@@ -24,14 +24,16 @@ import type { AbstractEngine, AbstractMesh, LinesMesh, Material, Mesh } from "@b
 import "@babylonjs/loaders/OBJ/objFileLoader";
 import "@babylonjs/loaders/glTF";
 import type { IGameScene } from "../SceneManager";
-import { isPlayerShipSystem } from "../data/PlayerShip";
-import { isStarbaseSystem } from "../data/Starbase";
 import { STAR_TYPES, StarType, PLANET_TYPES, PlanetType } from "../data/StarMap";
 import type { PlanetConfig, StarData, StarVisualKind } from "../data/StarMap";
 import { OrbitSystem } from "../systems/OrbitSystem";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
 
 type ExitSystemHandler = () => void | Promise<void>;
+
+export interface SystemSceneOptions {
+  homeSystemStarIds?: number[];
+}
 
 const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
 const PLAYER_SHIP_MODEL_FILE = "Fighter_01.obj";
@@ -45,6 +47,7 @@ export class SystemScene implements IGameScene {
   private engine: AbstractEngine;
   private star: StarData;
   private starCount: number;  // Track actual star count for player ship detection
+  private homeSystemStarIds: Set<number>;
   private readonly onExitSystem: ExitSystemHandler;
 
   private camera!: ArcRotateCamera;
@@ -116,19 +119,30 @@ export class SystemScene implements IGameScene {
     this.requestExit();
   };
 
-  constructor(engine: AbstractEngine, star: StarData, onExitSystem: ExitSystemHandler, starCount: number = 500) {
+  constructor(
+    engine: AbstractEngine,
+    star: StarData,
+    onExitSystem: ExitSystemHandler,
+    starCount: number = 500,
+    options: SystemSceneOptions = {},
+  ) {
     this.engine = engine;
     this.star = star;
     this.starCount = starCount;
+    this.homeSystemStarIds = new Set(options.homeSystemStarIds ?? []);
     this.onExitSystem = onExitSystem;
     this.scene = new Scene(engine);
     this.scene.clearColor = new Color4(0.01, 0.015, 0.03, 1);
     console.log(`📍 SystemScene init: star.id=${star.id}, totalStarCount=${starCount}`);
   }
 
+  private hasHomeSystemPresence(): boolean {
+    return this.homeSystemStarIds.has(this.star.id);
+  }
+
   private async createStarbaseIfPresent(): Promise<void> {
     console.log(`🔍 Checking starbase: star.id=${this.star.id}, using starCount=${this.starCount}`);
-    if (!isStarbaseSystem(this.star.id, this.starCount)) return;
+    if (!this.hasHomeSystemPresence()) return;
     console.log(`✅ This is the starbase system!`);
 
     const starRadius = Math.max(0.6, this.starDiameter * 0.5);
@@ -837,7 +851,7 @@ export class SystemScene implements IGameScene {
 
   private async createPlayerShipIfPresent(): Promise<void> {
     console.log(`🔍 Checking player ship: star.id=${this.star.id}, using starCount=${this.starCount}`);
-    if (!isPlayerShipSystem(this.star.id, this.starCount)) return;
+    if (!this.hasHomeSystemPresence()) return;
     console.log(`✅ This is the player ship system!`);
 
     console.log(`🚀 Loading player ship for star ID ${this.star.id}`);

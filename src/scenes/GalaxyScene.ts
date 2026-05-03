@@ -17,8 +17,13 @@ import {
 import type { AbstractEngine, Mesh, Observer, PointerInfo } from "@babylonjs/core";
 import type { IGameScene } from "../SceneManager";
 import { GALAXY_MAP } from "../data/GalaxyMap";
-import { getPlayerShipStarId } from "../data/PlayerShip";
-import { getStarbaseStarId } from "../data/Starbase";
+import {
+  FOG_OF_WAR_MAX_JUMPS,
+  buildFactions,
+  buildHomeSystemOwnership,
+  getPerspectiveVisibleStarIds,
+} from "../data/Factions";
+import type { FactionInfo, GalaxyPerspective } from "../data/Factions";
 import { generateStarMap } from "../data/StarMap";
 import type { StarData } from "../data/StarMap";
 import { CameraController } from "../systems/CameraController";
@@ -40,6 +45,9 @@ export interface GalaxyViewState {
 export interface GalaxySceneOptions {
   stars?: StarData[];
   initialViewState?: GalaxyViewState;
+  factions?: FactionInfo[];
+  perspective?: GalaxyPerspective;
+  visibilityJumps?: number;
 }
 
 function mulberry32(seed: number): () => number {
@@ -766,8 +774,9 @@ export class GalaxyScene implements IGameScene {
   private hyperlanePairs: Array<[number, number]> = [];
   private hyperlaneAdjacency: number[][] = [];
   private starOwnership: number[] = [];
-  private playerShipStarId = -1;
-  private starbaseStarId = -1;
+  private factions: FactionInfo[] = [];
+  private perspective: GalaxyPerspective = { mode: "observer" };
+  private visibleStarIds: Set<number> | null = null;
   private galacticCoreMeshes: Mesh[] = [];
   private galacticCoreSpinSpeeds: number[] = [];
   private hoveredStarId = -1;
@@ -822,8 +831,11 @@ export class GalaxyScene implements IGameScene {
           cfg.minStarSpacing,
           cfg.shape,
         );
-    this.playerShipStarId = getPlayerShipStarId(this.stars.length, cfg.seed);
-    this.starbaseStarId = getStarbaseStarId(this.stars.length, cfg.seed);
+    this.factions =
+      this.options.factions && this.options.factions.length > 0
+        ? this.options.factions
+        : buildFactions(this.stars, cfg);
+    this.perspective = this.options.perspective ?? { mode: "observer" };
 
     const initialViewState = this.options.initialViewState;
 
@@ -878,9 +890,12 @@ export class GalaxyScene implements IGameScene {
     this.setupHyperlanes(cfg.width, cfg.height, cfg.shape, cfg.seed);
     this.setupOwnershipLayer(cfg.width, cfg.height, cfg.seed);
 
-    this.starField = new StarFieldRenderer(this.scene, this.stars);
-    this.starField.setPlayerShipStar(this.playerShipStarId);
-    this.starField.setStarbaseStar(this.starbaseStarId);
+    this.starField = new StarFieldRenderer(
+      this.scene,
+      this.stars,
+      this.factions.map((faction) => faction.homeStarId),
+    );
+    this.starField.setVisibleStarIds(this.visibleStarIds);
 
     this.selectionPanel = new SelectionPanel(this.canvas);
     this.starField.setIconClickCallback((type, shiftKey) => {
@@ -944,6 +959,27 @@ export class GalaxyScene implements IGameScene {
     }
   }
 
+  private updateVisibilityFromPerspective(): void {
+    this.visibleStarIds = getPerspectiveVisibleStarIds(
+      this.perspective,
+      this.factions,
+      this.hyperlaneAdjacency,
+      this.options.visibilityJumps ?? FOG_OF_WAR_MAX_JUMPS,
+    );
+  }
+
+  private isStarVisibleToPerspective(starId: number): boolean {
+    return this.visibleStarIds === null || this.visibleStarIds.has(starId);
+  }
+
+  private applyVisibilityToOwnership(ownerByStar: number[]): number[] {
+    if (this.visibleStarIds === null) return ownerByStar;
+
+    return ownerByStar.map((owner, starId) => (
+      this.visibleStarIds?.has(starId) ? owner : -1
+    ));
+  }
+
   private setupHyperlanes(
     width: number,
     height: number,
@@ -953,6 +989,7 @@ export class GalaxyScene implements IGameScene {
     const hyperlanes = buildHyperlanePairs(this.stars, width, height, shape, seed);
     this.hyperlanePairs = hyperlanes;
     this.hyperlaneAdjacency = buildHyperlaneAdjacency(hyperlanes, this.stars.length);
+    this.updateVisibilityFromPerspective();
     if (hyperlanes.length === 0) return;
 
     const minAxis = Math.min(width, height);
@@ -961,6 +998,10 @@ export class GalaxyScene implements IGameScene {
     const lineColors: Color4[][] = [];
 
     for (const [a, b] of hyperlanes) {
+      if (!this.isStarVisibleToPerspective(a) || !this.isStarVisibleToPerspective(b)) {
+        continue;
+      }
+
       const starA = this.stars[a];
       const starB = this.stars[b];
 
@@ -1000,6 +1041,8 @@ export class GalaxyScene implements IGameScene {
       lineColors.push([laneColorStart, laneColorMid, laneColorEnd]);
     }
 
+    if (lineSegments.length === 0) return;
+
     this.hyperlaneMesh = MeshBuilder.CreateLineSystem(
       "galaxyHyperlanes",
       {
@@ -1019,19 +1062,13 @@ export class GalaxyScene implements IGameScene {
   private setupOwnershipLayer(width: number, height: number, seed: number): void {
     if (this.stars.length === 0) return;
 
-    const factionCount = Math.min(OWNERSHIP_FACTION_COUNT, this.stars.length);
+    const factionCount = Math.min(this.factions.length, this.stars.length);
     if (factionCount <= 0) return;
 
-    const rng = mulberry32(seed ^ 0x43a7f12d);
-    const seedIndices = selectOwnershipSeedIndices(
-      this.stars,
-      factionCount,
-      width,
-      height,
-      rng,
-    );
-    const palette = pickOwnershipPalette(seedIndices.length, rng);
-    this.starOwnership = assignOwnershipToStars(this.stars, seedIndices, this.hyperlaneAdjacency);
+    const palette = this.factions
+      .slice(0, factionCount)
+      .map((faction) => new Color3(faction.color[0], faction.color[1], faction.color[2]));
+    this.starOwnership = buildHomeSystemOwnership(this.stars, this.factions);
     const ownershipPadding = Math.min(width, height) * OWNERSHIP_OVERLAY_PADDING_FACTOR;
     const ownershipWidth = width + ownershipPadding * 2;
     const ownershipHeight = height + ownershipPadding * 2;
@@ -1045,7 +1082,7 @@ export class GalaxyScene implements IGameScene {
       stars: this.stars,
       palette,
     });
-    this.ownershipRenderer.updateOwnership(this.starOwnership);
+    this.ownershipRenderer.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
 
     const overlay = MeshBuilder.CreateGround(
       "galaxyOwnershipOverlay",
@@ -1213,6 +1250,8 @@ export class GalaxyScene implements IGameScene {
     let nearestDistSq = Infinity;
 
     for (const star of this.stars) {
+      if (!this.isStarVisibleToPerspective(star.id)) continue;
+
       const dx = clickX - star.x;
       const dz = clickZ - star.z;
       const dSq = dx * dx + dz * dz;
@@ -1284,6 +1323,7 @@ export class GalaxyScene implements IGameScene {
     const neighborIds = this.hyperlaneAdjacency[starId] ?? [];
     const out: StarData[] = [];
     for (const neighborId of neighborIds) {
+      if (!this.isStarVisibleToPerspective(neighborId)) continue;
       const star = this.stars[neighborId];
       if (star) out.push(star);
     }
@@ -1322,7 +1362,10 @@ export class GalaxyScene implements IGameScene {
   setStarOwnership(starId: number, owner: number): void {
     if (starId < 0 || starId >= this.starOwnership.length) return;
     this.starOwnership[starId] = owner;
-    this.ownershipRenderer?.setStarOwner(starId, owner);
+    this.ownershipRenderer?.setStarOwner(
+      starId,
+      this.isStarVisibleToPerspective(starId) ? owner : -1,
+    );
   }
 
   setStarOwnerships(ownerByStar: number[]): void {
@@ -1330,7 +1373,7 @@ export class GalaxyScene implements IGameScene {
     while (this.starOwnership.length < this.stars.length) {
       this.starOwnership.push(-1);
     }
-    this.ownershipRenderer?.updateOwnership(this.starOwnership);
+    this.ownershipRenderer?.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
   }
 
   captureViewState(): GalaxyViewState | null {
