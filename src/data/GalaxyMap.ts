@@ -62,8 +62,8 @@ export const GALAXY_MAP: GalaxyMapConfig = {
 
   camera: {
     minRadius: 2,
-    maxRadius: 900,
-    startRadius: 900,
+    maxRadius: 1500,
+    startRadius: 1200,
     startAlpha: -Math.PI / 2,
     startBeta: Math.PI / 4,
     minBeta: 0.1,

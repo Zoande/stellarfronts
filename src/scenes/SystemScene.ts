@@ -26,7 +26,7 @@ import "@babylonjs/loaders/glTF";
 import type { IGameScene } from "../SceneManager";
 import { isPlayerShipSystem } from "../data/PlayerShip";
 import { isStarbaseSystem } from "../data/Starbase";
-import { STAR_TYPES, StarType } from "../data/StarMap";
+import { STAR_TYPES, StarType, PLANET_TYPES, PlanetType } from "../data/StarMap";
 import type { PlanetConfig, StarData, StarVisualKind } from "../data/StarMap";
 import { OrbitSystem } from "../systems/OrbitSystem";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
@@ -38,7 +38,7 @@ const PLAYER_SHIP_MODEL_FILE = "Fighter_01.obj";
 const PLAYER_SHIP_TARGET_SIZE = 2.2;  // 5x smaller than original
 const PLAYER_SHIP_BASE_POSITION = new Vector3(23, 4.8, -19);
 
-const STARBASE_MODEL_URL = new URL("../../star_trek_-_starbase_375.glb", import.meta.url).toString();
+const STARBASE_MODEL_URL = "/starbase/star_trek_-_starbase_375.glb";
 
 export class SystemScene implements IGameScene {
   public scene: Scene;
@@ -1284,11 +1284,9 @@ export class SystemScene implements IGameScene {
   }
 
   private createPlanet(index: number, planet: PlanetConfig): void {
-    const textureByType: Record<PlanetConfig["type"], string> = {
-      rocky: "/textures/rocky_planet.png",
-      gas: "/textures/gas_giant.png",
-      ice: "/textures/ice_planet.png",
-    };
+    const planetCfg = PLANET_TYPES[planet.type];
+    const textureVariantNum = planet.textureVariation + 1;
+    const texturePath = `${planetCfg.texturePrefix}_0${textureVariantNum}-1024x512.png`;
 
     const orbitRadius = this.orbitBaseOffset + index * this.orbitSpacing + planet.orbitRadius * 1.2;
     const orbitSpeed = planet.orbitSpeed * 0.35;
@@ -1301,7 +1299,7 @@ export class SystemScene implements IGameScene {
     );
 
     const mat = new StandardMaterial(`systemPlanetMat_${index}`, this.scene);
-    mat.diffuseTexture = new Texture(textureByType[planet.type], this.scene);
+    mat.diffuseTexture = new Texture(texturePath, this.scene);
     mat.specularColor = new Color3(0.12, 0.12, 0.12);
     mat.emissiveColor = this.planetNightLift;
     mesh.material = mat;
@@ -1350,20 +1348,20 @@ export class SystemScene implements IGameScene {
   private createFallbackPlanets(kind: StarVisualKind): PlanetConfig[] {
     if (kind === "black-hole") {
       return [
-        { type: "rocky", diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32 },
-        { type: "gas", diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2 },
+        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32 },
+        { type: PlanetType.Methane, textureVariation: 0, diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2 },
       ];
     }
     if (kind === "neutron-star" || kind === "pulsar") {
       return [
-        { type: "rocky", diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62 },
-        { type: "ice", diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46 },
+        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62 },
+        { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46 },
       ];
     }
     return [
-      { type: "rocky", diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55 },
-      { type: "gas", diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24 },
-      { type: "ice", diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4 },
+      { type: PlanetType.Barren, textureVariation: 0, diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55 },
+      { type: PlanetType.Gaseous, textureVariation: 0, diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24 },
+      { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4 },
     ];
   }
 

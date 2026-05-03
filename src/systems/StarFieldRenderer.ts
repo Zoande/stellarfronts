@@ -23,6 +23,7 @@ import {
   TransformNode,
   GlowLayer,
   Matrix,
+  DynamicTexture,
 } from "@babylonjs/core";
 import type { Mesh, Scene } from "@babylonjs/core";
 import { STAR_TYPES, StarType } from "../data/StarMap";
@@ -123,6 +124,12 @@ const STARBASE_ICON_OFFSET_X = 8;
 const STARBASE_ICON_OFFSET_Z = -8;
 const STARBASE_ICON_PULSE_SPEED = 2.05;
 const STARBASE_ICON_PULSE_SCALE = 0.08;
+
+/** Star label visibility threshold (0 = fully zoomed out, 1 = fully zoomed in) */
+const STAR_LABEL_ZOOM_THRESHOLD = 0.65;
+const STAR_LABEL_FONT_SIZE = 128;
+const STAR_LABEL_TEXTURE_WIDTH = 512;
+const STAR_LABEL_TEXTURE_HEIGHT = 128;
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
@@ -244,6 +251,9 @@ export class StarFieldRenderer {
   private starbaseIconSprite: Sprite;
   private starbaseStarId = -1;
 
+  private starLabelMeshes: Mesh[] = [];
+  private starNames: string[] = [];
+
   // Current per-star overrides (applied each frame via applyVisuals)
   private alphaOverrides: Float32Array;
   private scaleOverrides: Float32Array;
@@ -353,6 +363,15 @@ export class StarFieldRenderer {
     this.pulseFrequency = new Float32Array(stars.length).fill(1);
     this.pulseFloor = new Float32Array(stars.length).fill(SUBTLE_PULSE_FLOOR);
     this.pulsePhase = new Float32Array(stars.length).fill(0);
+
+    // Create star name labels
+    console.log(`Creating ${stars.length} star labels...`);
+    for (let i = 0; i < stars.length; i++) {
+      this.starNames.push(stars[i].name);
+      const labelMesh = this.createStarLabel(stars[i]);
+      this.starLabelMeshes.push(labelMesh);
+    }
+    console.log(`Created ${this.starLabelMeshes.length} star label meshes`);
 
     for (let i = 0; i < stars.length; i++) {
       const star = stars[i];
@@ -503,6 +522,78 @@ export class StarFieldRenderer {
 
   update(deltaTime: number): void {
     this.elapsedTime += deltaTime;
+    
+    // Update star label visibility based on zoom level
+    // zoomOutBlend = 0 when zoomed in, 1 when zoomed out
+    // We want labels visible when ZOOMED IN (zoomOutBlend closer to 0)
+    const labelsVisible = this.zoomOutBlend < STAR_LABEL_ZOOM_THRESHOLD;
+    
+    for (let i = 0; i < this.starLabelMeshes.length; i++) {
+      const labelMesh = this.starLabelMeshes[i];
+      
+      if (labelMesh.isVisible !== labelsVisible) {
+        console.log(`Label ${i} visibility changed to ${labelsVisible}, zoomOutBlend: ${this.zoomOutBlend}, threshold: ${STAR_LABEL_ZOOM_THRESHOLD}`);
+        labelMesh.isVisible = labelsVisible;
+      }
+      
+      // Keep plane facing camera
+      if (labelsVisible && this.scene.activeCamera) {
+        const cameraPosition = this.scene.activeCamera.position;
+        const labelPosition = labelMesh.position;
+        labelMesh.lookAt(cameraPosition);
+      }
+    }
+  }
+
+  private createStarLabel(star: StarData): Mesh {
+    console.log(`Creating label for star: ${star.name} at (${star.x}, ${star.z})`);
+    
+    // Create AdvancedDynamicTexture for reliable text rendering
+    const advTexture = new AdvancedDynamicTexture("starLabelGUI_" + star.id, STAR_LABEL_TEXTURE_WIDTH, STAR_LABEL_TEXTURE_HEIGHT, this.scene);
+    advTexture.background = "rgba(0, 0, 0, 0.8)";
+    
+    // Create TextBlock for the star name
+    const textBlock = new TextBlock("starText_" + star.id, star.name);
+    textBlock.fontSize = 80;
+    textBlock.fontFamily = "Arial, sans-serif";
+    textBlock.fontWeight = "bold";
+    textBlock.color = "white";
+    textBlock.outlineWidth = 2;
+    textBlock.outlineColor = "black";
+    textBlock.textWrapping = false;
+    textBlock.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
+    textBlock.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
+    
+    advTexture.addControl(textBlock);
+    advTexture.update();
+    
+    console.log(`Advanced texture created for ${star.name}, size: ${STAR_LABEL_TEXTURE_WIDTH}x${STAR_LABEL_TEXTURE_HEIGHT}`);
+
+    // Create material with texture
+    const material = new StandardMaterial("starLabelMat_" + star.id, this.scene);
+    material.emissiveTexture = advTexture;
+    material.emissiveColor = new Color3(1, 1, 1);
+    material.disableLighting = true;
+    material.backFaceCulling = false;
+    material.alpha = 1.0;
+    
+    console.log(`Material created for ${star.name}`);
+
+    // Create plane mesh
+    const labelMesh = MeshBuilder.CreatePlane(
+      "starLabel_mesh_" + star.id,
+      { width: 10, height: 2.5 },
+      this.scene,
+    );
+    labelMesh.position = new Vector3(star.x, 3, star.z);
+    labelMesh.material = material;
+    labelMesh.isPickable = false;
+    labelMesh.isVisible = false;
+    labelMesh.renderingGroupId = 1;
+    
+    console.log(`Label mesh created for ${star.name} at position`, labelMesh.position);
+
+    return labelMesh;
   }
 
   /** Set alpha for a specific star (0 = invisible, 1 = full). */
@@ -536,7 +627,11 @@ export class StarFieldRenderer {
    * At higher values stars get larger and brighter for map readability.
    */
   setZoomOutBlend(zoomOutBlend: number): void {
+    const prevBlend = this.zoomOutBlend;
     this.zoomOutBlend = clamp01(zoomOutBlend);
+    if (Math.abs(this.zoomOutBlend - prevBlend) > 0.01) {
+      console.log(`Zoom blend updated: ${prevBlend.toFixed(2)} -> ${this.zoomOutBlend.toFixed(2)}, threshold: ${STAR_LABEL_ZOOM_THRESHOLD}`);
+    }
   }
 
   setStarsVisible(visible: boolean): void {
@@ -742,6 +837,13 @@ export class StarFieldRenderer {
     }
     this.selectionMarkerMaterial.dispose();
     this.selectionMarkerRoot.dispose();
+    for (const labelMesh of this.starLabelMeshes) {
+      if (labelMesh.material) {
+        (labelMesh.material as StandardMaterial).emissiveTexture?.dispose();
+        labelMesh.material.dispose();
+      }
+      labelMesh.dispose();
+    }
     this.haloManager.dispose();
     this.coreManager.dispose();
     this.haloSprites = [];
@@ -750,6 +852,8 @@ export class StarFieldRenderer {
     this.baseCoreSizes = [];
     this.baseHaloSizes = [];
     this.starPositions = [];
+    this.starLabelMeshes = [];
+    this.starNames = [];
   }
 
   public setIconClickCallback(callback: (type: "ship" | "starbase", shiftKey: boolean) => void): void {

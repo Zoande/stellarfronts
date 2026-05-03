@@ -199,8 +199,235 @@ export const STAR_TYPES: Record<StarType, StarTypeConfig> = {
 
 /*  Per-star data interfaces  */
 
+export enum PlanetType {
+  Barren = "Barren",
+  Gaseous = "Gaseous",
+  Snowy = "Snowy",
+  Arid = "Arid",
+  Dusty = "Dusty",
+  Grassland = "Grassland",
+  Jungle = "Jungle",
+  Marshy = "Marshy",
+  Martian = "Martian",
+  Methane = "Methane",
+  Sandy = "Sandy",
+  Tundra = "Tundra",
+}
+
+export interface PlanetTypeConfig {
+  /** Friendly display name */
+  name: string;
+  /** Texture path prefix (no extension) */
+  texturePrefix: string;
+  /** Number of texture variations available */
+  variations: number;
+  /** Spawn probability weight per star visual kind */
+  weightByStarKind: Record<StarVisualKind, number>;
+  /** Size range for this planet type */
+  diameterMin: number;
+  diameterMax: number;
+  /** Orbit speed multiplier */
+  orbitSpeedMultiplier: number;
+}
+
+export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
+  [PlanetType.Barren]: {
+    name: "Barren",
+    texturePrefix: "/textures/planets/Barren/Barren",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 18,
+      "red-giant": 15,
+      "brown-dwarf": 12,
+      "neutron-star": 20,
+      "pulsar": 15,
+      "black-hole": 25,
+    },
+    diameterMin: 0.9,
+    diameterMax: 2.1,
+    orbitSpeedMultiplier: 0.35,
+  },
+  [PlanetType.Gaseous]: {
+    name: "Gaseous",
+    texturePrefix: "/textures/planets/Gaseous/Gaseous",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 22,
+      "red-giant": 25,
+      "brown-dwarf": 35,
+      "neutron-star": 15,
+      "pulsar": 12,
+      "black-hole": 20,
+    },
+    diameterMin: 2.0,
+    diameterMax: 4.5,
+    orbitSpeedMultiplier: 0.12,
+  },
+  [PlanetType.Snowy]: {
+    name: "Snowy",
+    texturePrefix: "/textures/planets/Snowy/Snowy",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 12,
+      "red-giant": 8,
+      "brown-dwarf": 8,
+      "neutron-star": 10,
+      "pulsar": 8,
+      "black-hole": 5,
+    },
+    diameterMin: 0.7,
+    diameterMax: 1.7,
+    orbitSpeedMultiplier: 0.45,
+  },
+  [PlanetType.Arid]: {
+    name: "Arid",
+    texturePrefix: "/textures/planets/Arid/Arid",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 16,
+      "red-giant": 14,
+      "brown-dwarf": 10,
+      "neutron-star": 8,
+      "pulsar": 10,
+      "black-hole": 8,
+    },
+    diameterMin: 0.8,
+    diameterMax: 1.9,
+    orbitSpeedMultiplier: 0.38,
+  },
+  [PlanetType.Dusty]: {
+    name: "Dusty",
+    texturePrefix: "/textures/planets/Dusty/Dusty",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 14,
+      "red-giant": 12,
+      "brown-dwarf": 11,
+      "neutron-star": 12,
+      "pulsar": 14,
+      "black-hole": 10,
+    },
+    diameterMin: 0.85,
+    diameterMax: 1.95,
+    orbitSpeedMultiplier: 0.4,
+  },
+  [PlanetType.Grassland]: {
+    name: "Grassland",
+    texturePrefix: "/textures/planets/Grassland/Grassland",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 15,
+      "red-giant": 10,
+      "brown-dwarf": 5,
+      "neutron-star": 5,
+      "pulsar": 5,
+      "black-hole": 2,
+    },
+    diameterMin: 0.9,
+    diameterMax: 1.8,
+    orbitSpeedMultiplier: 0.36,
+  },
+  [PlanetType.Jungle]: {
+    name: "Jungle",
+    texturePrefix: "/textures/planets/Jungle/Jungle",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 12,
+      "red-giant": 8,
+      "brown-dwarf": 3,
+      "neutron-star": 2,
+      "pulsar": 2,
+      "black-hole": 1,
+    },
+    diameterMin: 0.95,
+    diameterMax: 2.0,
+    orbitSpeedMultiplier: 0.34,
+  },
+  [PlanetType.Marshy]: {
+    name: "Marshy",
+    texturePrefix: "/textures/planets/Marshy/Marshy",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 11,
+      "red-giant": 9,
+      "brown-dwarf": 4,
+      "neutron-star": 3,
+      "pulsar": 3,
+      "black-hole": 2,
+    },
+    diameterMin: 0.88,
+    diameterMax: 1.85,
+    orbitSpeedMultiplier: 0.37,
+  },
+  [PlanetType.Martian]: {
+    name: "Martian",
+    texturePrefix: "/textures/planets/Martian/Martian",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 13,
+      "red-giant": 11,
+      "brown-dwarf": 9,
+      "neutron-star": 11,
+      "pulsar": 13,
+      "black-hole": 9,
+    },
+    diameterMin: 0.82,
+    diameterMax: 1.92,
+    orbitSpeedMultiplier: 0.39,
+  },
+  [PlanetType.Methane]: {
+    name: "Methane",
+    texturePrefix: "/textures/planets/Methane/Methane",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 18,
+      "red-giant": 20,
+      "brown-dwarf": 30,
+      "neutron-star": 12,
+      "pulsar": 10,
+      "black-hole": 15,
+    },
+    diameterMin: 2.1,
+    diameterMax: 4.2,
+    orbitSpeedMultiplier: 0.15,
+  },
+  [PlanetType.Sandy]: {
+    name: "Sandy",
+    texturePrefix: "/textures/planets/Sandy/Sandy",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 14,
+      "red-giant": 12,
+      "brown-dwarf": 8,
+      "neutron-star": 9,
+      "pulsar": 11,
+      "black-hole": 7,
+    },
+    diameterMin: 0.8,
+    diameterMax: 1.9,
+    orbitSpeedMultiplier: 0.38,
+  },
+  [PlanetType.Tundra]: {
+    name: "Tundra",
+    texturePrefix: "/textures/planets/Tundra/Tundra",
+    variations: 5,
+    weightByStarKind: {
+      "main-sequence": 10,
+      "red-giant": 6,
+      "brown-dwarf": 6,
+      "neutron-star": 8,
+      "pulsar": 6,
+      "black-hole": 4,
+    },
+    diameterMin: 0.75,
+    diameterMax: 1.8,
+    orbitSpeedMultiplier: 0.46,
+  },
+};
+
 export interface PlanetConfig {
-  type: "rocky" | "gas" | "ice";
+  type: PlanetType;
+  textureVariation: number;
   diameter: number;
   orbitRadius: number;
   orbitSpeed: number;
@@ -335,21 +562,16 @@ export function generateStarMap(
     return `${p}${s}${d}`;
   }
 
-  function pickPlanetType(kind: StarVisualKind): PlanetConfig["type"] {
-    const r = rng();
-    if (kind === "brown-dwarf") {
-      if (r < 0.15) return "rocky";
-      if (r < 0.65) return "gas";
-      return "ice";
+  function pickPlanetType(kind: StarVisualKind): PlanetType {
+    const typeEntries = Object.entries(PLANET_TYPES) as [PlanetType, PlanetTypeConfig][];
+    const totalWeight = typeEntries.reduce((sum, [, cfg]) => sum + cfg.weightByStarKind[kind], 0);
+    
+    let r = rng() * totalWeight;
+    for (const [type, cfg] of typeEntries) {
+      r -= cfg.weightByStarKind[kind];
+      if (r <= 0) return type;
     }
-    if (kind === "black-hole" || kind === "neutron-star" || kind === "pulsar") {
-      if (r < 0.25) return "rocky";
-      if (r < 0.55) return "gas";
-      return "ice";
-    }
-    if (r < 0.45) return "rocky";
-    if (r < 0.75) return "gas";
-    return "ice";
+    return PlanetType.Barren;
   }
 
   function generatePlanets(starType: StarType): PlanetConfig[] {
@@ -406,30 +628,18 @@ export function generateStarMap(
 
     const planets: PlanetConfig[] = [];
     for (let i = 0; i < numPlanets; i++) {
-      const ptype = pickPlanetType(typeCfg.kind);
-      let diameter: number;
-      let orbitSpeed: number;
-
-      switch (ptype) {
-        case "rocky":
-          diameter = 0.8 + rng() * 1.2;
-          orbitSpeed = 0.3 + rng() * 0.4;
-          break;
-        case "gas":
-          diameter = 2.0 + rng() * 2.5;
-          orbitSpeed = 0.1 + rng() * 0.2;
-          break;
-        case "ice":
-          diameter = 0.6 + rng() * 1.0;
-          orbitSpeed = 0.4 + rng() * 0.5;
-          break;
-      }
+      const planetType = pickPlanetType(typeCfg.kind);
+      const planetCfg = PLANET_TYPES[planetType];
+      const textureVar = Math.floor(rng() * planetCfg.variations);
+      const diameter = planetCfg.diameterMin + rng() * (planetCfg.diameterMax - planetCfg.diameterMin);
+      const orbitSpeed = (0.2 + rng() * 0.3) * planetCfg.orbitSpeedMultiplier * orbitSpeedScale;
 
       planets.push({
-        type: ptype,
+        type: planetType,
+        textureVariation: textureVar,
         diameter,
         orbitRadius: baseOrbit + i * orbitSpacing + rng() * (orbitSpacing * 0.8),
-        orbitSpeed: orbitSpeed * orbitSpeedScale,
+        orbitSpeed,
       });
     }
 
