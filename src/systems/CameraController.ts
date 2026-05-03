@@ -29,8 +29,8 @@ export class CameraController {
 
   // WASD / edge pan state
   private keysDown = new Set<string>();
-  private panSpeed = 60;        // units per second at max zoom-out
-  private edgeThreshold = 40;   // pixels from screen edge
+  private panSpeed = 120;       // units per second at max zoom-out (increased from 60)
+  private edgeThreshold = 20;   // harsh edge threshold - only very close to edge triggers panning
   private rotateSpeed = 1.5;    // radians per second for Q/E orbit
   private mouseX = 0;
   private mouseY = 0;
@@ -175,15 +175,27 @@ export class CameraController {
     if (this.keysDown.has("a") || this.keysDown.has("arrowleft")) dx -= 1;
     if (this.keysDown.has("d") || this.keysDown.has("arrowright")) dx += 1;
 
-    // Mouse edge panning
+    // Mouse edge panning — gradient intensity based on distance from edge (harsher threshold)
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
     const et = this.edgeThreshold;
 
-    if (this.mouseX < et) dx -= 1;
-    if (this.mouseX > w - et) dx += 1;
-    if (this.mouseY < et) dz += 1;
-    if (this.mouseY > h - et) dz -= 1;
+    // Left edge: intensity increases as we get closer to the very edge
+    if (this.mouseX < et) {
+      dx += (1 - this.mouseX / et);
+    }
+    // Right edge: intensity increases as we get closer to the very edge
+    if (this.mouseX > w - et) {
+      dx -= (1 - (w - this.mouseX) / et);
+    }
+    // Top edge: intensity increases as we get closer to the very edge
+    if (this.mouseY < et) {
+      dz += (1 - this.mouseY / et);
+    }
+    // Bottom edge: intensity increases as we get closer to the very edge
+    if (this.mouseY > h - et) {
+      dz -= (1 - (h - this.mouseY) / et);
+    }
 
     if (dx !== 0 || dz !== 0) {
       // Normalize if diagonal

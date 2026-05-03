@@ -24,6 +24,7 @@ import type { StarData } from "../data/StarMap";
 import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
+import { SelectionPanel } from "../ui/SelectionPanel";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
 
@@ -766,11 +767,12 @@ export class GalaxyScene implements IGameScene {
   private hyperlaneAdjacency: number[][] = [];
   private starOwnership: number[] = [];
   private playerShipStarId = -1;
-    private starbaseStarId = -1;
+  private starbaseStarId = -1;
   private galacticCoreMeshes: Mesh[] = [];
   private galacticCoreSpinSpeeds: number[] = [];
   private hoveredStarId = -1;
   private readonly hoverScaleBoost = 1.3;
+  private selectionPanel!: SelectionPanel;
 
   private hyperlanesVisible = true;
   private centerCloudVisible = true;
@@ -880,6 +882,11 @@ export class GalaxyScene implements IGameScene {
     this.starField.setPlayerShipStar(this.playerShipStarId);
     this.starField.setStarbaseStar(this.starbaseStarId);
 
+    this.selectionPanel = new SelectionPanel(this.canvas);
+    this.starField.setIconClickCallback((type, shiftKey) => {
+      this.handleIconClick(type, shiftKey);
+    });
+
     this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
       if (pointerInfo.type === PointerEventTypes.POINTERMOVE) {
         this.updateHoveredStarFromPointer();
@@ -890,6 +897,14 @@ export class GalaxyScene implements IGameScene {
       const ev = pointerInfo.event as PointerEvent;
       if (ev.button !== 0) return;
       if (this.isNavigating) return;
+      
+      // Check for icon click first
+      const rect = this.canvas.getBoundingClientRect();
+      const canvasX = (ev.clientX - rect.left) * (this.canvas.width / rect.width);
+      const canvasY = (ev.clientY - rect.top) * (this.canvas.height / rect.height);
+      console.log("Checking icon click at canvas coords:", {canvasX, canvasY, clientX: ev.clientX, clientY: ev.clientY});
+      this.starField.checkIconClick(canvasX, canvasY, {width: this.canvas.width, height: this.canvas.height}, ev.shiftKey);
+      
       this.tryEnterSystemAtPointer();
     });
 
@@ -1232,6 +1247,34 @@ export class GalaxyScene implements IGameScene {
       });
   }
 
+  private handleIconClick(type: "ship" | "starbase", shiftKey: boolean): void {
+    const cfg = GALAXY_MAP;
+    
+    if (type === "ship") {
+      this.selectionPanel.select(
+        {
+          type: "ship",
+          name: "Player Vessel",
+          hp: 95,
+          maxHp: 100,
+          class: "Sovereign-Class",
+        },
+        shiftKey,
+      );
+    } else if (type === "starbase") {
+      this.selectionPanel.select(
+        {
+          type: "starbase",
+          name: "Starbase 375",
+          hp: 88,
+          maxHp: 100,
+          class: "Outpost",
+        },
+        shiftKey,
+      );
+    }
+  }
+
   getStars(): StarData[] {
     return this.stars;
   }
@@ -1311,6 +1354,7 @@ export class GalaxyScene implements IGameScene {
     }
     this.canvas?.removeEventListener("contextmenu", this.onContextMenu);
     this.canvas?.removeEventListener("mouseleave", this.onCanvasPointerLeave);
+    this.selectionPanel?.clear();
     this.hyperlaneMesh?.dispose();
     this.hyperlaneMesh = null;
     if (this.ownershipOverlayMesh) {

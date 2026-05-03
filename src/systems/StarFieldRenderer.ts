@@ -22,6 +22,7 @@ import {
   StandardMaterial,
   TransformNode,
   GlowLayer,
+  Matrix,
 } from "@babylonjs/core";
 import type { Mesh, Scene } from "@babylonjs/core";
 import { STAR_TYPES, StarType } from "../data/StarMap";
@@ -106,16 +107,20 @@ const SELECTION_MARKER_GLOW_MAX = 0.68;
 const SELECTION_MARKER_COLOR = new Color3(0.18, 1.0, 0.9);
 
 const PLAYER_SHIP_ICON_TEXTURE_SIZE = 1024;
-const PLAYER_SHIP_ICON_MIN_SIZE = 14;
-const PLAYER_SHIP_ICON_MAX_SIZE = 27;
+const PLAYER_SHIP_ICON_MIN_SIZE = 11;
+const PLAYER_SHIP_ICON_MAX_SIZE = 19;
 const PLAYER_SHIP_ICON_Y = 2.4;
+const PLAYER_SHIP_ICON_OFFSET_X = 8;
+const PLAYER_SHIP_ICON_OFFSET_Z = -8;
 const PLAYER_SHIP_ICON_PULSE_SPEED = 2.3;
 const PLAYER_SHIP_ICON_PULSE_SCALE = 0.09;
 
 const STARBASE_ICON_TEXTURE_SIZE = 1024;
-const STARBASE_ICON_MIN_SIZE = 15;
-const STARBASE_ICON_MAX_SIZE = 29;
+const STARBASE_ICON_MIN_SIZE = 16;
+const STARBASE_ICON_MAX_SIZE = 28;
 const STARBASE_ICON_Y = 2.4;
+const STARBASE_ICON_OFFSET_X = 8;
+const STARBASE_ICON_OFFSET_Z = -8;
 const STARBASE_ICON_PULSE_SPEED = 2.05;
 const STARBASE_ICON_PULSE_SCALE = 0.08;
 
@@ -218,6 +223,7 @@ function createSelectionMarkerBoxes(
 }
 
 export class StarFieldRenderer {
+  private scene: Scene;
   private haloManager: SpriteManager;
   private coreManager: SpriteManager;
   private haloSprites: Sprite[] = [];
@@ -252,8 +258,10 @@ export class StarFieldRenderer {
   private elapsedTime = 0;
   private starsVisible = true;
   private bloomEnabled = true;
+  private onIconClick?: (type: "ship" | "starbase", shiftKey: boolean) => void;
 
   constructor(scene: Scene, stars: StarData[]) {
+    this.scene = scene;
     const haloTexture = createRadialTextureDataURL(
       STAR_TEXTURE_SIZE,
       HALO_TEXTURE_MIDDLE_STOP,
@@ -697,15 +705,9 @@ export class StarFieldRenderer {
     }
 
     const pos = this.starPositions[starId];
-    const pulse = 1 + PLAYER_SHIP_ICON_PULSE_SCALE
-      * Math.sin(this.elapsedTime * PLAYER_SHIP_ICON_PULSE_SPEED);
-    const iconSize = mix(
-      PLAYER_SHIP_ICON_MIN_SIZE,
-      PLAYER_SHIP_ICON_MAX_SIZE,
-      this.zoomOutBlend,
-    ) * pulse;
+    const iconSize = PLAYER_SHIP_ICON_MAX_SIZE;
 
-    this.playerShipIconSprite.position.set(pos.x, PLAYER_SHIP_ICON_Y, pos.z);
+    this.playerShipIconSprite.position.set(pos.x + PLAYER_SHIP_ICON_OFFSET_X, PLAYER_SHIP_ICON_Y, pos.z + PLAYER_SHIP_ICON_OFFSET_Z);
     this.playerShipIconSprite.width = iconSize;
     this.playerShipIconSprite.height = iconSize;
     this.playerShipIconSprite.angle = Math.sin(this.elapsedTime * 0.9) * 0.06;
@@ -722,15 +724,9 @@ export class StarFieldRenderer {
     }
 
     const pos = this.starPositions[starId];
-    const pulse = 1 + STARBASE_ICON_PULSE_SCALE
-      * Math.sin(this.elapsedTime * STARBASE_ICON_PULSE_SPEED);
-    const iconSize = mix(
-      STARBASE_ICON_MIN_SIZE,
-      STARBASE_ICON_MAX_SIZE,
-      this.zoomOutBlend,
-    ) * pulse;
+    const iconSize = STARBASE_ICON_MAX_SIZE;
 
-    this.starbaseIconSprite.position.set(pos.x, STARBASE_ICON_Y, pos.z);
+    this.starbaseIconSprite.position.set(pos.x + STARBASE_ICON_OFFSET_X, STARBASE_ICON_Y, pos.z + STARBASE_ICON_OFFSET_Z);
     this.starbaseIconSprite.width = iconSize;
     this.starbaseIconSprite.height = iconSize;
     this.starbaseIconSprite.angle = Math.sin(this.elapsedTime * 0.8) * 0.05;
@@ -755,5 +751,61 @@ export class StarFieldRenderer {
     this.baseHaloSizes = [];
     this.starPositions = [];
   }
+
+  public setIconClickCallback(callback: (type: "ship" | "starbase", shiftKey: boolean) => void): void {
+    this.onIconClick = callback;
+  }
+
+  public checkIconClick(screenX: number, screenY: number, viewport: {width: number; height: number}, shiftKey: boolean): void {
+    if (!this.onIconClick) {
+      console.log("No icon click callback set");
+      return;
+    }
+
+    const camera = this.scene.activeCamera;
+    if (!camera) return;
+
+    // Create a ray from camera through the click point
+    const ray = camera.getScene().createPickingRay(
+      screenX,
+      screenY,
+      Matrix.Identity(),
+      camera,
+    );
+
+    if (!ray) return;
+
+    // Check distance from ray to ship icon
+    const shipHitDist = this.distanceFromRayToPoint(ray, this.playerShipIconSprite.position);
+    console.log("Ship distance from ray:", shipHitDist, "visible:", this.playerShipIconSprite.isVisible);
+    if (shipHitDist < 5 && this.playerShipIconSprite.isVisible) {
+      console.log("Ship icon clicked!");
+      this.onIconClick("ship", shiftKey);
+      return;
+    }
+
+    // Check distance from ray to starbase icon
+    const starbaseHitDist = this.distanceFromRayToPoint(ray, this.starbaseIconSprite.position);
+    console.log("Starbase distance from ray:", starbaseHitDist, "visible:", this.starbaseIconSprite.isVisible);
+    if (starbaseHitDist < 5 && this.starbaseIconSprite.isVisible) {
+      console.log("Starbase icon clicked!");
+      this.onIconClick("starbase", shiftKey);
+      return;
+    }
+  }
+
+  private distanceFromRayToPoint(ray: any, point: Vector3): number {
+    // Ray defined as: origin + direction * t
+    // Find closest point on ray to the given point
+    const rayOrigin = ray.origin;
+    const rayDir = ray.direction;
+    
+    const toPoint = point.subtract(rayOrigin);
+    const t = Vector3.Dot(toPoint, rayDir) / Vector3.Dot(rayDir, rayDir);
+    const closestPointOnRay = rayOrigin.add(rayDir.scale(Math.max(0, t)));
+    
+    return Vector3.Distance(closestPointOnRay, point);
+  }
 }
+
 
