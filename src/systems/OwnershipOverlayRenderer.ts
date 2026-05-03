@@ -29,34 +29,70 @@ export interface OwnershipOverlayRendererOptions {
   textureSize: number;
   mapWidth: number;
   mapHeight: number;
-  territoryWidth?: number;
-  territoryHeight?: number;
   stars: StarData[];
   palette: Color3[];
+  territoryRadiusWorld?: number;
 }
 
-const FILL_ALPHA = 0.12;
+const FILL_ALPHA = 0.1;
 const BORDER_CONTOUR_STEP = 1;
-const BORDER_DIRTY_PADDING = 28;
-const BORDER_GLOW_WIDTH = 8.5;
-const BORDER_SOFT_WIDTH = 4.2;
-const BORDER_CORE_WIDTH = 1.45;
-const BORDER_GLOW_BLUR = 9;
-const BORDER_SOFT_BLUR = 4;
+const BORDER_GLOW_WIDTH = 5.5;
+const BORDER_SOFT_WIDTH = 2.8;
+const BORDER_CORE_WIDTH = 1.2;
+const BORDER_GLOW_BLUR = 5.5;
+const BORDER_SOFT_BLUR = 2.6;
 const BORDER_GLOW_ALPHA = 0.16;
 const BORDER_SOFT_ALPHA = 0.34;
 const BORDER_CORE_ALPHA = 0.82;
 const REFERENCE_TEXTURE_SIZE = 1600;
+const TERRITORY_RADIUS_NEAREST_FACTOR = 0.68;
+const TERRITORY_RADIUS_MIN_MAP_FACTOR = 0.014;
+const TERRITORY_RADIUS_MAX_MAP_FACTOR = 0.032;
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
 }
 
-function computeOwnershipRadiusWorld(mapWidth: number, mapHeight: number, starCount: number): number {
+function computeOwnershipRadiusWorld(
+  mapWidth: number,
+  mapHeight: number,
+  stars: StarData[],
+): number {
   const minAxis = Math.min(mapWidth, mapHeight);
-  const areaPerStar = (mapWidth * mapHeight) / Math.max(1, starCount);
-  const baseRadius = Math.sqrt(areaPerStar) * 0.88;
-  return clamp(baseRadius, minAxis * 0.022, minAxis * 0.085);
+  const minRadius = minAxis * TERRITORY_RADIUS_MIN_MAP_FACTOR;
+  const maxRadius = minAxis * TERRITORY_RADIUS_MAX_MAP_FACTOR;
+
+  if (stars.length < 2) {
+    return clamp(minAxis * 0.022, minRadius, maxRadius);
+  }
+
+  const nearestDistances: number[] = [];
+  for (let i = 0; i < stars.length; i++) {
+    let nearestSq = Number.POSITIVE_INFINITY;
+    const a = stars[i];
+    for (let j = 0; j < stars.length; j++) {
+      if (i === j) continue;
+      const b = stars[j];
+      const dx = a.x - b.x;
+      const dz = a.z - b.z;
+      const distanceSq = dx * dx + dz * dz;
+      if (distanceSq < nearestSq) {
+        nearestSq = distanceSq;
+      }
+    }
+
+    if (Number.isFinite(nearestSq)) {
+      nearestDistances.push(Math.sqrt(nearestSq));
+    }
+  }
+
+  if (nearestDistances.length === 0) {
+    return clamp(minAxis * 0.022, minRadius, maxRadius);
+  }
+
+  nearestDistances.sort((a, b) => a - b);
+  const medianNearest = nearestDistances[Math.floor(nearestDistances.length * 0.5)];
+  return clamp(medianNearest * TERRITORY_RADIUS_NEAREST_FACTOR, minRadius, maxRadius);
 }
 
 function colorToRgb(color: Color3): { r: number; g: number; b: number } {
@@ -78,45 +114,16 @@ function rgbaString(
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-function normalizeBounds(bounds: PixelBounds, width: number, height: number): PixelBounds {
-  return {
-    minX: clamp(Math.floor(bounds.minX), 0, width - 1),
-    minY: clamp(Math.floor(bounds.minY), 0, height - 1),
-    maxX: clamp(Math.ceil(bounds.maxX), 0, width - 1),
-    maxY: clamp(Math.ceil(bounds.maxY), 0, height - 1),
-  };
-}
-
-function expandBounds(bounds: PixelBounds, padding: number): PixelBounds {
-  return {
-    minX: bounds.minX - padding,
-    minY: bounds.minY - padding,
-    maxX: bounds.maxX + padding,
-    maxY: bounds.maxY + padding,
-  };
-}
-
-function unionBounds(bounds: PixelBounds | null, next: PixelBounds): PixelBounds {
-  if (!bounds) return { ...next };
-  return {
-    minX: Math.min(bounds.minX, next.minX),
-    minY: Math.min(bounds.minY, next.minY),
-    maxX: Math.max(bounds.maxX, next.maxX),
-    maxY: Math.max(bounds.maxY, next.maxY),
-  };
-}
-
 export class OwnershipOverlayRenderer {
   readonly texture: DynamicTexture;
 
   private readonly ctx: CanvasRenderingContext2D;
   private readonly widthPx: number;
   private readonly heightPx: number;
-  private readonly mapWidth: number;
-  private readonly mapHeight: number;
   private readonly stars: StarData[];
   private readonly paletteRgb: Array<{ r: number; g: number; b: number }>;
   private readonly projectedStars: ProjectedStar[];
+  private readonly fullBounds: PixelBounds;
   private readonly territoryOuterRadiusPx: number;
   private readonly outerRadiusSq: number;
   private readonly invOuterRadius: number;
@@ -136,12 +143,16 @@ export class OwnershipOverlayRenderer {
       ? Math.max(640, Math.round(options.textureSize / Math.max(0.001, mapAspect)))
       : options.textureSize;
 
-    this.mapWidth = options.mapWidth;
-    this.mapHeight = options.mapHeight;
     this.stars = options.stars;
     this.ownerByStar = new Array<number>(options.stars.length).fill(-1);
     this.paletteRgb = options.palette.map(colorToRgb);
     this.borderPixelScale = options.textureSize / REFERENCE_TEXTURE_SIZE;
+    this.fullBounds = {
+      minX: 0,
+      minY: 0,
+      maxX: this.widthPx - 1,
+      maxY: this.heightPx - 1,
+    };
 
     this.texture = new DynamicTexture(
       "galaxyOwnershipOverlayTexture",
@@ -159,17 +170,12 @@ export class OwnershipOverlayRenderer {
     this.ctx.imageSmoothingEnabled = true;
     this.ctx.imageSmoothingQuality = "high";
 
-    const territoryWidth = options.territoryWidth ?? options.mapWidth;
-    const territoryHeight = options.territoryHeight ?? options.mapHeight;
     const pxPerWorldX = (this.widthPx - 1) / Math.max(1, options.mapWidth);
     const pxPerWorldY = (this.heightPx - 1) / Math.max(1, options.mapHeight);
     const avgPxPerWorld = (pxPerWorldX + pxPerWorldY) * 0.5;
-    const territoryRadiusWorld = computeOwnershipRadiusWorld(
-      territoryWidth,
-      territoryHeight,
-      options.stars.length,
-    );
-    this.territoryOuterRadiusPx = Math.max(4, territoryRadiusWorld * avgPxPerWorld * 1.18);
+    const territoryRadiusWorld = options.territoryRadiusWorld
+      ?? computeOwnershipRadiusWorld(options.mapWidth, options.mapHeight, options.stars);
+    this.territoryOuterRadiusPx = Math.max(4, territoryRadiusWorld * avgPxPerWorld);
     this.outerRadiusSq = this.territoryOuterRadiusPx * this.territoryOuterRadiusPx;
     this.invOuterRadius = 1 / Math.max(0.001, this.territoryOuterRadiusPx);
 
@@ -185,7 +191,9 @@ export class OwnershipOverlayRenderer {
   }
 
   updateOwnership(ownerByStar: number[]): void {
-    this.ownerByStar = ownerByStar.slice(0, this.stars.length);
+    this.ownerByStar = ownerByStar
+      .slice(0, this.stars.length)
+      .map((owner) => this.normalizeOwner(owner));
     while (this.ownerByStar.length < this.stars.length) {
       this.ownerByStar.push(-1);
     }
@@ -194,25 +202,26 @@ export class OwnershipOverlayRenderer {
 
   setStarOwner(starId: number, owner: number): void {
     if (starId < 0 || starId >= this.stars.length) return;
-    if (this.ownerByStar[starId] === owner) return;
+    const normalizedOwner = this.normalizeOwner(owner);
+    if (this.ownerByStar[starId] === normalizedOwner) return;
 
-    this.ownerByStar[starId] = owner;
-    const dirtyBounds = this.boundsForStar(starId);
-    this.render(dirtyBounds);
+    this.ownerByStar[starId] = normalizedOwner;
+    this.render();
   }
 
   setStarOwners(changes: Array<{ starId: number; owner: number }>): void {
-    let dirtyBounds: PixelBounds | null = null;
+    let changed = false;
 
     for (const change of changes) {
       if (change.starId < 0 || change.starId >= this.stars.length) continue;
-      if (this.ownerByStar[change.starId] === change.owner) continue;
-      this.ownerByStar[change.starId] = change.owner;
-      dirtyBounds = unionBounds(dirtyBounds, this.boundsForStar(change.starId));
+      const normalizedOwner = this.normalizeOwner(change.owner);
+      if (this.ownerByStar[change.starId] === normalizedOwner) continue;
+      this.ownerByStar[change.starId] = normalizedOwner;
+      changed = true;
     }
 
-    if (dirtyBounds) {
-      this.render(dirtyBounds);
+    if (changed) {
+      this.render();
     }
   }
 
@@ -220,35 +229,38 @@ export class OwnershipOverlayRenderer {
     this.texture.dispose();
   }
 
-  private boundsForStar(starId: number): PixelBounds {
-    const star = this.projectedStars[starId];
-    const radius = this.territoryOuterRadiusPx + this.scaleBorderPixels(BORDER_DIRTY_PADDING);
-    return normalizeBounds(
-      {
-        minX: star.x - radius,
-        minY: star.y - radius,
-        maxX: star.x + radius,
-        maxY: star.y + radius,
-      },
-      this.widthPx,
-      this.heightPx,
-    );
+  private normalizeOwner(owner: number): number {
+    if (!Number.isFinite(owner)) return -1;
+    const normalizedOwner = Math.trunc(owner);
+    return normalizedOwner >= 0 && normalizedOwner < this.paletteRgb.length
+      ? normalizedOwner
+      : -1;
   }
 
-  private render(bounds?: PixelBounds): void {
-    const renderBounds = bounds
-      ? normalizeBounds(
-        expandBounds(bounds, this.scaleBorderPixels(BORDER_DIRTY_PADDING)),
-        this.widthPx,
-        this.heightPx,
-      )
-      : { minX: 0, minY: 0, maxX: this.widthPx - 1, maxY: this.heightPx - 1 };
+  private render(): void {
+    const renderBounds = this.fullBounds;
 
+    this.clearCanvas(renderBounds);
     this.clearMaps(renderBounds);
     this.stampOwnership(renderBounds);
     this.paintFill(renderBounds);
     this.drawBorders(renderBounds);
-    this.texture.update(false);
+    this.texture.update(true);
+  }
+
+  private clearCanvas(bounds: PixelBounds): void {
+    this.ctx.save();
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.globalAlpha = 1;
+    this.ctx.globalCompositeOperation = "source-over";
+    this.ctx.shadowBlur = 0;
+    this.ctx.clearRect(
+      bounds.minX,
+      bounds.minY,
+      bounds.maxX - bounds.minX + 1,
+      bounds.maxY - bounds.minY + 1,
+    );
+    this.ctx.restore();
   }
 
   private clearMaps(bounds: PixelBounds): void {

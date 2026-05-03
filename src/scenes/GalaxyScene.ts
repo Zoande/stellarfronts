@@ -1077,8 +1077,6 @@ export class GalaxyScene implements IGameScene {
       textureSize: OWNERSHIP_TEXTURE_SIZE,
       mapWidth: ownershipWidth,
       mapHeight: ownershipHeight,
-      territoryWidth: width,
-      territoryHeight: height,
       stars: this.stars,
       palette,
     });
