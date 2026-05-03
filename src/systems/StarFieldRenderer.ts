@@ -18,6 +18,7 @@ import {
   Vector3,
   Color3,
   Color4,
+  Material,
   MeshBuilder,
   StandardMaterial,
   TransformNode,
@@ -127,9 +128,12 @@ const STARBASE_ICON_PULSE_SCALE = 0.08;
 
 /** Star label visibility threshold (0 = fully zoomed out, 1 = fully zoomed in) */
 const STAR_LABEL_ZOOM_THRESHOLD = 0.65;
-const STAR_LABEL_FONT_SIZE = 128;
+const STAR_LABEL_FONT_SIZE = 78;
+const STAR_LABEL_MIN_FONT_SIZE = 42;
 const STAR_LABEL_TEXTURE_WIDTH = 512;
 const STAR_LABEL_TEXTURE_HEIGHT = 128;
+const STAR_LABEL_TEXTURE_PADDING_X = 34;
+const STAR_LABEL_FONT_FAMILY = '"Segoe UI", Arial, sans-serif';
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
@@ -539,7 +543,6 @@ export class StarFieldRenderer {
       // Keep plane facing camera
       if (labelsVisible && this.scene.activeCamera) {
         const cameraPosition = this.scene.activeCamera.position;
-        const labelPosition = labelMesh.position;
         labelMesh.lookAt(cameraPosition);
       }
     }
@@ -547,34 +550,56 @@ export class StarFieldRenderer {
 
   private createStarLabel(star: StarData): Mesh {
     console.log(`Creating label for star: ${star.name} at (${star.x}, ${star.z})`);
-    
-    // Create AdvancedDynamicTexture for reliable text rendering
-    const advTexture = new AdvancedDynamicTexture("starLabelGUI_" + star.id, STAR_LABEL_TEXTURE_WIDTH, STAR_LABEL_TEXTURE_HEIGHT, this.scene);
-    advTexture.background = "rgba(0, 0, 0, 0.8)";
-    
-    // Create TextBlock for the star name
-    const textBlock = new TextBlock("starText_" + star.id, star.name);
-    textBlock.fontSize = 80;
-    textBlock.fontFamily = "Arial, sans-serif";
-    textBlock.fontWeight = "bold";
-    textBlock.color = "white";
-    textBlock.outlineWidth = 2;
-    textBlock.outlineColor = "black";
-    textBlock.textWrapping = false;
-    textBlock.verticalAlignment = Control.VERTICAL_ALIGNMENT_CENTER;
-    textBlock.horizontalAlignment = Control.HORIZONTAL_ALIGNMENT_CENTER;
-    
-    advTexture.addControl(textBlock);
-    advTexture.update();
-    
-    console.log(`Advanced texture created for ${star.name}, size: ${STAR_LABEL_TEXTURE_WIDTH}x${STAR_LABEL_TEXTURE_HEIGHT}`);
+
+    const labelTexture = new DynamicTexture(
+      "starLabelTexture_" + star.id,
+      { width: STAR_LABEL_TEXTURE_WIDTH, height: STAR_LABEL_TEXTURE_HEIGHT },
+      this.scene,
+      false,
+    );
+    labelTexture.hasAlpha = true;
+
+    const ctx = labelTexture.getContext() as unknown as CanvasRenderingContext2D;
+    ctx.clearRect(0, 0, STAR_LABEL_TEXTURE_WIDTH, STAR_LABEL_TEXTURE_HEIGHT);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+
+    const maxTextWidth = STAR_LABEL_TEXTURE_WIDTH - STAR_LABEL_TEXTURE_PADDING_X * 2;
+    let fontSize = STAR_LABEL_FONT_SIZE;
+    do {
+      ctx.font = `700 ${fontSize}px ${STAR_LABEL_FONT_FAMILY}`;
+      if (ctx.measureText(star.name).width <= maxTextWidth) break;
+      fontSize -= 4;
+    } while (fontSize > STAR_LABEL_MIN_FONT_SIZE);
+
+    const x = STAR_LABEL_TEXTURE_WIDTH / 2;
+    const y = STAR_LABEL_TEXTURE_HEIGHT / 2;
+    ctx.shadowColor = "rgba(0, 0, 0, 0.85)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 2;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.95)";
+    ctx.lineWidth = Math.max(6, fontSize * 0.12);
+    ctx.strokeText(star.name, x, y);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+    ctx.fillText(star.name, x, y);
+    labelTexture.update(true);
+
+    console.log(`Dynamic texture created for ${star.name}, size: ${STAR_LABEL_TEXTURE_WIDTH}x${STAR_LABEL_TEXTURE_HEIGHT}`);
 
     // Create material with texture
     const material = new StandardMaterial("starLabelMat_" + star.id, this.scene);
-    material.emissiveTexture = advTexture;
-    material.emissiveColor = new Color3(1, 1, 1);
+    material.diffuseTexture = labelTexture;
+    material.emissiveTexture = labelTexture;
+    material.opacityTexture = labelTexture;
+    material.diffuseColor = Color3.White();
+    material.emissiveColor = Color3.White();
+    material.specularColor = Color3.Black();
     material.disableLighting = true;
     material.backFaceCulling = false;
+    material.useAlphaFromDiffuseTexture = true;
+    material.transparencyMode = Material.MATERIAL_ALPHABLEND;
     material.alpha = 1.0;
     
     console.log(`Material created for ${star.name}`);
