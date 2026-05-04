@@ -29,6 +29,7 @@ import {
 import type { Mesh, Scene } from "@babylonjs/core";
 import { STAR_TYPES, StarType } from "../data/StarMap";
 import type { StarData } from "../data/StarMap";
+import type { GalaxyShipTransit } from "../game/GameplayTypes";
 
 const SPRITE_BLEND_ADD = 1; // ALPHA_ADD
 const STAR_TEXTURE_SIZE = 128;
@@ -252,10 +253,15 @@ export class StarFieldRenderer {
   private selectionGlowLayer: GlowLayer;
   private selectionMarkerStarId = -1;
   private playerShipIconManager: SpriteManager;
-  private playerShipIconSprites: Sprite[] = [];
+  private playerShipIconSprite: Sprite | null = null;
   private starbaseIconManager: SpriteManager;
   private starbaseIconSprites: Sprite[] = [];
-  private homeSystemStarIds: number[] = [];
+  private playerShipStarId = -1;
+  private playerShipTransit: GalaxyShipTransit | null = null;
+  private starbaseSystemIds = new Set<number>();
+  private highlightedStarIds = new Set<number>();
+  private targetMarkerRoots: TransformNode[] = [];
+  private targetMarkerMeshes: Mesh[] = [];
 
   private starLabelMeshes: Mesh[] = [];
   private starNames: string[] = [];
@@ -277,10 +283,15 @@ export class StarFieldRenderer {
   private bloomEnabled = true;
   private onIconClick?: (type: "ship" | "starbase", shiftKey: boolean) => void;
 
-  constructor(scene: Scene, stars: StarData[], homeSystemStarIds: number[] = []) {
+  constructor(
+    scene: Scene,
+    stars: StarData[],
+    playerShipStarId = -1,
+    starbaseSystemIds: number[] = [],
+  ) {
     this.scene = scene;
-    this.homeSystemStarIds = homeSystemStarIds.slice();
-    const homeSystemCount = Math.max(1, this.homeSystemStarIds.length);
+    this.playerShipStarId = playerShipStarId;
+    this.starbaseSystemIds = new Set(starbaseSystemIds);
     const haloTexture = createRadialTextureDataURL(
       STAR_TEXTURE_SIZE,
       HALO_TEXTURE_MIDDLE_STOP,
@@ -335,7 +346,7 @@ export class StarFieldRenderer {
     this.playerShipIconManager = new SpriteManager(
       "playerShipIconSprites",
       "/textures/own_ship_icon.png",
-      homeSystemCount,
+      1,
       {
         width: PLAYER_SHIP_ICON_TEXTURE_SIZE,
         height: PLAYER_SHIP_ICON_TEXTURE_SIZE,
@@ -344,17 +355,14 @@ export class StarFieldRenderer {
     );
     this.playerShipIconManager.isPickable = false;
     this.playerShipIconManager.fogEnabled = false;
-    for (let i = 0; i < this.homeSystemStarIds.length; i++) {
-      const sprite = new Sprite(`player_ship_icon_${i}`, this.playerShipIconManager);
-      sprite.isVisible = false;
-      sprite.position.y = PLAYER_SHIP_ICON_Y;
-      this.playerShipIconSprites.push(sprite);
-    }
+    this.playerShipIconSprite = new Sprite("player_ship_icon", this.playerShipIconManager);
+    this.playerShipIconSprite.isVisible = false;
+    this.playerShipIconSprite.position.y = PLAYER_SHIP_ICON_Y;
 
     this.starbaseIconManager = new SpriteManager(
       "starbaseIconSprites",
       new URL("../../own_starbase_icon.png", import.meta.url).toString(),
-      homeSystemCount,
+      Math.max(1, stars.length),
       {
         width: STARBASE_ICON_TEXTURE_SIZE,
         height: STARBASE_ICON_TEXTURE_SIZE,
@@ -363,7 +371,7 @@ export class StarFieldRenderer {
     );
     this.starbaseIconManager.isPickable = false;
     this.starbaseIconManager.fogEnabled = false;
-    for (let i = 0; i < this.homeSystemStarIds.length; i++) {
+    for (let i = 0; i < stars.length; i++) {
       const sprite = new Sprite(`starbase_icon_${i}`, this.starbaseIconManager);
       sprite.isVisible = false;
       sprite.position.y = STARBASE_ICON_Y;
@@ -641,6 +649,23 @@ export class StarFieldRenderer {
     this.visibleStarIds = starIds ? new Set(starIds) : null;
   }
 
+  setPlayerShipState(starId: number, transit: GalaxyShipTransit | null = null): void {
+    this.playerShipStarId = starId;
+    this.playerShipTransit = transit;
+  }
+
+  setStarbaseSystemIds(starIds: Iterable<number>): void {
+    this.starbaseSystemIds = new Set(starIds);
+  }
+
+  setHighlightedStarIds(starIds: Iterable<number>): void {
+    const nextIds = new Set(starIds);
+    if (this.areSetsEqual(this.highlightedStarIds, nextIds)) return;
+
+    this.highlightedStarIds = nextIds;
+    this.rebuildTargetMarkers();
+  }
+
   /** Set alpha for a specific star (0 = invisible, 1 = full). */
   setStarAlpha(starId: number, alpha: number): void {
     if (starId >= 0 && starId < this.coreSprites.length) {
@@ -800,8 +825,42 @@ export class StarFieldRenderer {
     }
 
     this.applySelectionMarkerVisual();
+    this.applyTargetMarkerVisuals();
     this.applyPlayerShipIconVisual();
     this.applyStarbaseIconVisual();
+  }
+
+  private areSetsEqual(a: Set<number>, b: Set<number>): boolean {
+    if (a.size !== b.size) return false;
+    for (const value of a) {
+      if (!b.has(value)) return false;
+    }
+    return true;
+  }
+
+  private rebuildTargetMarkers(): void {
+    for (const mesh of this.targetMarkerMeshes) {
+      mesh.dispose();
+    }
+    for (const root of this.targetMarkerRoots) {
+      root.dispose();
+    }
+    this.targetMarkerMeshes = [];
+    this.targetMarkerRoots = [];
+
+    for (const starId of this.highlightedStarIds) {
+      if (starId < 0 || starId >= this.starPositions.length) continue;
+      const root = new TransformNode(`starTargetMarker_${starId}`, this.scene);
+      const pos = this.starPositions[starId];
+      root.position.set(pos.x, SELECTION_MARKER_Y, pos.z);
+      root.scaling.setAll(0.82);
+      const meshes = createSelectionMarkerBoxes(this.scene, root, this.selectionMarkerMaterial);
+      for (const mesh of meshes) {
+        this.selectionGlowLayer.addIncludedOnlyMesh(mesh);
+        this.targetMarkerMeshes.push(mesh);
+      }
+      this.targetMarkerRoots.push(root);
+    }
   }
 
   private applySelectionMarkerVisual(): void {
@@ -838,40 +897,63 @@ export class StarFieldRenderer {
     this.selectionMarkerRoot.setEnabled(true);
   }
 
-  private applyPlayerShipIconVisual(): void {
-    for (let i = 0; i < this.playerShipIconSprites.length; i++) {
-      const sprite = this.playerShipIconSprites[i];
-      const starId = this.homeSystemStarIds[i];
-      const hasPlayerShip =
-        this.starsVisible
-        && starId >= 0
-        && starId < this.starPositions.length
-        && this.isStarRevealed(starId);
+  private applyTargetMarkerVisuals(): void {
+    if (this.targetMarkerRoots.length === 0) return;
 
-      if (!hasPlayerShip) {
-        sprite.isVisible = false;
-        continue;
-      }
-
-      const pos = this.starPositions[starId];
-      const iconSize = PLAYER_SHIP_ICON_MAX_SIZE;
-
-      sprite.position.set(pos.x + PLAYER_SHIP_ICON_OFFSET_X, PLAYER_SHIP_ICON_Y, pos.z + PLAYER_SHIP_ICON_OFFSET_Z);
-      sprite.width = iconSize;
-      sprite.height = iconSize;
-      sprite.angle = Math.sin(this.elapsedTime * 0.9 + i * 0.37) * 0.06;
-      sprite.isVisible = true;
+    const pulse = 0.5 + 0.5 * Math.sin(this.elapsedTime * (SELECTION_MARKER_PULSE_SPEED * 0.82));
+    const markerScale = 0.8 + pulse * 0.08;
+    if (this.starsVisible && this.bloomEnabled) {
+      this.selectionGlowLayer.intensity = Math.max(
+        this.selectionGlowLayer.intensity,
+        mix(SELECTION_MARKER_GLOW_MIN, SELECTION_MARKER_GLOW_MAX * 0.8, pulse),
+      );
     }
+    for (let i = 0; i < this.targetMarkerRoots.length; i++) {
+      const root = this.targetMarkerRoots[i];
+      root.rotation.y = -this.elapsedTime * (SELECTION_MARKER_ROTATION_SPEED * 0.65) + i * 0.21;
+      root.scaling.set(markerScale, markerScale, markerScale);
+      root.setEnabled(this.starsVisible);
+    }
+  }
+
+  private applyPlayerShipIconVisual(): void {
+    const sprite = this.playerShipIconSprite;
+    if (!sprite) return;
+
+    const shipPosition = this.getPlayerShipGalaxyPosition();
+    const hasPlayerShip =
+      this.starsVisible
+      && !!shipPosition
+      && (this.playerShipTransit
+        ? this.isStarRevealed(this.playerShipTransit.fromStarId)
+          || this.isStarRevealed(this.playerShipTransit.toStarId)
+        : this.isStarRevealed(this.playerShipStarId));
+
+    if (!hasPlayerShip || !shipPosition) {
+      sprite.isVisible = false;
+      return;
+    }
+
+    sprite.position.set(
+      shipPosition.x + PLAYER_SHIP_ICON_OFFSET_X,
+      PLAYER_SHIP_ICON_Y,
+      shipPosition.z + PLAYER_SHIP_ICON_OFFSET_Z,
+    );
+    sprite.width = PLAYER_SHIP_ICON_MAX_SIZE;
+    sprite.height = PLAYER_SHIP_ICON_MAX_SIZE;
+    sprite.angle = Math.sin(this.elapsedTime * 0.9) * 0.06;
+    sprite.isVisible = true;
   }
 
   private applyStarbaseIconVisual(): void {
     for (let i = 0; i < this.starbaseIconSprites.length; i++) {
       const sprite = this.starbaseIconSprites[i];
-      const starId = this.homeSystemStarIds[i];
+      const starId = i;
       const hasStarbase =
         this.starsVisible
         && starId >= 0
         && starId < this.starPositions.length
+        && this.starbaseSystemIds.has(starId)
         && this.isStarRevealed(starId);
 
       if (!hasStarbase) {
@@ -890,10 +972,32 @@ export class StarFieldRenderer {
     }
   }
 
+  private getPlayerShipGalaxyPosition(): { x: number; z: number } | null {
+    if (this.playerShipTransit) {
+      const from = this.starPositions[this.playerShipTransit.fromStarId];
+      const to = this.starPositions[this.playerShipTransit.toStarId];
+      if (!from || !to) return null;
+      const t = clamp01(this.playerShipTransit.progress);
+      return {
+        x: mix(from.x, to.x, t),
+        z: mix(from.z, to.z, t),
+      };
+    }
+
+    const pos = this.starPositions[this.playerShipStarId];
+    return pos ? { x: pos.x, z: pos.z } : null;
+  }
+
   dispose(): void {
     this.playerShipIconManager.dispose();
     this.starbaseIconManager.dispose();
     this.selectionGlowLayer.dispose();
+    for (const mesh of this.targetMarkerMeshes) {
+      mesh.dispose();
+    }
+    for (const root of this.targetMarkerRoots) {
+      root.dispose();
+    }
     for (const mesh of this.selectionMarkerMeshes) {
       mesh.dispose();
     }
@@ -916,23 +1020,26 @@ export class StarFieldRenderer {
     this.starPositions = [];
     this.starLabelMeshes = [];
     this.starNames = [];
-    this.playerShipIconSprites = [];
+    this.playerShipIconSprite = null;
     this.starbaseIconSprites = [];
-    this.homeSystemStarIds = [];
+    this.starbaseSystemIds.clear();
+    this.highlightedStarIds.clear();
+    this.targetMarkerMeshes = [];
+    this.targetMarkerRoots = [];
   }
 
   public setIconClickCallback(callback: (type: "ship" | "starbase", shiftKey: boolean) => void): void {
     this.onIconClick = callback;
   }
 
-  public checkIconClick(screenX: number, screenY: number, viewport: {width: number; height: number}, shiftKey: boolean): void {
+  public checkIconClick(screenX: number, screenY: number, viewport: {width: number; height: number}, shiftKey: boolean): boolean {
     if (!this.onIconClick) {
       console.log("No icon click callback set");
-      return;
+      return false;
     }
 
     const camera = this.scene.activeCamera;
-    if (!camera) return;
+    if (!camera) return false;
 
     // Create a ray from camera through the click point
     const ray = camera.getScene().createPickingRay(
@@ -942,15 +1049,16 @@ export class StarFieldRenderer {
       camera,
     );
 
-    if (!ray) return;
+    if (!ray) return false;
 
-    for (const sprite of this.playerShipIconSprites) {
-      const shipHitDist = this.distanceFromRayToPoint(ray, sprite.position);
-      console.log("Ship distance from ray:", shipHitDist, "visible:", sprite.isVisible);
-      if (shipHitDist < 5 && sprite.isVisible) {
+    const shipSprite = this.playerShipIconSprite;
+    if (shipSprite) {
+      const shipHitDist = this.distanceFromRayToPoint(ray, shipSprite.position);
+      console.log("Ship distance from ray:", shipHitDist, "visible:", shipSprite.isVisible);
+      if (shipHitDist < 5 && shipSprite.isVisible) {
         console.log("Ship icon clicked!");
         this.onIconClick("ship", shiftKey);
-        return;
+        return true;
       }
     }
 
@@ -960,9 +1068,10 @@ export class StarFieldRenderer {
       if (starbaseHitDist < 5 && sprite.isVisible) {
         console.log("Starbase icon clicked!");
         this.onIconClick("starbase", shiftKey);
-        return;
+        return true;
       }
     }
+    return false;
   }
 
   private distanceFromRayToPoint(ray: any, point: Vector3): number {

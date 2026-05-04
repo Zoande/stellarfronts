@@ -30,6 +30,7 @@ import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
 import { SelectionPanel } from "../ui/SelectionPanel";
+import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
 
@@ -48,6 +49,14 @@ export interface GalaxySceneOptions {
   factions?: FactionInfo[];
   perspective?: GalaxyPerspective;
   visibilityJumps?: number;
+  visibleStarIds?: Iterable<number> | null;
+  starOwnership?: number[];
+  playerFactionId?: number;
+  playerShipStarId?: number;
+  playerShipTransit?: GalaxyShipTransit | null;
+  starbaseSystemIds?: Iterable<number>;
+  onGameplayFrame?: (deltaTime: number) => void;
+  onShipCommand?: (action: ShipAction, targetStarId: number) => void;
 }
 
 function mulberry32(seed: number): () => number {
@@ -79,6 +88,8 @@ const OWNERSHIP_TIE_EPSILON = 0.0001;
 const STAR_PICK_RADIUS_MIN = 5.5;
 const STAR_PICK_RADIUS_MAX = 10;
 const STAR_PICK_RADIUS_CAMERA_FACTOR = 0.012;
+const SHIP_TARGET_SCALE_BOOST = 1.36;
+const ACTION_MENU_STYLE_ID = "space-action-menu-style";
 
 const OWNERSHIP_COLOR_BANK: Array<[number, number, number]> = [
   [224, 83, 83],
@@ -129,6 +140,61 @@ function pickOwnershipPalette(factionCount: number, rng: () => number): Color3[]
     );
   }
   return palette;
+}
+
+function ensureActionMenuStyles(): void {
+  if (document.getElementById(ACTION_MENU_STYLE_ID)) return;
+
+  const style = document.createElement("style");
+  style.id = ACTION_MENU_STYLE_ID;
+  style.textContent = `
+.spaceActionMenu {
+  position: fixed;
+  z-index: 80;
+  min-width: 150px;
+  border: 1px solid rgba(150, 200, 230, 0.72);
+  border-radius: 5px;
+  background: linear-gradient(180deg, rgba(16, 22, 30, 0.98), rgba(8, 12, 18, 0.98));
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.46);
+  padding: 6px;
+  pointer-events: auto;
+  font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
+}
+
+.spaceActionMenuTitle {
+  padding: 6px 8px 8px;
+  color: rgba(214, 226, 242, 0.94);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-bottom: 1px solid rgba(136, 151, 171, 0.38);
+  margin-bottom: 5px;
+}
+
+.spaceActionMenuBtn {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid rgba(136, 151, 171, 0.42);
+  border-radius: 4px;
+  background: rgba(18, 25, 33, 0.96);
+  color: #c4d1e2;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-top: 5px;
+}
+
+.spaceActionMenuBtn:hover {
+  border-color: rgba(90, 220, 255, 0.86);
+  color: #edfaff;
+  background: rgba(29, 43, 57, 0.98);
+}
+`;
+  document.head.appendChild(style);
 }
 
 function selectOwnershipSeedIndices(
@@ -777,6 +843,15 @@ export class GalaxyScene implements IGameScene {
   private factions: FactionInfo[] = [];
   private perspective: GalaxyPerspective = { mode: "observer" };
   private visibleStarIds: Set<number> | null = null;
+  private explicitVisibleStarIds: Set<number> | null | undefined = undefined;
+  private playerFactionId = 0;
+  private playerShipStarId = -1;
+  private playerShipTransit: GalaxyShipTransit | null = null;
+  private starbaseSystemIds = new Set<number>();
+  private selectedShip = false;
+  private activeShipAction: ShipAction | null = null;
+  private targetableStarIds = new Set<number>();
+  private actionMenuElement: HTMLDivElement | null = null;
   private galacticCoreMeshes: Mesh[] = [];
   private galacticCoreSpinSpeeds: number[] = [];
   private hoveredStarId = -1;
@@ -836,6 +911,23 @@ export class GalaxyScene implements IGameScene {
         ? this.options.factions
         : buildFactions(this.stars, cfg);
     this.perspective = this.options.perspective ?? { mode: "observer" };
+    this.playerFactionId = this.options.playerFactionId
+      ?? (this.perspective.mode === "faction" ? this.perspective.factionId : 0);
+    this.playerShipStarId = this.options.playerShipStarId
+      ?? this.factions[this.playerFactionId]?.homeStarId
+      ?? this.factions[0]?.homeStarId
+      ?? -1;
+    this.playerShipTransit = this.options.playerShipTransit ?? null;
+    this.starbaseSystemIds = new Set(
+      this.options.starbaseSystemIds
+        ? Array.from(this.options.starbaseSystemIds)
+        : this.factions.map((faction) => faction.homeStarId),
+    );
+    if ("visibleStarIds" in this.options) {
+      this.explicitVisibleStarIds = this.options.visibleStarIds
+        ? new Set(this.options.visibleStarIds)
+        : null;
+    }
 
     const initialViewState = this.options.initialViewState;
 
@@ -893,11 +985,15 @@ export class GalaxyScene implements IGameScene {
     this.starField = new StarFieldRenderer(
       this.scene,
       this.stars,
-      this.factions.map((faction) => faction.homeStarId),
+      this.playerShipStarId,
+      Array.from(this.starbaseSystemIds),
     );
     this.starField.setVisibleStarIds(this.visibleStarIds);
+    this.starField.setPlayerShipState(this.playerShipStarId, this.playerShipTransit);
 
-    this.selectionPanel = new SelectionPanel(this.canvas);
+    this.selectionPanel = new SelectionPanel(this.canvas, {
+      onShipAction: (action) => this.beginShipAction(action),
+    });
     this.starField.setIconClickCallback((type, shiftKey) => {
       this.handleIconClick(type, shiftKey);
     });
@@ -910,15 +1006,29 @@ export class GalaxyScene implements IGameScene {
 
       if (pointerInfo.type !== PointerEventTypes.POINTERDOWN) return;
       const ev = pointerInfo.event as PointerEvent;
-      if (ev.button !== 0) return;
       if (this.isNavigating) return;
+
+      if (ev.button === 2) {
+        ev.preventDefault();
+        this.openShipActionMenuAtPointer(ev);
+        return;
+      }
+
+      if (ev.button !== 0) return;
+      this.closeActionMenu();
+
+      if (this.tryIssueActiveShipActionAtPointer()) {
+        return;
+      }
       
       // Check for icon click first
       const rect = this.canvas.getBoundingClientRect();
       const canvasX = (ev.clientX - rect.left) * (this.canvas.width / rect.width);
       const canvasY = (ev.clientY - rect.top) * (this.canvas.height / rect.height);
       console.log("Checking icon click at canvas coords:", {canvasX, canvasY, clientX: ev.clientX, clientY: ev.clientY});
-      this.starField.checkIconClick(canvasX, canvasY, {width: this.canvas.width, height: this.canvas.height}, ev.shiftKey);
+      if (this.starField.checkIconClick(canvasX, canvasY, {width: this.canvas.width, height: this.canvas.height}, ev.shiftKey)) {
+        return;
+      }
       
       this.tryEnterSystemAtPointer();
     });
@@ -928,6 +1038,7 @@ export class GalaxyScene implements IGameScene {
 
   onBeforeRender(): void {
     const dt = this.engine.getDeltaTime() / 1000;
+    this.options.onGameplayFrame?.(dt);
     this.cam.updatePanning(dt);
 
     const camera = this.cam.camera;
@@ -940,6 +1051,9 @@ export class GalaxyScene implements IGameScene {
     this.starField.resetOverrides();
     if (this.hoveredStarId >= 0 && this.hoveredStarId < this.stars.length) {
       this.starField.setStarScale(this.hoveredStarId, this.hoverScaleBoost);
+    }
+    for (const starId of this.targetableStarIds) {
+      this.starField.setStarScale(starId, SHIP_TARGET_SCALE_BOOST);
     }
     this.starField.setSelectionMarkerStar(this.hoveredStarId);
     this.starField.setZoomOutBlend(zoomOutBlend);
@@ -960,6 +1074,13 @@ export class GalaxyScene implements IGameScene {
   }
 
   private updateVisibilityFromPerspective(): void {
+    if (this.explicitVisibleStarIds !== undefined) {
+      this.visibleStarIds = this.explicitVisibleStarIds
+        ? new Set(this.explicitVisibleStarIds)
+        : null;
+      return;
+    }
+
     this.visibleStarIds = getPerspectiveVisibleStarIds(
       this.perspective,
       this.factions,
@@ -990,6 +1111,13 @@ export class GalaxyScene implements IGameScene {
     this.hyperlanePairs = hyperlanes;
     this.hyperlaneAdjacency = buildHyperlaneAdjacency(hyperlanes, this.stars.length);
     this.updateVisibilityFromPerspective();
+    this.rebuildHyperlaneMesh(width, height);
+  }
+
+  private rebuildHyperlaneMesh(width: number, height: number): void {
+    this.hyperlaneMesh?.dispose();
+    this.hyperlaneMesh = null;
+    const hyperlanes = this.hyperlanePairs;
     if (hyperlanes.length === 0) return;
 
     const minAxis = Math.min(width, height);
@@ -1068,7 +1196,12 @@ export class GalaxyScene implements IGameScene {
     const palette = this.factions
       .slice(0, factionCount)
       .map((faction) => new Color3(faction.color[0], faction.color[1], faction.color[2]));
-    this.starOwnership = buildHomeSystemOwnership(this.stars, this.factions);
+    this.starOwnership = this.options.starOwnership
+      ? this.options.starOwnership.slice(0, this.stars.length)
+      : buildHomeSystemOwnership(this.stars, this.factions);
+    while (this.starOwnership.length < this.stars.length) {
+      this.starOwnership.push(-1);
+    }
     const ownershipPadding = Math.min(width, height) * OWNERSHIP_OVERLAY_PADDING_FACTOR;
     const ownershipWidth = width + ownershipPadding * 2;
     const ownershipHeight = height + ownershipPadding * 2;
@@ -1224,6 +1357,140 @@ export class GalaxyScene implements IGameScene {
     }
   }
 
+  private getCurrentCommandOriginStarId(): number {
+    return this.playerShipTransit?.toStarId ?? this.playerShipStarId;
+  }
+
+  private getReachableStarIds(action: ShipAction): Set<number> {
+    const reachable = new Set<number>();
+    if (action === "attack") return reachable;
+
+    const start = this.getCurrentCommandOriginStarId();
+    if (start < 0 || start >= this.hyperlaneAdjacency.length) return reachable;
+    if (!this.isStarVisibleToPerspective(start)) return reachable;
+
+    const queue: number[] = [start];
+    let head = 0;
+    reachable.add(start);
+
+    while (head < queue.length) {
+      const current = queue[head++];
+      for (const neighbor of this.hyperlaneAdjacency[current] ?? []) {
+        if (neighbor < 0 || neighbor >= this.hyperlaneAdjacency.length) continue;
+        if (reachable.has(neighbor)) continue;
+        if (!this.isStarVisibleToPerspective(neighbor)) continue;
+        reachable.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+
+    if (action === "move") {
+      reachable.delete(start);
+      return reachable;
+    }
+
+    for (const starId of Array.from(reachable)) {
+      if (this.starbaseSystemIds.has(starId)) {
+        reachable.delete(starId);
+      }
+    }
+    return reachable;
+  }
+
+  private beginShipAction(action: ShipAction): void {
+    if (!this.selectedShip && action !== "attack") {
+      this.selectedShip = true;
+    }
+
+    if (action === "attack") {
+      console.info("Attack command is a placeholder.");
+      this.clearShipAction();
+      return;
+    }
+
+    if (this.activeShipAction === action) {
+      this.clearShipAction();
+      return;
+    }
+
+    this.activeShipAction = action;
+    this.targetableStarIds = this.getReachableStarIds(action);
+    this.starField.setHighlightedStarIds(this.targetableStarIds);
+    this.selectionPanel.setActiveShipAction(action);
+  }
+
+  private clearShipAction(): void {
+    this.activeShipAction = null;
+    this.targetableStarIds.clear();
+    this.starField.setHighlightedStarIds([]);
+    this.selectionPanel?.setActiveShipAction(null);
+  }
+
+  private tryIssueActiveShipActionAtPointer(): boolean {
+    if (!this.activeShipAction) return false;
+
+    const nearestStar = this.findNearestStarAtPointer();
+    if (!nearestStar) return true;
+    if (!this.targetableStarIds.has(nearestStar.id)) return true;
+
+    const action = this.activeShipAction;
+    this.clearShipAction();
+    this.options.onShipCommand?.(action, nearestStar.id);
+    return true;
+  }
+
+  private openShipActionMenuAtPointer(ev: PointerEvent): void {
+    const star = this.findNearestStarAtPointer();
+    if (!star || !this.selectedShip || !this.isStarVisibleToPerspective(star.id)) {
+      this.closeActionMenu();
+      return;
+    }
+
+    ensureActionMenuStyles();
+    this.closeActionMenu();
+
+    const menu = document.createElement("div");
+    menu.className = "spaceActionMenu";
+    menu.style.left = `${Math.min(ev.clientX, window.innerWidth - 170)}px`;
+    menu.style.top = `${Math.min(ev.clientY, window.innerHeight - 150)}px`;
+
+    const title = document.createElement("div");
+    title.className = "spaceActionMenuTitle";
+    title.textContent = star.name;
+    menu.appendChild(title);
+
+    const actions: Array<{ action: ShipAction; label: string }> = [
+      { action: "move", label: "Move" },
+      { action: "build", label: "Build" },
+      { action: "attack", label: "Attack" },
+    ];
+
+    for (const item of actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "spaceActionMenuBtn";
+      button.textContent = item.label;
+      button.addEventListener("click", (clickEv) => {
+        clickEv.stopPropagation();
+        this.closeActionMenu();
+        if (item.action === "attack") {
+          console.info("Attack command is a placeholder.");
+          return;
+        }
+        this.options.onShipCommand?.(item.action, star.id);
+      });
+      menu.appendChild(button);
+    }
+
+    document.body.appendChild(menu);
+    this.actionMenuElement = menu;
+  }
+
+  private closeActionMenu(): void {
+    this.actionMenuElement?.remove();
+    this.actionMenuElement = null;
+  }
+
   private findNearestStarAtPointer(): StarData | null {
     const pick = this.scene.pick(
       this.scene.pointerX,
@@ -1285,9 +1552,8 @@ export class GalaxyScene implements IGameScene {
   }
 
   private handleIconClick(type: "ship" | "starbase", shiftKey: boolean): void {
-    const cfg = GALAXY_MAP;
-    
     if (type === "ship") {
+      this.selectedShip = true;
       this.selectionPanel.select(
         {
           type: "ship",
@@ -1295,10 +1561,16 @@ export class GalaxyScene implements IGameScene {
           hp: 95,
           maxHp: 100,
           class: "Sovereign-Class",
+          status: this.playerShipTransit ? "Moving" : "Operational",
+          detail: "Select a command, then choose a highlighted system.",
         },
         shiftKey,
       );
     } else if (type === "starbase") {
+      if (!shiftKey) {
+        this.selectedShip = false;
+        this.clearShipAction();
+      }
       this.selectionPanel.select(
         {
           type: "starbase",
@@ -1357,6 +1629,33 @@ export class GalaxyScene implements IGameScene {
     this.ownershipOverlayMesh?.setEnabled(visible);
   }
 
+  setVisibleStarIds(starIds: Iterable<number> | null): void {
+    this.explicitVisibleStarIds = starIds ? new Set(starIds) : null;
+    this.updateVisibilityFromPerspective();
+    this.starField?.setVisibleStarIds(this.visibleStarIds);
+    this.ownershipRenderer?.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
+    this.rebuildHyperlaneMesh(GALAXY_MAP.width, GALAXY_MAP.height);
+    if (this.activeShipAction) {
+      this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
+      this.starField?.setHighlightedStarIds(this.targetableStarIds);
+    }
+  }
+
+  setPlayerShipState(starId: number, transit: GalaxyShipTransit | null): void {
+    this.playerShipStarId = starId;
+    this.playerShipTransit = transit;
+    this.starField?.setPlayerShipState(starId, transit);
+  }
+
+  setStarbaseSystemIds(starIds: Iterable<number>): void {
+    this.starbaseSystemIds = new Set(starIds);
+    this.starField?.setStarbaseSystemIds(this.starbaseSystemIds);
+    if (this.activeShipAction === "build") {
+      this.targetableStarIds = this.getReachableStarIds("build");
+      this.starField?.setHighlightedStarIds(this.targetableStarIds);
+    }
+  }
+
   setStarOwnership(starId: number, owner: number): void {
     if (starId < 0 || starId >= this.starOwnership.length) return;
     this.starOwnership[starId] = owner;
@@ -1389,6 +1688,7 @@ export class GalaxyScene implements IGameScene {
   }
 
   dispose(): void {
+    this.closeActionMenu();
     if (this.pointerObserver) {
       this.scene.onPointerObservable.remove(this.pointerObserver);
       this.pointerObserver = null;

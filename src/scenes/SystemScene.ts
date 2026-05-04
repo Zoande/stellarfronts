@@ -27,12 +27,18 @@ import type { IGameScene } from "../SceneManager";
 import { STAR_TYPES, StarType, PLANET_TYPES, PlanetType } from "../data/StarMap";
 import type { PlanetConfig, StarData, StarVisualKind } from "../data/StarMap";
 import { OrbitSystem } from "../systems/OrbitSystem";
+import type { GalaxyShipTransit, HyperlaneExitPoint } from "../game/GameplayTypes";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
 
 type ExitSystemHandler = () => void | Promise<void>;
 
 export interface SystemSceneOptions {
   homeSystemStarIds?: number[];
+  playerShipStarId?: number;
+  starbaseSystemIds?: number[];
+  shipTransit?: GalaxyShipTransit | null;
+  hyperlaneExits?: HyperlaneExitPoint[];
+  onGameplayFrame?: (deltaTime: number) => void;
 }
 
 const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
@@ -41,6 +47,10 @@ const PLAYER_SHIP_TARGET_SIZE = 2.2;  // 5x smaller than original
 const PLAYER_SHIP_BASE_POSITION = new Vector3(23, 4.8, -19);
 
 const STARBASE_MODEL_URL = "/starbase/star_trek_-_starbase_375.glb";
+const HYPERLANE_EXIT_RADIUS = 38;
+const HYPERLANE_EXIT_Y = 2.8;
+const SHIP_EXIT_END_PROGRESS = 0.28;
+const SHIP_ENTRY_START_PROGRESS = 0.72;
 
 export class SystemScene implements IGameScene {
   public scene: Scene;
@@ -48,6 +58,10 @@ export class SystemScene implements IGameScene {
   private star: StarData;
   private starCount: number;  // Track actual star count for player ship detection
   private homeSystemStarIds: Set<number>;
+  private playerShipStarId: number;
+  private starbaseSystemIds: Set<number>;
+  private shipTransit: GalaxyShipTransit | null;
+  private hyperlaneExits: HyperlaneExitPoint[];
   private readonly onExitSystem: ExitSystemHandler;
 
   private camera!: ArcRotateCamera;
@@ -71,6 +85,8 @@ export class SystemScene implements IGameScene {
 
   private starbaseRoot: TransformNode | null = null;
   private starbaseLight: PointLight | null = null;
+  private hyperlaneExitMeshes: Mesh[] = [];
+  private hyperlaneExitMaterial: StandardMaterial | null = null;
 
   private orbitSystem = new OrbitSystem();
   private orbitRings: LinesMesh[] = [];
@@ -130,19 +146,29 @@ export class SystemScene implements IGameScene {
     this.star = star;
     this.starCount = starCount;
     this.homeSystemStarIds = new Set(options.homeSystemStarIds ?? []);
+    this.playerShipStarId = options.playerShipStarId ?? (options.homeSystemStarIds?.[0] ?? -1);
+    this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
+    this.shipTransit = options.shipTransit ?? null;
+    this.hyperlaneExits = options.hyperlaneExits ?? [];
     this.onExitSystem = onExitSystem;
     this.scene = new Scene(engine);
     this.scene.clearColor = new Color4(0.01, 0.015, 0.03, 1);
     console.log(`📍 SystemScene init: star.id=${star.id}, totalStarCount=${starCount}`);
   }
 
-  private hasHomeSystemPresence(): boolean {
-    return this.homeSystemStarIds.has(this.star.id);
+  private hasPlayerShipPresence(): boolean {
+    if (this.playerShipStarId === this.star.id) return true;
+    return !!this.shipTransit
+      && (this.shipTransit.fromStarId === this.star.id || this.shipTransit.toStarId === this.star.id);
+  }
+
+  private hasStarbasePresence(): boolean {
+    return this.starbaseSystemIds.has(this.star.id);
   }
 
   private async createStarbaseIfPresent(): Promise<void> {
     console.log(`🔍 Checking starbase: star.id=${this.star.id}, using starCount=${this.starCount}`);
-    if (!this.hasHomeSystemPresence()) return;
+    if (!this.hasStarbasePresence() || this.starbaseRoot) return;
     console.log(`✅ This is the starbase system!`);
 
     const starRadius = Math.max(0.6, this.starDiameter * 0.5);
@@ -851,7 +877,7 @@ export class SystemScene implements IGameScene {
 
   private async createPlayerShipIfPresent(): Promise<void> {
     console.log(`🔍 Checking player ship: star.id=${this.star.id}, using starCount=${this.starCount}`);
-    if (!this.hasHomeSystemPresence()) return;
+    if (!this.hasPlayerShipPresence() || this.playerShipRoot) return;
     console.log(`✅ This is the player ship system!`);
 
     console.log(`🚀 Loading player ship for star ID ${this.star.id}`);

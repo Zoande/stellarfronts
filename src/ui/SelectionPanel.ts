@@ -3,6 +3,8 @@
  * Displays detail panels for selected ship or starbase in bottom-right
  */
 
+import type { ShipAction } from "../game/GameplayTypes";
+
 export type SelectionType = "ship" | "starbase";
 
 export interface SelectionData {
@@ -11,6 +13,12 @@ export interface SelectionData {
   hp: number;
   maxHp: number;
   class?: string;
+  status?: string;
+  detail?: string;
+}
+
+export interface SelectionPanelCallbacks {
+  onShipAction?: (action: ShipAction) => void;
 }
 
 export class SelectionPanel {
@@ -19,8 +27,10 @@ export class SelectionPanel {
   private styleId = "space-selection-panel-style";
   private containerElement: HTMLDivElement | null = null;
   private canvasElement: HTMLCanvasElement | null = null;
+  private activeShipAction: ShipAction | null = null;
+  private callbacks: SelectionPanelCallbacks;
 
-  constructor(canvasElement?: HTMLCanvasElement) {
+  constructor(canvasElement?: HTMLCanvasElement, callbacks: SelectionPanelCallbacks = {}) {
     this.root = document.getElementById("spaceHudRoot") as HTMLDivElement;
     if (!this.root) {
       this.root = document.createElement("div");
@@ -28,6 +38,7 @@ export class SelectionPanel {
       document.body.appendChild(this.root);
     }
     this.canvasElement = canvasElement || (document.querySelector("canvas") as HTMLCanvasElement);
+    this.callbacks = callbacks;
     this.injectStyles();
   }
 
@@ -146,6 +157,45 @@ export class SelectionPanel {
   text-align: right;
   letter-spacing: 0.08em;
 }
+
+.spaceSelectionPanelDetail {
+  color: var(--hud-muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  line-height: 1.35;
+}
+
+.spaceSelectionActions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.spaceSelectionActionBtn {
+  min-height: 30px;
+  border-radius: 4px;
+  border: 1px solid var(--hud-line);
+  background: linear-gradient(180deg, rgba(29, 38, 49, 0.96) 0%, rgba(18, 25, 33, 0.96) 100%);
+  color: #c4d1e2;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.spaceSelectionActionBtn:hover {
+  border-color: rgba(150, 200, 230, 0.86);
+  background: linear-gradient(180deg, rgba(37, 52, 68, 0.98) 0%, rgba(22, 33, 44, 0.98) 100%);
+}
+
+.spaceSelectionActionBtn.active {
+  border-color: rgba(90, 220, 255, 0.92);
+  color: #edfaff;
+  box-shadow: 0 0 16px rgba(90, 210, 255, 0.22);
+}
     `;
     document.head.appendChild(style);
   }
@@ -165,6 +215,11 @@ export class SelectionPanel {
 
   public clear(): void {
     this.selections.clear();
+    this.render();
+  }
+
+  public setActiveShipAction(action: ShipAction | null): void {
+    this.activeShipAction = action;
     this.render();
   }
 
@@ -206,6 +261,7 @@ export class SelectionPanel {
     const hpPercent = Math.round((data.hp / data.maxHp) * 100);
     const hpWidth = (data.hp / data.maxHp) * 100;
 
+    const status = data.status ?? "Operational";
     let classLine = "";
     if (data.class) {
       classLine = `
@@ -216,14 +272,28 @@ export class SelectionPanel {
       `;
     }
 
+    const detailLine = data.detail
+      ? `<div class="spaceSelectionPanelDetail">${data.detail}</div>`
+      : "";
+    const actionButtons = data.type === "ship"
+      ? `
+        <div class="spaceSelectionActions">
+          <button class="spaceSelectionActionBtn ${this.activeShipAction === "move" ? "active" : ""}" type="button" data-action="move">Move</button>
+          <button class="spaceSelectionActionBtn ${this.activeShipAction === "build" ? "active" : ""}" type="button" data-action="build">Build</button>
+          <button class="spaceSelectionActionBtn" type="button" data-action="attack">Attack</button>
+        </div>
+      `
+      : "";
+
     panel.innerHTML = `
       <div class="spaceSelectionPanelTitle">${data.name}</div>
       <div class="spaceSelectionPanelContent">
         <div class="spaceSelectionPanelRow">
           <span class="spaceSelectionPanelLabel">Status</span>
-          <span class="spaceSelectionPanelValue">Operational</span>
+          <span class="spaceSelectionPanelValue">${status}</span>
         </div>
         ${classLine}
+        ${detailLine}
         <div class="spaceSelectionPanelRow">
           <span class="spaceSelectionPanelLabel">Integrity</span>
           <span class="spaceSelectionPanelValue">${hpPercent}%</span>
@@ -232,8 +302,18 @@ export class SelectionPanel {
           <div class="spaceSelectionPanelHpFill" style="width: ${hpWidth}%"></div>
         </div>
         <div class="spaceSelectionPanelHpPercent">${data.hp} / ${data.maxHp}</div>
+        ${actionButtons}
       </div>
     `;
+
+    for (const button of panel.querySelectorAll<HTMLButtonElement>(".spaceSelectionActionBtn")) {
+      button.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const action = button.dataset.action as ShipAction | undefined;
+        if (!action) return;
+        this.callbacks.onShipAction?.(action);
+      });
+    }
 
     return panel;
   }
