@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import '../styles/Auth.css';
+import BackgroundScene from '@/components/BackgroundScene';
 
 interface EmailVerificationPageProps {
   onVerified: () => void;
@@ -27,7 +28,7 @@ export default function EmailVerificationPage({
 
   return (
     <div className="auth-container">
-      <div className="stars-bg"></div>
+      <BackgroundScene />
       
       <div className="auth-panel">
         <div className="auth-header">

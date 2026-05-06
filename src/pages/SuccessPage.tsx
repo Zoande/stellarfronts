@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import '../styles/Auth.css';
+import BackgroundScene from '@/components/BackgroundScene';
 
 interface SuccessPageProps {
   message: string;
@@ -16,7 +17,7 @@ export default function SuccessPage({ message, onEnterGame }: SuccessPageProps) 
 
   return (
     <div className="auth-container">
-      <div className="stars-bg"></div>
+      <BackgroundScene />
       
       <div className="auth-panel success-panel">
         <div className="success-icon">✓</div>
