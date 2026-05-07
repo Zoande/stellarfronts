@@ -7,7 +7,6 @@ import type { StarData } from "@/data/StarMap";
 import { GALAXY_MAP } from "@/data/GalaxyMap";
 import {
   buildFactions,
-  computeVisibleStarIds,
   FOG_OF_WAR_MAX_JUMPS,
 } from "@/data/Factions";
 import type { FactionInfo, GalaxyPerspective } from "@/data/Factions";
@@ -15,16 +14,18 @@ import type { GalaxySceneOptions, GalaxyViewState } from "@/scenes/GalaxyScene";
 import { HudOverlay } from "@/ui/HudOverlay";
 import type { HudConnectedSystem, HudVisualToggles } from "@/ui/HudOverlay";
 
+export interface BootOptions {
+  perspective?: GalaxyPerspective;
+}
+
 /**
- * Boot the game with a fixed observer perspective (no login overlay)
- * Used when game is loaded after React auth
+ * Boot the game with a selectable perspective.
  */
-export async function boot(container: HTMLDivElement) {
+export async function boot(container: HTMLDivElement, options: BootOptions = {}) {
   const canvas = container.querySelector("#renderCanvas") as HTMLCanvasElement;
   if (!canvas) throw new Error("Canvas not found in container");
 
-  // Use observer perspective (no faction)
-  const perspective: GalaxyPerspective = { mode: "observer" };
+  const perspective: GalaxyPerspective = options.perspective ?? { mode: "observer" };
 
   const cfg = GALAXY_MAP;
   const initialStars = generateStarMap(
@@ -62,7 +63,6 @@ export async function boot(container: HTMLDivElement) {
   };
 
   const getPerspectiveVisibleStars = (): Set<number> | null => {
-    // Observer mode has no visibility restrictions
     return null;
   };
 
@@ -144,6 +144,7 @@ export async function boot(container: HTMLDivElement) {
     const options: GalaxySceneOptions = {
       factions,
       perspective,
+      playerFactionId: perspective.mode === "faction" ? perspective.factionId : 0,
       visibilityJumps: FOG_OF_WAR_MAX_JUMPS,
     };
     if (cachedGalaxyStars && cachedGalaxyStars.length > 0) {
