@@ -391,7 +391,8 @@ export class StarFieldRenderer {
     console.log(`Creating ${stars.length} star labels...`);
     for (let i = 0; i < stars.length; i++) {
       this.starNames.push(stars[i].name);
-      const labelMesh = this.createStarLabel(stars[i]);
+      const hasStarbase = this.starbaseSystemIds.has(stars[i].id);
+      const labelMesh = this.createStarLabel(stars[i], hasStarbase);
       this.starLabelMeshes.push(labelMesh);
     }
     console.log(`Created ${this.starLabelMeshes.length} star label meshes`);
@@ -568,8 +569,8 @@ export class StarFieldRenderer {
     }
   }
 
-  private createStarLabel(star: StarData): Mesh {
-    console.log(`Creating label for star: ${star.name} at (${star.x}, ${star.z})`);
+  private createStarLabel(star: StarData, hasStarbase: boolean = false): Mesh {
+    console.log(`Creating label for star: ${star.name} at (${star.x}, ${star.z}), hasStarbase: ${hasStarbase}`);
 
     const labelTexture = new DynamicTexture(
       "starLabelTexture_" + star.id,
@@ -581,19 +582,41 @@ export class StarFieldRenderer {
 
     const ctx = labelTexture.getContext() as unknown as CanvasRenderingContext2D;
     ctx.clearRect(0, 0, STAR_LABEL_TEXTURE_WIDTH, STAR_LABEL_TEXTURE_HEIGHT);
-    ctx.textAlign = "center";
+
+    ctx.direction = hasStarbase ? "rtl" : "ltr";
+    ctx.textAlign = hasStarbase ? "right" : "center";
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
 
-    const maxTextWidth = STAR_LABEL_TEXTURE_WIDTH - STAR_LABEL_TEXTURE_PADDING_X * 2;
-    let fontSize = STAR_LABEL_FONT_SIZE;
+    if (hasStarbase) {
+      const bgPaddingX = 20;
+      const bgPaddingY = 18;
+      ctx.fillStyle = "rgba(0, 0, 0, 0.82)";
+      ctx.strokeStyle = "rgba(110, 170, 255, 0.42)";
+      ctx.lineWidth = 3;
+      ctx.fillRect(
+        bgPaddingX,
+        bgPaddingY,
+        STAR_LABEL_TEXTURE_WIDTH - bgPaddingX * 2,
+        STAR_LABEL_TEXTURE_HEIGHT - bgPaddingY * 2,
+      );
+      ctx.strokeRect(
+        bgPaddingX,
+        bgPaddingY,
+        STAR_LABEL_TEXTURE_WIDTH - bgPaddingX * 2,
+        STAR_LABEL_TEXTURE_HEIGHT - bgPaddingY * 2,
+      );
+    }
+
+    const maxTextWidth = STAR_LABEL_TEXTURE_WIDTH - STAR_LABEL_TEXTURE_PADDING_X * 2 - (hasStarbase ? 110 : 0);
+    let fontSize = STAR_LABEL_FONT_SIZE * (hasStarbase ? 1.5 : 1);
     do {
       ctx.font = `700 ${fontSize}px ${STAR_LABEL_FONT_FAMILY}`;
       if (ctx.measureText(star.name).width <= maxTextWidth) break;
       fontSize -= 4;
     } while (fontSize > STAR_LABEL_MIN_FONT_SIZE);
 
-    const x = STAR_LABEL_TEXTURE_WIDTH / 2;
+    const x = hasStarbase ? STAR_LABEL_TEXTURE_WIDTH - 82 : STAR_LABEL_TEXTURE_WIDTH / 2;
     const y = STAR_LABEL_TEXTURE_HEIGHT / 2;
     ctx.shadowColor = "rgba(0, 0, 0, 0.85)";
     ctx.shadowBlur = 10;
@@ -604,6 +627,40 @@ export class StarFieldRenderer {
     ctx.strokeText(star.name, x, y);
     ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
     ctx.fillText(star.name, x, y);
+    
+    // Draw starbase icon if present
+    if (hasStarbase) {
+      const iconSize = 36;
+      const iconX = 62;
+      const iconY = y;
+      
+      // Draw a simple starbase icon (hexagon shape)
+      ctx.fillStyle = "rgba(78, 162, 255, 0.9)";
+      ctx.strokeStyle = "rgba(185, 220, 255, 1)";
+      ctx.lineWidth = 2.5;
+      
+      // Draw hexagon
+      const sides = 6;
+      const radius = iconSize / 2;
+      ctx.beginPath();
+      for (let i = 0; i < sides; i++) {
+        const angle = (i * Math.PI * 2) / sides;
+        const px = iconX + Math.cos(angle) * radius;
+        const py = iconY + Math.sin(angle) * radius;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      
+      // Draw center circle
+      ctx.fillStyle = "rgba(225, 240, 255, 0.95)";
+      ctx.beginPath();
+      ctx.arc(iconX, iconY, radius * 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
     labelTexture.update(true);
 
     console.log(`Dynamic texture created for ${star.name}, size: ${STAR_LABEL_TEXTURE_WIDTH}x${STAR_LABEL_TEXTURE_HEIGHT}`);
@@ -946,29 +1003,9 @@ export class StarFieldRenderer {
   }
 
   private applyStarbaseIconVisual(): void {
+    // Hide all starbase icon sprites - they are now shown in the star labels instead
     for (let i = 0; i < this.starbaseIconSprites.length; i++) {
-      const sprite = this.starbaseIconSprites[i];
-      const starId = i;
-      const hasStarbase =
-        this.starsVisible
-        && starId >= 0
-        && starId < this.starPositions.length
-        && this.starbaseSystemIds.has(starId)
-        && this.isStarRevealed(starId);
-
-      if (!hasStarbase) {
-        sprite.isVisible = false;
-        continue;
-      }
-
-      const pos = this.starPositions[starId];
-      const iconSize = STARBASE_ICON_MAX_SIZE;
-
-      sprite.position.set(pos.x + STARBASE_ICON_OFFSET_X, STARBASE_ICON_Y, pos.z + STARBASE_ICON_OFFSET_Z);
-      sprite.width = iconSize;
-      sprite.height = iconSize;
-      sprite.angle = Math.sin(this.elapsedTime * 0.8 + i * 0.31) * 0.05;
-      sprite.isVisible = true;
+      this.starbaseIconSprites[i].isVisible = false;
     }
   }
 

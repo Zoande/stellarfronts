@@ -1,11 +1,12 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { useEffect, useState } from 'react';
+import { BrowserRouter as Router } from 'react-router-dom';
+import { useEffect, useState, useCallback } from 'react';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import EmailVerificationPage from './pages/EmailVerificationPage';
 import SuccessPage from './pages/SuccessPage';
 import GamePage from './pages/GamePage';
 import { LoadingScreen } from './components/LoadingScreen';
+import BackgroundScene from './components/BackgroundScene';
 import { preloadAuthAssets } from './utils/preloadAuthAssets';
 
 export interface AuthState {
@@ -18,6 +19,7 @@ function App() {
   const [authLoadingProgress, setAuthLoadingProgress] = useState(0);
   const [authLoadingDetail, setAuthLoadingDetail] = useState('Preparing auth assets');
   const [authAssetsReady, setAuthAssetsReady] = useState(false);
+  const [authBackgroundReady, setAuthBackgroundReady] = useState(false);
   const [auth, setAuth] = useState<AuthState>({
     isLoggedIn: false,
     username: '',
@@ -41,6 +43,17 @@ function App() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const handleAuthBackgroundProgress = useCallback((progress: number, detail: string) => {
+    setAuthLoadingProgress(progress * 100);
+    setAuthLoadingDetail(detail);
+  }, []);
+
+  const handleAuthBackgroundReady = useCallback(() => {
+    setAuthBackgroundReady(true);
+    setAuthLoadingProgress(100);
+    setAuthLoadingDetail('Login background is ready');
   }, []);
 
   const handleLoginSuccess = (username: string) => {
@@ -100,84 +113,64 @@ function App() {
     );
   }
 
+  const isGameRoute = typeof window !== 'undefined' && window.location.pathname === '/game';
+
+  const authScreen = auth.mode === 'signup'
+    ? (
+      <SignupPage
+        onSignupSubmit={handleSignupSubmit}
+        onBackToLogin={handleBackToLogin}
+      />
+    )
+    : auth.mode === 'email-verify'
+      ? (
+        <EmailVerificationPage
+          onVerified={handleEmailVerified}
+          username={auth.username}
+        />
+      )
+      : auth.mode === 'success'
+        ? (
+          <SuccessPage
+            message={auth.isLoggedIn ? `Welcome back, ${auth.username}!` : 'Account created successfully!'}
+            onEnterGame={handleEnterGame}
+          />
+        )
+        : (
+          <LoginPage
+            onLoginSuccess={handleLoginSuccess}
+            onSignupClick={handleSignupClick}
+          />
+        );
+
+  if (isGameRoute && auth.isLoggedIn) {
+    return (
+      <Router>
+        <GamePage username={auth.username} />
+      </Router>
+    );
+  }
+
   return (
     <Router>
-      <Routes>
-        {auth.isLoggedIn ? (
-          <Route path="/game" element={<GamePage username={auth.username} />} />
-        ) : null}
-
-        {/* Auth pages */}
-        {auth.mode === 'login' && (
-          <Route
-            path="/"
-            element={
-              <LoginPage
-                onLoginSuccess={handleLoginSuccess}
-                onSignupClick={handleSignupClick}
-              />
-            }
-          />
-        )}
-
-        {auth.mode === 'signup' && (
-          <Route
-            path="/"
-            element={
-              <SignupPage
-                onSignupSubmit={handleSignupSubmit}
-                onBackToLogin={handleBackToLogin}
-              />
-            }
-          />
-        )}
-
-        {auth.mode === 'email-verify' && (
-          <Route
-            path="/"
-            element={
-              <EmailVerificationPage
-                onVerified={handleEmailVerified}
-                username={auth.username}
-              />
-            }
-          />
-        )}
-
-        {auth.mode === 'success' && !auth.isLoggedIn && (
-          <Route
-            path="/"
-            element={
-              <SuccessPage
-                message="Account created successfully!"
-                onEnterGame={handleEnterGame}
-              />
-            }
-          />
-        )}
-
-        {auth.isLoggedIn && auth.mode === 'success' && (
-          <Route
-            path="/"
-            element={
-              <SuccessPage
-                message={`Welcome back, ${auth.username}!`}
-                onEnterGame={handleEnterGame}
-              />
-            }
-          />
-        )}
-
-        {auth.isLoggedIn && (
-          <Route path="/game" element={<GamePage username={auth.username} />} />
-        )}
-
-        {/* Catch all - redirect to home or game */}
-        <Route
-          path="*"
-          element={<Navigate to={auth.isLoggedIn ? '/game' : '/'} replace />}
+      <div className="auth-container">
+        <BackgroundScene
+          onLoadProgress={handleAuthBackgroundProgress}
+          onReady={handleAuthBackgroundReady}
         />
-      </Routes>
+
+        {!authBackgroundReady && (
+          <LoadingScreen
+            theme="auth"
+            subtitle="Startup"
+            title="Preparing login scene"
+            progress={authLoadingProgress}
+            detail={authLoadingDetail}
+          />
+        )}
+
+        {authBackgroundReady && authScreen}
+      </div>
     </Router>
   );
 }

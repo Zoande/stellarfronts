@@ -6,6 +6,7 @@ interface BackgroundSceneProps {
 }
 import {
   ArcRotateCamera,
+  Axis,
   Color3,
   Color4,
   Engine,
@@ -16,6 +17,7 @@ import {
   PointLight,
   Scene,
   SceneLoader,
+  Space,
   StandardMaterial,
   Texture,
   TransformNode,
@@ -577,9 +579,15 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
 
     const animate = () => {
       const dt = engine.getDeltaTime() / 1000;
-      root.rotation.y += dt * 0.02;
-      starbaseRoot.rotation.y += dt * 0.04;
+      const rotAmount = dt * 0.035;
+      
+      starbaseRoot.rotate(Axis.Y, rotAmount, Space.LOCAL);
       starbaseRoot.position.y = starbaseBaseY;
+
+      // Rotate each ship in place
+      for (const shipRoot of shipRoots) {
+        shipRoot.rotate(Axis.Y, rotAmount, Space.LOCAL);
+      }
 
       scene.render();
     };
