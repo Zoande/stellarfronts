@@ -48,6 +48,16 @@ export class CameraController {
 
   // bound handlers for cleanup
   private _onMouseMove: (e: MouseEvent) => void;
+  private _onWheel: (e: WheelEvent) => void;
+  private _onPointerDown: (e: PointerEvent) => void;
+  private _onPointerMove: (e: PointerEvent) => void;
+  private _onPointerUp: (e: PointerEvent) => void;
+
+  // Touchpad / multi-touch state
+  private activeTouches = new Map<number, { x: number; y: number }>();
+  private lastPinchDistance = 0;
+  private lastTouchpadX = 0;
+  private lastTouchpadY = 0;
 
   constructor(scene: Scene, canvas: HTMLCanvasElement, config: CameraConfig) {
     this.scene = scene;
@@ -113,6 +123,151 @@ export class CameraController {
       this.mouseY = e.clientY;
     };
     canvas.addEventListener("mousemove", this._onMouseMove);
+
+    // ── Touchpad wheel events (pinch zoom, two-finger scroll) ──
+    this._onWheel = (e: WheelEvent) => this._handleTouchpadWheel(e);
+    canvas.addEventListener("wheel", this._onWheel, { passive: false });
+
+    // ── Multi-touch pointer events (pinch zoom on touch devices) ──
+    this._onPointerDown = (e: PointerEvent) => this._handlePointerDown(e);
+    this._onPointerMove = (e: PointerEvent) => this._handlePointerMove(e);
+    this._onPointerUp = (e: PointerEvent) => this._handlePointerUp(e);
+    canvas.addEventListener("pointerdown", this._onPointerDown);
+    canvas.addEventListener("pointermove", this._onPointerMove);
+    canvas.addEventListener("pointerup", this._onPointerUp);
+    canvas.addEventListener("pointercancel", this._onPointerUp);
+  }
+
+  /**
+   * Handle touchpad wheel events with modifiers.
+   * ctrlKey or deltaZ: pinch zoom
+   * shiftKey: two-finger horizontal scroll pan
+   */
+  private _handleTouchpadWheel(e: WheelEvent): void {
+    // Pinch zoom: Ctrl+Scroll on macOS trackpad, or deltaZ on supported platforms
+    if (e.ctrlKey || e.deltaZ !== 0) {
+      e.preventDefault();
+      const zoomDelta = (e.deltaY || e.deltaZ) * 0.01;
+      const lowerLimit = this.camera.lowerRadiusLimit ?? 0.1;
+      const upperLimit = this.camera.upperRadiusLimit ?? 1000;
+      const newRadius = Math.max(
+        lowerLimit,
+        Math.min(
+          upperLimit,
+          this.camera.radius * (1 + zoomDelta),
+        ),
+      );
+      this.camera.radius = newRadius;
+      return;
+    }
+
+    // Two-finger horizontal scroll: pan left/right
+    if (e.shiftKey) {
+      e.preventDefault();
+      const panX = (e.deltaX * -0.5) / this.camera.radius;
+      const panY = (e.deltaY * -0.5) / this.camera.radius;
+
+      // Apply pan in camera-relative directions
+      const forward = this.camera.getForwardRay().direction;
+      const fwd = new Vector3(forward.x, 0, forward.z).normalize();
+      const right = new Vector3(-fwd.z, 0, fwd.x);
+
+      const move = fwd.scale(panY).add(right.scale(panX));
+      this.camera.target.addInPlace(move);
+      return;
+    }
+  }
+
+  /**
+   * Track pointer down for multi-touch pinch detection.
+   */
+  private _handlePointerDown(e: PointerEvent): void {
+    this.activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    this.lastTouchpadX = e.clientX;
+    this.lastTouchpadY = e.clientY;
+
+    // If we have 2 touches, store initial pinch distance
+    if (this.activeTouches.size === 2) {
+      const touches = Array.from(this.activeTouches.values());
+      const dx = touches[1].x - touches[0].x;
+      const dy = touches[1].y - touches[0].y;
+      this.lastPinchDistance = Math.sqrt(dx * dx + dy * dy);
+    }
+  }
+
+  /**
+   * Handle multi-touch pinch and pan.
+   */
+  private _handlePointerMove(e: PointerEvent): void {
+    const touch = this.activeTouches.get(e.pointerId);
+    if (!touch) return;
+
+    // Update touch position
+    touch.x = e.clientX;
+    touch.y = e.clientY;
+
+    // If we have 2 touches, handle pinch zoom and pan
+    if (this.activeTouches.size === 2) {
+      const touches = Array.from(this.activeTouches.values());
+      const dx = touches[1].x - touches[0].x;
+      const dy = touches[1].y - touches[0].y;
+      const currentDistance = Math.sqrt(dx * dx + dy * dy);
+
+      // Pinch zoom
+      if (this.lastPinchDistance > 0) {
+        const distanceDelta = currentDistance - this.lastPinchDistance;
+        const zoomFactor = 1 - distanceDelta * 0.01;
+        const lowerLimit = this.camera.lowerRadiusLimit ?? 0.1;
+        const upperLimit = this.camera.upperRadiusLimit ?? 1000;
+        const newRadius = Math.max(
+          lowerLimit,
+          Math.min(
+            upperLimit,
+            this.camera.radius * zoomFactor,
+          ),
+        );
+        this.camera.radius = newRadius;
+      }
+
+      this.lastPinchDistance = currentDistance;
+
+      // Two-finger pan
+      const panDx = e.clientX - this.lastTouchpadX;
+      const panDy = e.clientY - this.lastTouchpadY;
+
+      if (Math.abs(panDx) > 0.1 || Math.abs(panDy) > 0.1) {
+        const panX = (panDx * -0.5) / this.camera.radius;
+        const panY = (panDy * -0.5) / this.camera.radius;
+
+        const forward = this.camera.getForwardRay().direction;
+        const fwd = new Vector3(forward.x, 0, forward.z).normalize();
+        const right = new Vector3(-fwd.z, 0, fwd.x);
+
+        const move = fwd.scale(panY).add(right.scale(panX));
+        this.camera.target.addInPlace(move);
+
+        this.lastTouchpadX = e.clientX;
+        this.lastTouchpadY = e.clientY;
+      }
+    }
+  }
+
+  /**
+   * Clean up pointer tracking on release.
+   */
+  private _handlePointerUp(e: PointerEvent): void {
+    this.activeTouches.delete(e.pointerId);
+    if (this.activeTouches.size === 0) {
+      this.lastPinchDistance = 0;
+    } else if (this.activeTouches.size === 1) {
+      // Transition from 2-finger to 1-finger: reset pinch distance
+      this.lastPinchDistance = 0;
+      const touch = this.activeTouches.values().next().value;
+      if (touch) {
+        this.lastTouchpadX = touch.x;
+        this.lastTouchpadY = touch.y;
+      }
+    }
   }
 
   /* ─── Accessors ─── */
@@ -248,6 +403,12 @@ export class CameraController {
 
   dispose(): void {
     this.canvas.removeEventListener("mousemove", this._onMouseMove);
+    this.canvas.removeEventListener("wheel", this._onWheel);
+    this.canvas.removeEventListener("pointerdown", this._onPointerDown);
+    this.canvas.removeEventListener("pointermove", this._onPointerMove);
+    this.canvas.removeEventListener("pointerup", this._onPointerUp);
+    this.canvas.removeEventListener("pointercancel", this._onPointerUp);
+    this.activeTouches.clear();
     this.camera.detachControl();
     this.camera.dispose();
   }
