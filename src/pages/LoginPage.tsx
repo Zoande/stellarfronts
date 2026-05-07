@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useCallback } from 'react';
 import '../styles/Auth.css';
 import BackgroundScene from '@/components/BackgroundScene';
+import { LoadingScreen } from '@/components/LoadingScreen';
 
 interface LoginPageProps {
   onLoginSuccess: (username: string) => void;
@@ -11,6 +12,20 @@ export default function LoginPage({ onLoginSuccess, onSignupClick }: LoginPagePr
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isBackgroundReady, setIsBackgroundReady] = useState(false);
+  const [backgroundProgress, setBackgroundProgress] = useState(0);
+  const [backgroundDetail, setBackgroundDetail] = useState('Loading login background');
+
+  const handleBackgroundProgress = useCallback((progress: number, detail: string) => {
+    setBackgroundProgress(progress * 100);
+    setBackgroundDetail(detail);
+  }, []);
+
+  const handleBackgroundReady = useCallback(() => {
+    setBackgroundProgress(100);
+    setBackgroundDetail('Login background is ready');
+    setIsBackgroundReady(true);
+  }, []);
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,95 +44,110 @@ export default function LoginPage({ onLoginSuccess, onSignupClick }: LoginPagePr
 
   return (
     <div className="auth-container">
-      <BackgroundScene />
-      
-      <div className="auth-panel">
-        <div className="auth-header">
-          <h1 className="stellar-title">StellarFronts</h1>
-          <p className="auth-subtitle">Command Your Destiny</p>
-        </div>
+      <BackgroundScene
+        onLoadProgress={handleBackgroundProgress}
+        onReady={handleBackgroundReady}
+      />
 
-        <form onSubmit={handleLogin} className="auth-form">
-          <div className="form-group">
-            <label htmlFor="username">Username</label>
-            <input
-              id="username"
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              placeholder="Enter your username"
-              className="form-input"
-            />
+      {!isBackgroundReady && (
+        <LoadingScreen
+          theme="auth"
+          subtitle="Startup"
+          title="Preparing login scene"
+          progress={backgroundProgress}
+          detail={backgroundDetail}
+        />
+      )}
+
+      {isBackgroundReady && (
+        <div className="auth-panel">
+          <div className="auth-header">
+            <h1 className="stellar-title">StellarFronts</h1>
+            <p className="auth-subtitle">Command Your Destiny</p>
           </div>
 
-          <div className="form-group">
-            <label htmlFor="password">Password</label>
-            <input
-              id="password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
-              className="form-input"
-            />
+          <form onSubmit={handleLogin} className="auth-form">
+            <div className="form-group">
+              <label htmlFor="username">Username</label>
+              <input
+                id="username"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Enter your username"
+                className="form-input"
+              />
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="password">Password</label>
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                className="form-input"
+              />
+            </div>
+
+            {error && <div className="form-error">{error}</div>}
+
+            <button type="submit" className="btn btn-primary">
+              Log In
+            </button>
+          </form>
+
+          <div className="divider">
+            <span>or</span>
           </div>
 
-          {error && <div className="form-error">{error}</div>}
-
-          <button type="submit" className="btn btn-primary">
-            Log In
-          </button>
-        </form>
-
-        <div className="divider">
-          <span>or</span>
-        </div>
-
-        <div className="oauth-buttons">
-          <button
-            type="button"
-            onClick={() => handleOAuthClick('google')}
-            className="btn btn-oauth btn-google"
-            aria-label="Sign in with Google"
-          >
-            <svg width="18" height="18" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="oauth-svg">
-              <path fill="#EA4335" d="M24 12.24c3.54 0 6.36 1.22 8.26 2.22l6.02-5.86C35.6 5.02 30.08 3.2 24 3.2 14.7 3.2 6.99 8.86 3.5 16.9l6.98 5.42C12.9 15.6 17.95 12.24 24 12.24z"/>
-              <path fill="#34A853" d="M46.5 24c0-1.6-.15-2.8-.46-4.02H24v8.02h12.98c-.57 3.08-2.3 5.5-4.9 7.22l7.45 5.78C43.86 37.36 46.5 31.12 46.5 24z"/>
-              <path fill="#4A90E2" d="M10.48 29.32A14.9 14.9 0 0 1 9.6 24c0-1.6.27-3.14.76-4.56L3.5 13.99A23.97 23.97 0 0 0 .5 24c0 3.84.92 7.48 2.98 10.7l7  -5.38z"/>
-              <path fill="#FBBC05" d="M24 44.8c6.08 0 11.6-1.82 15.78-4.94l-7.45-5.78C30.36 34.96 27.66 36 24 36c-6.05 0-11.1-3.36-13.52-8.42l-6.98 5.42C6.99 39.94 14.7 44.8 24 44.8z"/>
-            </svg>
-            <span className="oauth-label">Google</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => handleOAuthClick('microsoft')}
-            className="btn btn-oauth btn-microsoft"
-            aria-label="Sign in with Microsoft"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" className="oauth-svg" xmlns="http://www.w3.org/2000/svg">
-              <rect x="1" y="1" width="10" height="10" fill="#F1511B" />
-              <rect x="13" y="1" width="10" height="10" fill="#FFB900" />
-              <rect x="1" y="13" width="10" height="10" fill="#7BD03B" />
-              <rect x="13" y="13" width="10" height="10" fill="#00A4EF" />
-            </svg>
-            <span className="oauth-label">Microsoft</span>
-          </button>
-        </div>
-
-        <div className="auth-footer">
-          <p>
-            Don't have an account?{' '}
+          <div className="oauth-buttons">
             <button
               type="button"
-              onClick={onSignupClick}
-              className="link-button"
+              onClick={() => handleOAuthClick('google')}
+              className="btn btn-oauth btn-google"
+              aria-label="Sign in with Google"
             >
-              Create one
+              <svg width="18" height="18" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="oauth-svg">
+                <path fill="#EA4335" d="M24 12.24c3.54 0 6.36 1.22 8.26 2.22l6.02-5.86C35.6 5.02 30.08 3.2 24 3.2 14.7 3.2 6.99 8.86 3.5 16.9l6.98 5.42C12.9 15.6 17.95 12.24 24 12.24z"/>
+                <path fill="#34A853" d="M46.5 24c0-1.6-.15-2.8-.46-4.02H24v8.02h12.98c-.57 3.08-2.3 5.5-4.9 7.22l7.45 5.78C43.86 37.36 46.5 31.12 46.5 24z"/>
+                <path fill="#4A90E2" d="M10.48 29.32A14.9 14.9 0 0 1 9.6 24c0-1.6.27-3.14.76-4.56L3.5 13.99A23.97 23.97 0 0 0 .5 24c0 3.84.92 7.48 2.98 10.7l7  -5.38z"/>
+                <path fill="#FBBC05" d="M24 44.8c6.08 0 11.6-1.82 15.78-4.94l-7.45-5.78C30.36 34.96 27.66 36 24 36c-6.05 0-11.1-3.36-13.52-8.42l-6.98 5.42C6.99 39.94 14.7 44.8 24 44.8z"/>
+              </svg>
+              <span className="oauth-label">Google</span>
             </button>
-          </p>
+
+            <button
+              type="button"
+              onClick={() => handleOAuthClick('microsoft')}
+              className="btn btn-oauth btn-microsoft"
+              aria-label="Sign in with Microsoft"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" className="oauth-svg" xmlns="http://www.w3.org/2000/svg">
+                <rect x="1" y="1" width="10" height="10" fill="#F1511B" />
+                <rect x="13" y="1" width="10" height="10" fill="#FFB900" />
+                <rect x="1" y="13" width="10" height="10" fill="#7BD03B" />
+                <rect x="13" y="13" width="10" height="10" fill="#00A4EF" />
+              </svg>
+              <span className="oauth-label">Microsoft</span>
+            </button>
+          </div>
+
+          <div className="auth-footer">
+            <p>
+              Don't have an account?{' '}
+              <button
+                type="button"
+                onClick={onSignupClick}
+                className="link-button"
+              >
+                Create one
+              </button>
+            </p>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { buildFactions, colorToCss, type GalaxyPerspective } from '@/data/Factions';
 import { GALAXY_MAP } from '@/data/GalaxyMap';
 import { generateStarMap } from '@/data/StarMap';
+import { LoadingScreen } from '@/components/LoadingScreen';
 import '../styles/Game.css';
 
 interface GamePageProps {
@@ -14,6 +15,8 @@ export default function GamePage({ username }: GamePageProps) {
   const [selectedPerspective, setSelectedPerspective] = useState<GalaxyPerspective | null>(null);
   const [isBooting, setIsBooting] = useState(false);
   const [bootError, setBootError] = useState('');
+  const [bootProgress, setBootProgress] = useState(0);
+  const [bootDetail, setBootDetail] = useState('Preparing galaxy boot');
 
   const factions = useMemo(() => {
     const cfg = GALAXY_MAP;
@@ -34,22 +37,37 @@ export default function GamePage({ username }: GamePageProps) {
     let cancelled = false;
     setIsBooting(true);
     setBootError('');
+    setBootProgress(0);
+    setBootDetail('Preparing galaxy boot');
 
-    import('../game/boot').then(({ boot }) => {
-      if (cancelled || !containerRef.current) return;
-      bootedRef.current = true;
-      void boot(containerRef.current, { perspective: selectedPerspective })
-        .catch((error: unknown) => {
-          if (cancelled) return;
-          setBootError(error instanceof Error ? error.message : 'Failed to start game');
-          bootedRef.current = false;
+    import('../game/boot')
+      .then(({ boot }) => {
+        if (cancelled || !containerRef.current) return;
+        bootedRef.current = true;
+        void boot(containerRef.current, {
+          perspective: selectedPerspective,
+          onProgress: (progress, detail) => {
+            if (cancelled) return;
+            setBootProgress(progress * 100);
+            setBootDetail(detail);
+          },
         })
-        .finally(() => {
-          if (!cancelled) {
-            setIsBooting(false);
-          }
-        });
-    });
+          .catch((error: unknown) => {
+            if (cancelled) return;
+            setBootError(error instanceof Error ? error.message : 'Failed to start game');
+            bootedRef.current = false;
+          })
+          .finally(() => {
+            if (!cancelled) {
+              setIsBooting(false);
+            }
+          });
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setBootError(error instanceof Error ? error.message : 'Failed to load game boot module');
+        setIsBooting(false);
+      });
 
     return () => {
       cancelled = true;
@@ -95,12 +113,13 @@ export default function GamePage({ username }: GamePageProps) {
         </div>
       )}
       {isBooting && (
-        <div className="game-start-overlay">
-          <div className="game-start-panel game-start-loading">
-            <div className="game-start-eyebrow">Loading</div>
-            <div className="game-start-title">Starting {selectedPerspective?.mode === 'observer' ? 'Observer' : 'Faction'} view</div>
-          </div>
-        </div>
+        <LoadingScreen
+          theme="game"
+          subtitle="Galaxy Boot"
+          title={`Starting ${selectedPerspective?.mode === 'observer' ? 'Observer' : 'Faction'} view`}
+          progress={bootProgress}
+          detail={bootDetail}
+        />
       )}
       {bootError && (
         <div className="game-error-banner">{bootError}</div>

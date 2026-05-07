@@ -16,6 +16,7 @@ import type { HudConnectedSystem, HudVisualToggles } from "@/ui/HudOverlay";
 
 export interface BootOptions {
   perspective?: GalaxyPerspective;
+  onProgress?: (progress: number, detail: string) => void;
 }
 
 /**
@@ -25,7 +26,13 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const canvas = container.querySelector("#renderCanvas") as HTMLCanvasElement;
   if (!canvas) throw new Error("Canvas not found in container");
 
+  const reportProgress = (progress: number, detail: string) => {
+    options.onProgress?.(progress, detail);
+  };
+
   const perspective: GalaxyPerspective = options.perspective ?? { mode: "observer" };
+
+  reportProgress(0.05, "Generating galaxy star map");
 
   const cfg = GALAXY_MAP;
   const initialStars = generateStarMap(
@@ -36,7 +43,12 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     cfg.minStarSpacing,
     cfg.shape,
   );
+
+  reportProgress(0.2, "Building factions and ownership data");
+
   const factions: FactionInfo[] = buildFactions(initialStars, cfg);
+
+  reportProgress(0.35, "Initializing renderer");
 
   const mgr = new SceneManager();
   const engine = await mgr.initEngine(canvas);
@@ -141,6 +153,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   }
 
   async function openGalaxyView(): Promise<void> {
+    reportProgress(0.6, "Loading galaxy scene");
+
     const options: GalaxySceneOptions = {
       factions,
       perspective,
@@ -162,6 +176,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       return galaxy;
     });
 
+    reportProgress(0.88, "Applying visibility and HUD layers");
+
     if (activeGalaxyScene) {
       cachedGalaxyStars = activeGalaxyScene.getStars();
       rebuildHyperlaneAdjacency(cachedGalaxyStars);
@@ -169,6 +185,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
     applyVisualToggles();
     updateHud();
+    reportProgress(1, "Galaxy view is ready");
   }
 
   async function openSystemView(star: StarData): Promise<void> {
@@ -219,6 +236,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     },
   });
 
+  reportProgress(0.5, "Starting galaxy boot sequence");
   await openGalaxyView();
 
   console.log("StellarFronts game running");

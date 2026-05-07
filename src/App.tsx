@@ -1,10 +1,12 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import EmailVerificationPage from './pages/EmailVerificationPage';
 import SuccessPage from './pages/SuccessPage';
 import GamePage from './pages/GamePage';
+import { LoadingScreen } from './components/LoadingScreen';
+import { preloadAuthAssets } from './utils/preloadAuthAssets';
 
 export interface AuthState {
   isLoggedIn: boolean;
@@ -13,11 +15,33 @@ export interface AuthState {
 }
 
 function App() {
+  const [authLoadingProgress, setAuthLoadingProgress] = useState(0);
+  const [authLoadingDetail, setAuthLoadingDetail] = useState('Preparing auth assets');
+  const [authAssetsReady, setAuthAssetsReady] = useState(false);
   const [auth, setAuth] = useState<AuthState>({
     isLoggedIn: false,
     username: '',
     mode: 'login',
   });
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void preloadAuthAssets((state) => {
+      if (cancelled) return;
+      setAuthLoadingProgress(state.progress * 100);
+      setAuthLoadingDetail(state.detail);
+    }).then(() => {
+      if (cancelled) return;
+      setAuthAssetsReady(true);
+      setAuthLoadingProgress(100);
+      setAuthLoadingDetail('Auth background assets are ready');
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleLoginSuccess = (username: string) => {
     setAuth({
@@ -63,6 +87,18 @@ function App() {
       isLoggedIn: true,
     }));
   };
+
+  if (!authAssetsReady) {
+    return (
+      <LoadingScreen
+        theme="auth"
+        subtitle="Startup"
+        title="Loading login environment"
+        progress={authLoadingProgress}
+        detail={authLoadingDetail}
+      />
+    );
+  }
 
   return (
     <Router>

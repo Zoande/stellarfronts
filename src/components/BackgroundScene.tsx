@@ -1,4 +1,9 @@
 import { useEffect, useRef } from 'react';
+
+interface BackgroundSceneProps {
+  onLoadProgress?: (progress: number, detail: string) => void;
+  onReady?: () => void;
+}
 import {
   ArcRotateCamera,
   Color3,
@@ -23,7 +28,7 @@ function rnd(seedRef: { v: number }) {
   return seedRef.v / 4294967296;
 }
 
-export default function BackgroundScene() {
+export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundSceneProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const modelCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -300,6 +305,9 @@ export default function BackgroundScene() {
     const canvas = modelCanvasRef.current;
     if (!canvas) return;
 
+    let cancelled = false;
+    onLoadProgress?.(0.1, 'Creating auth background scene');
+
     const engine = new Engine(canvas, true, {
       preserveDrawingBuffer: true,
       stencil: true,
@@ -308,6 +316,7 @@ export default function BackgroundScene() {
     });
     const scene = new Scene(engine);
     scene.clearColor = new Color4(0, 0, 0, 0);
+    onLoadProgress?.(0.18, 'Setting up cameras and lighting');
 
     const camera = new ArcRotateCamera(
       'authModelCamera',
@@ -411,6 +420,7 @@ export default function BackgroundScene() {
 
     const starbaseRoot = new TransformNode('authStarbaseRoot', scene);
     starbaseRoot.parent = root;
+    onLoadProgress?.(0.35, 'Importing starbase model');
     starbaseRoot.position = new Vector3(51.4, 60.2, 0.1);
     const starbaseBaseY = starbaseRoot.position.y;
 
@@ -499,6 +509,8 @@ export default function BackgroundScene() {
         fallback.material = mat;
       });
 
+    onLoadProgress?.(0.65, 'Importing fighter model');
+
     const shipPromise = SceneLoader.ImportMeshAsync('', '', '/ships/fighter_01/Fighter_01.obj', scene)
       .then((result) => {
         const meshes = result.meshes.filter((mesh): mesh is Mesh => typeof mesh.getTotalVertices === 'function' && mesh.getTotalVertices() > 0);
@@ -577,20 +589,25 @@ export default function BackgroundScene() {
     window.addEventListener('resize', onResize);
 
     void Promise.all([starbasePromise, shipPromise]).then(() => {
+      if (!cancelled) {
+        onLoadProgress?.(1, 'Login background is ready');
+        onReady?.();
+      }
       scene.executeWhenReady(() => engine.resize());
     });
 
     return () => {
+      cancelled = true;
       window.removeEventListener('resize', onResize);
       scene.dispose();
       engine.dispose();
     };
-  }, []);
+  }, [onLoadProgress, onReady]);
 
-    return (
-      <>
-        <canvas id="authBgCanvas" ref={canvasRef} />
-        <canvas id="authModelCanvas" ref={modelCanvasRef} />
-      </>
-    );
+  return (
+    <>
+      <canvas id="authBgCanvas" ref={canvasRef} />
+      <canvas id="authModelCanvas" ref={modelCanvasRef} />
+    </>
+  );
 }
