@@ -1073,9 +1073,34 @@ export class StarFieldRenderer {
   }
 
   private applyStarbaseIconVisual(): void {
-    // Hide all starbase icon sprites - they are now shown in the star labels instead
     for (let i = 0; i < this.starbaseIconSprites.length; i++) {
       this.starbaseIconSprites[i].isVisible = false;
+    }
+
+    if (!this.starsVisible) return;
+    for (const starId of this.starbaseSystemIds) {
+      if (starId < 0 || starId >= this.starPositions.length) continue;
+      if (!this.isStarRevealed(starId)) continue;
+      const sprite = this.starbaseIconSprites[starId];
+      const pos = this.starPositions[starId];
+      if (!sprite || !pos) continue;
+      const pulse = 0.5 + 0.5 * Math.sin(
+        this.elapsedTime * STARBASE_ICON_PULSE_SPEED + starId * 0.31,
+      );
+      const size = mix(
+        STARBASE_ICON_MIN_SIZE,
+        STARBASE_ICON_MAX_SIZE,
+        1 - STARBASE_ICON_PULSE_SCALE + pulse * STARBASE_ICON_PULSE_SCALE,
+      );
+      sprite.position.set(
+        pos.x + STARBASE_ICON_OFFSET_X,
+        STARBASE_ICON_Y,
+        pos.z + STARBASE_ICON_OFFSET_Z,
+      );
+      sprite.width = size;
+      sprite.height = size;
+      sprite.angle = Math.sin(this.elapsedTime * 0.75 + starId * 0.23) * 0.04;
+      sprite.isVisible = true;
     }
   }
 

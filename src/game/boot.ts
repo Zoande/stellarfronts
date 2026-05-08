@@ -1,27 +1,21 @@
 import { SceneManager } from "@/SceneManager";
-import { buildHyperlaneAdjacency, buildHyperlanePairs, GalaxyScene } from "@/scenes/GalaxyScene";
+import { GalaxyScene } from "@/scenes/GalaxyScene";
 import { SystemScene } from "@/scenes/SystemScene";
 import type { IGameScene } from "@/SceneManager";
-import { generateStarMap } from "@/data/StarMap";
 import type { StarData } from "@/data/StarMap";
-import { GALAXY_MAP } from "@/data/GalaxyMap";
-import {
-  buildFactions,
-  FOG_OF_WAR_MAX_JUMPS,
-} from "@/data/Factions";
-import type { FactionInfo, GalaxyPerspective } from "@/data/Factions";
+import type { GalaxyPerspective } from "@/data/Factions";
 import type { GalaxySceneOptions, GalaxyViewState } from "@/scenes/GalaxyScene";
+import { buildHyperlaneAdjacency } from "@/data/Hyperlanes";
 import { HudOverlay } from "@/ui/HudOverlay";
 import type { HudConnectedSystem, HudVisualToggles } from "@/ui/HudOverlay";
+import { GameServerClient } from "./GameServerClient";
+import type { GameSnapshot, ServerShip } from "./GameProtocol";
 
 export interface BootOptions {
   perspective?: GalaxyPerspective;
   onProgress?: (progress: number, detail: string) => void;
 }
 
-/**
- * Boot the game with a selectable perspective.
- */
 export async function boot(container: HTMLDivElement, options: BootOptions = {}) {
   const canvas = container.querySelector("#renderCanvas") as HTMLCanvasElement;
   if (!canvas) throw new Error("Canvas not found in container");
@@ -32,33 +26,22 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   const perspective: GalaxyPerspective = options.perspective ?? { mode: "observer" };
 
-  reportProgress(0.05, "Charting galaxy star map");
+  reportProgress(0.08, "Connecting to game server");
+  const server = new GameServerClient(perspective);
+  let snapshot = await server.connect();
 
-  const cfg = GALAXY_MAP;
-  const initialStars = generateStarMap(
-    cfg.width,
-    cfg.height,
-    cfg.starCount,
-    cfg.seed,
-    cfg.minStarSpacing,
-    cfg.shape,
-  );
-
-  reportProgress(0.2, "Mapping factions and ownership");
-
-  const factions: FactionInfo[] = buildFactions(initialStars, cfg);
-
-  reportProgress(0.35, "Initializing galaxy renderer");
+  reportProgress(0.28, "Receiving authoritative galaxy state");
 
   const mgr = new SceneManager();
   const engine = await mgr.initEngine(canvas);
   let isSwitching = false;
   let activeGalaxyScene: GalaxyScene | null = null;
   let activeSystemScene: SystemScene | null = null;
-  let cachedGalaxyStars: StarData[] | null = initialStars;
+  let cachedGalaxyStars: StarData[] | null = snapshot.stars;
   let cachedGalaxyViewState: GalaxyViewState | null = null;
-  let cachedHyperlaneAdjacency: number[][] = [];
+  let cachedHyperlaneAdjacency: number[][] = buildHyperlaneAdjacency(snapshot.hyperlanes, snapshot.stars.length);
   let currentSystemStar: StarData | null = null;
+  let hud: HudOverlay | null = null;
 
   const visualToggles: HudVisualToggles = {
     hyperlanes: true,
@@ -68,48 +51,53 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     ownership: true,
   };
 
-  const resolveRoutingStars = (): StarData[] => {
-    if (cachedGalaxyStars && cachedGalaxyStars.length > 0) return cachedGalaxyStars;
-    if (activeGalaxyScene) return activeGalaxyScene.getStars();
-    return [];
-  };
+  const resolveRoutingStars = (): StarData[] => cachedGalaxyStars ?? snapshot.stars;
 
-  const getPerspectiveVisibleStars = (): Set<number> | null => {
-    return null;
-  };
+  const getVisibleStarSet = (): Set<number> | null => (
+    snapshot.visibleStarIds ? new Set(snapshot.visibleStarIds) : null
+  );
 
-  const rebuildHyperlaneAdjacency = (stars: StarData[]): void => {
-    if (stars.length === 0) {
-      cachedHyperlaneAdjacency = [];
-      return;
+  const getFactionHomeStarIds = (): number[] => snapshot.factions.map((faction) => faction.homeStarId);
+  const getStarbaseSystemIds = (): number[] => snapshot.starbases.map((starbase) => starbase.starId);
+  const getShipSystemIds = (): number[] => snapshot.ships.map((ship) => ship.currentStarId);
+
+  const getPrimaryTransitShip = (): ServerShip | null => (
+    snapshot.ships.find((ship) => ship.hyperlanePosition !== null) ?? null
+  );
+
+  const getPrimaryShipStarId = (): number => {
+    if (perspective.mode === "faction") {
+      const ownShip = snapshot.ships.find((ship) => ship.ownerId === perspective.factionId);
+      if (ownShip) return ownShip.currentStarId;
     }
-    const pairs = buildHyperlanePairs(
-      stars,
-      GALAXY_MAP.width,
-      GALAXY_MAP.height,
-      GALAXY_MAP.shape,
-      GALAXY_MAP.seed,
-    );
-    cachedHyperlaneAdjacency = buildHyperlaneAdjacency(pairs, stars.length);
+    return snapshot.ships[0]?.currentStarId ?? -1;
   };
+
+  const getPrimaryTransit = () => {
+    const ship = getPrimaryTransitShip();
+    return ship?.hyperlanePosition
+      ? {
+        fromStarId: ship.hyperlanePosition.fromStarId,
+        toStarId: ship.hyperlanePosition.toStarId,
+        progress: ship.hyperlanePosition.progress,
+      }
+      : null;
+  };
+
+  const getShipSystemPositions = (): Record<number, { x: number; y: number; z: number }> => (
+    Object.fromEntries(snapshot.ships.map((ship) => [ship.currentStarId, ship.systemPosition]))
+  );
 
   const getConnectedSystems = (sourceStarId: number): HudConnectedSystem[] => {
     const stars = resolveRoutingStars();
-    if (stars.length === 0) return [];
-
+    const visible = getVisibleStarSet();
     const sourceIndex = stars.findIndex((s) => s.id === sourceStarId);
     if (sourceIndex < 0 || sourceIndex >= cachedHyperlaneAdjacency.length) return [];
 
-    const targets: HudConnectedSystem[] = [];
-    const visibleStarIds = getPerspectiveVisibleStars();
-    const neighborIndices = cachedHyperlaneAdjacency[sourceIndex] ?? [];
-    for (const neighborIndex of neighborIndices) {
-      const targetStar = stars[neighborIndex];
-      if (!targetStar) continue;
-      if (visibleStarIds && !visibleStarIds.has(targetStar.id)) continue;
-      targets.push({ id: targetStar.id, name: targetStar.name });
-    }
-    return targets;
+    return (cachedHyperlaneAdjacency[sourceIndex] ?? [])
+      .map((neighborId) => stars[neighborId])
+      .filter((star): star is StarData => !!star && (!visible || visible.has(star.id)))
+      .map((star) => ({ id: star.id, name: star.name }));
   };
 
   const applyVisualToggles = (): void => {
@@ -122,24 +110,43 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
 
     if (activeSystemScene) {
+      activeSystemScene.setShipSystemPositions(getShipSystemPositions());
+    }
+
+    if (activeSystemScene) {
       activeSystemScene.setBloomEnabled(visualToggles.bloom);
       activeSystemScene.setStarsVisible(visualToggles.stars);
     }
   };
 
-  let hud: HudOverlay;
-
   function updateHud(): void {
-    const connectedSystems = currentSystemStar
-      ? getConnectedSystems(currentSystemStar.id)
-      : [];
-
+    if (!hud) return;
+    const connectedSystems = currentSystemStar ? getConnectedSystems(currentSystemStar.id) : [];
     hud.update({
       title: currentSystemStar ? `${currentSystemStar.name} System` : "Galaxy Map",
       canExitSystem: currentSystemStar !== null,
       connectedSystems,
       toggles: visualToggles,
+      clock: snapshot.clock,
     });
+  }
+
+  function applySnapshotToActiveScene(): void {
+    cachedGalaxyStars = snapshot.stars;
+    cachedHyperlaneAdjacency = buildHyperlaneAdjacency(snapshot.hyperlanes, snapshot.stars.length);
+
+    if (activeGalaxyScene) {
+      activeGalaxyScene.setVisibleStarIds(snapshot.visibleStarIds);
+      activeGalaxyScene.setStarOwnerships(snapshot.starOwnership);
+      activeGalaxyScene.setStarbaseSystemIds(getStarbaseSystemIds());
+      activeGalaxyScene.setServerShips(snapshot.ships);
+      activeGalaxyScene.setPlayerShipState(
+        getPrimaryTransitShip()?.currentStarId ?? getPrimaryShipStarId(),
+        getPrimaryTransit(),
+      );
+    }
+
+    updateHud();
   }
 
   async function switchScene(factory: () => IGameScene): Promise<void> {
@@ -153,38 +160,41 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   }
 
   async function openGalaxyView(): Promise<void> {
-    reportProgress(0.6, "Loading galaxy scene");
+    reportProgress(0.58, "Loading galaxy scene");
 
-    const factionHomeStarIds = factions.map((faction) => faction.homeStarId);
-    const options: GalaxySceneOptions = {
-      factions,
+    const optionsForGalaxy: GalaxySceneOptions = {
+      stars: snapshot.stars,
+      factions: snapshot.factions,
       perspective,
       playerFactionId: perspective.mode === "faction" ? perspective.factionId : 0,
-      playerShipSystemIds: factionHomeStarIds,
-      starbaseSystemIds: factionHomeStarIds,
-      visibilityJumps: FOG_OF_WAR_MAX_JUMPS,
+      playerShipStarId: getPrimaryTransitShip()?.currentStarId ?? getPrimaryShipStarId(),
+      playerShipTransit: getPrimaryTransit(),
+      playerShipSystemIds: getShipSystemIds(),
+      serverShips: snapshot.ships,
+      starbaseSystemIds: getStarbaseSystemIds(),
+      starOwnership: snapshot.starOwnership,
+      visibleStarIds: snapshot.visibleStarIds,
+      onShipCommand: (action, targetStarId, shipId) => {
+        if (!shipId) return;
+        if (action === "move") {
+          server.send({ type: "moveShip", shipId, targetStarId });
+        } else if (action === "build") {
+          server.send({ type: "buildStarbase", shipId, targetStarId });
+        }
+      },
     };
-    if (cachedGalaxyStars && cachedGalaxyStars.length > 0) {
-      options.stars = cachedGalaxyStars;
-    }
+
     if (cachedGalaxyViewState) {
-      options.initialViewState = cachedGalaxyViewState;
+      optionsForGalaxy.initialViewState = cachedGalaxyViewState;
     }
 
     await switchScene(() => {
-      const galaxy = new GalaxyScene(engine, (star) => openSystemView(star), options);
+      const galaxy = new GalaxyScene(engine, (star) => openSystemView(star), optionsForGalaxy);
       activeGalaxyScene = galaxy;
       activeSystemScene = null;
       currentSystemStar = null;
       return galaxy;
     });
-
-    reportProgress(0.88, "Applying visibility and HUD layers");
-
-    if (activeGalaxyScene) {
-      cachedGalaxyStars = activeGalaxyScene.getStars();
-      rebuildHyperlaneAdjacency(cachedGalaxyStars);
-    }
 
     applyVisualToggles();
     updateHud();
@@ -193,27 +203,23 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   async function openSystemView(star: StarData): Promise<void> {
     if (activeGalaxyScene) {
-      cachedGalaxyStars = activeGalaxyScene.getStars();
       cachedGalaxyViewState = activeGalaxyScene.captureViewState();
       activeGalaxyScene = null;
     }
 
-    if (cachedGalaxyStars && cachedHyperlaneAdjacency.length !== cachedGalaxyStars.length) {
-      rebuildHyperlaneAdjacency(cachedGalaxyStars);
-    }
-
     await switchScene(() => {
-      const actualStarCount = cachedGalaxyStars ? cachedGalaxyStars.length : 500;
-      const factionHomeStarIds = factions.map((faction) => faction.homeStarId);
       const system = new SystemScene(
         engine,
         star,
         () => openGalaxyView(),
-        actualStarCount,
+        snapshot.stars.length,
         {
-          homeSystemStarIds: factionHomeStarIds,
-          playerShipSystemIds: factionHomeStarIds,
-          starbaseSystemIds: factionHomeStarIds,
+          homeSystemStarIds: getFactionHomeStarIds(),
+          playerShipSystemIds: getShipSystemIds(),
+          starbaseSystemIds: getStarbaseSystemIds(),
+          playerShipStarId: getPrimaryShipStarId(),
+          shipTransit: getPrimaryTransit(),
+          shipSystemPositions: getShipSystemPositions(),
         },
       );
       activeSystemScene = system;
@@ -232,8 +238,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     },
     onNavigateConnectedSystem: (targetId) => {
       if (!currentSystemStar) return;
-      const stars = resolveRoutingStars();
-      const target = stars.find((s) => s.id === targetId);
+      const target = resolveRoutingStars().find((star) => star.id === targetId);
       if (!target) return;
       void openSystemView(target);
     },
@@ -242,6 +247,28 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       applyVisualToggles();
       updateHud();
     },
+  });
+
+  server.onSnapshot((nextSnapshot) => {
+    snapshot = nextSnapshot;
+    applySnapshotToActiveScene();
+  });
+
+  window.addEventListener("keydown", (ev) => {
+    const speedByKey: Record<string, number> = {
+      "1": 1,
+      "2": 2,
+      "3": 3,
+      "4": 4,
+      "5": 5,
+      "6": 50,
+      "7": 100,
+      "8": 200,
+      "9": 500,
+    };
+    const multiplier = speedByKey[ev.key];
+    if (!multiplier) return;
+    server.send({ type: "setSpeedMultiplier", multiplier });
   });
 
   reportProgress(0.5, "Starting galaxy command sequence");

@@ -40,6 +40,7 @@ export interface SystemSceneOptions {
   homeSystemStarIds?: number[];
   playerShipStarId?: number;
   playerShipSystemIds?: number[];
+  shipSystemPositions?: Record<number, { x: number; y: number; z: number }>;
   starbaseSystemIds?: number[];
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
@@ -65,6 +66,7 @@ export class SystemScene implements IGameScene {
   private homeSystemStarIds: Set<number>;
   private playerShipStarId: number;
   private playerShipSystemIds: Set<number>;
+  private shipSystemPositions: Record<number, { x: number; y: number; z: number }>;
   private starbaseSystemIds: Set<number>;
   private shipTransit: GalaxyShipTransit | null;
   private hyperlaneExits: HyperlaneExitPoint[];
@@ -165,6 +167,7 @@ export class SystemScene implements IGameScene {
         ?? options.homeSystemStarIds
         ?? (this.playerShipStarId >= 0 ? [this.playerShipStarId] : []),
     );
+    this.shipSystemPositions = options.shipSystemPositions ?? {};
     this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
     this.shipTransit = options.shipTransit ?? null;
     this.hyperlaneExits = options.hyperlaneExits ?? [];
@@ -1075,6 +1078,10 @@ export class SystemScene implements IGameScene {
     console.log(`🚀 Loading player ship for star ID ${this.star.id}`);
 
     this.playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
+    const serverPosition = this.shipSystemPositions[this.star.id];
+    if (serverPosition) {
+      this.playerShipBasePosition.set(serverPosition.x, serverPosition.y, serverPosition.z);
+    }
     this.playerShipRoot = new TransformNode("playerShipRoot", this.scene);
     this.playerShipRoot.position = this.playerShipBasePosition.clone();
     this.playerShipRoot.rotation.set(0.18, -0.7, -0.08);
@@ -1827,6 +1834,13 @@ export class SystemScene implements IGameScene {
     if (this.glowLayer) {
       this.glowLayer.intensity = enabled ? this.glowLayer.intensity : 0;
     }
+  }
+
+  setShipSystemPositions(positions: Record<number, { x: number; y: number; z: number }>): void {
+    this.shipSystemPositions = positions;
+    const position = positions[this.star.id];
+    if (!position || !this.playerShipRoot) return;
+    this.playerShipBasePosition.set(position.x, position.y, position.z);
   }
 
   dispose(): void {

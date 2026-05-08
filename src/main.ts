@@ -1,10 +1,11 @@
 import { SceneManager } from "@/SceneManager";
-import { buildHyperlaneAdjacency, buildHyperlanePairs, GalaxyScene } from "@/scenes/GalaxyScene";
+import { GalaxyScene } from "@/scenes/GalaxyScene";
 import { SystemScene } from "@/scenes/SystemScene";
 import type { IGameScene } from "@/SceneManager";
 import { generateStarMap } from "@/data/StarMap";
 import type { StarData } from "@/data/StarMap";
 import { GALAXY_MAP } from "@/data/GalaxyMap";
+import { buildHyperlaneAdjacency, buildHyperlanePairs } from "@/data/Hyperlanes";
 import {
   buildFactions,
   computeVisibleStarIds,
