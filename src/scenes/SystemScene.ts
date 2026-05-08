@@ -895,7 +895,7 @@ export class SystemScene implements IGameScene {
     hemi.specular = new Color3(0.25, 0.25, 0.3);
 
     const bounce = new HemisphericLight("systemBounce", new Vector3(0, -1, 0), this.scene);
-    bounce.intensity = this.bounceIntensity;
+    bounce.intensity = this.bounceIntensity * 1.3;
     bounce.diffuse = new Color3(0.2, 0.22, 0.26);
     bounce.specular = new Color3(0.05, 0.05, 0.08);
 
@@ -1527,9 +1527,9 @@ export class SystemScene implements IGameScene {
     planetTexture.hasAlpha = false;
     mat.diffuseTexture = planetTexture;
     mat.specularColor = new Color3(0.12, 0.12, 0.12);
-    // Prevent planets from contributing visible glow but allow them to
-    // occlude the star's glow by including them in the GlowLayer.
-    mat.emissiveColor = Color3.Black();
+    // Keep a subtle baseline lift for readability without making planets
+    // look self-illuminated or washing out the sunlit side.
+    mat.emissiveColor = this.planetNightLift.scale(0.2);
     mat.alpha = 1.0;
     mat.useAlphaFromDiffuseTexture = false;
     mat.transparencyMode = Material.MATERIAL_OPAQUE;

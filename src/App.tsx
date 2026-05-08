@@ -5,14 +5,16 @@ import SignupPage from './pages/SignupPage';
 import EmailVerificationPage from './pages/EmailVerificationPage';
 import SuccessPage from './pages/SuccessPage';
 import GamePage from './pages/GamePage';
+import HomePage from './pages/HomePage';
 import { LoadingScreen } from './components/LoadingScreen';
 import BackgroundScene from './components/BackgroundScene';
 import { preloadAuthAssets } from './utils/preloadAuthAssets';
+import type { GalaxyPerspective } from './data/Factions';
 
 export interface AuthState {
   isLoggedIn: boolean;
   username: string;
-  mode: 'login' | 'signup' | 'email-verify' | 'success';
+  mode: 'login' | 'signup' | 'email-verify' | 'success' | 'home';
 }
 
 function App() {
@@ -26,6 +28,7 @@ function App() {
     username: '',
     mode: 'login',
   });
+  const [selectedPerspective, setSelectedPerspective] = useState<GalaxyPerspective | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -65,7 +68,7 @@ function App() {
     setAuth({
       isLoggedIn: true,
       username,
-      mode: 'success',
+      mode: 'home',
     });
   };
 
@@ -83,18 +86,18 @@ function App() {
     }));
   };
 
-  const handleSignupSubmit = (email: string, username: string) => {
+  const handleSignupSubmit = (_email: string, username: string) => {
     setAuth({
-      isLoggedIn: false,
+      isLoggedIn: true,
       username,
-      mode: 'email-verify',
+      mode: 'home',
     });
   };
 
   const handleEmailVerified = () => {
     setAuth((prev) => ({
       ...prev,
-      mode: 'success',
+      mode: 'home',
       isLoggedIn: true,
     }));
   };
@@ -103,6 +106,28 @@ function App() {
     setAuth((prev) => ({
       ...prev,
       isLoggedIn: true,
+    }));
+  };
+
+  const handleOpenHome = () => {
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', '/home');
+    }
+    setAuth((prev) => ({
+      ...prev,
+      mode: 'home',
+    }));
+  };
+
+  const handleStartGameFromHome = (perspective: GalaxyPerspective) => {
+    setSelectedPerspective(perspective);
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', '/game');
+    }
+    setAuth((prev) => ({
+      ...prev,
+      isLoggedIn: true,
+      mode: 'home',
     }));
   };
 
@@ -126,7 +151,7 @@ function App() {
         ? (
           <SuccessPage
             message={auth.isLoggedIn ? `Welcome back, ${auth.username}!` : 'Account created successfully!'}
-            onEnterGame={handleEnterGame}
+            onEnterGame={handleOpenHome}
           />
         )
         : (
@@ -136,10 +161,18 @@ function App() {
           />
         );
 
-  if (isGameRoute && auth.isLoggedIn) {
+  if (isGameRoute && auth.isLoggedIn && selectedPerspective) {
     return (
       <Router>
-        <GamePage username={auth.username} />
+        <GamePage username={auth.username} selectedPerspective={selectedPerspective} />
+      </Router>
+    );
+  }
+
+  if (auth.isLoggedIn && auth.mode === 'home') {
+    return (
+      <Router>
+        <HomePage username={auth.username} onContinuePlaying={handleStartGameFromHome} />
       </Router>
     );
   }
