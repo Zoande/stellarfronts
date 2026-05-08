@@ -431,6 +431,8 @@ export interface PlanetConfig {
   diameter: number;
   orbitRadius: number;
   orbitSpeed: number;
+  name: string;
+  isHabited?: boolean;
 }
 
 export interface StarSystemConfig {
@@ -574,7 +576,7 @@ export function generateStarMap(
     return PlanetType.Barren;
   }
 
-  function generatePlanets(starType: StarType): PlanetConfig[] {
+  function generatePlanets(starType: StarType, starName: string): PlanetConfig[] {
     const typeCfg = STAR_TYPES[starType];
 
     let minPlanets = 1;
@@ -633,6 +635,8 @@ export function generateStarMap(
       const textureVar = Math.floor(rng() * planetCfg.variations);
       const diameter = planetCfg.diameterMin + rng() * (planetCfg.diameterMax - planetCfg.diameterMin);
       const orbitSpeed = (0.2 + rng() * 0.3) * planetCfg.orbitSpeedMultiplier * orbitSpeedScale;
+      const romanNumerals = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
+      const planetName = `${starName} ${romanNumerals[i] || i + 1}`;
 
       planets.push({
         type: planetType,
@@ -640,6 +644,7 @@ export function generateStarMap(
         diameter,
         orbitRadius: baseOrbit + i * orbitSpacing + rng() * (orbitSpacing * 0.8),
         orbitSpeed,
+        name: planetName,
       });
     }
 
@@ -715,9 +720,10 @@ export function generateStarMap(
     const pulseFreq = cfg.galaxyPulseFrequency[0]
       + rng() * (cfg.galaxyPulseFrequency[1] - cfg.galaxyPulseFrequency[0]);
 
+    const starName = generateName();
     stars.push({
       id: stars.length,
-      name: generateName(),
+      name: starName,
       type,
       x,
       z,
@@ -725,7 +731,7 @@ export function generateStarMap(
       color,
       galaxyPulseAmplitude: pulseAmp,
       galaxyPulseFrequency: pulseFreq,
-      system: { planets: generatePlanets(type) },
+      system: { planets: generatePlanets(type, starName) },
     });
   }
 

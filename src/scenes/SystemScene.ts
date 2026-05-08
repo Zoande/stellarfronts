@@ -19,8 +19,12 @@ import {
   GlowLayer,
   TransformNode,
   SceneLoader,
+  DynamicTexture,
+  Material,
+  Mesh,
+  Ray,
 } from "@babylonjs/core";
-import type { AbstractEngine, AbstractMesh, LinesMesh, Material, Mesh } from "@babylonjs/core";
+import type { AbstractEngine, AbstractMesh, LinesMesh } from "@babylonjs/core";
 import "@babylonjs/loaders/OBJ/objFileLoader";
 import "@babylonjs/loaders/glTF";
 import type { IGameScene } from "../SceneManager";
@@ -90,6 +94,13 @@ export class SystemScene implements IGameScene {
 
   private orbitSystem = new OrbitSystem();
   private orbitRings: LinesMesh[] = [];
+  private planetMeshes: Mesh[] = [];
+  private planetLabelMeshes: Mesh[] = [];
+  private planetDiameters: number[] = [];
+  private starLabelMesh: Mesh | null = null;
+  private starOccluded = false;
+  private debugLogOccluder = true;
+  private deepDebug = false;
   private isExiting = false;
   private elapsed = 0;
   private starsVisible = true;
@@ -412,6 +423,137 @@ export class SystemScene implements IGameScene {
     if (!this.bloomEnabled) {
       this.glowLayer.intensity = 0;
     }
+
+    this.updatePlanetLabels();
+    this.updateStarOcclusionAndGlow();
+  }
+
+  private updatePlanetLabels(): void {
+    // Update planet labels
+    for (let i = 0; i < this.planetMeshes.length; i++) {
+      const planetMesh = this.planetMeshes[i];
+      const labelMesh = this.planetLabelMeshes[i];
+      const diameter = this.planetDiameters[i];
+      if (labelMesh && planetMesh && diameter) {
+        // Position label above planet based on its actual diameter
+        const offsetDistance = diameter * 0.6 + 1.2;
+        labelMesh.position = new Vector3(
+          planetMesh.position.x,
+          planetMesh.position.y + offsetDistance,
+          planetMesh.position.z,
+        );
+      }
+    }
+
+    // Update star label
+    if (this.starLabelMesh && this.starMesh) {
+      const offsetDistance = this.starDiameter * 0.6 + 1.2;
+      this.starLabelMesh.position = new Vector3(
+        this.starMesh.position.x,
+        this.starMesh.position.y + offsetDistance,
+        this.starMesh.position.z,
+      );
+    }
+  }
+
+  private updateStarOcclusionAndGlow(): void {
+    if (!this.starMesh || !this.camera || !this.glowLayer) return;
+
+    const camPos = this.camera.position;
+    const starPos = this.starMesh.position;
+    const dir = starPos.subtract(camPos);
+    const dist = dir.length();
+    if (dist <= 0.0001) return;
+
+    const ray = new Ray(camPos, dir.normalize(), dist - 0.001);
+    const pick = this.scene.pickWithRay(ray, (mesh) => {
+      if (!mesh) return false;
+      // Ignore star's own meshes
+      if (mesh === this.starMesh || mesh === this.starDetailMesh || mesh === this.starCoronaMesh) return false;
+      // Ignore label planes (they are UI-like and should not occlude glow)
+      if (mesh.name && (mesh.name.startsWith("planetLabel_mesh") || mesh.name.includes("Label"))) return false;
+      return true;
+    });
+
+    const occluded = !!(pick && pick.hit && pick.pickedPoint);
+    this.starOccluded = occluded;
+
+    if (this.debugLogOccluder && occluded && pick && pick.pickedMesh) {
+      console.log(`🌑 Star occluded by mesh: ${pick.pickedMesh.name}`);
+      if (this.deepDebug) {
+        // Dump material info for the occluding mesh
+        this.dumpMeshMaterialInfo(pick.pickedMesh);
+
+        // Find a starbase mesh (if present) to compare materials
+        const sb = this.scene.meshes.find((m) => m.name.toLowerCase().includes("starbase") && m.material);
+        if (sb) {
+          console.log("🔎 Example starbase mesh for comparison:", sb.name);
+          this.dumpMeshMaterialInfo(sb);
+        }
+
+        // If the occluder is not a planet, also dump the nearest planet material
+        if (!pick.pickedMesh.name.startsWith("systemPlanet")) {
+          const planet = this.planetMeshes.length > 0 ? this.planetMeshes[0] : null;
+          if (planet) {
+            console.log(`🔎 Example planet mesh for comparison: ${planet.name}`);
+            this.dumpMeshMaterialInfo(planet);
+          }
+        }
+      }
+    }
+
+    const target = occluded ? this.glowBaseIntensity * 0.12 : this.glowBaseIntensity;
+    const current = this.glowLayer.intensity;
+    this.glowLayer.intensity = current + (target - current) * 0.18;
+  }
+
+  private dumpMeshMaterialInfo(mesh: AbstractMesh | null): void {
+    if (!mesh) return;
+    try {
+      mesh.computeWorldMatrix(true);
+      console.log(`  • Mesh: ${mesh.name}, renderingGroupId=${(mesh as Mesh).renderingGroupId}, isPickable=${mesh.isPickable}, alwaysSelectAsActiveMesh=${mesh.alwaysSelectAsActiveMesh}`);
+      const material = (mesh as Mesh).material as any;
+      if (!material) {
+        console.log("    - No material attached");
+        return;
+      }
+
+      // Handle MultiMaterial
+      if (material.subMaterials) {
+        console.log(`    - MultiMaterial with ${material.subMaterials.length} subMaterials`);
+        material.subMaterials.forEach((m: any, idx: number) => {
+          console.log(`    - subMaterial[${idx}]: ${m.name || "<anon>"}`);
+          this.logMaterialFields(m);
+        });
+        return;
+      }
+
+      console.log(`    - Material: ${material.name || "<anon>"}, type=${material.getClassName ? material.getClassName() : typeof material}`);
+      this.logMaterialFields(material);
+    } catch (err) {
+      console.warn("Failed to dump material info", err);
+    }
+  }
+
+  private logMaterialFields(mat: any): void {
+    if (!mat) return;
+    const entries: string[] = [];
+    try {
+      entries.push(`alpha=${mat.alpha}`);
+      if (typeof mat.transparencyMode !== "undefined") entries.push(`transparencyMode=${mat.transparencyMode}`);
+      if (typeof mat.useAlphaFromDiffuseTexture !== "undefined") entries.push(`useAlphaFromDiffuseTexture=${mat.useAlphaFromDiffuseTexture}`);
+      if (typeof mat.needDepthPrePass !== "undefined") entries.push(`needDepthPrePass=${mat.needDepthPrePass}`);
+      if (typeof mat.backFaceCulling !== "undefined") entries.push(`backFaceCulling=${mat.backFaceCulling}`);
+      if (typeof (mat as any).forceDepthWrite !== "undefined") entries.push(`forceDepthWrite=${(mat as any).forceDepthWrite}`);
+      if (typeof mat.disableLighting !== "undefined") entries.push(`disableLighting=${mat.disableLighting}`);
+      if (mat.emissiveColor) entries.push(`emissiveColor=${mat.emissiveColor.r?.toFixed(2)},${mat.emissiveColor.g?.toFixed(2)},${mat.emissiveColor.b?.toFixed(2)}`);
+      if (mat.diffuseTexture) entries.push(`diffuseTexture=${mat.diffuseTexture.name || mat.diffuseTexture.url || '<texture>'}`);
+      if (mat.opacityTexture) entries.push(`opacityTexture=${mat.opacityTexture?.name || mat.opacityTexture?.url || '<texture>'}`);
+      if (mat.emissiveTexture) entries.push(`emissiveTexture=${mat.emissiveTexture?.name || mat.emissiveTexture?.url || '<texture>'}`);
+    } catch (err) {
+      entries.push(`(failed reading fields: ${err})`);
+    }
+    for (const e of entries) console.log(`      - ${e}`);
   }
 
   private configureVisualPreset(): void {
@@ -778,6 +920,20 @@ export class SystemScene implements IGameScene {
       blurKernelSize: 48,
     });
     this.glowLayer.intensity = this.glowBaseIntensity;
+
+    // Debug: allow toggling glow with 'g' key to quickly test occlusion behavior
+    if (typeof window !== "undefined") {
+      window.addEventListener("keydown", (ev: KeyboardEvent) => {
+        if (ev.key.toLowerCase() === "g") {
+          this.glowLayer!.isEnabled = !this.glowLayer!.isEnabled;
+          console.log(`🔆 Glow layer toggled: ${this.glowLayer!.isEnabled}`);
+        }
+        if (ev.key.toLowerCase() === "d") {
+          this.deepDebug = !this.deepDebug;
+          console.log(`🐞 Deep debug toggled: ${this.deepDebug}`);
+        }
+      });
+    }
   }
 
   private buildSystemObjects(): void {
@@ -848,9 +1004,27 @@ export class SystemScene implements IGameScene {
     this.starCoronaMesh.isPickable = false;
 
     if (this.starKind !== "black-hole") {
-      this.glowLayer.addIncludedOnlyMesh(this.starMesh);
-      this.glowLayer.addIncludedOnlyMesh(this.starDetailMesh);
-      if (this.starCoronaAlpha > 0.01) {
+      // Avoid adding the base star mesh to the glow layer — the glow render
+      // pass can cause emissive effect to appear over occluders. Only include
+      // detail/corona meshes which will be depth-checked.
+      // this.glowLayer.addIncludedOnlyMesh(this.starMesh);
+      if (this.starDetailMesh) {
+        // Ensure the detail material participates in depth tests to avoid
+        // drawing over nearer occluders like planets.
+        const detMat = this.starDetailMesh.material as StandardMaterial | null;
+        if (detMat) {
+          detMat.needDepthPrePass = true as any;
+          // Force write to depth buffer so occluders hide the detail when needed
+          (detMat as any).forceDepthWrite = true;
+        }
+        this.glowLayer.addIncludedOnlyMesh(this.starDetailMesh);
+      }
+      if (this.starCoronaMesh && this.starCoronaAlpha > 0.01) {
+        const coronaMat = this.starCoronaMesh.material as StandardMaterial | null;
+        if (coronaMat) {
+          coronaMat.needDepthPrePass = true as any;
+          (coronaMat as any).forceDepthWrite = true;
+        }
         this.glowLayer.addIncludedOnlyMesh(this.starCoronaMesh);
       }
     }
@@ -870,9 +1044,19 @@ export class SystemScene implements IGameScene {
         ? this.star.system.planets
         : this.createFallbackPlanets(this.starKind);
 
+    // Mark one random planet as habited if this is a starting owned system
+    const isOwnedSystem = this.homeSystemStarIds.has(this.star.id);
+    if (isOwnedSystem && planets.length > 0) {
+      const habitedIndex = Math.floor(Math.random() * planets.length);
+      planets[habitedIndex].isHabited = true;
+    }
+
     for (let i = 0; i < planets.length; i++) {
       this.createPlanet(i, planets[i]);
     }
+
+    // Create star label
+    this.starLabelMesh = this.createStarLabel();
   }
 
   private async createPlayerShipIfPresent(): Promise<void> {
@@ -1339,13 +1523,33 @@ export class SystemScene implements IGameScene {
     );
 
     const mat = new StandardMaterial(`systemPlanetMat_${index}`, this.scene);
-    mat.diffuseTexture = new Texture(texturePath, this.scene);
+    const planetTexture = new Texture(texturePath, this.scene);
+    planetTexture.hasAlpha = false;
+    mat.diffuseTexture = planetTexture;
     mat.specularColor = new Color3(0.12, 0.12, 0.12);
-    mat.emissiveColor = this.planetNightLift;
+    // Prevent planets from contributing visible glow but allow them to
+    // occlude the star's glow by including them in the GlowLayer.
+    mat.emissiveColor = Color3.Black();
+    mat.alpha = 1.0;
+    mat.useAlphaFromDiffuseTexture = false;
+    mat.transparencyMode = Material.MATERIAL_OPAQUE;
+    mat.forceDepthWrite = true;
     mesh.material = mat;
     mesh.isPickable = false;
 
+    // Add planet as an occluder to the glow pass so the star's bloom doesn't
+    // composite over planets. Planets have near-zero emissive above.
+    if (this.glowLayer) {
+      this.glowLayer.addIncludedOnlyMesh(mesh as Mesh);
+    }
+
     this.createOrbitRing(index, orbitRadius);
+    this.planetMeshes.push(mesh);
+    this.planetDiameters.push(diameter);
+    
+    // Create planet label
+    const labelMesh = this.createPlanetLabel(index, planet, orbitRadius);
+    this.planetLabelMeshes.push(labelMesh);
 
     this.orbitSystem.addBody({
       mesh,
@@ -1385,23 +1589,204 @@ export class SystemScene implements IGameScene {
     this.orbitRings.push(ring);
   }
 
+  private createPlanetLabel(index: number, planet: PlanetConfig, orbitRadius: number): Mesh {
+    const labelTextureSize = 2048;
+    const labelTexture = new DynamicTexture(`planetLabel_${index}`, labelTextureSize, this.scene);
+    const ctx = labelTexture.getContext() as unknown as CanvasRenderingContext2D;
+
+    const isHabited = planet.isHabited ?? false;
+
+    // For non-habited planets, just draw text directly (no background)
+    if (!isHabited) {
+      // Draw star name
+      ctx.font = "bold 90px 'Orbitron', 'Rajdhani', sans-serif";
+      ctx.fillStyle = "rgba(150, 180, 220, 0.8)";
+      ctx.textAlign = "center";
+      ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 2;
+      ctx.fillText(this.star.name, labelTextureSize / 2, 200);
+
+      // Draw planet name
+      const planetFontSize = 210;
+      ctx.font = `bold ${planetFontSize}px 'Orbitron', 'Rajdhani', sans-serif`;
+      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+      ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 2;
+      ctx.fillText(planet.name, labelTextureSize / 2, 500);
+    } else {
+      // For habited planets, draw a tight card around the text
+      // Measure text first to size the card appropriately
+      ctx.font = "bold 90px 'Orbitron', 'Rajdhani', sans-serif";
+      const starNameMetrics = ctx.measureText(this.star.name);
+      
+      ctx.font = "bold 210px 'Orbitron', 'Rajdhani', sans-serif";
+      const planetNameMetrics = ctx.measureText(planet.name);
+      
+      const maxWidth = Math.max(starNameMetrics.width, planetNameMetrics.width);
+      const padding = 40;
+      const cardRadius = 20;
+      const bgX = (labelTextureSize - maxWidth) / 2 - padding;
+      const bgY = 80;
+      const bgW = maxWidth + padding * 2;
+      const bgH = 480;
+
+      // Create gradient background for card
+      const gradient = ctx.createLinearGradient(0, bgY, 0, bgY + bgH);
+      gradient.addColorStop(0, "rgba(45, 85, 140, 0.95)");
+      gradient.addColorStop(1, "rgba(25, 55, 100, 0.95)");
+      
+      ctx.fillStyle = gradient;
+      ctx.strokeStyle = "rgba(150, 200, 255, 0.6)";
+      ctx.lineWidth = 3;
+      
+      // Draw rounded rectangle for card
+      ctx.beginPath();
+      ctx.moveTo(bgX + cardRadius, bgY);
+      ctx.lineTo(bgX + bgW - cardRadius, bgY);
+      ctx.quadraticCurveTo(bgX + bgW, bgY, bgX + bgW, bgY + cardRadius);
+      ctx.lineTo(bgX + bgW, bgY + bgH - cardRadius);
+      ctx.quadraticCurveTo(bgX + bgW, bgY + bgH, bgX + bgW - cardRadius, bgY + bgH);
+      ctx.lineTo(bgX + cardRadius, bgY + bgH);
+      ctx.quadraticCurveTo(bgX, bgY + bgH, bgX, bgY + bgH - cardRadius);
+      ctx.lineTo(bgX, bgY + cardRadius);
+      ctx.quadraticCurveTo(bgX, bgY, bgX + cardRadius, bgY);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      
+      // Draw top accent bar
+      ctx.fillStyle = "rgba(100, 180, 255, 0.4)";
+      ctx.fillRect(bgX + cardRadius, bgY, bgW - cardRadius * 2, 8);
+
+      // Draw star name
+      ctx.font = "bold 90px 'Orbitron', 'Rajdhani', sans-serif";
+      ctx.fillStyle = "rgba(150, 180, 220, 0.9)";
+      ctx.textAlign = "center";
+      ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 2;
+      ctx.fillText(this.star.name, labelTextureSize / 2, 200);
+
+      // Draw planet name
+      const planetFontSize = 210;
+      ctx.font = `bold ${planetFontSize}px 'Orbitron', 'Rajdhani', sans-serif`;
+      ctx.fillStyle = "rgba(255, 255, 255, 0.98)";
+      ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 2;
+      ctx.fillText(planet.name, labelTextureSize / 2, 500);
+      
+      // Draw habited indicator
+      ctx.font = "bold 100px 'Orbitron', 'Rajdhani', sans-serif";
+      ctx.fillStyle = "rgba(100, 255, 100, 0.95)";
+      ctx.fillText("● HABITED ●", labelTextureSize / 2, 650);
+    }
+
+    labelTexture.update(true);
+
+    // Create material
+    const material = new StandardMaterial(`planetLabelMat_${index}`, this.scene);
+    material.diffuseTexture = labelTexture;
+    material.emissiveTexture = labelTexture;
+    material.opacityTexture = labelTexture;
+    material.diffuseColor = Color3.White();
+    material.emissiveColor = Color3.White();
+    material.specularColor = Color3.Black();
+    material.disableLighting = true;
+    material.backFaceCulling = false;
+    material.useAlphaFromDiffuseTexture = true;
+    material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    material.alpha = 1.0;
+    
+
+    // Create plane mesh - increased size for larger text
+    const labelMesh = MeshBuilder.CreatePlane(
+      `planetLabel_mesh_${index}`,
+      { width: 4.8, height: 2.4 },
+      this.scene,
+    );
+    
+    // Position label (will be updated each frame)
+    labelMesh.position = new Vector3(0, 0, 0);
+    labelMesh.material = material;
+    labelMesh.isPickable = false;
+    labelMesh.renderingGroupId = 1;
+    labelMesh.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    
+    return labelMesh;
+  }
+
+  private createStarLabel(): Mesh {
+    const labelTextureSize = 2048;
+    const labelTexture = new DynamicTexture("starLabel", labelTextureSize, this.scene);
+    const ctx = labelTexture.getContext() as unknown as CanvasRenderingContext2D;
+
+    // Draw just the star name - no card for stars
+    ctx.font = "bold 90px 'Orbitron', 'Rajdhani', sans-serif";
+    ctx.fillStyle = "rgba(255, 200, 100, 0.9)";
+    ctx.textAlign = "center";
+    ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 2;
+    ctx.fillText(this.star.name, labelTextureSize / 2, 300);
+
+    labelTexture.update(true);
+
+    // Create material
+    const material = new StandardMaterial("starLabelMat", this.scene);
+    material.diffuseTexture = labelTexture;
+    material.emissiveTexture = labelTexture;
+    material.opacityTexture = labelTexture;
+    material.diffuseColor = Color3.White();
+    material.emissiveColor = Color3.White();
+    material.specularColor = Color3.Black();
+    material.disableLighting = true;
+    material.backFaceCulling = false;
+    material.useAlphaFromDiffuseTexture = true;
+    material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+    material.alpha = 1.0;
+    
+
+    // Create plane mesh for star label
+    const labelMesh = MeshBuilder.CreatePlane(
+      "starLabel_mesh",
+      { width: 4.8, height: 1.2 },
+      this.scene,
+    );
+    
+    labelMesh.position = new Vector3(0, this.starDiameter + 3, 0);
+    labelMesh.material = material;
+    labelMesh.isPickable = false;
+    labelMesh.renderingGroupId = 1;
+    labelMesh.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    
+    return labelMesh;
+  }
+
   private createFallbackPlanets(kind: StarVisualKind): PlanetConfig[] {
     if (kind === "black-hole") {
       return [
-        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32 },
-        { type: PlanetType.Methane, textureVariation: 0, diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2 },
+        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32, name: `${this.star.name} I` },
+        { type: PlanetType.Methane, textureVariation: 0, diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2, name: `${this.star.name} II` },
       ];
     }
     if (kind === "neutron-star" || kind === "pulsar") {
       return [
-        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62 },
-        { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46 },
+        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62, name: `${this.star.name} I` },
+        { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46, name: `${this.star.name} II` },
       ];
     }
     return [
-      { type: PlanetType.Barren, textureVariation: 0, diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55 },
-      { type: PlanetType.Gaseous, textureVariation: 0, diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24 },
-      { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4 },
+      { type: PlanetType.Barren, textureVariation: 0, diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55, name: `${this.star.name} I` },
+      { type: PlanetType.Gaseous, textureVariation: 0, diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24, name: `${this.star.name} II` },
+      { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4, name: `${this.star.name} III` },
     ];
   }
 
