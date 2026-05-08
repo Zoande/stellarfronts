@@ -32,7 +32,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   const perspective: GalaxyPerspective = options.perspective ?? { mode: "observer" };
 
-  reportProgress(0.05, "Generating galaxy star map");
+  reportProgress(0.05, "Charting galaxy star map");
 
   const cfg = GALAXY_MAP;
   const initialStars = generateStarMap(
@@ -44,11 +44,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     cfg.shape,
   );
 
-  reportProgress(0.2, "Building factions and ownership data");
+  reportProgress(0.2, "Mapping factions and ownership");
 
   const factions: FactionInfo[] = buildFactions(initialStars, cfg);
 
-  reportProgress(0.35, "Initializing renderer");
+  reportProgress(0.35, "Initializing galaxy renderer");
 
   const mgr = new SceneManager();
   const engine = await mgr.initEngine(canvas);
@@ -185,7 +185,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
     applyVisualToggles();
     updateHud();
-    reportProgress(1, "Galaxy view is ready");
+    reportProgress(1, "Galaxy command is ready");
   }
 
   async function openSystemView(star: StarData): Promise<void> {
@@ -236,7 +236,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     },
   });
 
-  reportProgress(0.5, "Starting galaxy boot sequence");
+  reportProgress(0.5, "Starting galaxy command sequence");
   await openGalaxyView();
 
   console.log("StellarFronts game running");

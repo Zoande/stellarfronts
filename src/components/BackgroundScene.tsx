@@ -580,13 +580,14 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
     const animate = () => {
       const dt = engine.getDeltaTime() / 1000;
       const rotAmount = dt * 0.035;
+      const shipTurnAmount = dt * 0.09;
       
       starbaseRoot.rotate(Axis.Y, rotAmount, Space.LOCAL);
       starbaseRoot.position.y = starbaseBaseY;
 
       // Rotate each ship in place
       for (const shipRoot of shipRoots) {
-        shipRoot.rotate(Axis.Y, rotAmount, Space.LOCAL);
+        shipRoot.rotate(Axis.Y, shipTurnAmount, Space.LOCAL);
       }
 
       scene.render();

@@ -17,7 +17,7 @@ export default function GamePage({ username, selectedPerspective }: GamePageProp
   const [showBootLoading, setShowBootLoading] = useState(false);
   const [bootError, setBootError] = useState('');
   const [bootProgress, setBootProgress] = useState(0);
-  const [bootDetail, setBootDetail] = useState('Preparing galaxy boot');
+  const [bootDetail, setBootDetail] = useState('Preparing galaxy map');
 
   const clearBootHideTimer = () => {
     if (bootHideTimerRef.current !== null) {
@@ -30,24 +30,21 @@ export default function GamePage({ username, selectedPerspective }: GamePageProp
     if (bootedRef.current || !containerRef.current) return;
 
     let cancelled = false;
+    let bootFailed = false;
     clearBootHideTimer();
     bootStartedAtRef.current = window.performance.now();
     setIsBooting(true);
     setShowBootLoading(true);
     setBootError('');
     setBootProgress(0);
-    setBootDetail('Preparing galaxy boot');
+    setBootDetail('Preparing galaxy map');
 
-    const hideBootLoading = () => {
-      const minimumVisibleMs = 1200;
-      const elapsed = window.performance.now() - bootStartedAtRef.current;
-      const remaining = Math.max(0, minimumVisibleMs - elapsed);
-
+    const hideBootLoading = (delayMs = 500) => {
       clearBootHideTimer();
       bootHideTimerRef.current = window.setTimeout(() => {
         if (cancelled) return;
         setIsBooting(false);
-      }, remaining);
+      }, delayMs);
     };
 
     import('../game/boot')
@@ -64,18 +61,20 @@ export default function GamePage({ username, selectedPerspective }: GamePageProp
         })
           .catch((error: unknown) => {
             if (cancelled) return;
+            bootFailed = true;
             setBootError(error instanceof Error ? error.message : 'Failed to start game');
             bootedRef.current = false;
-            hideBootLoading();
+            hideBootLoading(0);
           })
           .finally(() => {
-            if (!cancelled) hideBootLoading();
+            if (!cancelled && !bootFailed) hideBootLoading(500);
           });
       })
       .catch((error: unknown) => {
         if (cancelled) return;
+        bootFailed = true;
         setBootError(error instanceof Error ? error.message : 'Failed to load game boot module');
-        hideBootLoading();
+        hideBootLoading(0);
       });
 
     return () => {
@@ -90,8 +89,8 @@ export default function GamePage({ username, selectedPerspective }: GamePageProp
       {showBootLoading && (
         <LoadingScreen
           theme="game"
-          subtitle="Galaxy Boot"
-          title={`Starting ${selectedPerspective?.mode === 'observer' ? 'Observer' : 'Faction'} view`}
+          subtitle="Galaxy Command"
+          title={`Entering ${selectedPerspective?.mode === 'observer' ? 'Observer' : 'Faction'} View`}
           progress={bootProgress}
           detail={bootDetail}
           isVisible={isBooting}
