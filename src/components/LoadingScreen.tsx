@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import '../styles/LoadingScreen.css';
 
 interface LoadingScreenProps {
@@ -6,6 +7,10 @@ interface LoadingScreenProps {
   detail: string;
   progress: number;
   theme?: 'auth' | 'game';
+  isVisible?: boolean;
+  onHidden?: () => void;
+  zIndex?: number;
+  exitDurationMs?: number;
 }
 
 export function LoadingScreen({
@@ -14,11 +19,40 @@ export function LoadingScreen({
   detail,
   progress,
   theme = 'auth',
+  isVisible = true,
+  onHidden,
+  zIndex,
+  exitDurationMs = 520,
 }: LoadingScreenProps) {
   const clampedProgress = Math.max(0, Math.min(100, progress));
+  const [shouldRender, setShouldRender] = useState(true);
+
+  useEffect(() => {
+    if (isVisible) {
+      setShouldRender(true);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setShouldRender(false);
+      onHidden?.();
+    }, exitDurationMs);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [exitDurationMs, isVisible, onHidden]);
+
+  if (!shouldRender) {
+    return null;
+  }
 
   return (
-    <div className={`loading-screen loading-screen--${theme}`}>
+    <div
+      className={`loading-screen loading-screen--${theme} ${isVisible ? 'loading-screen--visible' : 'loading-screen--exiting'}`}
+      style={zIndex !== undefined ? { zIndex } : undefined}
+      aria-hidden={!isVisible}
+    >
       <div className="loading-screen__backdrop">
         <div className="loading-screen__orb loading-screen__orb--one" />
         <div className="loading-screen__orb loading-screen__orb--two" />

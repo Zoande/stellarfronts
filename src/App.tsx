@@ -20,6 +20,7 @@ function App() {
   const [authLoadingDetail, setAuthLoadingDetail] = useState('Preparing auth assets');
   const [authAssetsReady, setAuthAssetsReady] = useState(false);
   const [authBackgroundReady, setAuthBackgroundReady] = useState(false);
+  const [showAuthStartupLoading, setShowAuthStartupLoading] = useState(true);
   const [auth, setAuth] = useState<AuthState>({
     isLoggedIn: false,
     username: '',
@@ -54,6 +55,10 @@ function App() {
     setAuthBackgroundReady(true);
     setAuthLoadingProgress(100);
     setAuthLoadingDetail('Login background is ready');
+  }, []);
+
+  const handleAuthStartupLoadingHidden = useCallback(() => {
+    setShowAuthStartupLoading(false);
   }, []);
 
   const handleLoginSuccess = (username: string) => {
@@ -101,18 +106,6 @@ function App() {
     }));
   };
 
-  if (!authAssetsReady) {
-    return (
-      <LoadingScreen
-        theme="auth"
-        subtitle="Startup"
-        title="Loading login environment"
-        progress={authLoadingProgress}
-        detail={authLoadingDetail}
-      />
-    );
-  }
-
   const isGameRoute = typeof window !== 'undefined' && window.location.pathname === '/game';
 
   const authScreen = auth.mode === 'signup'
@@ -159,13 +152,16 @@ function App() {
           onReady={handleAuthBackgroundReady}
         />
 
-        {!authBackgroundReady && (
+        {showAuthStartupLoading && (
           <LoadingScreen
             theme="auth"
             subtitle="Startup"
-            title="Preparing login scene"
+            title="Loading login environment"
             progress={authLoadingProgress}
             detail={authLoadingDetail}
+            isVisible={!authBackgroundReady}
+            onHidden={handleAuthStartupLoadingHidden}
+            zIndex={220}
           />
         )}
 

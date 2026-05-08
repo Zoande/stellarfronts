@@ -14,6 +14,7 @@ export default function GamePage({ username }: GamePageProps) {
   const bootedRef = useRef(false);
   const [selectedPerspective, setSelectedPerspective] = useState<GalaxyPerspective | null>(null);
   const [isBooting, setIsBooting] = useState(false);
+  const [showBootLoading, setShowBootLoading] = useState(false);
   const [bootError, setBootError] = useState('');
   const [bootProgress, setBootProgress] = useState(0);
   const [bootDetail, setBootDetail] = useState('Preparing galaxy boot');
@@ -36,6 +37,7 @@ export default function GamePage({ username }: GamePageProps) {
 
     let cancelled = false;
     setIsBooting(true);
+    setShowBootLoading(true);
     setBootError('');
     setBootProgress(0);
     setBootDetail('Preparing galaxy boot');
@@ -112,13 +114,16 @@ export default function GamePage({ username }: GamePageProps) {
           </div>
         </div>
       )}
-      {isBooting && (
+      {showBootLoading && (
         <LoadingScreen
           theme="game"
           subtitle="Galaxy Boot"
           title={`Starting ${selectedPerspective?.mode === 'observer' ? 'Observer' : 'Faction'} view`}
           progress={bootProgress}
           detail={bootDetail}
+          isVisible={isBooting}
+          onHidden={() => setShowBootLoading(false)}
+          zIndex={210}
         />
       )}
       {bootError && (
