@@ -155,10 +155,13 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   async function openGalaxyView(): Promise<void> {
     reportProgress(0.6, "Loading galaxy scene");
 
+    const factionHomeStarIds = factions.map((faction) => faction.homeStarId);
     const options: GalaxySceneOptions = {
       factions,
       perspective,
       playerFactionId: perspective.mode === "faction" ? perspective.factionId : 0,
+      playerShipSystemIds: factionHomeStarIds,
+      starbaseSystemIds: factionHomeStarIds,
       visibilityJumps: FOG_OF_WAR_MAX_JUMPS,
     };
     if (cachedGalaxyStars && cachedGalaxyStars.length > 0) {
@@ -201,12 +204,17 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
     await switchScene(() => {
       const actualStarCount = cachedGalaxyStars ? cachedGalaxyStars.length : 500;
+      const factionHomeStarIds = factions.map((faction) => faction.homeStarId);
       const system = new SystemScene(
         engine,
         star,
         () => openGalaxyView(),
         actualStarCount,
-        { homeSystemStarIds: factions.map((faction) => faction.homeStarId) },
+        {
+          homeSystemStarIds: factionHomeStarIds,
+          playerShipSystemIds: factionHomeStarIds,
+          starbaseSystemIds: factionHomeStarIds,
+        },
       );
       activeSystemScene = system;
       currentSystemStar = star;

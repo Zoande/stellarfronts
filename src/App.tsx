@@ -300,8 +300,13 @@ function App() {
   }
 
   if (homeTransition.isActive) {
+    const shouldRenderHomeBehindLoader = homeTransition.progress >= 82;
+
     return (
       <Router>
+        {shouldRenderHomeBehindLoader && (
+          <HomePage username={homeTransition.username} onContinuePlaying={handleStartGameFromHome} />
+        )}
         <LoadingScreen
           theme="auth"
           subtitle="Command Link"

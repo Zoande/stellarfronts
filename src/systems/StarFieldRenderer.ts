@@ -31,6 +31,11 @@ import { STAR_TYPES, StarType } from "../data/StarMap";
 import type { StarData } from "../data/StarMap";
 import type { GalaxyShipTransit } from "../game/GameplayTypes";
 
+export interface ShipIconStyle {
+  starId: number;
+  color: [number, number, number];
+}
+
 const SPRITE_BLEND_ADD = 1; // ALPHA_ADD
 const STAR_TEXTURE_SIZE = 128;
 
@@ -253,10 +258,12 @@ export class StarFieldRenderer {
   private selectionGlowLayer: GlowLayer;
   private selectionMarkerStarId = -1;
   private playerShipIconManager: SpriteManager;
-  private playerShipIconSprite: Sprite | null = null;
+  private playerShipIconSprites: Sprite[] = [];
   private starbaseIconManager: SpriteManager;
   private starbaseIconSprites: Sprite[] = [];
   private playerShipStarId = -1;
+  private playerShipSystemIds = new Set<number>();
+  private playerShipIconColors = new Map<number, Color4>();
   private playerShipTransit: GalaxyShipTransit | null = null;
   private starbaseSystemIds = new Set<number>();
   private highlightedStarIds = new Set<number>();
@@ -281,16 +288,23 @@ export class StarFieldRenderer {
   private elapsedTime = 0;
   private starsVisible = true;
   private bloomEnabled = true;
-  private onIconClick?: (type: "ship" | "starbase", shiftKey: boolean) => void;
+  private onIconClick?: (type: "ship" | "starbase", shiftKey: boolean, starId?: number) => void;
 
   constructor(
     scene: Scene,
     stars: StarData[],
     playerShipStarId = -1,
     starbaseSystemIds: number[] = [],
+    playerShipSystemIds: number[] = [],
+    shipIconStyles: ShipIconStyle[] = [],
   ) {
     this.scene = scene;
     this.playerShipStarId = playerShipStarId;
+    this.playerShipSystemIds = new Set(playerShipSystemIds);
+    if (playerShipStarId >= 0) {
+      this.playerShipSystemIds.add(playerShipStarId);
+    }
+    this.setShipIconStyles(shipIconStyles);
     this.starbaseSystemIds = new Set(starbaseSystemIds);
     const haloTexture = createRadialTextureDataURL(
       STAR_TEXTURE_SIZE,
@@ -346,7 +360,7 @@ export class StarFieldRenderer {
     this.playerShipIconManager = new SpriteManager(
       "playerShipIconSprites",
       "/textures/own_ship_icon.png",
-      1,
+      Math.max(1, stars.length),
       {
         width: PLAYER_SHIP_ICON_TEXTURE_SIZE,
         height: PLAYER_SHIP_ICON_TEXTURE_SIZE,
@@ -355,9 +369,12 @@ export class StarFieldRenderer {
     );
     this.playerShipIconManager.isPickable = false;
     this.playerShipIconManager.fogEnabled = false;
-    this.playerShipIconSprite = new Sprite("player_ship_icon", this.playerShipIconManager);
-    this.playerShipIconSprite.isVisible = false;
-    this.playerShipIconSprite.position.y = PLAYER_SHIP_ICON_Y;
+    for (let i = 0; i < stars.length; i++) {
+      const sprite = new Sprite(`player_ship_icon_${i}`, this.playerShipIconManager);
+      sprite.isVisible = false;
+      sprite.position.y = PLAYER_SHIP_ICON_Y;
+      this.playerShipIconSprites.push(sprite);
+    }
 
     this.starbaseIconManager = new SpriteManager(
       "starbaseIconSprites",
@@ -565,6 +582,7 @@ export class StarFieldRenderer {
       if (labelVisible && this.scene.activeCamera) {
         const cameraPosition = this.scene.activeCamera.position;
         labelMesh.lookAt(cameraPosition);
+        labelMesh.rotation.y += Math.PI;
       }
     }
   }
@@ -583,8 +601,9 @@ export class StarFieldRenderer {
     const ctx = labelTexture.getContext() as unknown as CanvasRenderingContext2D;
     ctx.clearRect(0, 0, STAR_LABEL_TEXTURE_WIDTH, STAR_LABEL_TEXTURE_HEIGHT);
 
-    ctx.direction = hasStarbase ? "rtl" : "ltr";
-    ctx.textAlign = hasStarbase ? "right" : "center";
+    const labelText = star.name;
+    ctx.direction = "rtl";
+    ctx.textAlign = "right";
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
 
@@ -612,11 +631,11 @@ export class StarFieldRenderer {
     let fontSize = STAR_LABEL_FONT_SIZE * (hasStarbase ? 1.5 : 1);
     do {
       ctx.font = `700 ${fontSize}px ${STAR_LABEL_FONT_FAMILY}`;
-      if (ctx.measureText(star.name).width <= maxTextWidth) break;
+      if (ctx.measureText(labelText).width <= maxTextWidth) break;
       fontSize -= 4;
     } while (fontSize > STAR_LABEL_MIN_FONT_SIZE);
 
-    const x = hasStarbase ? STAR_LABEL_TEXTURE_WIDTH - 82 : STAR_LABEL_TEXTURE_WIDTH / 2;
+    const x = hasStarbase ? STAR_LABEL_TEXTURE_WIDTH - 82 : STAR_LABEL_TEXTURE_WIDTH - STAR_LABEL_TEXTURE_PADDING_X;
     const y = STAR_LABEL_TEXTURE_HEIGHT / 2;
     ctx.shadowColor = "rgba(0, 0, 0, 0.85)";
     ctx.shadowBlur = 10;
@@ -624,9 +643,9 @@ export class StarFieldRenderer {
     ctx.shadowOffsetY = 2;
     ctx.strokeStyle = "rgba(0, 0, 0, 0.95)";
     ctx.lineWidth = Math.max(6, fontSize * 0.12);
-    ctx.strokeText(star.name, x, y);
+    ctx.strokeText(labelText, x, y);
     ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
-    ctx.fillText(star.name, x, y);
+    ctx.fillText(labelText, x, y);
     
     // Draw starbase icon if present
     if (hasStarbase) {
@@ -708,7 +727,27 @@ export class StarFieldRenderer {
 
   setPlayerShipState(starId: number, transit: GalaxyShipTransit | null = null): void {
     this.playerShipStarId = starId;
+    if (starId >= 0) {
+      this.playerShipSystemIds.add(starId);
+    }
     this.playerShipTransit = transit;
+  }
+
+  setPlayerShipSystemIds(starIds: Iterable<number>): void {
+    this.playerShipSystemIds = new Set(starIds);
+    if (this.playerShipStarId >= 0) {
+      this.playerShipSystemIds.add(this.playerShipStarId);
+    }
+  }
+
+  setShipIconStyles(styles: Iterable<ShipIconStyle>): void {
+    this.playerShipIconColors.clear();
+    for (const style of styles) {
+      this.playerShipIconColors.set(
+        style.starId,
+        new Color4(style.color[0], style.color[1], style.color[2], 1),
+      );
+    }
   }
 
   setStarbaseSystemIds(starIds: Iterable<number>): void {
@@ -974,32 +1013,63 @@ export class StarFieldRenderer {
   }
 
   private applyPlayerShipIconVisual(): void {
-    const sprite = this.playerShipIconSprite;
-    if (!sprite) return;
-
-    const shipPosition = this.getPlayerShipGalaxyPosition();
-    const hasPlayerShip =
-      this.starsVisible
-      && !!shipPosition
-      && (this.playerShipTransit
-        ? this.isStarRevealed(this.playerShipTransit.fromStarId)
-          || this.isStarRevealed(this.playerShipTransit.toStarId)
-        : this.isStarRevealed(this.playerShipStarId));
-
-    if (!hasPlayerShip || !shipPosition) {
+    for (const sprite of this.playerShipIconSprites) {
       sprite.isVisible = false;
-      return;
+    }
+    if (!this.starsVisible) return;
+
+    if (this.playerShipTransit) {
+      const sprite = this.playerShipIconSprites[this.playerShipStarId] ?? this.playerShipIconSprites[0];
+      const shipPosition = this.getPlayerShipGalaxyPosition();
+      const hasTransitShip =
+        !!sprite
+        && !!shipPosition
+        && (this.isStarRevealed(this.playerShipTransit.fromStarId)
+          || this.isStarRevealed(this.playerShipTransit.toStarId));
+
+      if (hasTransitShip && shipPosition) {
+        sprite.color = this.playerShipIconColors.get(this.playerShipStarId) ?? new Color4(1, 1, 1, 1);
+        sprite.position.set(
+          shipPosition.x + PLAYER_SHIP_ICON_OFFSET_X,
+          PLAYER_SHIP_ICON_Y,
+          shipPosition.z + PLAYER_SHIP_ICON_OFFSET_Z,
+        );
+        sprite.width = PLAYER_SHIP_ICON_MAX_SIZE;
+        sprite.height = PLAYER_SHIP_ICON_MAX_SIZE;
+        sprite.angle = Math.sin(this.elapsedTime * 0.9) * 0.06;
+        sprite.isVisible = true;
+      }
     }
 
-    sprite.position.set(
-      shipPosition.x + PLAYER_SHIP_ICON_OFFSET_X,
-      PLAYER_SHIP_ICON_Y,
-      shipPosition.z + PLAYER_SHIP_ICON_OFFSET_Z,
-    );
-    sprite.width = PLAYER_SHIP_ICON_MAX_SIZE;
-    sprite.height = PLAYER_SHIP_ICON_MAX_SIZE;
-    sprite.angle = Math.sin(this.elapsedTime * 0.9) * 0.06;
-    sprite.isVisible = true;
+    for (const starId of this.playerShipSystemIds) {
+      if (starId < 0 || starId >= this.starPositions.length) continue;
+      if (!this.isStarRevealed(starId)) continue;
+
+      const sprite = this.playerShipIconSprites[starId];
+      const pos = this.starPositions[starId];
+      if (!sprite || !pos) continue;
+      if (this.playerShipTransit && sprite.isVisible) continue;
+
+      const pulse = 0.5 + 0.5 * Math.sin(
+        this.elapsedTime * PLAYER_SHIP_ICON_PULSE_SPEED + starId * 0.37,
+      );
+      const size = mix(
+        PLAYER_SHIP_ICON_MIN_SIZE,
+        PLAYER_SHIP_ICON_MAX_SIZE,
+        1 - PLAYER_SHIP_ICON_PULSE_SCALE + pulse * PLAYER_SHIP_ICON_PULSE_SCALE,
+      );
+
+      sprite.position.set(
+        pos.x + PLAYER_SHIP_ICON_OFFSET_X,
+        PLAYER_SHIP_ICON_Y,
+        pos.z + PLAYER_SHIP_ICON_OFFSET_Z,
+      );
+      sprite.color = this.playerShipIconColors.get(starId) ?? new Color4(1, 1, 1, 1);
+      sprite.width = size;
+      sprite.height = size;
+      sprite.angle = Math.sin(this.elapsedTime * 0.9 + starId * 0.37) * 0.06;
+      sprite.isVisible = true;
+    }
   }
 
   private applyStarbaseIconVisual(): void {
@@ -1057,15 +1127,18 @@ export class StarFieldRenderer {
     this.starPositions = [];
     this.starLabelMeshes = [];
     this.starNames = [];
-    this.playerShipIconSprite = null;
+    this.playerShipIconSprites = [];
     this.starbaseIconSprites = [];
+    this.playerShipSystemIds.clear();
     this.starbaseSystemIds.clear();
     this.highlightedStarIds.clear();
     this.targetMarkerMeshes = [];
     this.targetMarkerRoots = [];
   }
 
-  public setIconClickCallback(callback: (type: "ship" | "starbase", shiftKey: boolean) => void): void {
+  public setIconClickCallback(
+    callback: (type: "ship" | "starbase", shiftKey: boolean, starId?: number) => void,
+  ): void {
     this.onIconClick = callback;
   }
 
@@ -1088,23 +1161,24 @@ export class StarFieldRenderer {
 
     if (!ray) return false;
 
-    const shipSprite = this.playerShipIconSprite;
-    if (shipSprite) {
+    for (let starId = 0; starId < this.playerShipIconSprites.length; starId++) {
+      const shipSprite = this.playerShipIconSprites[starId];
       const shipHitDist = this.distanceFromRayToPoint(ray, shipSprite.position);
       console.log("Ship distance from ray:", shipHitDist, "visible:", shipSprite.isVisible);
       if (shipHitDist < 5 && shipSprite.isVisible) {
         console.log("Ship icon clicked!");
-        this.onIconClick("ship", shiftKey);
+        this.onIconClick("ship", shiftKey, starId);
         return true;
       }
     }
 
-    for (const sprite of this.starbaseIconSprites) {
+    for (let starId = 0; starId < this.starbaseIconSprites.length; starId++) {
+      const sprite = this.starbaseIconSprites[starId];
       const starbaseHitDist = this.distanceFromRayToPoint(ray, sprite.position);
       console.log("Starbase distance from ray:", starbaseHitDist, "visible:", sprite.isVisible);
       if (starbaseHitDist < 5 && sprite.isVisible) {
         console.log("Starbase icon clicked!");
-        this.onIconClick("starbase", shiftKey);
+        this.onIconClick("starbase", shiftKey, starId);
         return true;
       }
     }

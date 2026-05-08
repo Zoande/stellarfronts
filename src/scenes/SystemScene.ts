@@ -39,6 +39,7 @@ type ExitSystemHandler = () => void | Promise<void>;
 export interface SystemSceneOptions {
   homeSystemStarIds?: number[];
   playerShipStarId?: number;
+  playerShipSystemIds?: number[];
   starbaseSystemIds?: number[];
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
@@ -63,6 +64,7 @@ export class SystemScene implements IGameScene {
   private starCount: number;  // Track actual star count for player ship detection
   private homeSystemStarIds: Set<number>;
   private playerShipStarId: number;
+  private playerShipSystemIds: Set<number>;
   private starbaseSystemIds: Set<number>;
   private shipTransit: GalaxyShipTransit | null;
   private hyperlaneExits: HyperlaneExitPoint[];
@@ -158,6 +160,11 @@ export class SystemScene implements IGameScene {
     this.starCount = starCount;
     this.homeSystemStarIds = new Set(options.homeSystemStarIds ?? []);
     this.playerShipStarId = options.playerShipStarId ?? (options.homeSystemStarIds?.[0] ?? -1);
+    this.playerShipSystemIds = new Set(
+      options.playerShipSystemIds
+        ?? options.homeSystemStarIds
+        ?? (this.playerShipStarId >= 0 ? [this.playerShipStarId] : []),
+    );
     this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
     this.shipTransit = options.shipTransit ?? null;
     this.hyperlaneExits = options.hyperlaneExits ?? [];
@@ -168,6 +175,7 @@ export class SystemScene implements IGameScene {
   }
 
   private hasPlayerShipPresence(): boolean {
+    if (this.playerShipSystemIds.has(this.star.id)) return true;
     if (this.playerShipStarId === this.star.id) return true;
     return !!this.shipTransit
       && (this.shipTransit.fromStarId === this.star.id || this.shipTransit.toStarId === this.star.id);

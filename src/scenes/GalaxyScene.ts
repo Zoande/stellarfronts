@@ -29,6 +29,7 @@ import type { StarData } from "../data/StarMap";
 import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
+import type { ShipIconStyle } from "../systems/StarFieldRenderer";
 import { SelectionPanel } from "../ui/SelectionPanel";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 
@@ -53,6 +54,7 @@ export interface GalaxySceneOptions {
   starOwnership?: number[];
   playerFactionId?: number;
   playerShipStarId?: number;
+  playerShipSystemIds?: Iterable<number>;
   playerShipTransit?: GalaxyShipTransit | null;
   starbaseSystemIds?: Iterable<number>;
   onGameplayFrame?: (deltaTime: number) => void;
@@ -846,9 +848,11 @@ export class GalaxyScene implements IGameScene {
   private explicitVisibleStarIds: Set<number> | null | undefined = undefined;
   private playerFactionId = 0;
   private playerShipStarId = -1;
+  private playerShipSystemIds = new Set<number>();
   private playerShipTransit: GalaxyShipTransit | null = null;
   private starbaseSystemIds = new Set<number>();
   private selectedShip = false;
+  private selectedCommandShipStarId = -1;
   private activeShipAction: ShipAction | null = null;
   private targetableStarIds = new Set<number>();
   private actionMenuElement: HTMLDivElement | null = null;
@@ -917,6 +921,14 @@ export class GalaxyScene implements IGameScene {
       ?? this.factions[this.playerFactionId]?.homeStarId
       ?? this.factions[0]?.homeStarId
       ?? -1;
+    this.playerShipSystemIds = new Set(
+      this.options.playerShipSystemIds
+        ? Array.from(this.options.playerShipSystemIds)
+        : this.factions.map((faction) => faction.homeStarId),
+    );
+    if (this.playerShipStarId >= 0) {
+      this.playerShipSystemIds.add(this.playerShipStarId);
+    }
     this.playerShipTransit = this.options.playerShipTransit ?? null;
     this.starbaseSystemIds = new Set(
       this.options.starbaseSystemIds
@@ -987,6 +999,8 @@ export class GalaxyScene implements IGameScene {
       this.stars,
       this.playerShipStarId,
       Array.from(this.starbaseSystemIds),
+      Array.from(this.playerShipSystemIds),
+      this.getShipIconStyles(),
     );
     this.starField.setVisibleStarIds(this.visibleStarIds);
     this.starField.setPlayerShipState(this.playerShipStarId, this.playerShipTransit);
@@ -994,8 +1008,8 @@ export class GalaxyScene implements IGameScene {
     this.selectionPanel = new SelectionPanel(this.canvas, {
       onShipAction: (action) => this.beginShipAction(action),
     });
-    this.starField.setIconClickCallback((type, shiftKey) => {
-      this.handleIconClick(type, shiftKey);
+    this.starField.setIconClickCallback((type, shiftKey, starId) => {
+      this.handleIconClick(type, shiftKey, starId);
     });
 
     this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
@@ -1357,8 +1371,27 @@ export class GalaxyScene implements IGameScene {
     }
   }
 
+  private getShipOwnerForStarId(starId: number): FactionInfo | null {
+    return this.factions.find((faction) => faction.homeStarId === starId) ?? null;
+  }
+
+  private getShipIconStyles(): ShipIconStyle[] {
+    const styles: ShipIconStyle[] = [];
+    for (const starId of this.playerShipSystemIds) {
+      const owner = this.getShipOwnerForStarId(starId);
+      if (!owner) continue;
+      styles.push({ starId, color: owner.color });
+    }
+    return styles;
+  }
+
+  private isOwnShipOwner(ownerId: number | null): boolean {
+    return ownerId !== null && ownerId === this.playerFactionId;
+  }
+
   private getCurrentCommandOriginStarId(): number {
-    return this.playerShipTransit?.toStarId ?? this.playerShipStarId;
+    return this.playerShipTransit?.toStarId
+      ?? (this.selectedCommandShipStarId >= 0 ? this.selectedCommandShipStarId : this.playerShipStarId);
   }
 
   private getReachableStarIds(action: ShipAction): Set<number> {
@@ -1398,8 +1431,9 @@ export class GalaxyScene implements IGameScene {
   }
 
   private beginShipAction(action: ShipAction): void {
-    if (!this.selectedShip && action !== "attack") {
-      this.selectedShip = true;
+    if (!this.selectedShip || this.selectedCommandShipStarId < 0) {
+      this.clearShipAction();
+      return;
     }
 
     if (action === "attack") {
@@ -1551,24 +1585,44 @@ export class GalaxyScene implements IGameScene {
       });
   }
 
-  private handleIconClick(type: "ship" | "starbase", shiftKey: boolean): void {
+  private handleIconClick(type: "ship" | "starbase", shiftKey: boolean, starId?: number): void {
     if (type === "ship") {
-      this.selectedShip = true;
+      const shipStarId = starId ?? this.playerShipStarId;
+      const owner = this.getShipOwnerForStarId(shipStarId);
+      const ownerId = owner?.id ?? null;
+      const canCommand = this.isOwnShipOwner(ownerId);
+
+      if (canCommand) {
+        this.selectedShip = true;
+        this.selectedCommandShipStarId = shipStarId;
+      } else if (!shiftKey) {
+        this.selectedShip = false;
+        this.selectedCommandShipStarId = -1;
+        this.clearShipAction();
+      }
+
       this.selectionPanel.select(
         {
           type: "ship",
-          name: "Player Vessel",
+          id: String(shipStarId),
+          name: owner ? `${owner.name} Vessel` : "Unidentified Vessel",
           hp: 95,
           maxHp: 100,
           class: "Sovereign-Class",
-          status: this.playerShipTransit ? "Moving" : "Operational",
-          detail: "Select a command, then choose a highlighted system.",
+          status: this.playerShipTransit && shipStarId === this.playerShipStarId ? "Moving" : "Operational",
+          detail: canCommand
+            ? "Select a command, then choose a highlighted system."
+            : "Foreign ship. Command controls unavailable.",
+          ownerName: owner?.name ?? "Unknown",
+          ownerColor: owner?.color,
+          canCommand,
         },
         shiftKey,
       );
     } else if (type === "starbase") {
       if (!shiftKey) {
         this.selectedShip = false;
+        this.selectedCommandShipStarId = -1;
         this.clearShipAction();
       }
       this.selectionPanel.select(
@@ -1643,7 +1697,12 @@ export class GalaxyScene implements IGameScene {
 
   setPlayerShipState(starId: number, transit: GalaxyShipTransit | null): void {
     this.playerShipStarId = starId;
+    if (starId >= 0) {
+      this.playerShipSystemIds.add(starId);
+    }
     this.playerShipTransit = transit;
+    this.starField?.setPlayerShipSystemIds(this.playerShipSystemIds);
+    this.starField?.setShipIconStyles(this.getShipIconStyles());
     this.starField?.setPlayerShipState(starId, transit);
   }
 
