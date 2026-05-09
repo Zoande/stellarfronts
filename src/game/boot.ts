@@ -39,6 +39,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let activeSystemScene: SystemScene | null = null;
   let cachedGalaxyStars: StarData[] | null = snapshot.stars;
   let cachedGalaxyViewState: GalaxyViewState | null = null;
+  let cachedHyperlanePairs: Array<[number, number]> = snapshot.hyperlanes;
   let cachedHyperlaneAdjacency: number[][] = buildHyperlaneAdjacency(snapshot.hyperlanes, snapshot.stars.length);
   let currentSystemStar: StarData | null = null;
   let hud: HudOverlay | null = null;
@@ -55,6 +56,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   const getVisibleStarSet = (): Set<number> | null => (
     snapshot.visibleStarIds ? new Set(snapshot.visibleStarIds) : null
+  );
+  const getKnownStarSet = (): Set<number> | null => (
+    snapshot.knownStarIds ? new Set(snapshot.knownStarIds) : null
   );
 
   const getFactionHomeStarIds = (): number[] => snapshot.factions.map((faction) => faction.homeStarId);
@@ -88,15 +92,23 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     Object.fromEntries(snapshot.ships.map((ship) => [ship.currentStarId, ship.systemPosition]))
   );
 
+  const hyperlaneListsEqual = (a: Array<[number, number]>, b: Array<[number, number]>): boolean => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (a[i][0] !== b[i][0] || a[i][1] !== b[i][1]) return false;
+    }
+    return true;
+  };
+
   const getConnectedSystems = (sourceStarId: number): HudConnectedSystem[] => {
     const stars = resolveRoutingStars();
-    const visible = getVisibleStarSet();
+    const known = getKnownStarSet();
     const sourceIndex = stars.findIndex((s) => s.id === sourceStarId);
     if (sourceIndex < 0 || sourceIndex >= cachedHyperlaneAdjacency.length) return [];
 
     return (cachedHyperlaneAdjacency[sourceIndex] ?? [])
       .map((neighborId) => stars[neighborId])
-      .filter((star): star is StarData => !!star && (!visible || visible.has(star.id)))
+      .filter((star): star is StarData => !!star && (!known || known.has(star.id)))
       .map((star) => ({ id: star.id, name: star.name }));
   };
 
@@ -133,10 +145,14 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   function applySnapshotToActiveScene(): void {
     cachedGalaxyStars = snapshot.stars;
-    cachedHyperlaneAdjacency = buildHyperlaneAdjacency(snapshot.hyperlanes, snapshot.stars.length);
+    if (!hyperlaneListsEqual(snapshot.hyperlanes, cachedHyperlanePairs)) {
+      cachedHyperlanePairs = snapshot.hyperlanes;
+      cachedHyperlaneAdjacency = buildHyperlaneAdjacency(snapshot.hyperlanes, snapshot.stars.length);
+    }
 
     if (activeGalaxyScene) {
       activeGalaxyScene.setVisibleStarIds(snapshot.visibleStarIds);
+      activeGalaxyScene.setKnownStarIds(snapshot.knownStarIds);
       activeGalaxyScene.setStarOwnerships(snapshot.starOwnership);
       activeGalaxyScene.setStarbaseSystemIds(getStarbaseSystemIds());
       activeGalaxyScene.setServerShips(snapshot.ships);
@@ -144,6 +160,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         getPrimaryTransitShip()?.currentStarId ?? getPrimaryShipStarId(),
         getPrimaryTransit(),
       );
+    }
+
+    if (activeSystemScene) {
+      activeSystemScene.setShipSystemPositions(getShipSystemPositions());
+      activeSystemScene.setStarbaseSystemIds(getStarbaseSystemIds());
     }
 
     updateHud();
@@ -174,6 +195,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       starbaseSystemIds: getStarbaseSystemIds(),
       starOwnership: snapshot.starOwnership,
       visibleStarIds: snapshot.visibleStarIds,
+      knownStarIds: snapshot.knownStarIds,
       onShipCommand: (action, targetStarId, shipId) => {
         if (!shipId) return;
         if (action === "move") {

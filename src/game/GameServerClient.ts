@@ -4,6 +4,12 @@ import type { ClientCommand, GameSnapshot, ServerEvent } from "./GameProtocol";
 type SnapshotHandler = (snapshot: GameSnapshot) => void;
 type MessageHandler = (message: string, ok: boolean) => void;
 
+function perspectivesMatch(a: GameSnapshot["perspective"], b: GameSnapshot["perspective"]): boolean {
+  if (a.mode !== b.mode) return false;
+  if (a.mode === "observer" && b.mode === "observer") return true;
+  return a.mode === "faction" && b.mode === "faction" && a.factionId === b.factionId;
+}
+
 export class GameServerClient {
   private socket: WebSocket | null = null;
   private latestSnapshot: GameSnapshot | null = null;
@@ -32,10 +38,29 @@ export class GameServerClient {
         if (parsed.type === "snapshot") {
           this.latestSnapshot = parsed;
           for (const handler of this.snapshotHandlers) handler(parsed);
-          if (!resolved) {
+          if (!resolved && perspectivesMatch(parsed.perspective, this.perspective)) {
             resolved = true;
             resolve(parsed);
           }
+          return;
+        }
+
+        if (parsed.type === "update") {
+          if (!this.latestSnapshot) return;
+          this.latestSnapshot = {
+            ...this.latestSnapshot,
+            type: "snapshot",
+            perspective: parsed.perspective,
+            clock: parsed.clock,
+            hyperlanes: parsed.hyperlanes,
+            factions: parsed.factions,
+            starOwnership: parsed.starOwnership,
+            visibleStarIds: parsed.visibleStarIds,
+            knownStarIds: parsed.knownStarIds,
+            ships: parsed.ships,
+            starbases: parsed.starbases,
+          };
+          for (const handler of this.snapshotHandlers) handler(this.latestSnapshot);
           return;
         }
 

@@ -25,12 +25,19 @@ type ContourSegment = {
 
 type ContourPoint = [number, number];
 
+type OwnedComponent = {
+  id: number;
+  owner: number;
+  starIds: number[];
+};
+
 export interface OwnershipOverlayRendererOptions {
   textureSize: number;
   mapWidth: number;
   mapHeight: number;
   stars: StarData[];
   palette: Color3[];
+  hyperlanePairs?: Array<[number, number]>;
   territoryRadiusWorld?: number;
 }
 
@@ -48,6 +55,9 @@ const REFERENCE_TEXTURE_SIZE = 1600;
 const TERRITORY_RADIUS_NEAREST_FACTOR = 0.68;
 const TERRITORY_RADIUS_MIN_MAP_FACTOR = 0.014;
 const TERRITORY_RADIUS_MAX_MAP_FACTOR = 0.032;
+const TERRITORY_CONNECTION_RADIUS_FACTOR = 0.82;
+const TERRITORY_FOREIGN_STAR_RESERVE_FACTOR = 0.58;
+const TERRITORY_HOLE_FILL_INFLUENCE = 0.46;
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -123,11 +133,15 @@ export class OwnershipOverlayRenderer {
   private readonly stars: StarData[];
   private readonly paletteRgb: Array<{ r: number; g: number; b: number }>;
   private readonly projectedStars: ProjectedStar[];
+  private readonly hyperlanePairs: Array<[number, number]>;
   private readonly fullBounds: PixelBounds;
   private readonly territoryOuterRadiusPx: number;
+  private readonly territoryConnectionRadiusPx: number;
+  private readonly foreignStarReserveRadiusPx: number;
   private readonly outerRadiusSq: number;
   private readonly invOuterRadius: number;
   private readonly ownerMap: Int16Array;
+  private readonly componentMap: Int16Array;
   private readonly distanceSqMap: Float32Array;
   private readonly influenceMap: Float32Array;
   private readonly borderPixelScale: number;
@@ -146,6 +160,7 @@ export class OwnershipOverlayRenderer {
     this.stars = options.stars;
     this.ownerByStar = new Array<number>(options.stars.length).fill(-1);
     this.paletteRgb = options.palette.map(colorToRgb);
+    this.hyperlanePairs = options.hyperlanePairs ?? [];
     this.borderPixelScale = options.textureSize / REFERENCE_TEXTURE_SIZE;
     this.fullBounds = {
       minX: 0,
@@ -176,11 +191,20 @@ export class OwnershipOverlayRenderer {
     const territoryRadiusWorld = options.territoryRadiusWorld
       ?? computeOwnershipRadiusWorld(options.mapWidth, options.mapHeight, options.stars);
     this.territoryOuterRadiusPx = Math.max(4, territoryRadiusWorld * avgPxPerWorld);
+    this.territoryConnectionRadiusPx = Math.max(
+      3,
+      this.territoryOuterRadiusPx * TERRITORY_CONNECTION_RADIUS_FACTOR,
+    );
+    this.foreignStarReserveRadiusPx = Math.max(
+      3,
+      this.territoryOuterRadiusPx * TERRITORY_FOREIGN_STAR_RESERVE_FACTOR,
+    );
     this.outerRadiusSq = this.territoryOuterRadiusPx * this.territoryOuterRadiusPx;
     this.invOuterRadius = 1 / Math.max(0.001, this.territoryOuterRadiusPx);
 
     const pixelCount = this.widthPx * this.heightPx;
     this.ownerMap = new Int16Array(pixelCount);
+    this.componentMap = new Int16Array(pixelCount);
     this.distanceSqMap = new Float32Array(pixelCount);
     this.influenceMap = new Float32Array(pixelCount);
 
@@ -239,13 +263,73 @@ export class OwnershipOverlayRenderer {
 
   private render(): void {
     const renderBounds = this.fullBounds;
+    const { components, componentByStar } = this.buildOwnedComponents();
 
     this.clearCanvas(renderBounds);
     this.clearMaps(renderBounds);
-    this.stampOwnership(renderBounds);
+    this.stampOwnership(renderBounds, componentByStar);
+    this.stampOwnershipConnections(renderBounds, componentByStar);
+    this.fillEnclosedComponentHoles(renderBounds, components);
+    this.reserveForeignStarCenters(renderBounds);
     this.paintFill(renderBounds);
     this.drawBorders(renderBounds);
     this.texture.update(true);
+  }
+
+  private buildOwnedComponents(): {
+    components: OwnedComponent[];
+    componentByStar: Int16Array;
+  } {
+    const adjacency: number[][] = Array.from(
+      { length: this.projectedStars.length },
+      () => [],
+    );
+
+    for (const [a, b] of this.hyperlanePairs) {
+      if (a < 0 || b < 0 || a >= this.projectedStars.length || b >= this.projectedStars.length) continue;
+      const owner = this.ownerByStar[a] ?? -1;
+      if (owner < 0 || owner !== (this.ownerByStar[b] ?? -1)) continue;
+      adjacency[a].push(b);
+      adjacency[b].push(a);
+    }
+
+    const componentByStar = new Int16Array(this.projectedStars.length).fill(-1);
+    const visited = new Uint8Array(this.projectedStars.length);
+    const components: OwnedComponent[] = [];
+
+    for (let start = 0; start < this.projectedStars.length; start++) {
+      if (visited[start]) continue;
+      const owner = this.ownerByStar[start] ?? -1;
+      if (owner < 0) {
+        visited[start] = 1;
+        continue;
+      }
+
+      const component: OwnedComponent = {
+        id: components.length,
+        owner,
+        starIds: [],
+      };
+      const queue = [start];
+      visited[start] = 1;
+      let head = 0;
+
+      while (head < queue.length) {
+        const current = queue[head++];
+        component.starIds.push(current);
+        componentByStar[current] = component.id;
+
+        for (const neighbor of adjacency[current]) {
+          if (visited[neighbor]) continue;
+          visited[neighbor] = 1;
+          queue.push(neighbor);
+        }
+      }
+
+      components.push(component);
+    }
+
+    return { components, componentByStar };
   }
 
   private clearCanvas(bounds: PixelBounds): void {
@@ -268,15 +352,18 @@ export class OwnershipOverlayRenderer {
       const start = y * this.widthPx + bounds.minX;
       const end = y * this.widthPx + bounds.maxX + 1;
       this.ownerMap.fill(-1, start, end);
+      this.componentMap.fill(-1, start, end);
       this.distanceSqMap.fill(Number.POSITIVE_INFINITY, start, end);
       this.influenceMap.fill(0, start, end);
     }
   }
 
-  private stampOwnership(bounds: PixelBounds): void {
+  private stampOwnership(bounds: PixelBounds, componentByStar: Int16Array): void {
     for (let starIndex = 0; starIndex < this.projectedStars.length; starIndex++) {
       const owner = this.ownerByStar[starIndex] ?? -1;
       if (owner < 0 || owner >= this.paletteRgb.length) continue;
+      const componentId = componentByStar[starIndex] ?? -1;
+      if (componentId < 0) continue;
 
       const star = this.projectedStars[starIndex];
       const starMinX = Math.floor(star.x - this.territoryOuterRadiusPx);
@@ -305,13 +392,267 @@ export class OwnershipOverlayRenderer {
 
           if (currentOwner < 0 || distanceSq < currentDistanceSq) {
             this.ownerMap[idx] = owner;
+            this.componentMap[idx] = componentId;
             this.distanceSqMap[idx] = distanceSq;
             this.influenceMap[idx] = influence;
             continue;
           }
 
           if (currentOwner === owner && influence > this.influenceMap[idx]) {
+            this.componentMap[idx] = componentId;
             this.influenceMap[idx] = influence;
+          }
+        }
+      }
+    }
+  }
+
+  private stampOwnershipConnections(bounds: PixelBounds, componentByStar: Int16Array): void {
+    const radius = this.territoryConnectionRadiusPx;
+    const radiusSq = radius * radius;
+    const invRadius = 1 / Math.max(0.001, radius);
+
+    for (const [a, b] of this.hyperlanePairs) {
+      if (a < 0 || b < 0 || a >= this.projectedStars.length || b >= this.projectedStars.length) continue;
+
+      const owner = this.ownerByStar[a] ?? -1;
+      if (owner < 0 || owner !== (this.ownerByStar[b] ?? -1)) continue;
+      const componentId = componentByStar[a] ?? -1;
+      if (componentId < 0 || componentId !== (componentByStar[b] ?? -1)) continue;
+
+      const start = this.projectedStars[a];
+      const end = this.projectedStars[b];
+      const vx = end.x - start.x;
+      const vy = end.y - start.y;
+      const lenSq = vx * vx + vy * vy;
+      if (lenSq < 0.0001) continue;
+
+      const minX = Math.max(bounds.minX, Math.floor(Math.min(start.x, end.x) - radius));
+      const maxX = Math.min(bounds.maxX, Math.ceil(Math.max(start.x, end.x) + radius));
+      const minY = Math.max(bounds.minY, Math.floor(Math.min(start.y, end.y) - radius));
+      const maxY = Math.min(bounds.maxY, Math.ceil(Math.max(start.y, end.y) + radius));
+      if (minX > maxX || minY > maxY) continue;
+
+      for (let y = minY; y <= maxY; y++) {
+        for (let x = minX; x <= maxX; x++) {
+          const wx = x - start.x;
+          const wy = y - start.y;
+          const t = clamp((wx * vx + wy * vy) / lenSq, 0, 1);
+          const px = start.x + vx * t;
+          const py = start.y + vy * t;
+          const dx = x - px;
+          const dy = y - py;
+          const distanceSq = dx * dx + dy * dy;
+          if (distanceSq > radiusSq) continue;
+
+          const idx = y * this.widthPx + x;
+          const currentOwner = this.ownerMap[idx];
+          if (currentOwner >= 0 && currentOwner !== owner) continue;
+
+          const influenceLinear = clamp(1 - Math.sqrt(distanceSq) * invRadius, 0, 1);
+          const influence = influenceLinear * influenceLinear * 0.72;
+          this.ownerMap[idx] = owner;
+          this.componentMap[idx] = componentId;
+          if (influence > this.influenceMap[idx]) {
+            this.influenceMap[idx] = influence;
+          }
+        }
+      }
+    }
+  }
+
+  private fillEnclosedComponentHoles(bounds: PixelBounds, components: OwnedComponent[]): void {
+    for (const component of components) {
+      if (component.starIds.length < 3) continue;
+
+      const componentBounds = this.getComponentPixelBounds(bounds, component);
+      if (!componentBounds) continue;
+
+      this.fillEnclosedComponentHolesInBounds(component, componentBounds);
+    }
+  }
+
+  private getComponentPixelBounds(bounds: PixelBounds, component: OwnedComponent): PixelBounds | null {
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    const padding = Math.ceil(this.territoryOuterRadiusPx + this.territoryConnectionRadiusPx + 2);
+
+    for (const starId of component.starIds) {
+      const star = this.projectedStars[starId];
+      minX = Math.min(minX, star.x - padding);
+      minY = Math.min(minY, star.y - padding);
+      maxX = Math.max(maxX, star.x + padding);
+      maxY = Math.max(maxY, star.y + padding);
+    }
+
+    if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) {
+      return null;
+    }
+
+    const pixelBounds = {
+      minX: Math.max(bounds.minX, Math.floor(minX)),
+      minY: Math.max(bounds.minY, Math.floor(minY)),
+      maxX: Math.min(bounds.maxX, Math.ceil(maxX)),
+      maxY: Math.min(bounds.maxY, Math.ceil(maxY)),
+    };
+
+    if (pixelBounds.minX >= pixelBounds.maxX || pixelBounds.minY >= pixelBounds.maxY) {
+      return null;
+    }
+
+    return pixelBounds;
+  }
+
+  private fillEnclosedComponentHolesInBounds(component: OwnedComponent, bounds: PixelBounds): void {
+    const width = bounds.maxX - bounds.minX + 1;
+    const height = bounds.maxY - bounds.minY + 1;
+    const cellCount = width * height;
+    const visited = new Uint8Array(cellCount);
+    const queue = new Int32Array(cellCount);
+    let head = 0;
+    let tail = 0;
+
+    const localIndex = (x: number, y: number): number => y * width + x;
+    const globalIndex = (local: number): number => {
+      const localY = Math.floor(local / width);
+      const localX = local - localY * width;
+      return (bounds.minY + localY) * this.widthPx + bounds.minX + localX;
+    };
+    const isBarrier = (local: number): boolean => (
+      this.componentMap[globalIndex(local)] === component.id
+    );
+    const pushExterior = (local: number): void => {
+      if (visited[local] || isBarrier(local)) return;
+      visited[local] = 1;
+      queue[tail++] = local;
+    };
+
+    for (let x = 0; x < width; x++) {
+      pushExterior(localIndex(x, 0));
+      pushExterior(localIndex(x, height - 1));
+    }
+    for (let y = 1; y < height - 1; y++) {
+      pushExterior(localIndex(0, y));
+      pushExterior(localIndex(width - 1, y));
+    }
+
+    while (head < tail) {
+      const current = queue[head++];
+      const y = Math.floor(current / width);
+      const x = current - y * width;
+      if (x > 0) pushExterior(current - 1);
+      if (x < width - 1) pushExterior(current + 1);
+      if (y > 0) pushExterior(current - width);
+      if (y < height - 1) pushExterior(current + width);
+    }
+
+    const reservedStarCells = this.getReservedStarCellsForComponent(component, bounds, width, height);
+    const holeQueue = new Int32Array(cellCount);
+
+    for (let local = 0; local < cellCount; local++) {
+      if (visited[local] || isBarrier(local)) continue;
+
+      let holeHead = 0;
+      let holeTail = 0;
+      const holeCells: number[] = [];
+      let containsReservedStar = false;
+      visited[local] = 2;
+      holeQueue[holeTail++] = local;
+
+      while (holeHead < holeTail) {
+        const current = holeQueue[holeHead++];
+        holeCells.push(current);
+        if (reservedStarCells.has(current)) {
+          containsReservedStar = true;
+        }
+
+        const y = Math.floor(current / width);
+        const x = current - y * width;
+        const addHoleNeighbor = (next: number): void => {
+          if (visited[next] || isBarrier(next)) return;
+          visited[next] = 2;
+          holeQueue[holeTail++] = next;
+        };
+
+        if (x > 0) addHoleNeighbor(current - 1);
+        if (x < width - 1) addHoleNeighbor(current + 1);
+        if (y > 0) addHoleNeighbor(current - width);
+        if (y < height - 1) addHoleNeighbor(current + width);
+      }
+
+      for (const holeCell of holeCells) {
+        visited[holeCell] = 3;
+        if (containsReservedStar) continue;
+
+        const idx = globalIndex(holeCell);
+        const currentOwner = this.ownerMap[idx];
+        if (currentOwner >= 0 && currentOwner !== component.owner) continue;
+
+        this.ownerMap[idx] = component.owner;
+        this.componentMap[idx] = component.id;
+        if (TERRITORY_HOLE_FILL_INFLUENCE > this.influenceMap[idx]) {
+          this.influenceMap[idx] = TERRITORY_HOLE_FILL_INFLUENCE;
+        }
+      }
+    }
+  }
+
+  private getReservedStarCellsForComponent(
+    component: OwnedComponent,
+    bounds: PixelBounds,
+    width: number,
+    height: number,
+  ): Set<number> {
+    const reserved = new Set<number>();
+
+    for (let starIndex = 0; starIndex < this.projectedStars.length; starIndex++) {
+      if (component.starIds.includes(starIndex)) continue;
+      if ((this.ownerByStar[starIndex] ?? -1) === component.owner) continue;
+
+      const star = this.projectedStars[starIndex];
+      const localX = Math.round(star.x - bounds.minX);
+      const localY = Math.round(star.y - bounds.minY);
+      if (localX < 0 || localX >= width || localY < 0 || localY >= height) continue;
+      reserved.add(localY * width + localX);
+    }
+
+    return reserved;
+  }
+
+  private reserveForeignStarCenters(bounds: PixelBounds): void {
+    const radius = this.foreignStarReserveRadiusPx;
+    const radiusSq = radius * radius;
+
+    for (let starIndex = 0; starIndex < this.projectedStars.length; starIndex++) {
+      const starOwner = this.ownerByStar[starIndex] ?? -1;
+      const star = this.projectedStars[starIndex];
+      const minX = Math.max(bounds.minX, Math.floor(star.x - radius));
+      const maxX = Math.min(bounds.maxX, Math.ceil(star.x + radius));
+      const minY = Math.max(bounds.minY, Math.floor(star.y - radius));
+      const maxY = Math.min(bounds.maxY, Math.ceil(star.y + radius));
+      if (minX > maxX || minY > maxY) continue;
+
+      for (let y = minY; y <= maxY; y++) {
+        const dy = y - star.y;
+        for (let x = minX; x <= maxX; x++) {
+          const dx = x - star.x;
+          if (dx * dx + dy * dy > radiusSq) continue;
+
+          const idx = y * this.widthPx + x;
+          const currentOwner = this.ownerMap[idx];
+          if (currentOwner < 0 || currentOwner === starOwner) continue;
+
+          if (starOwner >= 0) {
+            this.ownerMap[idx] = starOwner;
+            this.componentMap[idx] = -1;
+            this.influenceMap[idx] = Math.max(this.influenceMap[idx], 0.48);
+          } else {
+            this.ownerMap[idx] = -1;
+            this.componentMap[idx] = -1;
+            this.distanceSqMap[idx] = Number.POSITIVE_INFINITY;
+            this.influenceMap[idx] = 0;
           }
         }
       }

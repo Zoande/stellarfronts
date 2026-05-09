@@ -23,6 +23,8 @@ import {
   Material,
   Mesh,
   Ray,
+  Quaternion,
+  Matrix,
 } from "@babylonjs/core";
 import type { AbstractEngine, AbstractMesh, LinesMesh } from "@babylonjs/core";
 import "@babylonjs/loaders/OBJ/objFileLoader";
@@ -49,7 +51,7 @@ export interface SystemSceneOptions {
 
 const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
 const PLAYER_SHIP_MODEL_FILE = "Fighter_01.obj";
-const PLAYER_SHIP_TARGET_SIZE = 2.2;  // 5x smaller than original
+const PLAYER_SHIP_TARGET_SIZE = 0.8;
 const PLAYER_SHIP_BASE_POSITION = new Vector3(23, 4.8, -19);
 
 const STARBASE_MODEL_URL = "/starbase/star_trek_-_starbase_375.glb";
@@ -57,6 +59,10 @@ const HYPERLANE_EXIT_RADIUS = 38;
 const HYPERLANE_EXIT_Y = 2.8;
 const SHIP_EXIT_END_PROGRESS = 0.28;
 const SHIP_ENTRY_START_PROGRESS = 0.72;
+const SYSTEM_LABEL_TEXTURE_WIDTH = 2048;
+const SYSTEM_LABEL_TEXTURE_HEIGHT = 512;
+const SYSTEM_LABEL_U_SCALE = -1;
+const SYSTEM_LABEL_U_OFFSET = 1;
 
 export class SystemScene implements IGameScene {
   public scene: Scene;
@@ -90,6 +96,7 @@ export class SystemScene implements IGameScene {
   private playerShipLight: PointLight | null = null;
   private playerShipThrusterMaterial: StandardMaterial | null = null;
   private playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
+  private playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
 
   private starbaseRoot: TransformNode | null = null;
   private starbaseLight: PointLight | null = null;
@@ -178,6 +185,7 @@ export class SystemScene implements IGameScene {
   }
 
   private hasPlayerShipPresence(): boolean {
+    if (this.shipSystemPositions[this.star.id]) return true;
     if (this.playerShipSystemIds.has(this.star.id)) return true;
     if (this.playerShipStarId === this.star.id) return true;
     return !!this.shipTransit
@@ -386,8 +394,14 @@ export class SystemScene implements IGameScene {
     }
 
     if (this.playerShipRoot) {
+      const t = Math.min(1, dt * 4.5);
+      this.playerShipBasePosition.x = this.playerShipBasePosition.x + (this.playerShipTargetPosition.x - this.playerShipBasePosition.x) * t;
+      this.playerShipBasePosition.y = this.playerShipBasePosition.y + (this.playerShipTargetPosition.y - this.playerShipBasePosition.y) * t;
+      this.playerShipBasePosition.z = this.playerShipBasePosition.z + (this.playerShipTargetPosition.z - this.playerShipBasePosition.z) * t;
+      this.playerShipRoot.position.x = this.playerShipBasePosition.x;
       this.playerShipRoot.position.y =
         this.playerShipBasePosition.y + Math.sin(this.elapsed * 1.15) * 0.32;
+      this.playerShipRoot.position.z = this.playerShipBasePosition.z;
       this.playerShipRoot.rotation.y += dt * 0.16;
     }
     if (this.playerShipThrusterMaterial) {
@@ -453,6 +467,7 @@ export class SystemScene implements IGameScene {
           planetMesh.position.y + offsetDistance,
           planetMesh.position.z,
         );
+        this.faceSystemLabelToCamera(labelMesh);
       }
     }
 
@@ -464,7 +479,43 @@ export class SystemScene implements IGameScene {
         this.starMesh.position.y + offsetDistance,
         this.starMesh.position.z,
       );
+      this.faceSystemLabelToCamera(this.starLabelMesh);
     }
+  }
+
+  private faceSystemLabelToCamera(labelMesh: Mesh): void {
+    const camera = this.scene.activeCamera ?? this.camera;
+    if (!camera) return;
+
+    const toCamera = camera.position.subtract(labelMesh.position);
+    if (toCamera.lengthSquared() < 0.0001) return;
+
+    const normal = toCamera.normalize();
+    const cameraRight = camera.getDirection(Vector3.Right()).normalize();
+    const cameraUp = camera.getDirection(Vector3.Up()).normalize();
+
+    let right = cameraRight.subtract(normal.scale(Vector3.Dot(cameraRight, normal)));
+    if (right.lengthSquared() < 0.0001) {
+      right = Vector3.Cross(Vector3.Up(), normal);
+    }
+    if (right.lengthSquared() < 0.0001) {
+      right = Vector3.Right();
+    }
+    right.normalize();
+    if (Vector3.Dot(right, cameraRight) < 0) {
+      right.scaleInPlace(-1);
+    }
+
+    let up = Vector3.Cross(normal, right);
+    if (Vector3.Dot(up, cameraUp) < 0) {
+      right.scaleInPlace(-1);
+      up = Vector3.Cross(normal, right);
+    }
+    up.normalize();
+
+    const rotationMatrix = Matrix.Identity();
+    Matrix.FromXYZAxesToRef(right, up, normal, rotationMatrix);
+    labelMesh.rotationQuaternion = Quaternion.FromRotationMatrix(rotationMatrix);
   }
 
   private updateStarOcclusionAndGlow(): void {
@@ -931,6 +982,7 @@ export class SystemScene implements IGameScene {
       blurKernelSize: 48,
     });
     this.glowLayer.intensity = this.glowBaseIntensity;
+    this.scene.ambientColor = new Color3(0.18, 0.2, 0.24);
 
     // Debug: allow toggling glow with 'g' key to quickly test occlusion behavior
     if (typeof window !== "undefined") {
@@ -1078,9 +1130,11 @@ export class SystemScene implements IGameScene {
     console.log(`🚀 Loading player ship for star ID ${this.star.id}`);
 
     this.playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
+    this.playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
     const serverPosition = this.shipSystemPositions[this.star.id];
     if (serverPosition) {
       this.playerShipBasePosition.set(serverPosition.x, serverPosition.y, serverPosition.z);
+      this.playerShipTargetPosition.copyFrom(this.playerShipBasePosition);
     }
     this.playerShipRoot = new TransformNode("playerShipRoot", this.scene);
     this.playerShipRoot.position = this.playerShipBasePosition.clone();
@@ -1126,10 +1180,10 @@ export class SystemScene implements IGameScene {
         mesh.alwaysSelectAsActiveMesh = true;
         console.log(`  - Mesh "${mesh.name}": vertices=${mesh.getTotalVertices()}`);
         this.applyPlayerShipMaterialStyle(mesh.material);
-        this.glowLayer.addIncludedOnlyMesh(mesh as Mesh);
       }
 
       this.playerShipRoot.scaling.setAll(shipScale);
+      this.createPlayerShipReadabilityLight();
       console.log(`✅ Player ship loaded successfully! Root position: ${JSON.stringify(this.playerShipRoot.position)}, rotation: ${JSON.stringify(this.playerShipRoot.rotation)}`);
     } catch (err) {
       console.warn("❌ Failed to load player ship model", err);
@@ -1190,27 +1244,29 @@ export class SystemScene implements IGameScene {
     if (!(material instanceof StandardMaterial)) return;
 
     const name = material.name.toLowerCase();
-    material.specularColor = new Color3(0.72, 0.78, 0.86);
-    material.emissiveColor = new Color3(0.025, 0.03, 0.04);
+    material.disableLighting = false;
+    material.diffuseColor = new Color3(0.92, 0.96, 1.0);
+    material.ambientColor = new Color3(0.34, 0.38, 0.44);
+    material.specularColor = new Color3(0.82, 0.86, 0.9);
+    material.emissiveColor = new Color3(0.014, 0.016, 0.019);
 
     if (name.includes("body")) {
-      material.diffuseTexture = new Texture(
+      material.diffuseTexture = this.createPlayerShipTexture(
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Body_BaseColor.png`,
-        this.scene,
       );
       material.bumpTexture = new Texture(
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Body_Normal.png`,
         this.scene,
       );
-      material.emissiveColor = new Color3(0.06, 0.065, 0.08);
+      material.diffuseColor = new Color3(1.02, 1.04, 1.06);
+      material.emissiveColor = new Color3(0.026, 0.028, 0.033);
       material.specularPower = 110;
       return;
     }
 
     if (name.includes("front")) {
-      material.diffuseTexture = new Texture(
+      material.diffuseTexture = this.createPlayerShipTexture(
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Front_BaseColor.png`,
-        this.scene,
       );
       material.bumpTexture = new Texture(
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Front_Normal.png`,
@@ -1220,15 +1276,15 @@ export class SystemScene implements IGameScene {
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Front_Emissive.png`,
         this.scene,
       );
-      material.emissiveColor = new Color3(0.12, 0.3, 1.0).scale(1.35);
+      material.diffuseColor = new Color3(0.96, 1.0, 1.04);
+      material.emissiveColor = new Color3(0.018, 0.032, 0.052);
       material.specularPower = 160;
       return;
     }
 
     if (name.includes("rear")) {
-      material.diffuseTexture = new Texture(
+      material.diffuseTexture = this.createPlayerShipTexture(
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Rear_BaseColor.png`,
-        this.scene,
       );
       material.bumpTexture = new Texture(
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Rear_Normal.png`,
@@ -1238,23 +1294,45 @@ export class SystemScene implements IGameScene {
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Rear_Emissive.png`,
         this.scene,
       );
-      material.emissiveColor = new Color3(1.0, 0.18, 0.08).scale(1.25);
+      material.diffuseColor = new Color3(0.96, 0.98, 1.0);
+      material.emissiveColor = new Color3(0.055, 0.02, 0.012);
       material.specularPower = 150;
       return;
     }
 
     if (name.includes("windows")) {
-      material.diffuseTexture = new Texture(
+      material.diffuseTexture = this.createPlayerShipTexture(
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Windows_BaseColor.png`,
-        this.scene,
       );
       material.bumpTexture = new Texture(
         `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Windows_Normal.png`,
         this.scene,
       );
-      material.emissiveColor = new Color3(0.2, 0.85, 1.0).scale(1.15);
+      material.diffuseColor = new Color3(0.95, 1.0, 1.05);
+      material.emissiveColor = new Color3(0.035, 0.08, 0.095);
       material.specularPower = 180;
     }
+  }
+
+  private createPlayerShipTexture(url: string, level = 1.35): Texture {
+    const texture = new Texture(url, this.scene);
+    texture.level = level;
+    return texture;
+  }
+
+  private createPlayerShipReadabilityLight(): void {
+    if (!this.playerShipRoot || this.playerShipLight) return;
+
+    this.playerShipLight = new PointLight(
+      "playerShipSoftFill",
+      new Vector3(0, 7, -9),
+      this.scene,
+    );
+    this.playerShipLight.parent = this.playerShipRoot;
+    this.playerShipLight.intensity = 0.9;
+    this.playerShipLight.range = 34;
+    this.playerShipLight.diffuse = new Color3(0.64, 0.7, 0.78);
+    this.playerShipLight.specular = new Color3(0.72, 0.78, 0.86);
   }
 
   private createPlayerShipAccents(
@@ -1605,102 +1683,27 @@ export class SystemScene implements IGameScene {
   }
 
   private createPlanetLabel(index: number, planet: PlanetConfig, orbitRadius: number): Mesh {
-    const labelTextureSize = 2048;
-    const labelTexture = new DynamicTexture(`planetLabel_${index}`, labelTextureSize, this.scene);
+    const labelTexture = new DynamicTexture(
+      `planetLabel_${index}`,
+      { width: SYSTEM_LABEL_TEXTURE_WIDTH, height: SYSTEM_LABEL_TEXTURE_HEIGHT },
+      this.scene,
+      false,
+    );
+    labelTexture.hasAlpha = true;
+    labelTexture.uScale = SYSTEM_LABEL_U_SCALE;
+    labelTexture.uOffset = SYSTEM_LABEL_U_OFFSET;
     const ctx = labelTexture.getContext() as unknown as CanvasRenderingContext2D;
 
     const isHabited = planet.isHabited ?? false;
+    ctx.clearRect(0, 0, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
 
-    // For non-habited planets, just draw text directly (no background)
-    if (!isHabited) {
-      // Draw star name
-      ctx.font = "bold 90px 'Orbitron', 'Rajdhani', sans-serif";
-      ctx.fillStyle = "rgba(150, 180, 220, 0.8)";
-      ctx.textAlign = "center";
-      ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
-      ctx.shadowBlur = 12;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 2;
-      ctx.fillText(this.star.name, labelTextureSize / 2, 200);
-
-      // Draw planet name
-      const planetFontSize = 210;
-      ctx.font = `bold ${planetFontSize}px 'Orbitron', 'Rajdhani', sans-serif`;
-      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
-      ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
-      ctx.shadowBlur = 12;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 2;
-      ctx.fillText(planet.name, labelTextureSize / 2, 500);
+    if (isHabited) {
+      this.drawSystemNameplate(ctx, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT, planet.name, "HABITED", true);
     } else {
-      // For habited planets, draw a tight card around the text
-      // Measure text first to size the card appropriately
-      ctx.font = "bold 90px 'Orbitron', 'Rajdhani', sans-serif";
-      const starNameMetrics = ctx.measureText(this.star.name);
-      
-      ctx.font = "bold 210px 'Orbitron', 'Rajdhani', sans-serif";
-      const planetNameMetrics = ctx.measureText(planet.name);
-      
-      const maxWidth = Math.max(starNameMetrics.width, planetNameMetrics.width);
-      const padding = 40;
-      const cardRadius = 20;
-      const bgX = (labelTextureSize - maxWidth) / 2 - padding;
-      const bgY = 80;
-      const bgW = maxWidth + padding * 2;
-      const bgH = 480;
-
-      // Create gradient background for card
-      const gradient = ctx.createLinearGradient(0, bgY, 0, bgY + bgH);
-      gradient.addColorStop(0, "rgba(45, 85, 140, 0.95)");
-      gradient.addColorStop(1, "rgba(25, 55, 100, 0.95)");
-      
-      ctx.fillStyle = gradient;
-      ctx.strokeStyle = "rgba(150, 200, 255, 0.6)";
-      ctx.lineWidth = 3;
-      
-      // Draw rounded rectangle for card
-      ctx.beginPath();
-      ctx.moveTo(bgX + cardRadius, bgY);
-      ctx.lineTo(bgX + bgW - cardRadius, bgY);
-      ctx.quadraticCurveTo(bgX + bgW, bgY, bgX + bgW, bgY + cardRadius);
-      ctx.lineTo(bgX + bgW, bgY + bgH - cardRadius);
-      ctx.quadraticCurveTo(bgX + bgW, bgY + bgH, bgX + bgW - cardRadius, bgY + bgH);
-      ctx.lineTo(bgX + cardRadius, bgY + bgH);
-      ctx.quadraticCurveTo(bgX, bgY + bgH, bgX, bgY + bgH - cardRadius);
-      ctx.lineTo(bgX, bgY + cardRadius);
-      ctx.quadraticCurveTo(bgX, bgY, bgX + cardRadius, bgY);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      
-      // Draw top accent bar
-      ctx.fillStyle = "rgba(100, 180, 255, 0.4)";
-      ctx.fillRect(bgX + cardRadius, bgY, bgW - cardRadius * 2, 8);
-
-      // Draw star name
-      ctx.font = "bold 90px 'Orbitron', 'Rajdhani', sans-serif";
-      ctx.fillStyle = "rgba(150, 180, 220, 0.9)";
-      ctx.textAlign = "center";
-      ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
-      ctx.shadowBlur = 12;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 2;
-      ctx.fillText(this.star.name, labelTextureSize / 2, 200);
-
-      // Draw planet name
-      const planetFontSize = 210;
-      ctx.font = `bold ${planetFontSize}px 'Orbitron', 'Rajdhani', sans-serif`;
-      ctx.fillStyle = "rgba(255, 255, 255, 0.98)";
-      ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
-      ctx.shadowBlur = 12;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 2;
-      ctx.fillText(planet.name, labelTextureSize / 2, 500);
-      
-      // Draw habited indicator
-      ctx.font = "bold 100px 'Orbitron', 'Rajdhani', sans-serif";
-      ctx.fillStyle = "rgba(100, 255, 100, 0.95)";
-      ctx.fillText("● HABITED ●", labelTextureSize / 2, 650);
+      this.drawSimpleSystemLabel(ctx, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT, planet.name, 150);
     }
 
     labelTexture.update(true);
@@ -1718,12 +1721,13 @@ export class SystemScene implements IGameScene {
     material.useAlphaFromDiffuseTexture = true;
     material.transparencyMode = Material.MATERIAL_ALPHABLEND;
     material.alpha = 1.0;
+    material.disableDepthWrite = true;
     
 
-    // Create plane mesh - increased size for larger text
+    // Create plane mesh - texture and plane share the same aspect ratio to avoid stretching.
     const labelMesh = MeshBuilder.CreatePlane(
       `planetLabel_mesh_${index}`,
-      { width: 4.8, height: 2.4 },
+      { width: isHabited ? 8.2 : 5.8, height: isHabited ? 2.05 : 1.45 },
       this.scene,
     );
     
@@ -1731,26 +1735,27 @@ export class SystemScene implements IGameScene {
     labelMesh.position = new Vector3(0, 0, 0);
     labelMesh.material = material;
     labelMesh.isPickable = false;
-    labelMesh.renderingGroupId = 1;
-    labelMesh.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    labelMesh.renderingGroupId = 2;
+    labelMesh.alwaysSelectAsActiveMesh = true;
+    labelMesh.billboardMode = Mesh.BILLBOARDMODE_NONE;
     
     return labelMesh;
   }
 
   private createStarLabel(): Mesh {
-    const labelTextureSize = 2048;
-    const labelTexture = new DynamicTexture("starLabel", labelTextureSize, this.scene);
+    const labelTexture = new DynamicTexture(
+      "starLabel",
+      { width: SYSTEM_LABEL_TEXTURE_WIDTH, height: SYSTEM_LABEL_TEXTURE_HEIGHT },
+      this.scene,
+      false,
+    );
+    labelTexture.hasAlpha = true;
+    labelTexture.uScale = SYSTEM_LABEL_U_SCALE;
+    labelTexture.uOffset = SYSTEM_LABEL_U_OFFSET;
     const ctx = labelTexture.getContext() as unknown as CanvasRenderingContext2D;
 
-    // Draw just the star name - no card for stars
-    ctx.font = "bold 90px 'Orbitron', 'Rajdhani', sans-serif";
-    ctx.fillStyle = "rgba(255, 200, 100, 0.9)";
-    ctx.textAlign = "center";
-    ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
-    ctx.shadowBlur = 12;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 2;
-    ctx.fillText(this.star.name, labelTextureSize / 2, 300);
+    ctx.clearRect(0, 0, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT);
+    this.drawSimpleSystemLabel(ctx, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT, this.star.name, 150);
 
     labelTexture.update(true);
 
@@ -1767,22 +1772,190 @@ export class SystemScene implements IGameScene {
     material.useAlphaFromDiffuseTexture = true;
     material.transparencyMode = Material.MATERIAL_ALPHABLEND;
     material.alpha = 1.0;
+    material.disableDepthWrite = true;
     
 
     // Create plane mesh for star label
     const labelMesh = MeshBuilder.CreatePlane(
       "starLabel_mesh",
-      { width: 4.8, height: 1.2 },
+      { width: 6.2, height: 1.55 },
       this.scene,
     );
     
     labelMesh.position = new Vector3(0, this.starDiameter + 3, 0);
     labelMesh.material = material;
     labelMesh.isPickable = false;
-    labelMesh.renderingGroupId = 1;
-    labelMesh.billboardMode = Mesh.BILLBOARDMODE_ALL;
+    labelMesh.renderingGroupId = 2;
+    labelMesh.alwaysSelectAsActiveMesh = true;
+    labelMesh.billboardMode = Mesh.BILLBOARDMODE_NONE;
     
     return labelMesh;
+  }
+
+  private drawSimpleSystemLabel(
+    ctx: CanvasRenderingContext2D,
+    textureWidth: number,
+    textureHeight: number,
+    text: string,
+    fontSize: number,
+  ): void {
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const maxTextWidth = textureWidth - 180;
+    let fittedFontSize = fontSize;
+    do {
+      ctx.font = `800 ${fittedFontSize}px "Segoe UI", Arial, sans-serif`;
+      if (ctx.measureText(text).width <= maxTextWidth) break;
+      fittedFontSize -= 6;
+    } while (fittedFontSize > 72);
+
+    ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
+    ctx.shadowBlur = 20;
+    ctx.shadowOffsetY = 5;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.96)";
+    ctx.lineWidth = Math.max(10, fittedFontSize * 0.11);
+    ctx.strokeText(text, textureWidth / 2, textureHeight / 2);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.98)";
+    ctx.fillText(text, textureWidth / 2, textureHeight / 2);
+    ctx.restore();
+  }
+
+  private drawSystemNameplate(
+    ctx: CanvasRenderingContext2D,
+    textureWidth: number,
+    textureHeight: number,
+    name: string,
+    status: string,
+    drawBadge: boolean,
+  ): void {
+    const plateW = 1120;
+    const plateH = 210;
+    const plateX = (textureWidth - plateW) / 2 - (drawBadge ? 115 : 0);
+    const plateY = (textureHeight - plateH) / 2;
+    const badgeX = plateX + plateW + 125;
+    const badgeY = textureHeight / 2;
+    const badgeR = 110;
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
+    ctx.shadowBlur = 24;
+    ctx.shadowOffsetY = 10;
+    ctx.fillStyle = "rgba(5, 45, 39, 0.94)";
+    ctx.strokeStyle = "rgba(152, 240, 219, 0.86)";
+    ctx.lineWidth = 12;
+    this.drawSystemRoundedRect(ctx, plateX, plateY, plateW, plateH, 12);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "rgba(35, 137, 116, 0.34)";
+    ctx.fillRect(plateX + 24, plateY + 24, plateW - 48, 24);
+    ctx.restore();
+
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const maxTextWidth = plateW - 90;
+    let nameFontSize = 112;
+    do {
+      ctx.font = `900 ${nameFontSize}px "Segoe UI", Arial, sans-serif`;
+      if (ctx.measureText(name).width <= maxTextWidth) break;
+      nameFontSize -= 5;
+    } while (nameFontSize > 58);
+
+    ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
+    ctx.shadowBlur = 14;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.95)";
+    ctx.lineWidth = Math.max(7, nameFontSize * 0.07);
+    ctx.strokeText(name, plateX + plateW / 2, plateY + 92, maxTextWidth);
+    ctx.fillStyle = "rgba(230, 255, 250, 0.98)";
+    ctx.fillText(name, plateX + plateW / 2, plateY + 92, maxTextWidth);
+
+    ctx.font = `800 42px "Segoe UI", Arial, sans-serif`;
+    ctx.fillStyle = "rgba(114, 230, 139, 0.9)";
+    ctx.fillText(status, plateX + plateW / 2, plateY + 158);
+    ctx.restore();
+
+    if (drawBadge) {
+      this.drawSystemHexBadge(ctx, badgeX, badgeY, badgeR);
+    }
+  }
+
+  private drawSystemRoundedRect(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    radius: number,
+  ): void {
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + width - radius, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+    ctx.lineTo(x + width, y + height - radius);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    ctx.lineTo(x + radius, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+  }
+
+  private drawSystemHexBadge(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
+    const drawHex = (r: number): void => {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const angle = -Math.PI / 6 + (i * Math.PI * 2) / 6;
+        const px = x + Math.cos(angle) * r;
+        const py = y + Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    };
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
+    ctx.shadowBlur = 28;
+    ctx.shadowOffsetY = 12;
+    drawHex(radius);
+    ctx.fillStyle = "rgba(224, 239, 235, 0.98)";
+    ctx.fill();
+    ctx.lineWidth = 20;
+    ctx.strokeStyle = "rgba(66, 86, 82, 0.96)";
+    ctx.stroke();
+
+    drawHex(radius * 0.64);
+    ctx.fillStyle = "rgba(245, 252, 250, 1)";
+    ctx.fill();
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = "rgba(92, 112, 108, 0.86)";
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "rgba(78, 93, 90, 0.98)";
+    const nodeR = radius * 0.12;
+    const nodes = [
+      [x, y - radius * 0.22],
+      [x - radius * 0.22, y + radius * 0.12],
+      [x + radius * 0.22, y + radius * 0.12],
+    ];
+    ctx.lineWidth = 14;
+    ctx.strokeStyle = "rgba(78, 93, 90, 0.95)";
+    ctx.beginPath();
+    ctx.moveTo(nodes[0][0], nodes[0][1]);
+    ctx.lineTo(nodes[1][0], nodes[1][1]);
+    ctx.lineTo(nodes[2][0], nodes[2][1]);
+    ctx.lineTo(nodes[0][0], nodes[0][1]);
+    ctx.stroke();
+    for (const [nx, ny] of nodes) {
+      ctx.beginPath();
+      ctx.arc(nx, ny, nodeR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   private createFallbackPlanets(kind: StarVisualKind): PlanetConfig[] {
@@ -1839,8 +2012,35 @@ export class SystemScene implements IGameScene {
   setShipSystemPositions(positions: Record<number, { x: number; y: number; z: number }>): void {
     this.shipSystemPositions = positions;
     const position = positions[this.star.id];
-    if (!position || !this.playerShipRoot) return;
-    this.playerShipBasePosition.set(position.x, position.y, position.z);
+    if (!position) {
+      this.playerShipRoot?.setEnabled(false);
+      return;
+    }
+
+    this.playerShipTargetPosition.set(position.x, position.y, position.z);
+    if (!this.playerShipRoot) {
+      this.playerShipBasePosition.copyFrom(this.playerShipTargetPosition);
+      void this.createPlayerShipIfPresent().then(() => {
+        this.playerShipRoot?.setEnabled(this.starsVisible);
+      });
+      return;
+    }
+
+    this.playerShipRoot.setEnabled(this.starsVisible);
+  }
+
+  setStarbaseSystemIds(starIds: Iterable<number>): void {
+    this.starbaseSystemIds = new Set(starIds);
+    if (this.starbaseSystemIds.has(this.star.id)) {
+      if (this.starbaseRoot) {
+        this.starbaseRoot.setEnabled(true);
+        return;
+      }
+      void this.createStarbaseIfPresent();
+      return;
+    }
+
+    this.starbaseRoot?.setEnabled(false);
   }
 
   dispose(): void {

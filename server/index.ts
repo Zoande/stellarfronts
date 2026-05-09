@@ -12,6 +12,7 @@ import type {
   ClientCommand,
   FactionState,
   GameClock,
+  GameUpdate,
   GameSnapshot,
   ServerEvent,
   ServerShip,
@@ -46,6 +47,7 @@ interface GameState {
   starbases: ServerStarbase[];
   ships: GameShip[];
   discoveredByFaction: Record<string, number[]>;
+  lastKnownOwnershipByFaction: Record<string, number[]>;
   clock: GameClock & { lastUpdatedAt: number };
 }
 
@@ -134,6 +136,7 @@ function createInitialState(): GameState {
     starbases,
     ships,
     discoveredByFaction: {},
+    lastKnownOwnershipByFaction: {},
     clock: {
       year: GAME_START_YEAR,
       speedMultiplier: 1,
@@ -150,6 +153,7 @@ async function loadState(): Promise<GameState> {
     const parsed = JSON.parse(raw) as GameState;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
+    parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.clock.lastUpdatedAt = parsed.clock.lastUpdatedAt ?? Date.now();
     parsed.ships = parsed.ships.map((ship) => ({
       ...ship,
@@ -195,29 +199,58 @@ function addDiscoveryFrom(nextState: GameState, sourceStarId: number, visible: S
   }
 }
 
+function computeCurrentVisibleSet(nextState: GameState, factionId: number): Set<number> {
+  const visible = new Set<number>();
+  const faction = nextState.factions.find((candidate) => candidate.id === factionId);
+  if (faction) addDiscoveryFrom(nextState, faction.homeStarId, visible);
+
+  for (const starbase of nextState.starbases) {
+    if (starbase.ownerId === factionId && starbase.status === "online") {
+      addDiscoveryFrom(nextState, starbase.starId, visible);
+    }
+  }
+
+  for (const ship of nextState.ships) {
+    if (ship.ownerId !== factionId) continue;
+    addDiscoveryFrom(nextState, ship.currentStarId, visible);
+    if (ship.hyperlanePosition) {
+      addDiscoveryFrom(nextState, ship.hyperlanePosition.fromStarId, visible);
+      addDiscoveryFrom(nextState, ship.hyperlanePosition.toStarId, visible);
+    }
+  }
+
+  return visible;
+}
+
 function refreshDiscovery(nextState = state): void {
   for (const faction of nextState.factions) {
-    const discovered = new Set<number>();
-    addDiscoveryFrom(nextState, faction.homeStarId, discovered);
-    for (const starbase of nextState.starbases) {
-      if (starbase.ownerId === faction.id && starbase.status === "online") {
-        addDiscoveryFrom(nextState, starbase.starId, discovered);
-      }
-    }
-    for (const ship of nextState.ships) {
-      if (ship.ownerId === faction.id) addDiscoveryFrom(nextState, ship.currentStarId, discovered);
-      if (ship.ownerId === faction.id && ship.hyperlanePosition) {
-        addDiscoveryFrom(nextState, ship.hyperlanePosition.fromStarId, discovered);
-        addDiscoveryFrom(nextState, ship.hyperlanePosition.toStarId, discovered);
-      }
-    }
+    const visible = computeCurrentVisibleSet(nextState, faction.id);
+    const discovered = new Set<number>(nextState.discoveredByFaction[String(faction.id)] ?? []);
+    for (const starId of visible) discovered.add(starId);
     nextState.discoveredByFaction[String(faction.id)] = Array.from(discovered).sort((a, b) => a - b);
+
+    const lastKnown = nextState.lastKnownOwnershipByFaction[String(faction.id)] ?? [];
+    while (lastKnown.length < nextState.stars.length) lastKnown.push(-1);
+    for (const starId of visible) {
+      lastKnown[starId] = nextState.starOwnership[starId] ?? -1;
+    }
+    nextState.lastKnownOwnershipByFaction[String(faction.id)] = lastKnown.slice(0, nextState.stars.length);
   }
 }
 
 function getVisibleSet(perspective: GalaxyPerspective): Set<number> | null {
   if (perspective.mode === "observer") return null;
+  return computeCurrentVisibleSet(state, perspective.factionId);
+}
+
+function getKnownSet(perspective: GalaxyPerspective): Set<number> | null {
+  if (perspective.mode === "observer") return null;
   return new Set(state.discoveredByFaction[String(perspective.factionId)] ?? []);
+}
+
+function getKnownOwnership(ownerId: number, starId: number): number {
+  const knownOwnership = state.lastKnownOwnershipByFaction[String(ownerId)] ?? [];
+  return knownOwnership[starId] ?? -1;
 }
 
 function isShipVisible(ship: ServerShip, visible: Set<number> | null, perspective: GalaxyPerspective): boolean {
@@ -229,29 +262,60 @@ function isShipVisible(ship: ServerShip, visible: Set<number> | null, perspectiv
 }
 
 function createSnapshot(perspective: GalaxyPerspective): GameSnapshot {
+  const visibleState = createVisibleState(perspective);
+
+  return {
+    type: "snapshot",
+    perspective,
+    ...visibleState,
+    stars: state.stars,
+  };
+}
+
+function createUpdate(perspective: GalaxyPerspective): GameUpdate {
+  return {
+    type: "update",
+    perspective,
+    ...createVisibleState(perspective),
+  };
+}
+
+function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, "type" | "perspective" | "stars"> {
   const visibleSet = getVisibleSet(perspective);
+  const knownSet = getKnownSet(perspective);
   const visibleStarIds = visibleSet ? Array.from(visibleSet).sort((a, b) => a - b) : null;
+  const knownStarIds = knownSet ? Array.from(knownSet).sort((a, b) => a - b) : null;
   const factions: FactionState[] = state.factions.map((faction) => ({
     ...faction,
-    discoveredStarIds: state.discoveredByFaction[String(faction.id)] ?? [],
+    discoveredStarIds: visibleSet === null || (
+      perspective.mode === "faction" && perspective.factionId === faction.id
+    )
+      ? state.discoveredByFaction[String(faction.id)] ?? []
+      : [],
   }));
   const starbases = visibleSet
     ? state.starbases.filter((starbase) => visibleSet.has(starbase.starId))
     : state.starbases;
   const ships = state.ships.filter((ship) => isShipVisible(ship, visibleSet, perspective));
+  const hyperlanes = visibleSet
+    ? state.hyperlanes.filter(([a, b]) => knownSet?.has(a) && knownSet?.has(b))
+    : state.hyperlanes;
+  const starOwnership = perspective.mode === "faction"
+    ? (state.lastKnownOwnershipByFaction[String(perspective.factionId)] ?? [])
+      .slice(0, state.stars.length)
+    : state.starOwnership;
+  while (starOwnership.length < state.stars.length) starOwnership.push(-1);
 
   return {
-    type: "snapshot",
-    perspective,
     clock: {
       year: state.clock.year,
       speedMultiplier: state.clock.speedMultiplier,
     },
-    stars: state.stars,
-    hyperlanes: state.hyperlanes,
+    hyperlanes,
     factions,
-    starOwnership: state.starOwnership,
+    starOwnership,
     visibleStarIds,
+    knownStarIds,
     ships,
     starbases,
   };
@@ -268,6 +332,12 @@ function broadcastSnapshots(): void {
   }
 }
 
+function broadcastUpdates(): void {
+  for (const client of clients) {
+    sendEvent(client.socket, createUpdate(client.perspective));
+  }
+}
+
 function reject(socket: WebSocket, message: string): void {
   sendEvent(socket, { type: "commandResult", ok: false, message });
 }
@@ -278,7 +348,7 @@ function accept(socket: WebSocket, message: string): void {
 
 function routeIsAllowed(route: number[], ownerId: number): boolean {
   for (const starId of route) {
-    const owner = state.starOwnership[starId] ?? -1;
+    const owner = getKnownOwnership(ownerId, starId);
     if (owner >= 0 && owner !== ownerId) return false;
   }
   return true;
@@ -296,7 +366,7 @@ function findRoute(ship: GameShip, targetStarId: number): number[] | null {
     for (const neighbor of state.adjacency[current] ?? []) {
       if (previous.has(neighbor)) continue;
       if (!discovered.has(neighbor)) continue;
-      const owner = state.starOwnership[neighbor] ?? -1;
+      const owner = getKnownOwnership(ship.ownerId, neighbor);
       if (owner >= 0 && owner !== ship.ownerId) continue;
       previous.set(neighbor, current);
       queue.push(neighbor);
@@ -315,6 +385,19 @@ function findRoute(ship: GameShip, targetStarId: number): number[] | null {
 }
 
 function startOrder(ship: GameShip, targetStarId: number, orderType: "move" | "build"): void {
+  if (orderType === "build" && ship.currentStarId === targetStarId) {
+    ship.targetStarId = targetStarId;
+    ship.orderType = orderType;
+    ship.route = [ship.currentStarId];
+    ship.routeIndex = 0;
+    ship.phase = "buildingStarbase";
+    ship.phaseElapsedMs = 0;
+    ship.phaseProgress = 0;
+    ship.systemPosition = systemCenterPosition();
+    ship.hyperlanePosition = null;
+    return;
+  }
+
   const route = findRoute(ship, targetStarId);
   if (!route) throw new Error("No discovered safe route to target.");
   ship.targetStarId = targetStarId;
@@ -339,14 +422,14 @@ function handleMove(socket: WebSocket, perspective: GalaxyPerspective, shipId: s
   if (!ship) return reject(socket, "Ship not found.");
   if (ship.ownerId !== factionId) return reject(socket, "You do not own that ship.");
   if (ship.phase !== "idle") return reject(socket, "Ship is already busy.");
-  const targetOwner = state.starOwnership[targetStarId] ?? -1;
+  const targetOwner = getKnownOwnership(factionId, targetStarId);
   if (targetOwner >= 0 && targetOwner !== factionId) return reject(socket, "Cannot enter another faction's territory.");
   try {
     startOrder(ship, targetStarId, "move");
     hasDirtyState = true;
     refreshDiscovery();
     accept(socket, "Move order accepted.");
-    broadcastSnapshots();
+    broadcastUpdates();
   } catch (error) {
     reject(socket, error instanceof Error ? error.message : "Move order rejected.");
   }
@@ -359,14 +442,14 @@ function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, shipId: 
   if (!ship) return reject(socket, "Ship not found.");
   if (ship.ownerId !== factionId) return reject(socket, "You do not own that ship.");
   if (ship.phase !== "idle") return reject(socket, "Ship is already busy.");
-  if ((state.starOwnership[targetStarId] ?? -1) !== -1) return reject(socket, "Can only build in unowned systems.");
+  if (getKnownOwnership(factionId, targetStarId) !== -1) return reject(socket, "Can only build in unowned systems.");
   if (state.starbases.some((starbase) => starbase.starId === targetStarId)) return reject(socket, "System already has a starbase.");
   try {
     startOrder(ship, targetStarId, "build");
     hasDirtyState = true;
     refreshDiscovery();
     accept(socket, "Build order accepted.");
-    broadcastSnapshots();
+    broadcastUpdates();
   } catch (error) {
     reject(socket, error instanceof Error ? error.message : "Build order rejected.");
   }
@@ -489,7 +572,7 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     state.clock.speedMultiplier = command.multiplier;
     hasDirtyState = true;
     accept(session.socket, `Speed set to ${command.multiplier}x.`);
-    broadcastSnapshots();
+    broadcastUpdates();
   }
 }
 
@@ -520,7 +603,7 @@ wss.on("connection", (socket) => {
 
 setInterval(() => {
   advanceState(Date.now());
-  broadcastSnapshots();
+  broadcastUpdates();
   if (hasDirtyState && Date.now() - lastSaveAt >= SAVE_INTERVAL_MS) {
     void saveState().catch((error) => console.error("[GameServer] Failed to save state", error));
   }

@@ -88,6 +88,20 @@ export interface GameSnapshot {
   factions: FactionState[];
   starOwnership: number[];
   visibleStarIds: number[] | null;
+  knownStarIds: number[] | null;
+  ships: ServerShip[];
+  starbases: ServerStarbase[];
+}
+
+export interface GameUpdate {
+  type: "update";
+  perspective: GalaxyPerspective;
+  clock: GameClock;
+  hyperlanes: Array<[number, number]>;
+  factions: FactionState[];
+  starOwnership: number[];
+  visibleStarIds: number[] | null;
+  knownStarIds: number[] | null;
   ships: ServerShip[];
   starbases: ServerStarbase[];
 }
@@ -103,4 +117,4 @@ export interface ServerInfoEvent {
   message: string;
 }
 
-export type ServerEvent = GameSnapshot | CommandResultEvent | ServerInfoEvent;
+export type ServerEvent = GameSnapshot | GameUpdate | CommandResultEvent | ServerInfoEvent;

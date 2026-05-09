@@ -52,6 +52,7 @@ export interface GalaxySceneOptions {
   perspective?: GalaxyPerspective;
   visibilityJumps?: number;
   visibleStarIds?: Iterable<number> | null;
+  knownStarIds?: Iterable<number> | null;
   starOwnership?: number[];
   playerFactionId?: number;
   playerShipStarId?: number;
@@ -196,6 +197,13 @@ function ensureActionMenuStyles(): void {
   border-color: rgba(90, 220, 255, 0.86);
   color: #edfaff;
   background: rgba(29, 43, 57, 0.98);
+}
+
+.spaceActionMenuBtn:disabled {
+  cursor: default;
+  opacity: 0.45;
+  border-color: rgba(90, 100, 112, 0.38);
+  color: rgba(160, 168, 178, 0.58);
 }
 `;
   document.head.appendChild(style);
@@ -847,7 +855,9 @@ export class GalaxyScene implements IGameScene {
   private factions: FactionInfo[] = [];
   private perspective: GalaxyPerspective = { mode: "observer" };
   private visibleStarIds: Set<number> | null = null;
+  private knownStarIds: Set<number> | null = null;
   private explicitVisibleStarIds: Set<number> | null | undefined = undefined;
+  private explicitKnownStarIds: Set<number> | null | undefined = undefined;
   private playerFactionId = 0;
   private playerShipStarId = -1;
   private playerShipSystemIds = new Set<number>();
@@ -945,6 +955,11 @@ export class GalaxyScene implements IGameScene {
         ? new Set(this.options.visibleStarIds)
         : null;
     }
+    if ("knownStarIds" in this.options) {
+      this.explicitKnownStarIds = this.options.knownStarIds
+        ? new Set(this.options.knownStarIds)
+        : null;
+    }
 
     const initialViewState = this.options.initialViewState;
 
@@ -1008,6 +1023,7 @@ export class GalaxyScene implements IGameScene {
       this.getShipIconStyles(),
     );
     this.starField.setVisibleStarIds(this.visibleStarIds);
+    this.starField.setKnownStarIds(this.knownStarIds);
     this.starField.setPlayerShipState(this.playerShipStarId, this.playerShipTransit);
 
     this.selectionPanel = new SelectionPanel(this.canvas, {
@@ -1097,26 +1113,46 @@ export class GalaxyScene implements IGameScene {
       this.visibleStarIds = this.explicitVisibleStarIds
         ? new Set(this.explicitVisibleStarIds)
         : null;
-      return;
+    } else {
+      this.visibleStarIds = getPerspectiveVisibleStarIds(
+        this.perspective,
+        this.factions,
+        this.hyperlaneAdjacency,
+        this.options.visibilityJumps ?? FOG_OF_WAR_MAX_JUMPS,
+      );
     }
 
-    this.visibleStarIds = getPerspectiveVisibleStarIds(
-      this.perspective,
-      this.factions,
-      this.hyperlaneAdjacency,
-      this.options.visibilityJumps ?? FOG_OF_WAR_MAX_JUMPS,
-    );
+    if (this.explicitKnownStarIds !== undefined) {
+      this.knownStarIds = this.explicitKnownStarIds
+        ? new Set(this.explicitKnownStarIds)
+        : null;
+    } else {
+      this.knownStarIds = this.visibleStarIds;
+    }
   }
 
   private isStarVisibleToPerspective(starId: number): boolean {
     return this.visibleStarIds === null || this.visibleStarIds.has(starId);
   }
 
+  private isStarKnownToPerspective(starId: number): boolean {
+    return this.knownStarIds === null || this.knownStarIds.has(starId);
+  }
+
+  private areVisibleStarSetsEqual(a: Set<number> | null, b: Set<number> | null): boolean {
+    if (a === null || b === null) return a === b;
+    if (a.size !== b.size) return false;
+    for (const value of a) {
+      if (!b.has(value)) return false;
+    }
+    return true;
+  }
+
   private applyVisibilityToOwnership(ownerByStar: number[]): number[] {
-    if (this.visibleStarIds === null) return ownerByStar;
+    if (this.knownStarIds === null) return ownerByStar;
 
     return ownerByStar.map((owner, starId) => (
-      this.visibleStarIds?.has(starId) ? owner : -1
+      this.knownStarIds?.has(starId) ? owner : -1
     ));
   }
 
@@ -1145,7 +1181,7 @@ export class GalaxyScene implements IGameScene {
     const lineColors: Color4[][] = [];
 
     for (const [a, b] of hyperlanes) {
-      if (!this.isStarVisibleToPerspective(a) || !this.isStarVisibleToPerspective(b)) {
+      if (!this.isStarKnownToPerspective(a) || !this.isStarKnownToPerspective(b)) {
         continue;
       }
 
@@ -1231,6 +1267,7 @@ export class GalaxyScene implements IGameScene {
       mapHeight: ownershipHeight,
       stars: this.stars,
       palette,
+      hyperlanePairs: this.hyperlanePairs,
     });
     this.ownershipRenderer.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
 
@@ -1413,7 +1450,7 @@ export class GalaxyScene implements IGameScene {
 
     const start = this.getCurrentCommandOriginStarId();
     if (start < 0 || start >= this.hyperlaneAdjacency.length) return reachable;
-    if (!this.isStarVisibleToPerspective(start)) return reachable;
+    if (!this.isStarKnownToPerspective(start)) return reachable;
 
     const queue: number[] = [start];
     let head = 0;
@@ -1424,7 +1461,11 @@ export class GalaxyScene implements IGameScene {
       for (const neighbor of this.hyperlaneAdjacency[current] ?? []) {
         if (neighbor < 0 || neighbor >= this.hyperlaneAdjacency.length) continue;
         if (reachable.has(neighbor)) continue;
-        if (!this.isStarVisibleToPerspective(neighbor)) continue;
+        if (!this.isStarKnownToPerspective(neighbor)) continue;
+
+        const owner = this.starOwnership[neighbor] ?? -1;
+        if (owner >= 0 && owner !== this.playerFactionId) continue;
+
         reachable.add(neighbor);
         queue.push(neighbor);
       }
@@ -1436,7 +1477,8 @@ export class GalaxyScene implements IGameScene {
     }
 
     for (const starId of Array.from(reachable)) {
-      if (this.starbaseSystemIds.has(starId)) {
+      const owner = this.starOwnership[starId] ?? -1;
+      if (owner !== -1 || this.starbaseSystemIds.has(starId)) {
         reachable.delete(starId);
       }
     }
@@ -1489,7 +1531,7 @@ export class GalaxyScene implements IGameScene {
 
   private openShipActionMenuAtPointer(ev: PointerEvent): void {
     const star = this.findNearestStarAtPointer();
-    if (!star || !this.selectedShip || !this.isStarVisibleToPerspective(star.id)) {
+    if (!star || !this.selectedShip || !this.isStarKnownToPerspective(star.id)) {
       this.closeActionMenu();
       return;
     }
@@ -1514,12 +1556,15 @@ export class GalaxyScene implements IGameScene {
     ];
 
     for (const item of actions) {
+      const canIssue = item.action !== "attack" && this.getReachableStarIds(item.action).has(star.id);
       const button = document.createElement("button");
       button.type = "button";
       button.className = "spaceActionMenuBtn";
       button.textContent = item.label;
+      button.disabled = !canIssue;
       button.addEventListener("click", (clickEv) => {
         clickEv.stopPropagation();
+        if (!canIssue) return;
         this.closeActionMenu();
         if (item.action === "attack") {
           console.info("Attack command is a placeholder.");
@@ -1563,7 +1608,7 @@ export class GalaxyScene implements IGameScene {
     let nearestDistSq = Infinity;
 
     for (const star of this.stars) {
-      if (!this.isStarVisibleToPerspective(star.id)) continue;
+      if (!this.isStarKnownToPerspective(star.id)) continue;
 
       const dx = clickX - star.x;
       const dz = clickZ - star.z;
@@ -1669,7 +1714,7 @@ export class GalaxyScene implements IGameScene {
     const neighborIds = this.hyperlaneAdjacency[starId] ?? [];
     const out: StarData[] = [];
     for (const neighborId of neighborIds) {
-      if (!this.isStarVisibleToPerspective(neighborId)) continue;
+      if (!this.isStarKnownToPerspective(neighborId)) continue;
       const star = this.stars[neighborId];
       if (star) out.push(star);
     }
@@ -1706,9 +1751,30 @@ export class GalaxyScene implements IGameScene {
   }
 
   setVisibleStarIds(starIds: Iterable<number> | null): void {
+    const previousVisibleStarIds = this.visibleStarIds ? new Set(this.visibleStarIds) : null;
     this.explicitVisibleStarIds = starIds ? new Set(starIds) : null;
     this.updateVisibilityFromPerspective();
+    const visibilityChanged = !this.areVisibleStarSetsEqual(previousVisibleStarIds, this.visibleStarIds);
+    if (!visibilityChanged) return;
+
     this.starField?.setVisibleStarIds(this.visibleStarIds);
+    this.starField?.setKnownStarIds(this.knownStarIds);
+    this.ownershipRenderer?.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
+    this.rebuildHyperlaneMesh(GALAXY_MAP.width, GALAXY_MAP.height);
+    if (this.activeShipAction) {
+      this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
+      this.starField?.setHighlightedStarIds(this.targetableStarIds);
+    }
+  }
+
+  setKnownStarIds(starIds: Iterable<number> | null): void {
+    const previousKnownStarIds = this.knownStarIds ? new Set(this.knownStarIds) : null;
+    this.explicitKnownStarIds = starIds ? new Set(starIds) : null;
+    this.updateVisibilityFromPerspective();
+    const knownChanged = !this.areVisibleStarSetsEqual(previousKnownStarIds, this.knownStarIds);
+    if (!knownChanged) return;
+
+    this.starField?.setKnownStarIds(this.knownStarIds);
     this.ownershipRenderer?.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
     this.rebuildHyperlaneMesh(GALAXY_MAP.width, GALAXY_MAP.height);
     if (this.activeShipAction) {
@@ -1756,11 +1822,18 @@ export class GalaxyScene implements IGameScene {
     this.starOwnership[starId] = owner;
     this.ownershipRenderer?.setStarOwner(
       starId,
-      this.isStarVisibleToPerspective(starId) ? owner : -1,
+      this.isStarKnownToPerspective(starId) ? owner : -1,
     );
   }
 
   setStarOwnerships(ownerByStar: number[]): void {
+    if (
+      ownerByStar.length === this.starOwnership.length
+      && ownerByStar.every((owner, index) => owner === this.starOwnership[index])
+    ) {
+      return;
+    }
+
     this.starOwnership = ownerByStar.slice(0, this.stars.length);
     while (this.starOwnership.length < this.stars.length) {
       this.starOwnership.push(-1);
