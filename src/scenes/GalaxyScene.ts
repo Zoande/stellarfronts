@@ -63,9 +63,11 @@ export interface GalaxySceneOptions {
   serverShips?: ServerShip[];
   starbaseSystemIds?: Iterable<number>;
   planetStates?: PlanetState[];
+  habitedPlanetSystemIds?: Iterable<number>;
   onGameplayFrame?: (deltaTime: number) => void;
   onShipCommand?: (action: ShipAction, targetStarId: number, shipId?: string) => void;
   onPlanetCommand?: (command: ClientCommand) => void;
+  onOpenHabitedPlanet?: (starId: number) => void | Promise<void>;
 }
 
 function mulberry32(seed: number): () => number {
@@ -868,6 +870,7 @@ export class GalaxyScene implements IGameScene {
   private playerShipTransit: GalaxyShipTransit | null = null;
   private serverShips: ServerShip[] = [];
   private planetStates: PlanetState[] = [];
+  private hasExplicitHabitedPlanetSystemIds = false;
   private starbaseSystemIds = new Set<number>();
   private selectedShip = false;
   private selectedCommandShipStarId = -1;
@@ -1032,6 +1035,10 @@ export class GalaxyScene implements IGameScene {
     );
     this.starField.setVisibleStarIds(this.visibleStarIds);
     this.starField.setKnownStarIds(this.knownStarIds);
+    if (this.options.habitedPlanetSystemIds) {
+      this.hasExplicitHabitedPlanetSystemIds = true;
+      this.starField.setHabitedPlanetSystemIds(this.options.habitedPlanetSystemIds);
+    }
     this.starField.setPlayerShipState(this.playerShipStarId, this.playerShipTransit);
 
     this.selectionPanel = new SelectionPanel(this.canvas, {
@@ -1189,7 +1196,9 @@ export class GalaxyScene implements IGameScene {
     const lineColors: Color4[][] = [];
 
     for (const [a, b] of hyperlanes) {
-      if (!this.isStarKnownToPerspective(a) || !this.isStarKnownToPerspective(b)) {
+      const knownA = this.isStarKnownToPerspective(a);
+      const knownB = this.isStarKnownToPerspective(b);
+      if (!knownA && !knownB) {
         continue;
       }
 
@@ -1220,9 +1229,18 @@ export class GalaxyScene implements IGameScene {
       const midAlpha = HYPERLANE_BASE_ALPHA + shortLaneFactor * HYPERLANE_DISTANCE_ALPHA_BOOST;
       const endAlpha = midAlpha * HYPERLANE_ENDPOINT_ALPHA_FACTOR;
 
-      const laneColorStart = new Color4(0.53, 0.57, 0.62, endAlpha);
-      const laneColorMid = new Color4(0.56, 0.61, 0.67, midAlpha);
-      const laneColorEnd = new Color4(0.53, 0.57, 0.62, endAlpha);
+      let laneColorStart = new Color4(0.53, 0.57, 0.62, endAlpha);
+      let laneColorMid = new Color4(0.56, 0.61, 0.67, midAlpha);
+      let laneColorEnd = new Color4(0.53, 0.57, 0.62, endAlpha);
+
+      if (knownA !== knownB) {
+        const knownColor = new Color4(0.62, 0.72, 0.76, midAlpha * 1.2);
+        const fadeColor = new Color4(0.43, 0.46, 0.49, midAlpha * 0.52);
+        const unknownColor = new Color4(0.31, 0.32, 0.35, endAlpha * 0.12);
+        laneColorStart = knownA ? knownColor : unknownColor;
+        laneColorMid = fadeColor;
+        laneColorEnd = knownB ? knownColor : unknownColor;
+      }
 
       lineSegments.push([
         new Vector3(ax, 0.06, az),
@@ -1717,6 +1735,11 @@ export class GalaxyScene implements IGameScene {
     }
 
     if (type === "habitedPlanet" && starId !== undefined) {
+      if (this.options.onOpenHabitedPlanet) {
+        void Promise.resolve(this.options.onOpenHabitedPlanet(starId))
+          .catch((error) => console.error("Failed to open habited planet details", error));
+        return;
+      }
       this.showFirstHabitedPlanet(starId);
     }
   }
@@ -1862,10 +1885,41 @@ export class GalaxyScene implements IGameScene {
         this.objectPanel?.refreshPlanetState(planet.id, planetState, planet.objectDetails, planet.isHabited === true);
       }
     }
-    const habitedSystemIds = this.stars
-      .filter((star) => star.system.planets.some((planet) => planet.isHabited === true))
-      .map((star) => star.id);
-    this.starField?.setHabitedPlanetSystemIds(habitedSystemIds);
+    if (!this.hasExplicitHabitedPlanetSystemIds) {
+      const habitedSystemIds = this.stars
+        .filter((star) => star.system.planets.some((planet) => planet.isHabited === true))
+        .map((star) => star.id);
+      this.starField?.setHabitedPlanetSystemIds(habitedSystemIds);
+    }
+  }
+
+  setHabitedPlanetSystemIds(starIds: Iterable<number>): void {
+    this.hasExplicitHabitedPlanetSystemIds = true;
+    this.starField?.setHabitedPlanetSystemIds(starIds);
+  }
+
+  showPlanetDetails(star: StarData, planet: PlanetConfig, planetState: PlanetState): void {
+    this.objectPanel.show({
+      kind: "planet",
+      objectId: planet.id,
+      name: planet.name,
+      subtitle: `${star.name} System`,
+      isHabited: planet.isHabited === true,
+      objectDetails: planet.objectDetails,
+      planetState,
+      imageUrl: this.getPlanetTextureUrl(planet),
+      accentColor: "rgba(102, 236, 199, 0.95)",
+      onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+    });
+  }
+
+  refreshPlanetDetails(planet: PlanetConfig, planetState: PlanetState): void {
+    this.objectPanel?.refreshPlanetState(
+      planet.id,
+      planetState,
+      planet.objectDetails,
+      planet.isHabited === true,
+    );
   }
 
   setStarbaseSystemIds(starIds: Iterable<number>): void {

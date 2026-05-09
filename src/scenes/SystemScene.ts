@@ -61,6 +61,7 @@ export interface SystemSceneOptions {
   hyperlaneExits?: HyperlaneExitPoint[];
   onGameplayFrame?: (deltaTime: number) => void;
   onPlanetCommand?: (command: ClientCommand) => void;
+  onRequestPlanetDetails?: (planetId: string) => Promise<{ planet: PlanetConfig; planetState: PlanetState }>;
 }
 
 const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
@@ -2070,7 +2071,7 @@ export class SystemScene implements IGameScene {
       const labelMesh = this.planetLabelMeshes[i];
       const planet = this.planetConfigs[i];
       if (!labelMesh || !planet || !labelMesh.isEnabled() || !this.hitLabelPlane(ray, labelMesh)) continue;
-      this.showPlanetObjectPanel(planet);
+      void this.showPlanetObjectPanel(planet);
       return true;
     }
 
@@ -2098,17 +2099,27 @@ export class SystemScene implements IGameScene {
     return Math.abs(local.x) <= width / 2 && Math.abs(local.y) <= height / 2;
   }
 
-  private showPlanetObjectPanel(planet: PlanetConfig): void {
-    const planetState = this.getPlanetState(planet.id);
+  private async showPlanetObjectPanel(planet: PlanetConfig): Promise<void> {
+    let panelPlanet = planet;
+    let planetState = this.getPlanetState(planet.id);
+    if (this.options.onRequestPlanetDetails) {
+      try {
+        const details = await this.options.onRequestPlanetDetails(planet.id);
+        panelPlanet = details.planet;
+        planetState = details.planetState;
+      } catch (error) {
+        console.error("Failed to load planet details", error);
+      }
+    }
     this.objectPanel.show({
       kind: "planet",
-      objectId: planet.id,
-      name: planet.name,
+      objectId: panelPlanet.id,
+      name: panelPlanet.name,
       subtitle: `${this.star.name} System`,
-      isHabited: planet.isHabited === true,
-      objectDetails: planet.objectDetails,
+      isHabited: panelPlanet.isHabited === true,
+      objectDetails: panelPlanet.objectDetails,
       planetState,
-      imageUrl: this.getPlanetTextureUrl(planet),
+      imageUrl: this.getPlanetTextureUrl(panelPlanet),
       accentColor: "rgba(102, 236, 199, 0.95)",
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
     });

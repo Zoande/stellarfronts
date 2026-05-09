@@ -7,7 +7,7 @@ import type {
   PlanetState,
   UrbanSubDistrictKind,
 } from "../data/Economy";
-import type { StarData } from "../data/StarMap";
+import type { PlanetConfig, StarData } from "../data/StarMap";
 
 export type ShipAction = "move" | "build" | "attack";
 
@@ -22,6 +22,15 @@ export interface GameClock {
   year: number;
   speedMultiplier: number;
 }
+
+export type ServerUpdateField =
+  | "clock"
+  | "visibility"
+  | "planetStates"
+  | "habitedPlanetSystems"
+  | "factionEconomies"
+  | "ships"
+  | "starbases";
 
 export interface ServerStar extends StarData {}
 
@@ -55,6 +64,8 @@ export interface ServerShip {
   currentStarId: number;
   targetStarId: number | null;
   phase: ShipTransitPhase;
+  phaseStartedAtYear: number;
+  phaseDurationDays: number;
   route: number[];
   routeIndex: number;
   phaseProgress: number;
@@ -102,6 +113,16 @@ export interface SetUrbanSubDistrictCommand {
   subDistrictKind: UrbanSubDistrictKind;
 }
 
+export interface RequestSystemDetailsCommand {
+  type: "requestSystemDetails";
+  starId: number;
+}
+
+export interface RequestPlanetDetailsCommand {
+  type: "requestPlanetDetails";
+  planetId: string;
+}
+
 export interface JoinCommand {
   type: "join";
   perspective: GalaxyPerspective;
@@ -114,7 +135,9 @@ export type ClientCommand =
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
-  | SetUrbanSubDistrictCommand;
+  | SetUrbanSubDistrictCommand
+  | RequestSystemDetailsCommand
+  | RequestPlanetDetailsCommand;
 
 export interface GameSnapshot {
   type: "snapshot";
@@ -123,9 +146,10 @@ export interface GameSnapshot {
   stars: ServerStar[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
+  habitedPlanetSystemIds: number[];
   hyperlanes: Array<[number, number]>;
   factions: FactionState[];
-  starOwnership: number[];
+  starOwnership: Array<[number, number]>;
   visibleStarIds: number[] | null;
   knownStarIds: number[] | null;
   ships: ServerShip[];
@@ -135,16 +159,19 @@ export interface GameSnapshot {
 export interface GameUpdate {
   type: "update";
   perspective: GalaxyPerspective;
-  clock: GameClock;
-  planetStates: PlanetState[];
-  factionEconomies: FactionEconomyState[];
-  hyperlanes: Array<[number, number]>;
-  factions: FactionState[];
-  starOwnership: number[];
-  visibleStarIds: number[] | null;
-  knownStarIds: number[] | null;
-  ships: ServerShip[];
-  starbases: ServerStarbase[];
+  changed: ServerUpdateField[];
+  clock?: GameClock;
+  stars?: ServerStar[];
+  planetStates?: PlanetState[];
+  factionEconomies?: FactionEconomyState[];
+  habitedPlanetSystemIds?: number[];
+  hyperlanes?: Array<[number, number]>;
+  factions?: FactionState[];
+  starOwnership?: Array<[number, number]>;
+  visibleStarIds?: number[] | null;
+  knownStarIds?: number[] | null;
+  ships?: ServerShip[];
+  starbases?: ServerStarbase[];
 }
 
 export interface CommandResultEvent {
@@ -158,4 +185,23 @@ export interface ServerInfoEvent {
   message: string;
 }
 
-export type ServerEvent = GameSnapshot | GameUpdate | CommandResultEvent | ServerInfoEvent;
+export interface SystemDetailsEvent {
+  type: "systemDetails";
+  star: ServerStar;
+  planetStates: PlanetState[];
+}
+
+export interface PlanetDetailsEvent {
+  type: "planetDetails";
+  starId: number;
+  planet: PlanetConfig;
+  planetState: PlanetState;
+}
+
+export type ServerEvent =
+  | GameSnapshot
+  | GameUpdate
+  | CommandResultEvent
+  | ServerInfoEvent
+  | SystemDetailsEvent
+  | PlanetDetailsEvent;

@@ -12,8 +12,9 @@ import {
   generateStarMap,
   normalizeCelestialObjectDetails,
   normalizePlanetStates,
+  StarType,
 } from "../src/data/StarMap";
-import type { StarData } from "../src/data/StarMap";
+import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import {
   addResourceCounts,
   BUILDING_KINDS,
@@ -44,6 +45,7 @@ import type {
   ServerEvent,
   ServerShip,
   ServerStarbase,
+  ServerUpdateField,
   ShipTransitPhase,
 } from "../src/game/GameProtocol";
 
@@ -51,14 +53,17 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = path.join(__dirname, "state", "game-state.json");
 const PORT = Number(process.env.GAME_SERVER_PORT ?? 8787);
 const GAME_START_YEAR = 2100;
-const GAME_YEARS_PER_REAL_DAY = 8;
+const GAME_DAYS_PER_YEAR = 360;
+const REAL_MS_PER_GAME_DAY = 30_000;
+const GAME_MONTHS_PER_YEAR = 12;
+const GAME_MONTH_DAYS = GAME_DAYS_PER_YEAR / GAME_MONTHS_PER_YEAR;
 const DISCOVERY_JUMPS = 2;
 const DEPART_DURATION_MS = 120_000;
 const JUMP_DURATION_MS = 30_000;
 const ARRIVE_DURATION_MS = 150_000;
 const BUILD_DURATION_MS = 1_800_000;
 const SAVE_INTERVAL_MS = 5_000;
-const BROADCAST_INTERVAL_MS = 1_000;
+const SERVER_TICK_INTERVAL_MS = REAL_MS_PER_GAME_DAY;
 
 interface GameShip extends ServerShip {
   phaseElapsedMs: number;
@@ -120,6 +125,10 @@ function interpolateSystemPosition(
 
 function currentEconomyMonth(nextState = state): number {
   return gameYearToMonthIndex(nextState.clock.year);
+}
+
+function currentPopulationQuarter(nextState = state): number {
+  return Math.floor(currentEconomyMonth(nextState) / 4);
 }
 
 function recalculatePlanetEconomies(nextState = state): void {
@@ -197,6 +206,8 @@ function createInitialState(): GameState {
     currentStarId: faction.homeStarId,
     targetStarId: null,
     phase: "idle",
+    phaseStartedAtYear: GAME_START_YEAR,
+    phaseDurationDays: 0,
     route: [faction.homeStarId],
     routeIndex: 0,
     phaseProgress: 0,
@@ -245,6 +256,9 @@ async function loadState(): Promise<GameState> {
     parsed.ships = parsed.ships.map((ship) => ({
       ...ship,
       phaseElapsedMs: ship.phaseElapsedMs ?? Math.round((ship.phaseProgress ?? 0) * phaseDuration(ship.phase)),
+      phaseStartedAtYear: ship.phaseStartedAtYear
+        ?? parsed.clock.year - (ship.phaseProgress ?? 0) * phaseDurationYears(ship.phase),
+      phaseDurationDays: ship.phaseDurationDays ?? phaseDurationDays(ship.phase),
       systemPosition: ship.systemPosition ?? systemCenterPosition(),
       hyperlanePosition: ship.hyperlanePosition ?? null,
     }));
@@ -293,6 +307,23 @@ function phaseDuration(phase: ShipTransitPhase): number {
     default:
       return 1;
   }
+}
+
+function phaseDurationDays(phase: ShipTransitPhase): number {
+  if (phase === "idle") return 0;
+  return phaseDuration(phase) / REAL_MS_PER_GAME_DAY;
+}
+
+function phaseDurationYears(phase: ShipTransitPhase): number {
+  return phaseDurationDays(phase) / GAME_DAYS_PER_YEAR;
+}
+
+function setShipPhase(ship: GameShip, phase: ShipTransitPhase): void {
+  ship.phase = phase;
+  ship.phaseElapsedMs = 0;
+  ship.phaseProgress = 0;
+  ship.phaseStartedAtYear = state?.clock?.year ?? ship.phaseStartedAtYear ?? GAME_START_YEAR;
+  ship.phaseDurationDays = phaseDurationDays(phase);
 }
 
 function addDiscoveryFrom(nextState: GameState, sourceStarId: number, visible: Set<number>): void {
@@ -364,23 +395,110 @@ function isShipVisible(ship: ServerShip, visible: Set<number> | null, perspectiv
     && (visible.has(ship.hyperlanePosition.fromStarId) || visible.has(ship.hyperlanePosition.toStarId));
 }
 
+function createRedactedStar(star: StarData): StarData {
+  return {
+    id: star.id,
+    name: "Unknown Signal",
+    type: StarType.G,
+    x: star.x,
+    z: star.z,
+    luminosity: 0.6,
+    color: [0.42, 0.62, 0.58],
+    galaxyPulseAmplitude: 0.01,
+    galaxyPulseFrequency: 0.4,
+    objectDetails: undefined as unknown as StarData["objectDetails"],
+    system: { planets: [] },
+  };
+}
+
+function createMapStar(star: StarData): StarData {
+  return {
+    ...star,
+    objectDetails: undefined as unknown as StarData["objectDetails"],
+    system: { planets: [] },
+  };
+}
+
+function createVisibleStars(perspective: GalaxyPerspective, knownSet: Set<number> | null): StarData[] {
+  if (perspective.mode === "observer" || knownSet === null) {
+    return state.stars.map((star) => createMapStar(star));
+  }
+  return state.stars.map((star) => (knownSet.has(star.id) ? createMapStar(star) : createRedactedStar(star)));
+}
+
+function createVisiblePlanetStates(knownSet: Set<number> | null, includeDetails: boolean): PlanetState[] {
+  if (!includeDetails) return [];
+  if (knownSet === null) return state.planetStates;
+  return state.planetStates.filter((planetState) => knownSet.has(planetState.starId));
+}
+
+function createHabitedPlanetSystemIds(knownSet: Set<number> | null): number[] {
+  const systemIds = new Set<number>();
+  for (const planetState of state.planetStates) {
+    if (!planetState.isHabited) continue;
+    if (knownSet !== null && !knownSet.has(planetState.starId)) continue;
+    systemIds.add(planetState.starId);
+  }
+  return Array.from(systemIds).sort((a, b) => a - b);
+}
+
+function toOwnershipEntries(ownership: number[]): Array<[number, number]> {
+  const entries: Array<[number, number]> = [];
+  ownership.forEach((ownerId, starId) => {
+    if (ownerId >= 0) entries.push([starId, ownerId]);
+  });
+  return entries;
+}
+
 function createSnapshot(perspective: GalaxyPerspective): GameSnapshot {
   const visibleState = createVisibleState(perspective);
+  const knownSet = getKnownSet(perspective);
 
   return {
     type: "snapshot",
     perspective,
     ...visibleState,
-    stars: state.stars,
+    stars: createVisibleStars(perspective, knownSet),
   };
 }
 
-function createUpdate(perspective: GalaxyPerspective): GameUpdate {
-  return {
+function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField[]): GameUpdate {
+  const visibleState = createVisibleState(perspective);
+  const knownSet = getKnownSet(perspective);
+  const update: GameUpdate = {
     type: "update",
     perspective,
-    ...createVisibleState(perspective),
+    changed,
   };
+
+  if (changed.includes("clock")) {
+    update.clock = visibleState.clock;
+  }
+  if (changed.includes("visibility")) {
+    update.stars = createVisibleStars(perspective, knownSet);
+    update.hyperlanes = visibleState.hyperlanes;
+    update.factions = visibleState.factions;
+    update.starOwnership = visibleState.starOwnership;
+    update.visibleStarIds = visibleState.visibleStarIds;
+    update.knownStarIds = visibleState.knownStarIds;
+    update.habitedPlanetSystemIds = visibleState.habitedPlanetSystemIds;
+  }
+  if (changed.includes("planetStates")) {
+    update.planetStates = visibleState.planetStates;
+  }
+  if (changed.includes("habitedPlanetSystems")) {
+    update.habitedPlanetSystemIds = visibleState.habitedPlanetSystemIds;
+  }
+  if (changed.includes("factionEconomies")) {
+    update.factionEconomies = visibleState.factionEconomies;
+  }
+  if (changed.includes("ships")) {
+    update.ships = visibleState.ships;
+  }
+  if (changed.includes("starbases")) {
+    update.starbases = visibleState.starbases;
+  }
+  return update;
 }
 
 function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, "type" | "perspective" | "stars"> {
@@ -388,20 +506,22 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
   const knownSet = getKnownSet(perspective);
   const visibleStarIds = visibleSet ? Array.from(visibleSet).sort((a, b) => a - b) : null;
   const knownStarIds = knownSet ? Array.from(knownSet).sort((a, b) => a - b) : null;
-  const factions: FactionState[] = state.factions.map((faction) => ({
-    ...faction,
-    discoveredStarIds: visibleSet === null || (
-      perspective.mode === "faction" && perspective.factionId === faction.id
-    )
-      ? state.discoveredByFaction[String(faction.id)] ?? []
-      : [],
-  }));
+  const factions: FactionState[] = state.factions.map((faction) => {
+    const isOwnFaction = perspective.mode === "faction" && perspective.factionId === faction.id;
+    return {
+      ...faction,
+      homeStarId: visibleSet === null || isOwnFaction ? faction.homeStarId : -1,
+      discoveredStarIds: visibleSet === null || isOwnFaction
+        ? state.discoveredByFaction[String(faction.id)] ?? []
+        : [],
+    };
+  });
   const starbases = visibleSet
     ? state.starbases.filter((starbase) => visibleSet.has(starbase.starId))
     : state.starbases;
   const ships = state.ships.filter((ship) => isShipVisible(ship, visibleSet, perspective));
   const hyperlanes = visibleSet
-    ? state.hyperlanes.filter(([a, b]) => knownSet?.has(a) && knownSet?.has(b))
+    ? state.hyperlanes.filter(([a, b]) => knownSet?.has(a) || knownSet?.has(b))
     : state.hyperlanes;
   const starOwnership = perspective.mode === "faction"
     ? (state.lastKnownOwnershipByFaction[String(perspective.factionId)] ?? [])
@@ -419,13 +539,14 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     },
     hyperlanes,
     factions,
-    starOwnership,
+    starOwnership: toOwnershipEntries(starOwnership),
     visibleStarIds,
     knownStarIds,
     ships,
     starbases,
-    planetStates: state.planetStates,
+    planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
     factionEconomies,
+    habitedPlanetSystemIds: createHabitedPlanetSystemIds(knownSet),
   };
 }
 
@@ -440,9 +561,11 @@ function broadcastSnapshots(): void {
   }
 }
 
-function broadcastUpdates(): void {
+function broadcastUpdates(changed: ServerUpdateField[]): void {
+  const deduped = Array.from(new Set(changed));
+  if (deduped.length === 0) return;
   for (const client of clients) {
-    sendEvent(client.socket, createUpdate(client.perspective));
+    sendEvent(client.socket, createUpdate(client.perspective, deduped));
   }
 }
 
@@ -498,9 +621,7 @@ function startOrder(ship: GameShip, targetStarId: number, orderType: "move" | "b
     ship.orderType = orderType;
     ship.route = [ship.currentStarId];
     ship.routeIndex = 0;
-    ship.phase = "buildingStarbase";
-    ship.phaseElapsedMs = 0;
-    ship.phaseProgress = 0;
+    setShipPhase(ship, "buildingStarbase");
     ship.systemPosition = systemCenterPosition();
     ship.hyperlanePosition = null;
     return;
@@ -512,9 +633,7 @@ function startOrder(ship: GameShip, targetStarId: number, orderType: "move" | "b
   ship.orderType = orderType;
   ship.route = route;
   ship.routeIndex = 0;
-  ship.phase = "departingSystem";
-  ship.phaseElapsedMs = 0;
-  ship.phaseProgress = 0;
+  setShipPhase(ship, "departingSystem");
   ship.systemPosition = systemCenterPosition();
   ship.hyperlanePosition = null;
 }
@@ -537,7 +656,7 @@ function handleMove(socket: WebSocket, perspective: GalaxyPerspective, shipId: s
     hasDirtyState = true;
     refreshDiscovery();
     accept(socket, "Move order accepted.");
-    broadcastUpdates();
+    broadcastUpdates(["clock", "ships", "visibility"]);
   } catch (error) {
     reject(socket, error instanceof Error ? error.message : "Move order rejected.");
   }
@@ -557,7 +676,7 @@ function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, shipId: 
     hasDirtyState = true;
     refreshDiscovery();
     accept(socket, "Build order accepted.");
-    broadcastUpdates();
+    broadcastUpdates(["clock", "ships", "visibility"]);
   } catch (error) {
     reject(socket, error instanceof Error ? error.message : "Build order rejected.");
   }
@@ -565,6 +684,54 @@ function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, shipId: 
 
 function getPlanetState(planetId: string): PlanetState | null {
   return state.planetStates.find((planetState) => planetState.id === planetId) ?? null;
+}
+
+function getPlanetConfig(planetState: PlanetState): PlanetConfig | null {
+  return state.stars[planetState.starId]?.system.planets[planetState.planetIndex] ?? null;
+}
+
+function canAccessStar(perspective: GalaxyPerspective, starId: number): boolean {
+  if (starId < 0 || starId >= state.stars.length) return false;
+  if (perspective.mode === "observer") return true;
+  const known = state.discoveredByFaction[String(perspective.factionId)] ?? [];
+  return known.includes(starId);
+}
+
+function canAccessPlanet(perspective: GalaxyPerspective, planetState: PlanetState): boolean {
+  return canAccessStar(perspective, planetState.starId);
+}
+
+function sendSystemDetails(socket: WebSocket, perspective: GalaxyPerspective, starId: number): void {
+  if (!Number.isInteger(starId) || !canAccessStar(perspective, starId)) {
+    reject(socket, "System is not available.");
+    return;
+  }
+
+  sendEvent(socket, {
+    type: "systemDetails",
+    star: state.stars[starId],
+    planetStates: state.planetStates.filter((planetState) => planetState.starId === starId),
+  });
+}
+
+function sendPlanetDetails(socket: WebSocket, perspective: GalaxyPerspective, planetId: string): void {
+  const planetState = getPlanetState(planetId);
+  if (!planetState || !canAccessPlanet(perspective, planetState)) {
+    reject(socket, "Planet is not available.");
+    return;
+  }
+  const planet = getPlanetConfig(planetState);
+  if (!planet) {
+    reject(socket, "Planet details are unavailable.");
+    return;
+  }
+
+  sendEvent(socket, {
+    type: "planetDetails",
+    starId: planetState.starId,
+    planet,
+    planetState,
+  });
 }
 
 function getPlanetDistrictLimits(planetState: PlanetState) {
@@ -594,7 +761,12 @@ function validatePlanetCommand(socket: WebSocket, perspective: GalaxyPerspective
   return planetState;
 }
 
-function commitPlanetState(socket: WebSocket, message: string, nextPlanetState: PlanetState): void {
+function commitPlanetState(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  message: string,
+  nextPlanetState: PlanetState,
+): void {
   const index = state.planetStates.findIndex((planetState) => planetState.id === nextPlanetState.id);
   if (index < 0) {
     reject(socket, "Planet not found.");
@@ -605,11 +777,16 @@ function commitPlanetState(socket: WebSocket, message: string, nextPlanetState: 
   refreshFactionEconomyDeltas();
   hasDirtyState = true;
   accept(socket, message);
-  broadcastUpdates();
+  sendPlanetDetails(socket, perspective, nextPlanetState.id);
+  broadcastUpdates(["clock", "factionEconomies", "habitedPlanetSystems"]);
 }
 
 function isDistrictKind(value: string): value is DistrictKind {
   return value === "city" || value === "generator" || value === "mining" || value === "agriculture";
+}
+
+function isValidSlotIndex(value: number, length: number): boolean {
+  return Number.isInteger(value) && value >= 0 && value < length;
 }
 
 function handleBuildDistrict(
@@ -627,7 +804,7 @@ function handleBuildDistrict(
     return reject(socket, "District limit reached.");
   }
 
-  commitPlanetState(socket, "District built.", {
+  commitPlanetState(socket, perspective, "District built.", {
     ...planetState,
     builtDistricts: {
       ...planetState.builtDistricts,
@@ -650,11 +827,14 @@ function handleBuildPlanetBuilding(
   if (!BUILDING_KINDS.includes(buildingKind)) return reject(socket, "Invalid building.");
 
   if (area === "urbanSubDistrict") {
-    if (subDistrictIndex === undefined || subDistrictIndex < 0 || subDistrictIndex >= planetState.urbanSubDistricts.length) {
+    if (
+      subDistrictIndex === undefined
+      || !isValidSlotIndex(subDistrictIndex, planetState.urbanSubDistricts.length)
+    ) {
       return reject(socket, "Invalid sub-district.");
     }
     const subDistrict = planetState.urbanSubDistricts[subDistrictIndex];
-    if (slotIndex < 0 || slotIndex >= subDistrict.buildings.length) return reject(socket, "Invalid building slot.");
+    if (!isValidSlotIndex(slotIndex, subDistrict.buildings.length)) return reject(socket, "Invalid building slot.");
     if (subDistrict.buildings[slotIndex]) return reject(socket, "Building slot is occupied.");
     if (!isBuildingCompatible(buildingKind, area, subDistrict.kind)) {
       return reject(socket, "Building is incompatible with this sub-district.");
@@ -670,17 +850,17 @@ function handleBuildPlanetBuilding(
         }
         : candidate
     ));
-    commitPlanetState(socket, "Building constructed.", { ...planetState, urbanSubDistricts });
+    commitPlanetState(socket, perspective, "Building constructed.", { ...planetState, urbanSubDistricts });
     return;
   }
 
   if (!isDistrictKind(area)) return reject(socket, "Invalid building area.");
   const slots = planetState.buildings[area];
-  if (slotIndex < 0 || slotIndex >= slots.length) return reject(socket, "Invalid building slot.");
+  if (!isValidSlotIndex(slotIndex, slots.length)) return reject(socket, "Invalid building slot.");
   if (slots[slotIndex]) return reject(socket, "Building slot is occupied.");
   if (!isBuildingCompatible(buildingKind, area)) return reject(socket, "Building is incompatible with this district.");
 
-  commitPlanetState(socket, "Building constructed.", {
+  commitPlanetState(socket, perspective, "Building constructed.", {
     ...planetState,
     buildings: {
       ...planetState.buildings,
@@ -699,7 +879,7 @@ function handleSetUrbanSubDistrict(
   const planetState = validatePlanetCommand(socket, perspective, planetId);
   if (!planetState) return;
   if (!URBAN_SUB_DISTRICT_KINDS.includes(subDistrictKind)) return reject(socket, "Invalid sub-district type.");
-  if (subDistrictIndex < 0 || subDistrictIndex >= planetState.urbanSubDistricts.length) {
+  if (!isValidSlotIndex(subDistrictIndex, planetState.urbanSubDistricts.length)) {
     return reject(socket, "Invalid sub-district.");
   }
 
@@ -713,7 +893,7 @@ function handleSetUrbanSubDistrict(
     };
   });
 
-  commitPlanetState(socket, "Sub-district changed.", { ...planetState, urbanSubDistricts });
+  commitPlanetState(socket, perspective, "Sub-district changed.", { ...planetState, urbanSubDistricts });
 }
 
 function completeShipOrder(ship: GameShip): void {
@@ -736,9 +916,7 @@ function completeShipOrder(ship: GameShip): void {
   ship.orderType = null;
   ship.route = [ship.currentStarId];
   ship.routeIndex = 0;
-  ship.phase = "idle";
-  ship.phaseElapsedMs = 0;
-  ship.phaseProgress = 0;
+  setShipPhase(ship, "idle");
   ship.hyperlanePosition = null;
   ship.systemPosition = systemCenterPosition();
 }
@@ -769,7 +947,7 @@ function advanceShip(ship: GameShip, scaledMs: number): void {
     ship.phaseProgress = 0;
 
     if (ship.phase === "departingSystem") {
-      ship.phase = "jumpingHyperlane";
+      setShipPhase(ship, "jumpingHyperlane");
       const fromStarId = ship.route[ship.routeIndex];
       const toStarId = ship.route[ship.routeIndex + 1];
       ship.hyperlanePosition = { fromStarId, toStarId, progress: 0 };
@@ -777,14 +955,14 @@ function advanceShip(ship: GameShip, scaledMs: number): void {
       ship.currentStarId = ship.route[ship.routeIndex + 1];
       ship.routeIndex += 1;
       ship.hyperlanePosition = null;
-      ship.phase = "arrivingSystem";
+      setShipPhase(ship, "arrivingSystem");
       ship.systemPosition = systemEntryPosition();
     } else if (ship.phase === "arrivingSystem") {
       if (ship.routeIndex < ship.route.length - 1) {
-        ship.phase = "departingSystem";
+        setShipPhase(ship, "departingSystem");
         ship.systemPosition = systemCenterPosition();
       } else if (ship.orderType === "build") {
-        ship.phase = "buildingStarbase";
+        setShipPhase(ship, "buildingStarbase");
         ship.systemPosition = systemCenterPosition();
       } else {
         completeShipOrder(ship);
@@ -795,7 +973,22 @@ function advanceShip(ship: GameShip, scaledMs: number): void {
   }
 }
 
-function processEconomyMonths(targetMonth: number): void {
+function shipUpdateSignature(): string {
+  return JSON.stringify(state.ships.map((ship) => ({
+    id: ship.id,
+    ownerId: ship.ownerId,
+    currentStarId: ship.currentStarId,
+    targetStarId: ship.targetStarId,
+    phase: ship.phase,
+    phaseStartedAtYear: ship.phaseStartedAtYear,
+    phaseDurationDays: ship.phaseDurationDays,
+    route: ship.route,
+    routeIndex: ship.routeIndex,
+    orderType: ship.orderType,
+  })));
+}
+
+function processEconomyMonths(targetMonth: number): boolean {
   recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
   let processed = false;
@@ -809,15 +1002,26 @@ function processEconomyMonths(targetMonth: number): void {
   if (processed) {
     hasDirtyState = true;
   }
+  return processed;
 }
 
-function advanceState(now: number): void {
+function processPopulationQuarter(_targetQuarter: number): boolean {
+  // Population growth is intentionally not implemented yet. This hook exists so
+  // future population simulation has a single four-month cadence to attach to.
+  return false;
+}
+
+function advanceState(now: number): Set<ServerUpdateField> {
+  const changed = new Set<ServerUpdateField>();
   const elapsedMs = Math.max(0, now - state.clock.lastUpdatedAt);
-  if (elapsedMs <= 0) return;
+  if (elapsedMs <= 0) return changed;
   const previousEconomyMonth = currentEconomyMonth();
+  const previousPopulationQuarter = currentPopulationQuarter();
+  const previousShipSignature = shipUpdateSignature();
   const scaledMs = elapsedMs * state.clock.speedMultiplier;
-  state.clock.year += (scaledMs / 86_400_000) * GAME_YEARS_PER_REAL_DAY;
+  state.clock.year += (scaledMs / REAL_MS_PER_GAME_DAY) / GAME_DAYS_PER_YEAR;
   state.clock.lastUpdatedAt = now;
+  changed.add("clock");
 
   const movingBefore = state.ships.some((ship) => ship.phase !== "idle");
   for (const ship of state.ships) {
@@ -825,14 +1029,30 @@ function advanceState(now: number): void {
   }
   const movingAfter = state.ships.some((ship) => ship.phase !== "idle");
   if (movingBefore || movingAfter) {
-    hasDirtyState = true;
     refreshDiscovery();
+  }
+
+  if (shipUpdateSignature() !== previousShipSignature) {
+    hasDirtyState = true;
+    changed.add("ships");
+    changed.add("visibility");
+    changed.add("starbases");
   }
 
   const nextEconomyMonth = currentEconomyMonth();
   if (nextEconomyMonth > previousEconomyMonth) {
-    processEconomyMonths(nextEconomyMonth);
+    if (processEconomyMonths(nextEconomyMonth)) {
+      changed.add("factionEconomies");
+    }
   }
+
+  const nextPopulationQuarter = currentPopulationQuarter();
+  if (nextPopulationQuarter > previousPopulationQuarter && processPopulationQuarter(nextPopulationQuarter)) {
+    changed.add("factionEconomies");
+    changed.add("habitedPlanetSystems");
+  }
+
+  return changed;
 }
 
 function handleCommand(session: ClientSession, command: ClientCommand): void {
@@ -875,13 +1095,21 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     );
     return;
   }
+  if (command.type === "requestSystemDetails") {
+    sendSystemDetails(session.socket, session.perspective, command.starId);
+    return;
+  }
+  if (command.type === "requestPlanetDetails") {
+    sendPlanetDetails(session.socket, session.perspective, command.planetId);
+    return;
+  }
   if (command.type === "setSpeedMultiplier") {
     const allowed = new Set([1, 2, 3, 4, 5, 50, 100, 200, 500]);
     if (!allowed.has(command.multiplier)) return reject(session.socket, "Unsupported speed multiplier.");
     state.clock.speedMultiplier = command.multiplier;
     hasDirtyState = true;
     accept(session.socket, `Speed set to ${command.multiplier}x.`);
-    broadcastUpdates();
+    broadcastUpdates(["clock"]);
   }
 }
 
@@ -894,7 +1122,6 @@ wss.on("connection", (socket) => {
   const session: ClientSession = { socket, perspective: { mode: "observer" } };
   clients.add(session);
   sendEvent(socket, { type: "serverInfo", message: "Connected to StellarFronts game server." });
-  sendEvent(socket, createSnapshot(session.perspective));
 
   socket.on("message", (data) => {
     try {
@@ -911,11 +1138,11 @@ wss.on("connection", (socket) => {
 });
 
 setInterval(() => {
-  advanceState(Date.now());
-  broadcastUpdates();
+  const changed = advanceState(Date.now());
+  broadcastUpdates(Array.from(changed));
   if (hasDirtyState && Date.now() - lastSaveAt >= SAVE_INTERVAL_MS) {
     void saveState().catch((error) => console.error("[GameServer] Failed to save state", error));
   }
-}, BROADCAST_INTERVAL_MS);
+}, SERVER_TICK_INTERVAL_MS);
 
 console.log(`[GameServer] Listening on ws://localhost:${PORT}`);

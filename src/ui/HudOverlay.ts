@@ -27,6 +27,16 @@ export interface HudCallbacks {
 }
 
 const STYLE_ID = "space-rts-hud-style";
+const GAME_DAYS_PER_YEAR = 360;
+
+const RESOURCE_ICON_LABELS: Record<string, string> = {
+  food: "FD",
+  minerals: "MN",
+  energy: "EN",
+  goods: "GD",
+  alloys: "AL",
+  research: "RS",
+};
 
 const HUD_STYLE = `
 #spaceHudRoot {
@@ -231,58 +241,117 @@ const HUD_STYLE = `
 
 #spaceHudClock {
   position: absolute;
-  top: 18px;
-  right: 18px;
-  min-width: 190px;
-  border: 1px solid var(--hud-line);
-  border-radius: 6px;
-  background: linear-gradient(180deg, rgba(16, 22, 30, 0.96) 0%, rgba(8, 12, 18, 0.98) 100%);
-  padding: 10px 12px;
+  top: 0;
+  right: 0;
+  transform: scale(1.3);
+  transform-origin: top right;
+  min-width: 230px;
+  min-height: 34px;
+  border-left: 1px solid rgba(94, 173, 142, 0.72);
+  border-bottom: 1px solid rgba(94, 173, 142, 0.48);
+  background:
+    linear-gradient(180deg, rgba(9, 34, 25, 0.96), rgba(4, 13, 12, 0.98)),
+    radial-gradient(circle at 12% 0%, rgba(246, 170, 77, 0.16), transparent 9rem);
+  padding: 4px 12px 5px 44px;
   pointer-events: none;
   text-align: right;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), inset 0 -1px 0 rgba(117, 255, 208, 0.08);
+}
+
+#spaceHudClock::before {
+  content: "II";
+  position: absolute;
+  left: 12px;
+  top: 7px;
+  width: 22px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(235, 142, 61, 0.84);
+  color: #f2a34c;
+  background: rgba(77, 39, 14, 0.62);
+  font-size: 11px;
+  font-weight: 900;
 }
 
 #spaceHudResources {
   position: absolute;
-  top: 18px;
-  left: 18px;
+  top: 0;
+  left: 0;
+  transform: scale(1.3);
+  transform-origin: top left;
   display: flex;
-  gap: 6px;
-  max-width: calc(100vw - 260px);
+  align-items: stretch;
+  gap: 0;
+  max-width: calc(100vw - 250px);
+  min-height: 34px;
+  border-right: 1px solid rgba(94, 173, 142, 0.72);
+  border-bottom: 1px solid rgba(94, 173, 142, 0.48);
+  background:
+    linear-gradient(180deg, rgba(8, 33, 24, 0.96), rgba(4, 13, 12, 0.98)),
+    radial-gradient(circle at 30% 0%, rgba(90, 255, 195, 0.12), transparent 18rem);
   pointer-events: none;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 -1px 0 rgba(117, 255, 208, 0.08);
 }
 
 .spaceHudResourceItem {
-  min-width: 104px;
-  border: 1px solid var(--hud-line);
-  border-radius: 6px;
-  background: linear-gradient(180deg, rgba(16, 22, 30, 0.96) 0%, rgba(8, 12, 18, 0.98) 100%);
-  padding: 8px 9px;
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+  min-width: 112px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  border-right: 1px solid rgba(94, 173, 142, 0.35);
+  background: linear-gradient(90deg, rgba(16, 58, 43, 0.26), rgba(4, 12, 12, 0.12));
+  padding: 3px 8px 3px 7px;
+}
+
+.spaceHudResourceIcon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+  border: 1px solid rgba(152, 255, 219, 0.48);
+  background: rgba(11, 44, 38, 0.88);
+  color: #eafff7;
+  font-size: 8px;
+  font-weight: 900;
+}
+
+.spaceHudResourceIcon.food { color: #91ff75; background: rgba(37, 83, 28, 0.72); }
+.spaceHudResourceIcon.minerals { color: #f49a75; background: rgba(83, 38, 28, 0.72); }
+.spaceHudResourceIcon.energy { color: #f2e85b; background: rgba(78, 75, 18, 0.72); }
+.spaceHudResourceIcon.goods { color: #b9d2ff; background: rgba(36, 53, 84, 0.72); }
+.spaceHudResourceIcon.alloys { color: #c9d0d3; background: rgba(67, 72, 74, 0.72); }
+.spaceHudResourceIcon.research { color: #8ee8ff; background: rgba(24, 68, 78, 0.72); }
+
+.spaceHudResourceText {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 6px;
 }
 
 .spaceHudResourceLabel {
-  display: block;
-  color: var(--hud-muted);
-  font-size: 8px;
-  letter-spacing: 0.14em;
+  grid-column: 1 / span 2;
+  color: rgba(175, 208, 197, 0.72);
+  font-size: 7px;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  margin-bottom: 3px;
+  white-space: nowrap;
 }
 
 .spaceHudResourceValue {
-  display: block;
   color: #edf4ff;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
+  white-space: nowrap;
 }
 
 .spaceHudResourceDelta {
-  display: block;
-  margin-top: 2px;
   font-size: 9px;
   color: rgba(112, 235, 172, 0.92);
+  white-space: nowrap;
 }
 
 .spaceHudResourceDelta.negative {
@@ -291,27 +360,25 @@ const HUD_STYLE = `
 
 .spaceHudClockLabel {
   display: block;
-  color: var(--hud-muted);
-  font-size: 9px;
+  color: rgba(175, 208, 197, 0.72);
+  font-size: 7px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  margin-bottom: 4px;
 }
 
 .spaceHudClockValue {
   display: block;
   color: #edf4ff;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .spaceHudClockSpeed {
   display: block;
-  margin-top: 3px;
-  color: rgba(150, 210, 255, 0.92);
-  font-size: 10px;
+  color: rgba(246, 170, 77, 0.95);
+  font-size: 9px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
@@ -421,15 +488,12 @@ const HUD_STYLE = `
   }
 
   #spaceHudResources {
-    top: 12px;
-    left: 12px;
     max-width: calc(100vw - 24px);
     flex-wrap: wrap;
   }
 
   .spaceHudResourceItem {
-    min-width: 86px;
-    padding: 6px 7px;
+    min-width: 94px;
   }
 }
 `;
@@ -459,6 +523,16 @@ function formatCompactNumber(value: number): string {
 function formatDelta(value: number): string {
   const sign = value >= 0 ? "+" : "";
   return `${sign}${formatCompactNumber(value)}/mo`;
+}
+
+function formatGameDate(yearValue: number): { year: number; month: number; day: number } {
+  const year = Math.floor(yearValue);
+  const dayOfYear = Math.max(0, Math.min(GAME_DAYS_PER_YEAR - 1, Math.floor((yearValue - year) * GAME_DAYS_PER_YEAR)));
+  return {
+    year,
+    month: Math.floor(dayOfYear / 30) + 1,
+    day: (dayOfYear % 30) + 1,
+  };
 }
 
 export class HudOverlay {
@@ -543,10 +617,12 @@ export class HudOverlay {
   update(state: HudState): void {
     this.titleEl.textContent = state.title;
     if (state.clock) {
+      const date = formatGameDate(state.clock.year);
+      const daysPerThirtySeconds = state.clock.speedMultiplier;
       this.clockEl.innerHTML = `
-        <span class="spaceHudClockLabel">Game Clock</span>
-        <span class="spaceHudClockValue">Year ${state.clock.year.toFixed(1)}</span>
-        <span class="spaceHudClockSpeed">${state.clock.speedMultiplier}x Simulation</span>
+        <span class="spaceHudClockLabel">Galactic Standard</span>
+        <span class="spaceHudClockValue">${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")}</span>
+        <span class="spaceHudClockSpeed">${daysPerThirtySeconds} ${daysPerThirtySeconds === 1 ? "day" : "days"} / 30 sec</span>
       `;
     } else {
       this.clockEl.innerHTML = "";
@@ -557,9 +633,12 @@ export class HudOverlay {
         const delta = state.economy?.monthlyDelta[resource] ?? 0;
         return `
           <div class="spaceHudResourceItem">
-            <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
-            <span class="spaceHudResourceValue">${formatCompactNumber(stockpile)}</span>
-            <span class="spaceHudResourceDelta ${delta < 0 ? "negative" : ""}">${formatDelta(delta)}</span>
+            <span class="spaceHudResourceIcon ${resource}">${RESOURCE_ICON_LABELS[resource]}</span>
+            <span class="spaceHudResourceText">
+              <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
+              <span class="spaceHudResourceValue">${formatCompactNumber(stockpile)}</span>
+              <span class="spaceHudResourceDelta ${delta < 0 ? "negative" : ""}">${formatDelta(delta)}</span>
+            </span>
           </div>
         `;
       }).join("");
