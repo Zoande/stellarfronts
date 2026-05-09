@@ -24,15 +24,17 @@ import {
   getPerspectiveVisibleStarIds,
 } from "../data/Factions";
 import type { FactionInfo, GalaxyPerspective } from "../data/Factions";
-import { generateStarMap } from "../data/StarMap";
-import type { StarData } from "../data/StarMap";
+import { applyPlanetStatesToStars, generateStarMap, PLANET_TYPES } from "../data/StarMap";
+import type { PlanetConfig, StarData } from "../data/StarMap";
+import type { PlanetState } from "../data/Economy";
 import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
-import type { ShipIconStyle } from "../systems/StarFieldRenderer";
+import type { GalaxyIconClickType, ShipIconStyle } from "../systems/StarFieldRenderer";
 import { SelectionPanel } from "../ui/SelectionPanel";
+import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
-import type { ServerShip } from "../game/GameProtocol";
+import type { ClientCommand, ServerShip } from "../game/GameProtocol";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
 
@@ -60,8 +62,10 @@ export interface GalaxySceneOptions {
   playerShipTransit?: GalaxyShipTransit | null;
   serverShips?: ServerShip[];
   starbaseSystemIds?: Iterable<number>;
+  planetStates?: PlanetState[];
   onGameplayFrame?: (deltaTime: number) => void;
   onShipCommand?: (action: ShipAction, targetStarId: number, shipId?: string) => void;
+  onPlanetCommand?: (command: ClientCommand) => void;
 }
 
 function mulberry32(seed: number): () => number {
@@ -863,6 +867,7 @@ export class GalaxyScene implements IGameScene {
   private playerShipSystemIds = new Set<number>();
   private playerShipTransit: GalaxyShipTransit | null = null;
   private serverShips: ServerShip[] = [];
+  private planetStates: PlanetState[] = [];
   private starbaseSystemIds = new Set<number>();
   private selectedShip = false;
   private selectedCommandShipStarId = -1;
@@ -875,6 +880,7 @@ export class GalaxyScene implements IGameScene {
   private hoveredStarId = -1;
   private readonly hoverScaleBoost = 1.3;
   private selectionPanel!: SelectionPanel;
+  private objectPanel!: CelestialObjectPanel;
 
   private hyperlanesVisible = true;
   private centerCloudVisible = true;
@@ -924,6 +930,8 @@ export class GalaxyScene implements IGameScene {
           cfg.minStarSpacing,
           cfg.shape,
         );
+    this.planetStates = this.options.planetStates ?? [];
+    applyPlanetStatesToStars(this.stars, this.planetStates);
     this.factions =
       this.options.factions && this.options.factions.length > 0
         ? this.options.factions
@@ -1029,6 +1037,7 @@ export class GalaxyScene implements IGameScene {
     this.selectionPanel = new SelectionPanel(this.canvas, {
       onShipAction: (action) => this.beginShipAction(action),
     });
+    this.objectPanel = new CelestialObjectPanel();
     this.starField.setIconClickCallback((type, shiftKey, starId) => {
       this.handleIconClick(type, shiftKey, starId);
     });
@@ -1060,7 +1069,6 @@ export class GalaxyScene implements IGameScene {
       const rect = this.canvas.getBoundingClientRect();
       const canvasX = (ev.clientX - rect.left) * (this.canvas.width / rect.width);
       const canvasY = (ev.clientY - rect.top) * (this.canvas.height / rect.height);
-      console.log("Checking icon click at canvas coords:", {canvasX, canvasY, clientX: ev.clientX, clientY: ev.clientY});
       if (this.starField.checkIconClick(canvasX, canvasY, {width: this.canvas.width, height: this.canvas.height}, ev.shiftKey)) {
         return;
       }
@@ -1644,7 +1652,7 @@ export class GalaxyScene implements IGameScene {
       });
   }
 
-  private handleIconClick(type: "ship" | "starbase", shiftKey: boolean, starId?: number): void {
+  private handleIconClick(type: GalaxyIconClickType, shiftKey: boolean, starId?: number): void {
     if (type === "ship") {
       const shipStarId = starId ?? this.playerShipStarId;
       const serverShip = this.getShipForStarId(shipStarId);
@@ -1685,7 +1693,10 @@ export class GalaxyScene implements IGameScene {
         },
         shiftKey,
       );
-    } else if (type === "starbase") {
+      return;
+    }
+
+    if (type === "starbase") {
       if (!shiftKey) {
         this.selectedShip = false;
         this.selectedCommandShipStarId = -1;
@@ -1702,7 +1713,41 @@ export class GalaxyScene implements IGameScene {
         },
         shiftKey,
       );
+      return;
     }
+
+    if (type === "habitedPlanet" && starId !== undefined) {
+      this.showFirstHabitedPlanet(starId);
+    }
+  }
+
+  private showFirstHabitedPlanet(starId: number): void {
+    const star = this.stars[starId];
+    const planet = star?.system.planets.find((candidate) => candidate.isHabited === true);
+    if (!star || !planet) return;
+    const planetState = this.getPlanetState(planet.id);
+    this.objectPanel.show({
+      kind: "planet",
+      objectId: planet.id,
+      name: planet.name,
+      subtitle: `${star.name} System`,
+      isHabited: planet.isHabited === true,
+      objectDetails: planet.objectDetails,
+      planetState,
+      imageUrl: this.getPlanetTextureUrl(planet),
+      accentColor: "rgba(102, 236, 199, 0.95)",
+      onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+    });
+  }
+
+  private getPlanetState(planetId: string): PlanetState | undefined {
+    return this.planetStates.find((planetState) => planetState.id === planetId);
+  }
+
+  private getPlanetTextureUrl(planet: PlanetConfig): string {
+    const cfg = PLANET_TYPES[planet.type];
+    const variation = String(planet.textureVariation + 1).padStart(2, "0");
+    return `${cfg.texturePrefix}_${variation}-1024x512.png`;
   }
 
   getStars(): StarData[] {
@@ -1808,6 +1853,21 @@ export class GalaxyScene implements IGameScene {
     this.starField?.setShipIconStyles(this.getShipIconStyles());
   }
 
+  setPlanetStates(planetStates: PlanetState[]): void {
+    this.planetStates = planetStates;
+    applyPlanetStatesToStars(this.stars, planetStates);
+    for (const planetState of planetStates) {
+      const planet = this.stars[planetState.starId]?.system.planets[planetState.planetIndex];
+      if (planet) {
+        this.objectPanel?.refreshPlanetState(planet.id, planetState, planet.objectDetails, planet.isHabited === true);
+      }
+    }
+    const habitedSystemIds = this.stars
+      .filter((star) => star.system.planets.some((planet) => planet.isHabited === true))
+      .map((star) => star.id);
+    this.starField?.setHabitedPlanetSystemIds(habitedSystemIds);
+  }
+
   setStarbaseSystemIds(starIds: Iterable<number>): void {
     this.starbaseSystemIds = new Set(starIds);
     this.starField?.setStarbaseSystemIds(this.starbaseSystemIds);
@@ -1864,6 +1924,7 @@ export class GalaxyScene implements IGameScene {
     this.canvas?.removeEventListener("contextmenu", this.onContextMenu);
     this.canvas?.removeEventListener("mouseleave", this.onCanvasPointerLeave);
     this.selectionPanel?.clear();
+    this.objectPanel?.dispose();
     this.hyperlaneMesh?.dispose();
     this.hyperlaneMesh = null;
     if (this.ownershipOverlayMesh) {

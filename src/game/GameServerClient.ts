@@ -52,6 +52,8 @@ export class GameServerClient {
             type: "snapshot",
             perspective: parsed.perspective,
             clock: parsed.clock,
+            planetStates: parsed.planetStates,
+            factionEconomies: parsed.factionEconomies,
             hyperlanes: parsed.hyperlanes,
             factions: parsed.factions,
             starOwnership: parsed.starOwnership,

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "server:dev": "tsx server/index.ts",
+    "server:test": "node --import tsx --test server/*.test.ts",
     "dev:all": "concurrently \"npm run server:dev\" \"npm run dev\"",
     "server:typecheck": "tsc -p tsconfig.server.json --noEmit",
     "build": "tsc && vite build",

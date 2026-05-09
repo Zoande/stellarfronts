@@ -1,4 +1,12 @@
 import type { FactionInfo, GalaxyPerspective } from "../data/Factions";
+import type {
+  BuildingKind,
+  BuildingSlotArea,
+  DistrictKind,
+  FactionEconomyState,
+  PlanetState,
+  UrbanSubDistrictKind,
+} from "../data/Economy";
 import type { StarData } from "../data/StarMap";
 
 export type ShipAction = "move" | "build" | "attack";
@@ -72,18 +80,49 @@ export interface SetSpeedCommand {
   multiplier: number;
 }
 
+export interface BuildDistrictCommand {
+  type: "buildDistrict";
+  planetId: string;
+  districtKind: DistrictKind;
+}
+
+export interface BuildPlanetBuildingCommand {
+  type: "buildPlanetBuilding";
+  planetId: string;
+  area: BuildingSlotArea;
+  slotIndex: number;
+  buildingKind: BuildingKind;
+  subDistrictIndex?: number;
+}
+
+export interface SetUrbanSubDistrictCommand {
+  type: "setUrbanSubDistrict";
+  planetId: string;
+  subDistrictIndex: number;
+  subDistrictKind: UrbanSubDistrictKind;
+}
+
 export interface JoinCommand {
   type: "join";
   perspective: GalaxyPerspective;
 }
 
-export type ClientCommand = JoinCommand | MoveCommand | BuildCommand | SetSpeedCommand;
+export type ClientCommand =
+  | JoinCommand
+  | MoveCommand
+  | BuildCommand
+  | SetSpeedCommand
+  | BuildDistrictCommand
+  | BuildPlanetBuildingCommand
+  | SetUrbanSubDistrictCommand;
 
 export interface GameSnapshot {
   type: "snapshot";
   perspective: GalaxyPerspective;
   clock: GameClock;
   stars: ServerStar[];
+  planetStates: PlanetState[];
+  factionEconomies: FactionEconomyState[];
   hyperlanes: Array<[number, number]>;
   factions: FactionState[];
   starOwnership: number[];
@@ -97,6 +136,8 @@ export interface GameUpdate {
   type: "update";
   perspective: GalaxyPerspective;
   clock: GameClock;
+  planetStates: PlanetState[];
+  factionEconomies: FactionEconomyState[];
   hyperlanes: Array<[number, number]>;
   factions: FactionState[];
   starOwnership: number[];

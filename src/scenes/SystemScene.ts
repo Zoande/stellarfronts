@@ -25,15 +25,27 @@ import {
   Ray,
   Quaternion,
   Matrix,
+  PointerEventTypes,
 } from "@babylonjs/core";
-import type { AbstractEngine, AbstractMesh, LinesMesh } from "@babylonjs/core";
+import type { AbstractEngine, AbstractMesh, LinesMesh, Observer, PointerInfo } from "@babylonjs/core";
 import "@babylonjs/loaders/OBJ/objFileLoader";
 import "@babylonjs/loaders/glTF";
 import type { IGameScene } from "../SceneManager";
-import { STAR_TYPES, StarType, PLANET_TYPES, PlanetType } from "../data/StarMap";
+import {
+  STAR_TYPES,
+  StarType,
+  PLANET_TYPES,
+  PlanetType,
+  applyPlanetStatesToStars,
+  createPlanetId,
+  withPlanetObjectDetails,
+} from "../data/StarMap";
 import type { PlanetConfig, StarData, StarVisualKind } from "../data/StarMap";
+import type { PlanetState } from "../data/Economy";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint } from "../game/GameplayTypes";
+import type { ClientCommand } from "../game/GameProtocol";
+import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
 
 type ExitSystemHandler = () => void | Promise<void>;
@@ -44,9 +56,11 @@ export interface SystemSceneOptions {
   playerShipSystemIds?: number[];
   shipSystemPositions?: Record<number, { x: number; y: number; z: number }>;
   starbaseSystemIds?: number[];
+  planetStates?: PlanetState[];
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
   onGameplayFrame?: (deltaTime: number) => void;
+  onPlanetCommand?: (command: ClientCommand) => void;
 }
 
 const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
@@ -74,9 +88,11 @@ export class SystemScene implements IGameScene {
   private playerShipSystemIds: Set<number>;
   private shipSystemPositions: Record<number, { x: number; y: number; z: number }>;
   private starbaseSystemIds: Set<number>;
+  private planetStates: PlanetState[];
   private shipTransit: GalaxyShipTransit | null;
   private hyperlaneExits: HyperlaneExitPoint[];
   private readonly onExitSystem: ExitSystemHandler;
+  private readonly options: SystemSceneOptions;
 
   private camera!: ArcRotateCamera;
   private glowLayer!: GlowLayer;
@@ -107,10 +123,13 @@ export class SystemScene implements IGameScene {
   private orbitRings: LinesMesh[] = [];
   private planetMeshes: Mesh[] = [];
   private planetLabelMeshes: Mesh[] = [];
+  private planetConfigs: PlanetConfig[] = [];
   private planetDiameters: number[] = [];
   private starLabelMesh: Mesh | null = null;
+  private objectPanel!: CelestialObjectPanel;
+  private pointerObserver: Observer<PointerInfo> | null = null;
   private starOccluded = false;
-  private debugLogOccluder = true;
+  private debugLogOccluder = false;
   private deepDebug = false;
   private isExiting = false;
   private elapsed = 0;
@@ -176,9 +195,12 @@ export class SystemScene implements IGameScene {
     );
     this.shipSystemPositions = options.shipSystemPositions ?? {};
     this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
+    this.planetStates = options.planetStates ?? [];
+    applyPlanetStatesToStars([this.star], this.planetStates);
     this.shipTransit = options.shipTransit ?? null;
     this.hyperlaneExits = options.hyperlaneExits ?? [];
     this.onExitSystem = onExitSystem;
+    this.options = options;
     this.scene = new Scene(engine);
     this.scene.clearColor = new Color4(0.01, 0.015, 0.03, 1);
     console.log(`📍 SystemScene init: star.id=${star.id}, totalStarCount=${starCount}`);
@@ -365,6 +387,8 @@ export class SystemScene implements IGameScene {
     this.setupCamera(canvas);
     this.setupLighting();
     this.buildSystemObjects();
+    this.objectPanel = new CelestialObjectPanel();
+    this.installObjectLabelClicks();
     await this.createPlayerShipIfPresent();
     await this.createStarbaseIfPresent();
     this.setStarsVisible(this.starsVisible);
@@ -1107,13 +1131,7 @@ export class SystemScene implements IGameScene {
         ? this.star.system.planets
         : this.createFallbackPlanets(this.starKind);
 
-    // Mark one random planet as habited if this is a starting owned system
-    const isOwnedSystem = this.homeSystemStarIds.has(this.star.id);
-    if (isOwnedSystem && planets.length > 0) {
-      const habitedIndex = Math.floor(Math.random() * planets.length);
-      planets[habitedIndex].isHabited = true;
-    }
-
+    this.planetConfigs = planets;
     for (let i = 0; i < planets.length; i++) {
       this.createPlanet(i, planets[i]);
     }
@@ -1878,7 +1896,7 @@ export class SystemScene implements IGameScene {
     ctx.restore();
 
     if (drawBadge) {
-      this.drawSystemHexBadge(ctx, badgeX, badgeY, badgeR);
+      this.drawSystemHabitedPlanetBadge(ctx, badgeX, badgeY, badgeR);
     }
   }
 
@@ -1958,23 +1976,185 @@ export class SystemScene implements IGameScene {
     ctx.restore();
   }
 
+  private drawSystemHabitedPlanetBadge(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
+    const drawHex = (r: number): void => {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const angle = -Math.PI / 6 + (i * Math.PI * 2) / 6;
+        const px = x + Math.cos(angle) * r;
+        const py = y + Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    };
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
+    ctx.shadowBlur = 28;
+    ctx.shadowOffsetY = 12;
+
+    drawHex(radius);
+    const bg = ctx.createLinearGradient(x - radius, y - radius, x + radius, y + radius);
+    bg.addColorStop(0, "rgba(24, 171, 126, 0.98)");
+    bg.addColorStop(0.58, "rgba(21, 100, 137, 0.98)");
+    bg.addColorStop(1, "rgba(226, 166, 61, 0.98)");
+    ctx.fillStyle = bg;
+    ctx.fill();
+    ctx.lineWidth = 20;
+    ctx.strokeStyle = "rgba(194, 255, 231, 0.96)";
+    ctx.stroke();
+
+    drawHex(radius * 0.76);
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = "rgba(7, 35, 40, 0.72)";
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.ellipse(x, y, radius * 0.45, radius * 0.32, -0.18, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(210, 252, 230, 0.98)";
+    ctx.fill();
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = "rgba(9, 50, 51, 0.88)";
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(x - radius * 0.1, y - radius * 0.02, radius * 0.5, radius * 0.16, -0.34, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255, 232, 134, 0.95)";
+    ctx.lineWidth = 9;
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(34, 124, 92, 0.9)";
+    ctx.beginPath();
+    ctx.moveTo(x - radius * 0.27, y - radius * 0.06);
+    ctx.bezierCurveTo(x - radius * 0.1, y - radius * 0.2, x + radius * 0.08, y - radius * 0.14, x + radius * 0.17, y);
+    ctx.bezierCurveTo(x + radius * 0.02, y + radius * 0.05, x - radius * 0.12, y + radius * 0.08, x - radius * 0.27, y - radius * 0.06);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255, 226, 105, 0.96)";
+    const lightR = Math.max(4, radius * 0.045);
+    const lights = [
+      [x - radius * 0.11, y + radius * 0.1],
+      [x + radius * 0.03, y + radius * 0.07],
+      [x + radius * 0.18, y + radius * 0.02],
+    ];
+    for (const [lx, ly] of lights) {
+      ctx.beginPath();
+      ctx.arc(lx, ly, lightR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private installObjectLabelClicks(): void {
+    this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
+      if (pointerInfo.type !== PointerEventTypes.POINTERDOWN) return;
+      const ev = pointerInfo.event as PointerEvent;
+      if (ev.button !== 0) return;
+      if (this.tryOpenObjectPanelAtPointer(ev)) {
+        ev.preventDefault();
+      }
+    });
+  }
+
+  private tryOpenObjectPanelAtPointer(ev: PointerEvent): boolean {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const ray = this.scene.createPickingRay(canvasX, canvasY, Matrix.Identity(), this.camera);
+
+    for (let i = 0; i < this.planetLabelMeshes.length; i++) {
+      const labelMesh = this.planetLabelMeshes[i];
+      const planet = this.planetConfigs[i];
+      if (!labelMesh || !planet || !labelMesh.isEnabled() || !this.hitLabelPlane(ray, labelMesh)) continue;
+      this.showPlanetObjectPanel(planet);
+      return true;
+    }
+
+    if (this.starLabelMesh && this.starLabelMesh.isEnabled() && this.hitLabelPlane(ray, this.starLabelMesh)) {
+      this.showStarObjectPanel();
+      return true;
+    }
+
+    return false;
+  }
+
+  private hitLabelPlane(ray: Ray, labelMesh: Mesh): boolean {
+    const normal = labelMesh.getDirection(Vector3.Forward());
+    const denominator = Vector3.Dot(ray.direction, normal);
+    if (Math.abs(denominator) < 0.0001) return false;
+
+    const t = Vector3.Dot(labelMesh.position.subtract(ray.origin), normal) / denominator;
+    if (t < 0) return false;
+
+    const hitPoint = ray.origin.add(ray.direction.scale(t));
+    const inverseWorld = labelMesh.getWorldMatrix().clone().invert();
+    const local = Vector3.TransformCoordinates(hitPoint, inverseWorld);
+    const width = labelMesh.getBoundingInfo().boundingBox.extendSize.x * 2;
+    const height = labelMesh.getBoundingInfo().boundingBox.extendSize.y * 2;
+    return Math.abs(local.x) <= width / 2 && Math.abs(local.y) <= height / 2;
+  }
+
+  private showPlanetObjectPanel(planet: PlanetConfig): void {
+    const planetState = this.getPlanetState(planet.id);
+    this.objectPanel.show({
+      kind: "planet",
+      objectId: planet.id,
+      name: planet.name,
+      subtitle: `${this.star.name} System`,
+      isHabited: planet.isHabited === true,
+      objectDetails: planet.objectDetails,
+      planetState,
+      imageUrl: this.getPlanetTextureUrl(planet),
+      accentColor: "rgba(102, 236, 199, 0.95)",
+      onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+    });
+  }
+
+  private showStarObjectPanel(): void {
+    const [r, g, b] = this.star.color.map((channel) => Math.round(channel * 255));
+    this.objectPanel.show({
+      kind: "star",
+      objectId: `star-${this.star.id}`,
+      name: this.star.name,
+      subtitle: "Stellar Object",
+      isHabited: false,
+      objectDetails: this.star.objectDetails,
+      imageUrl: "/textures/star_surface.png",
+      accentColor: `rgba(${r}, ${g}, ${b}, 0.95)`,
+    });
+  }
+
+  private getPlanetState(planetId: string): PlanetState | undefined {
+    return this.planetStates.find((planetState) => planetState.id === planetId);
+  }
+
+  private getPlanetTextureUrl(planet: PlanetConfig): string {
+    const cfg = PLANET_TYPES[planet.type];
+    const variation = String(planet.textureVariation + 1).padStart(2, "0");
+    return `${cfg.texturePrefix}_${variation}-1024x512.png`;
+  }
+
   private createFallbackPlanets(kind: StarVisualKind): PlanetConfig[] {
     if (kind === "black-hole") {
       return [
-        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32, name: `${this.star.name} I` },
-        { type: PlanetType.Methane, textureVariation: 0, diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2, name: `${this.star.name} II` },
+        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32, name: `${this.star.name} I` }, `${this.star.id}:fallback:0`),
+        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 1), type: PlanetType.Methane, textureVariation: 0, diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2, name: `${this.star.name} II` }, `${this.star.id}:fallback:1`),
       ];
     }
     if (kind === "neutron-star" || kind === "pulsar") {
       return [
-        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62, name: `${this.star.name} I` },
-        { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46, name: `${this.star.name} II` },
+        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62, name: `${this.star.name} I` }, `${this.star.id}:fallback:0`),
+        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 1), type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46, name: `${this.star.name} II` }, `${this.star.id}:fallback:1`),
       ];
     }
     return [
-      { type: PlanetType.Barren, textureVariation: 0, diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55, name: `${this.star.name} I` },
-      { type: PlanetType.Gaseous, textureVariation: 0, diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24, name: `${this.star.name} II` },
-      { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4, name: `${this.star.name} III` },
+      withPlanetObjectDetails({ id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55, name: `${this.star.name} I` }, `${this.star.id}:fallback:0`),
+      withPlanetObjectDetails({ id: createPlanetId(this.star.id, 1), type: PlanetType.Gaseous, textureVariation: 0, diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24, name: `${this.star.name} II` }, `${this.star.id}:fallback:1`),
+      withPlanetObjectDetails({ id: createPlanetId(this.star.id, 2), type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4, name: `${this.star.name} III` }, `${this.star.id}:fallback:2`),
     ];
   }
 
@@ -2043,8 +2223,45 @@ export class SystemScene implements IGameScene {
     this.starbaseRoot?.setEnabled(false);
   }
 
+  setPlanetStates(planetStates: PlanetState[]): void {
+    this.planetStates = planetStates;
+    const previousHabited = this.planetConfigs.map((planet) => planet.isHabited === true);
+    applyPlanetStatesToStars([this.star], planetStates);
+    this.planetConfigs = this.star.system.planets.length > 0
+      ? this.star.system.planets
+      : this.planetConfigs;
+
+    for (let i = 0; i < this.planetConfigs.length; i++) {
+      if (previousHabited[i] === (this.planetConfigs[i].isHabited === true)) continue;
+      const oldLabel = this.planetLabelMeshes[i];
+      if (oldLabel) {
+        const material = oldLabel.material as StandardMaterial | null;
+        material?.diffuseTexture?.dispose();
+        material?.dispose();
+        oldLabel.dispose();
+      }
+      this.planetLabelMeshes[i] = this.createPlanetLabel(
+        i,
+        this.planetConfigs[i],
+        this.planetConfigs[i].orbitRadius,
+      );
+    }
+    for (const planetState of planetStates) {
+      if (planetState.starId !== this.star.id) continue;
+      const planet = this.star.system.planets[planetState.planetIndex];
+      if (planet) {
+        this.objectPanel?.refreshPlanetState(planet.id, planetState, planet.objectDetails, planet.isHabited === true);
+      }
+    }
+  }
+
   dispose(): void {
     window.removeEventListener("keydown", this.onEscapeKey);
+    if (this.pointerObserver) {
+      this.scene.onPointerObservable.remove(this.pointerObserver);
+      this.pointerObserver = null;
+    }
+    this.objectPanel?.dispose();
     this.orbitSystem.dispose();
     this.camera?.detachControl();
     this.scene.dispose();

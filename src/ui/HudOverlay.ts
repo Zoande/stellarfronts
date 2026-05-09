@@ -1,4 +1,6 @@
 import type { GameClock } from "../game/GameProtocol";
+import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
+import type { FactionEconomyState } from "../data/Economy";
 
 export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
 
@@ -15,6 +17,7 @@ export interface HudState {
   connectedSystems: HudConnectedSystem[];
   toggles: HudVisualToggles;
   clock?: GameClock;
+  economy?: FactionEconomyState | null;
 }
 
 export interface HudCallbacks {
@@ -240,6 +243,52 @@ const HUD_STYLE = `
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
 }
 
+#spaceHudResources {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  display: flex;
+  gap: 6px;
+  max-width: calc(100vw - 260px);
+  pointer-events: none;
+}
+
+.spaceHudResourceItem {
+  min-width: 104px;
+  border: 1px solid var(--hud-line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(16, 22, 30, 0.96) 0%, rgba(8, 12, 18, 0.98) 100%);
+  padding: 8px 9px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+}
+
+.spaceHudResourceLabel {
+  display: block;
+  color: var(--hud-muted);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+
+.spaceHudResourceValue {
+  display: block;
+  color: #edf4ff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.spaceHudResourceDelta {
+  display: block;
+  margin-top: 2px;
+  font-size: 9px;
+  color: rgba(112, 235, 172, 0.92);
+}
+
+.spaceHudResourceDelta.negative {
+  color: rgba(255, 129, 111, 0.95);
+}
+
 .spaceHudClockLabel {
   display: block;
   color: var(--hud-muted);
@@ -370,6 +419,18 @@ const HUD_STYLE = `
     min-height: 29px;
     font-size: 10px;
   }
+
+  #spaceHudResources {
+    top: 12px;
+    left: 12px;
+    max-width: calc(100vw - 24px);
+    flex-wrap: wrap;
+  }
+
+  .spaceHudResourceItem {
+    min-width: 86px;
+    padding: 6px 7px;
+  }
 }
 `;
 
@@ -386,11 +447,26 @@ function truncateLabel(name: string, maxLength = 18): string {
   return `${name.slice(0, maxLength - 1)}...`;
 }
 
+function formatCompactNumber(value: number): string {
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `${sign}${(abs / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}${abs.toFixed(abs >= 100 ? 0 : 1)}`;
+}
+
+function formatDelta(value: number): string {
+  const sign = value >= 0 ? "+" : "";
+  return `${sign}${formatCompactNumber(value)}/mo`;
+}
+
 export class HudOverlay {
   private readonly callbacks: HudCallbacks;
   private readonly root: HTMLDivElement;
   private readonly connectedContainer: HTMLDivElement;
   private readonly clockEl: HTMLDivElement;
+  private readonly resourceEl: HTMLDivElement;
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
   private readonly toggleButtons: Record<HudToggleKey, HTMLButtonElement>;
@@ -410,6 +486,9 @@ export class HudOverlay {
 
     this.clockEl = document.createElement("div");
     this.clockEl.id = "spaceHudClock";
+
+    this.resourceEl = document.createElement("div");
+    this.resourceEl.id = "spaceHudResources";
 
     this.titleEl = document.createElement("div");
     this.titleEl.id = "spaceHudTitle";
@@ -456,6 +535,7 @@ export class HudOverlay {
 
     this.root.appendChild(bottom);
     this.root.appendChild(this.clockEl);
+    this.root.appendChild(this.resourceEl);
     this.root.appendChild(toggles);
     document.body.appendChild(this.root);
   }
@@ -470,6 +550,21 @@ export class HudOverlay {
       `;
     } else {
       this.clockEl.innerHTML = "";
+    }
+    if (state.economy) {
+      this.resourceEl.innerHTML = RESOURCE_KINDS.map((resource) => {
+        const stockpile = state.economy?.stockpiles[resource] ?? 0;
+        const delta = state.economy?.monthlyDelta[resource] ?? 0;
+        return `
+          <div class="spaceHudResourceItem">
+            <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
+            <span class="spaceHudResourceValue">${formatCompactNumber(stockpile)}</span>
+            <span class="spaceHudResourceDelta ${delta < 0 ? "negative" : ""}">${formatDelta(delta)}</span>
+          </div>
+        `;
+      }).join("");
+    } else {
+      this.resourceEl.innerHTML = "";
     }
     this.exitButton.disabled = !state.canExitSystem;
 

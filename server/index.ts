@@ -5,8 +5,35 @@ import { WebSocketServer, WebSocket } from "ws";
 import { GALAXY_MAP } from "../src/data/GalaxyMap";
 import { buildFactions, buildHomeSystemOwnership, computeVisibleStarIds } from "../src/data/Factions";
 import type { FactionInfo, GalaxyPerspective } from "../src/data/Factions";
-import { generateStarMap } from "../src/data/StarMap";
+import {
+  applyPlanetStatesToStars,
+  buildPlanetStatesFromStars,
+  ensureHabitedHomePlanets,
+  generateStarMap,
+  normalizeCelestialObjectDetails,
+  normalizePlanetStates,
+} from "../src/data/StarMap";
 import type { StarData } from "../src/data/StarMap";
+import {
+  addResourceCounts,
+  BUILDING_KINDS,
+  cloneResourceCounts,
+  createEmptyResourceCounts,
+  createInitialFactionEconomyState,
+  gameYearToMonthIndex,
+  isBuildingCompatible,
+  recalculatePlanetStateEconomy,
+  URBAN_SUB_DISTRICT_KINDS,
+} from "../src/data/Economy";
+import type {
+  BuildingKind,
+  BuildingSlotArea,
+  DistrictKind,
+  FactionEconomyState,
+  PlanetState,
+  ResourceCounts,
+  UrbanSubDistrictKind,
+} from "../src/data/Economy";
 import { buildHyperlaneAdjacency, buildHyperlanePairs } from "../src/data/Hyperlanes";
 import type {
   ClientCommand,
@@ -38,8 +65,10 @@ interface GameShip extends ServerShip {
 }
 
 interface GameState {
-  schemaVersion: 1;
+  schemaVersion: 4;
   stars: StarData[];
+  planetStates: PlanetState[];
+  factionEconomies: FactionEconomyState[];
   hyperlanes: Array<[number, number]>;
   adjacency: number[][];
   factions: FactionInfo[];
@@ -89,6 +118,55 @@ function interpolateSystemPosition(
   };
 }
 
+function currentEconomyMonth(nextState = state): number {
+  return gameYearToMonthIndex(nextState.clock.year);
+}
+
+function recalculatePlanetEconomies(nextState = state): void {
+  nextState.planetStates = nextState.planetStates.map((planetState) => recalculatePlanetStateEconomy(planetState));
+  applyPlanetStatesToStars(nextState.stars, nextState.planetStates);
+}
+
+function calculateFactionMonthlyDelta(nextState: GameState, factionId: number) {
+  let delta = createEmptyResourceCounts();
+  for (const planetState of nextState.planetStates) {
+    if (!planetState.isHabited) continue;
+    if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    delta = addResourceCounts(delta, planetState.economy.net);
+  }
+  return delta;
+}
+
+function refreshFactionEconomyDeltas(nextState = state): void {
+  for (const economy of nextState.factionEconomies) {
+    economy.monthlyDelta = calculateFactionMonthlyDelta(nextState, economy.factionId);
+  }
+}
+
+function normalizeResourceCounts(counts?: Partial<ResourceCounts>): ResourceCounts {
+  return {
+    ...createEmptyResourceCounts(),
+    ...counts,
+  };
+}
+
+function normalizeFactionEconomies(
+  nextState: Omit<GameState, "factionEconomies"> & { factionEconomies?: FactionEconomyState[] },
+): FactionEconomyState[] {
+  const byFaction = new Map((nextState.factionEconomies ?? []).map((economy) => [economy.factionId, economy]));
+  const month = gameYearToMonthIndex(nextState.clock.year);
+  return nextState.factions.map((faction) => {
+    const existing = byFaction.get(faction.id);
+    const economy = existing ?? createInitialFactionEconomyState(faction.id, month);
+    return {
+      factionId: faction.id,
+      stockpiles: existing?.stockpiles ? cloneResourceCounts(normalizeResourceCounts(existing.stockpiles)) : economy.stockpiles,
+      monthlyDelta: existing?.monthlyDelta ? cloneResourceCounts(normalizeResourceCounts(existing.monthlyDelta)) : economy.monthlyDelta,
+      lastProcessedMonth: existing?.lastProcessedMonth ?? month,
+    };
+  });
+}
+
 function createInitialState(): GameState {
   const cfg = GALAXY_MAP;
   const stars = generateStarMap(
@@ -102,6 +180,9 @@ function createInitialState(): GameState {
   const hyperlanes = buildHyperlanePairs(stars, cfg.width, cfg.height, cfg.shape, cfg.seed);
   const adjacency = buildHyperlaneAdjacency(hyperlanes, stars.length);
   const factions = buildFactions(stars, cfg);
+  ensureHabitedHomePlanets(stars, factions.map((faction) => faction.homeStarId));
+  const planetStates = buildPlanetStatesFromStars(stars);
+  applyPlanetStatesToStars(stars, planetStates);
   const starOwnership = buildHomeSystemOwnership(stars, factions);
   const starbases = factions.map<ServerStarbase>((faction) => ({
     id: `starbase-${faction.id}`,
@@ -126,9 +207,12 @@ function createInitialState(): GameState {
   }));
 
   const now = Date.now();
+  const startMonth = gameYearToMonthIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 1,
+    schemaVersion: 4,
     stars,
+    planetStates,
+    factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
     hyperlanes,
     adjacency,
     factions,
@@ -143,6 +227,8 @@ function createInitialState(): GameState {
       lastUpdatedAt: now,
     },
   };
+  recalculatePlanetEconomies(created);
+  refreshFactionEconomyDeltas(created);
   refreshDiscovery(created);
   return created;
 }
@@ -151,6 +237,7 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
     const parsed = JSON.parse(raw) as GameState;
+    parsed.schemaVersion = 4;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
@@ -161,6 +248,22 @@ async function loadState(): Promise<GameState> {
       systemPosition: ship.systemPosition ?? systemCenterPosition(),
       hyperlanePosition: ship.hyperlanePosition ?? null,
     }));
+    const metadataChanged = normalizeCelestialObjectDetails(parsed.stars);
+    const habitationChanged = ensureHabitedHomePlanets(
+      parsed.stars,
+      parsed.factions.map((faction) => faction.homeStarId),
+    );
+    const normalizedPlanetStates = normalizePlanetStates(parsed.stars, parsed.planetStates ?? []);
+    parsed.planetStates = normalizedPlanetStates.planetStates;
+    recalculatePlanetEconomies(parsed);
+    const normalizedFactionEconomies = normalizeFactionEconomies(parsed);
+    const factionEconomiesChanged = JSON.stringify(parsed.factionEconomies ?? []) !== JSON.stringify(normalizedFactionEconomies);
+    parsed.factionEconomies = normalizedFactionEconomies;
+    refreshFactionEconomyDeltas(parsed);
+    const planetStateApplied = applyPlanetStatesToStars(parsed.stars, parsed.planetStates);
+    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged) {
+      hasDirtyState = true;
+    }
     refreshDiscovery(parsed);
     return parsed;
   } catch {
@@ -305,6 +408,9 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
       .slice(0, state.stars.length)
     : state.starOwnership;
   while (starOwnership.length < state.stars.length) starOwnership.push(-1);
+  const factionEconomies = perspective.mode === "faction"
+    ? state.factionEconomies.filter((economy) => economy.factionId === perspective.factionId)
+    : [];
 
   return {
     clock: {
@@ -318,6 +424,8 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     knownStarIds,
     ships,
     starbases,
+    planetStates: state.planetStates,
+    factionEconomies,
   };
 }
 
@@ -455,6 +563,159 @@ function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, shipId: 
   }
 }
 
+function getPlanetState(planetId: string): PlanetState | null {
+  return state.planetStates.find((planetState) => planetState.id === planetId) ?? null;
+}
+
+function getPlanetDistrictLimits(planetState: PlanetState) {
+  return state.stars[planetState.starId]?.system.planets[planetState.planetIndex]?.objectDetails.districtLimits ?? null;
+}
+
+function validatePlanetCommand(socket: WebSocket, perspective: GalaxyPerspective, planetId: string): PlanetState | null {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) {
+    reject(socket, "Observer mode is read-only.");
+    return null;
+  }
+
+  const planetState = getPlanetState(planetId);
+  if (!planetState) {
+    reject(socket, "Planet not found.");
+    return null;
+  }
+  if (!planetState.isHabited) {
+    reject(socket, "Only habited planets can be managed.");
+    return null;
+  }
+  if ((state.starOwnership[planetState.starId] ?? -1) !== factionId) {
+    reject(socket, "You do not own that planet.");
+    return null;
+  }
+  return planetState;
+}
+
+function commitPlanetState(socket: WebSocket, message: string, nextPlanetState: PlanetState): void {
+  const index = state.planetStates.findIndex((planetState) => planetState.id === nextPlanetState.id);
+  if (index < 0) {
+    reject(socket, "Planet not found.");
+    return;
+  }
+  state.planetStates[index] = recalculatePlanetStateEconomy(nextPlanetState);
+  applyPlanetStatesToStars(state.stars, state.planetStates);
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  accept(socket, message);
+  broadcastUpdates();
+}
+
+function isDistrictKind(value: string): value is DistrictKind {
+  return value === "city" || value === "generator" || value === "mining" || value === "agriculture";
+}
+
+function handleBuildDistrict(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  districtKind: DistrictKind,
+): void {
+  if (!isDistrictKind(districtKind)) return reject(socket, "Invalid district type.");
+  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!planetState) return;
+  const limits = getPlanetDistrictLimits(planetState);
+  if (!limits) return reject(socket, "Planet limits unavailable.");
+  if (planetState.builtDistricts[districtKind] >= limits[districtKind]) {
+    return reject(socket, "District limit reached.");
+  }
+
+  commitPlanetState(socket, "District built.", {
+    ...planetState,
+    builtDistricts: {
+      ...planetState.builtDistricts,
+      [districtKind]: planetState.builtDistricts[districtKind] + 1,
+    },
+  });
+}
+
+function handleBuildPlanetBuilding(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  area: BuildingSlotArea,
+  slotIndex: number,
+  buildingKind: BuildingKind,
+  subDistrictIndex?: number,
+): void {
+  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!planetState) return;
+  if (!BUILDING_KINDS.includes(buildingKind)) return reject(socket, "Invalid building.");
+
+  if (area === "urbanSubDistrict") {
+    if (subDistrictIndex === undefined || subDistrictIndex < 0 || subDistrictIndex >= planetState.urbanSubDistricts.length) {
+      return reject(socket, "Invalid sub-district.");
+    }
+    const subDistrict = planetState.urbanSubDistricts[subDistrictIndex];
+    if (slotIndex < 0 || slotIndex >= subDistrict.buildings.length) return reject(socket, "Invalid building slot.");
+    if (subDistrict.buildings[slotIndex]) return reject(socket, "Building slot is occupied.");
+    if (!isBuildingCompatible(buildingKind, area, subDistrict.kind)) {
+      return reject(socket, "Building is incompatible with this sub-district.");
+    }
+
+    const urbanSubDistricts = planetState.urbanSubDistricts.map((candidate, index) => (
+      index === subDistrictIndex
+        ? {
+          ...candidate,
+          buildings: candidate.buildings.map((building, buildingIndex) => (
+            buildingIndex === slotIndex ? buildingKind : building
+          )),
+        }
+        : candidate
+    ));
+    commitPlanetState(socket, "Building constructed.", { ...planetState, urbanSubDistricts });
+    return;
+  }
+
+  if (!isDistrictKind(area)) return reject(socket, "Invalid building area.");
+  const slots = planetState.buildings[area];
+  if (slotIndex < 0 || slotIndex >= slots.length) return reject(socket, "Invalid building slot.");
+  if (slots[slotIndex]) return reject(socket, "Building slot is occupied.");
+  if (!isBuildingCompatible(buildingKind, area)) return reject(socket, "Building is incompatible with this district.");
+
+  commitPlanetState(socket, "Building constructed.", {
+    ...planetState,
+    buildings: {
+      ...planetState.buildings,
+      [area]: slots.map((building, index) => (index === slotIndex ? buildingKind : building)),
+    },
+  });
+}
+
+function handleSetUrbanSubDistrict(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  subDistrictIndex: number,
+  subDistrictKind: UrbanSubDistrictKind,
+): void {
+  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!planetState) return;
+  if (!URBAN_SUB_DISTRICT_KINDS.includes(subDistrictKind)) return reject(socket, "Invalid sub-district type.");
+  if (subDistrictIndex < 0 || subDistrictIndex >= planetState.urbanSubDistricts.length) {
+    return reject(socket, "Invalid sub-district.");
+  }
+
+  const urbanSubDistricts = planetState.urbanSubDistricts.map((subDistrict, index) => {
+    if (index !== subDistrictIndex) return subDistrict;
+    return {
+      kind: subDistrictKind,
+      buildings: subDistrict.buildings.map((building) => (
+        building && isBuildingCompatible(building, "urbanSubDistrict", subDistrictKind) ? building : null
+      )),
+    };
+  });
+
+  commitPlanetState(socket, "Sub-district changed.", { ...planetState, urbanSubDistricts });
+}
+
 function completeShipOrder(ship: GameShip): void {
   if (ship.orderType === "build" && ship.targetStarId !== null) {
     const starId = ship.targetStarId;
@@ -534,9 +795,26 @@ function advanceShip(ship: GameShip, scaledMs: number): void {
   }
 }
 
+function processEconomyMonths(targetMonth: number): void {
+  recalculatePlanetEconomies();
+  refreshFactionEconomyDeltas();
+  let processed = false;
+  for (const economy of state.factionEconomies) {
+    while (economy.lastProcessedMonth < targetMonth) {
+      economy.stockpiles = addResourceCounts(economy.stockpiles, economy.monthlyDelta);
+      economy.lastProcessedMonth += 1;
+      processed = true;
+    }
+  }
+  if (processed) {
+    hasDirtyState = true;
+  }
+}
+
 function advanceState(now: number): void {
   const elapsedMs = Math.max(0, now - state.clock.lastUpdatedAt);
   if (elapsedMs <= 0) return;
+  const previousEconomyMonth = currentEconomyMonth();
   const scaledMs = elapsedMs * state.clock.speedMultiplier;
   state.clock.year += (scaledMs / 86_400_000) * GAME_YEARS_PER_REAL_DAY;
   state.clock.lastUpdatedAt = now;
@@ -549,6 +827,11 @@ function advanceState(now: number): void {
   if (movingBefore || movingAfter) {
     hasDirtyState = true;
     refreshDiscovery();
+  }
+
+  const nextEconomyMonth = currentEconomyMonth();
+  if (nextEconomyMonth > previousEconomyMonth) {
+    processEconomyMonths(nextEconomyMonth);
   }
 }
 
@@ -564,6 +847,32 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "buildStarbase") {
     handleBuild(session.socket, session.perspective, command.shipId, command.targetStarId);
+    return;
+  }
+  if (command.type === "buildDistrict") {
+    handleBuildDistrict(session.socket, session.perspective, command.planetId, command.districtKind);
+    return;
+  }
+  if (command.type === "buildPlanetBuilding") {
+    handleBuildPlanetBuilding(
+      session.socket,
+      session.perspective,
+      command.planetId,
+      command.area,
+      command.slotIndex,
+      command.buildingKind,
+      command.subDistrictIndex,
+    );
+    return;
+  }
+  if (command.type === "setUrbanSubDistrict") {
+    handleSetUrbanSubDistrict(
+      session.socket,
+      session.perspective,
+      command.planetId,
+      command.subDistrictIndex,
+      command.subDistrictKind,
+    );
     return;
   }
   if (command.type === "setSpeedMultiplier") {

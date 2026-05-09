@@ -4,6 +4,11 @@
  * Each star includes visual metadata used by both galaxy and system views.
  */
 
+import { createPlanetStateFromSeed } from "./Economy";
+import type { PlanetState } from "./Economy";
+
+export type { PlanetState } from "./Economy";
+
 /*  Star spectral types  */
 
 export enum StarType {
@@ -212,6 +217,24 @@ export enum PlanetType {
   Methane = "Methane",
   Sandy = "Sandy",
   Tundra = "Tundra",
+}
+
+export type DistrictKind = "city" | "generator" | "mining" | "agriculture";
+
+export interface DistrictCounts {
+  city: number;
+  generator: number;
+  mining: number;
+  agriculture: number;
+}
+
+export interface CelestialObjectDetails {
+  size: number;
+  typeName: string;
+  description: string;
+  habitability: number | null;
+  districtLimits: DistrictCounts;
+  builtDistricts: DistrictCounts;
 }
 
 export interface PlanetTypeConfig {
@@ -425,7 +448,329 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
   },
 };
 
+const ZERO_DISTRICTS: DistrictCounts = {
+  city: 0,
+  generator: 0,
+  mining: 0,
+  agriculture: 0,
+};
+
+const PLANET_DESCRIPTIONS: Record<PlanetType, string> = {
+  [PlanetType.Barren]: "A stripped rocky world with little atmosphere, harsh radiation, and exposed mineral seams across the surface.",
+  [PlanetType.Gaseous]: "A massive gaseous planet with deep storm bands, volatile cloud layers, and extractable atmospheric energy pockets.",
+  [PlanetType.Snowy]: "A frozen terrestrial world with glacial basins, buried oceans, and scattered geothermal refuge zones.",
+  [PlanetType.Arid]: "A dry terrestrial world with thin seas, broad deserts, and settlement corridors around sparse water tables.",
+  [PlanetType.Dusty]: "A wind-scoured rocky planet covered in fine regolith, crater fields, and accessible industrial minerals.",
+  [PlanetType.Grassland]: "A temperate terrestrial world with open plains, stable weather patterns, and broad agricultural potential.",
+  [PlanetType.Jungle]: "A humid biological world dominated by dense vegetation, high biodiversity, and difficult but fertile terrain.",
+  [PlanetType.Marshy]: "A wet lowland planet of deltas, shallow seas, and saturated soils that favor biological extraction and farming.",
+  [PlanetType.Martian]: "A cold red desert world with oxidized terrain, canyon systems, and rich subsurface ore deposits.",
+  [PlanetType.Methane]: "A cold giant or sub-giant world with methane-rich weather systems and volatile atmospheric resources.",
+  [PlanetType.Sandy]: "A hot desert planet with deep dune seas, high solar exposure, and concentrated mineral outcrops.",
+  [PlanetType.Tundra]: "A cold terrestrial world with hardy biomes, permafrost plains, and limited but reliable settlement zones.",
+};
+
+const STAR_DESCRIPTIONS: Record<StarType, string> = {
+  [StarType.B]: "A brilliant blue-white main sequence star with intense radiation output and a short, energetic lifespan.",
+  [StarType.A]: "A bright white main sequence star with strong luminosity and a relatively stable inner system.",
+  [StarType.F]: "A pale yellow-white main sequence star, hotter than a solar analogue and favorable to compact habitable zones.",
+  [StarType.G]: "A yellow main sequence star with steady output and long-lived orbital conditions.",
+  [StarType.K]: "An orange main sequence star with moderate radiation and a broad stable lifespan.",
+  [StarType.M]: "A small red main sequence star with low luminosity, frequent flaring, and tight orbital bands.",
+  [StarType.MRedGiant]: "An expanded red giant with a swollen atmosphere, variable output, and engulfed inner orbital space.",
+  [StarType.TBrownDwarf]: "A dim substellar brown dwarf radiating residual heat and faint infrared light.",
+  [StarType.NeutronStar]: "A compact stellar remnant with extreme gravity, radiation, and dense magnetic activity.",
+  [StarType.Pulsar]: "A rapidly rotating neutron star that emits focused radiation beams at regular intervals.",
+  [StarType.BlackHole]: "A collapsed stellar remnant surrounded by gravitational distortion and high-energy accretion debris.",
+};
+
+const PLANET_DISTRICT_BASELINES: Record<
+  PlanetType,
+  {
+    sizeMin: number;
+    sizeMax: number;
+    generator: number;
+    mining: number;
+    agriculture: number;
+  }
+> = {
+  [PlanetType.Barren]: { sizeMin: 6, sizeMax: 16, generator: 2, mining: 9, agriculture: 0 },
+  [PlanetType.Gaseous]: { sizeMin: 14, sizeMax: 30, generator: 10, mining: 2, agriculture: 0 },
+  [PlanetType.Snowy]: { sizeMin: 8, sizeMax: 18, generator: 6, mining: 5, agriculture: 3 },
+  [PlanetType.Arid]: { sizeMin: 8, sizeMax: 18, generator: 6, mining: 6, agriculture: 2 },
+  [PlanetType.Dusty]: { sizeMin: 7, sizeMax: 17, generator: 4, mining: 8, agriculture: 1 },
+  [PlanetType.Grassland]: { sizeMin: 10, sizeMax: 20, generator: 4, mining: 3, agriculture: 8 },
+  [PlanetType.Jungle]: { sizeMin: 10, sizeMax: 21, generator: 5, mining: 3, agriculture: 9 },
+  [PlanetType.Marshy]: { sizeMin: 9, sizeMax: 19, generator: 5, mining: 3, agriculture: 8 },
+  [PlanetType.Martian]: { sizeMin: 7, sizeMax: 18, generator: 3, mining: 9, agriculture: 1 },
+  [PlanetType.Methane]: { sizeMin: 12, sizeMax: 26, generator: 9, mining: 4, agriculture: 0 },
+  [PlanetType.Sandy]: { sizeMin: 8, sizeMax: 18, generator: 8, mining: 5, agriculture: 1 },
+  [PlanetType.Tundra]: { sizeMin: 8, sizeMax: 18, generator: 5, mining: 5, agriculture: 4 },
+};
+
+function cloneDistricts(counts: DistrictCounts): DistrictCounts {
+  return {
+    city: counts.city,
+    generator: counts.generator,
+    mining: counts.mining,
+    agriculture: counts.agriculture,
+  };
+}
+
+export function createPlanetId(starId: number, planetIndex: number): string {
+  return `star-${starId}-planet-${planetIndex}`;
+}
+
+function normalizeDistrictCounts(
+  counts: Partial<DistrictCounts> | undefined,
+  limits: DistrictCounts,
+): DistrictCounts {
+  return {
+    city: clampInt(counts?.city ?? 0, 0, limits.city),
+    generator: clampInt(counts?.generator ?? 0, 0, limits.generator),
+    mining: clampInt(counts?.mining ?? 0, 0, limits.mining),
+    agriculture: clampInt(counts?.agriculture ?? 0, 0, limits.agriculture),
+  };
+}
+
+function hashString(value: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function jitterFromHash(hash: number, shift: number, amplitude: number): number {
+  return ((hash >>> shift) % (amplitude * 2 + 1)) - amplitude;
+}
+
+export function createStarObjectDetails(type: StarType): CelestialObjectDetails {
+  const cfg = STAR_TYPES[type];
+  return {
+    size: Math.max(1, Math.round(cfg.systemDiameter * 2)),
+    typeName: type,
+    description: STAR_DESCRIPTIONS[type],
+    habitability: null,
+    districtLimits: cloneDistricts(ZERO_DISTRICTS),
+    builtDistricts: cloneDistricts(ZERO_DISTRICTS),
+  };
+}
+
+export function createPlanetObjectDetails(
+  planet: Pick<PlanetConfig, "type" | "diameter" | "name" | "isHabited">,
+  detailKey = planet.name,
+): CelestialObjectDetails {
+  const cfg = PLANET_TYPES[planet.type];
+  const baseline = PLANET_DISTRICT_BASELINES[planet.type];
+  const hash = hashString(`${detailKey}:${planet.type}:${planet.diameter.toFixed(3)}`);
+  const diameterT = (planet.diameter - cfg.diameterMin) / Math.max(0.0001, cfg.diameterMax - cfg.diameterMin);
+  const size = clampInt(
+    baseline.sizeMin + diameterT * (baseline.sizeMax - baseline.sizeMin) + jitterFromHash(hash, 0, 1),
+    baseline.sizeMin,
+    baseline.sizeMax,
+  );
+
+  const districtLimits: DistrictCounts = {
+    city: size,
+    generator: clampInt(baseline.generator + jitterFromHash(hash, 4, 2), 0, size),
+    mining: clampInt(baseline.mining + jitterFromHash(hash, 8, 2), 0, size),
+    agriculture: clampInt(baseline.agriculture + jitterFromHash(hash, 12, 2), 0, size),
+  };
+
+  const builtDistricts: DistrictCounts = {
+    city: planet.isHabited ? Math.min(2, districtLimits.city) : 0,
+    generator: 0,
+    mining: 0,
+    agriculture: 0,
+  };
+
+  return {
+    size,
+    typeName: cfg.name,
+    description: PLANET_DESCRIPTIONS[planet.type],
+    habitability: null,
+    districtLimits,
+    builtDistricts,
+  };
+}
+
+export function withPlanetObjectDetails<T extends Omit<PlanetConfig, "objectDetails"> & { objectDetails?: CelestialObjectDetails }>(
+  planet: T,
+  detailKey = planet.name,
+): T & { objectDetails: CelestialObjectDetails } {
+  return {
+    ...planet,
+    objectDetails: planet.objectDetails ?? createPlanetObjectDetails(planet, detailKey),
+  };
+}
+
+function ensureHabitedBuiltDistricts(planet: PlanetConfig): boolean {
+  if (!planet.isHabited || !planet.objectDetails) return false;
+  const expectedCityDistricts = Math.min(2, planet.objectDetails.districtLimits.city);
+  if (planet.objectDetails.builtDistricts.city >= expectedCityDistricts) return false;
+  planet.objectDetails.builtDistricts.city = expectedCityDistricts;
+  return true;
+}
+
+export function ensureHabitedHomePlanets(stars: StarData[], homeStarIds: Iterable<number>): boolean {
+  let changed = false;
+  const homeIds = new Set(homeStarIds);
+  for (const star of stars) {
+    if (!homeIds.has(star.id)) continue;
+    if (star.system.planets.length === 0) continue;
+
+    const existingHabited = star.system.planets.find((planet) => planet.isHabited === true);
+    if (existingHabited) {
+      changed = ensureHabitedBuiltDistricts(existingHabited) || changed;
+      continue;
+    }
+
+    const habitedIndex = star.id % star.system.planets.length;
+    const planet = star.system.planets[habitedIndex];
+    planet.isHabited = true;
+    if (planet.objectDetails) {
+      ensureHabitedBuiltDistricts(planet);
+    }
+    changed = true;
+  }
+  return changed;
+}
+
+export function normalizeCelestialObjectDetails(stars: StarData[]): boolean {
+  let changed = false;
+  for (const star of stars) {
+    if (!star.objectDetails) {
+      star.objectDetails = createStarObjectDetails(star.type);
+      changed = true;
+    }
+
+    for (let i = 0; i < star.system.planets.length; i++) {
+      const planet = star.system.planets[i];
+      const expectedId = createPlanetId(star.id, i);
+      if (planet.id !== expectedId) {
+        planet.id = expectedId;
+        changed = true;
+      }
+      if (!planet.objectDetails) {
+        planet.objectDetails = createPlanetObjectDetails(planet, `${star.id}:${i}:${planet.name}`);
+        changed = true;
+      }
+      changed = ensureHabitedBuiltDistricts(planet) || changed;
+    }
+  }
+  return changed;
+}
+
+export function createPlanetStateFromConfig(
+  starId: number,
+  planetIndex: number,
+  planet: PlanetConfig,
+  existing?: Partial<PlanetState>,
+): PlanetState {
+  return createPlanetStateFromSeed({
+    id: planet.id || createPlanetId(starId, planetIndex),
+    starId,
+    planetIndex,
+    isHabited: planet.isHabited === true,
+    habitability: planet.objectDetails.habitability,
+    builtDistricts: normalizeDistrictCounts(planet.objectDetails.builtDistricts, planet.objectDetails.districtLimits),
+    districtLimits: planet.objectDetails.districtLimits,
+  }, existing);
+}
+
+export function buildPlanetStatesFromStars(stars: StarData[]): PlanetState[] {
+  const states: PlanetState[] = [];
+  normalizeCelestialObjectDetails(stars);
+  for (const star of stars) {
+    for (let planetIndex = 0; planetIndex < star.system.planets.length; planetIndex++) {
+      states.push(createPlanetStateFromConfig(star.id, planetIndex, star.system.planets[planetIndex]));
+    }
+  }
+  return states;
+}
+
+export function normalizePlanetStates(
+  stars: StarData[],
+  existingStates: PlanetState[] = [],
+): { planetStates: PlanetState[]; changed: boolean } {
+  let changed = normalizeCelestialObjectDetails(stars);
+  const byId = new Map(existingStates.map((state) => [state.id, state]));
+  const normalized: PlanetState[] = [];
+
+  for (const star of stars) {
+    for (let planetIndex = 0; planetIndex < star.system.planets.length; planetIndex++) {
+      const planet = star.system.planets[planetIndex];
+      const expectedId = createPlanetId(star.id, planetIndex);
+      const source = byId.get(planet.id) ?? byId.get(expectedId);
+      const nextState = createPlanetStateFromConfig(star.id, planetIndex, planet, source);
+
+      if (!source || JSON.stringify(source) !== JSON.stringify(nextState)) {
+        changed = true;
+      }
+
+      normalized.push(nextState);
+    }
+  }
+
+  if (existingStates.length !== normalized.length) {
+    changed = true;
+  }
+
+  return { planetStates: normalized, changed };
+}
+
+export function applyPlanetStatesToStars(stars: StarData[], planetStates: PlanetState[]): boolean {
+  let changed = normalizeCelestialObjectDetails(stars);
+  const byId = new Map(planetStates.map((state) => [state.id, state]));
+
+  for (const star of stars) {
+    for (let planetIndex = 0; planetIndex < star.system.planets.length; planetIndex++) {
+      const planet = star.system.planets[planetIndex];
+      const state = byId.get(planet.id) ?? byId.get(createPlanetId(star.id, planetIndex));
+      if (!state) continue;
+
+      const nextBuiltDistricts = normalizeDistrictCounts(
+        state.builtDistricts,
+        planet.objectDetails.districtLimits,
+      );
+      if (state.isHabited) {
+        nextBuiltDistricts.city = Math.max(
+          nextBuiltDistricts.city,
+          Math.min(2, planet.objectDetails.districtLimits.city),
+        );
+      }
+
+      if (planet.isHabited !== state.isHabited) {
+        planet.isHabited = state.isHabited;
+        changed = true;
+      }
+      if (planet.objectDetails.habitability !== state.habitability) {
+        planet.objectDetails.habitability = state.habitability;
+        changed = true;
+      }
+      if (
+        planet.objectDetails.builtDistricts.city !== nextBuiltDistricts.city
+        || planet.objectDetails.builtDistricts.generator !== nextBuiltDistricts.generator
+        || planet.objectDetails.builtDistricts.mining !== nextBuiltDistricts.mining
+        || planet.objectDetails.builtDistricts.agriculture !== nextBuiltDistricts.agriculture
+      ) {
+        planet.objectDetails.builtDistricts = nextBuiltDistricts;
+        changed = true;
+      }
+    }
+  }
+
+  return changed;
+}
+
 export interface PlanetConfig {
+  id: string;
   type: PlanetType;
   textureVariation: number;
   diameter: number;
@@ -433,6 +778,7 @@ export interface PlanetConfig {
   orbitSpeed: number;
   name: string;
   isHabited?: boolean;
+  objectDetails: CelestialObjectDetails;
 }
 
 export interface StarSystemConfig {
@@ -452,6 +798,7 @@ export interface StarData {
   galaxyPulseAmplitude: number;
   /** Galaxy-view pulse frequency used by sprite renderer */
   galaxyPulseFrequency: number;
+  objectDetails: CelestialObjectDetails;
   system: StarSystemConfig;
 }
 
@@ -576,7 +923,7 @@ export function generateStarMap(
     return PlanetType.Barren;
   }
 
-  function generatePlanets(starType: StarType, starName: string): PlanetConfig[] {
+  function generatePlanets(starType: StarType, starName: string, starId: number): PlanetConfig[] {
     const typeCfg = STAR_TYPES[starType];
 
     let minPlanets = 1;
@@ -638,14 +985,15 @@ export function generateStarMap(
       const romanNumerals = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
       const planetName = `${starName} ${romanNumerals[i] || i + 1}`;
 
-      planets.push({
+      planets.push(withPlanetObjectDetails({
+        id: createPlanetId(starId, i),
         type: planetType,
         textureVariation: textureVar,
         diameter,
         orbitRadius: baseOrbit + i * orbitSpacing + rng() * (orbitSpacing * 0.8),
         orbitSpeed,
         name: planetName,
-      });
+      }, `${starId}:${i}:${planetName}`));
     }
 
     return planets;
@@ -731,7 +1079,8 @@ export function generateStarMap(
       color,
       galaxyPulseAmplitude: pulseAmp,
       galaxyPulseFrequency: pulseFreq,
-      system: { planets: generatePlanets(type, starName) },
+      objectDetails: createStarObjectDetails(type),
+      system: { planets: generatePlanets(type, starName, stars.length) },
     });
   }
 

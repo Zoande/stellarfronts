@@ -36,6 +36,8 @@ export interface ShipIconStyle {
   color: [number, number, number];
 }
 
+export type GalaxyIconClickType = "ship" | "starbase" | "habitedPlanet";
+
 const SPRITE_BLEND_ADD = 1; // ALPHA_ADD
 const STAR_TEXTURE_SIZE = 128;
 
@@ -143,6 +145,7 @@ const STAR_LABEL_FONT_FAMILY = '"Segoe UI", Arial, sans-serif';
 const NORMAL_STAR_LABEL_SCALE = 2;
 const STARBASE_LABEL_SCALE = 3;
 const STARBASE_BADGE_U = 429 / STAR_LABEL_TEXTURE_WIDTH;
+const HABITED_PLANET_LEFT_BADGE_U = 43 / STAR_LABEL_TEXTURE_WIDTH;
 const STARBASE_BADGE_V = 0.5;
 const STARBASE_BADGE_RADIUS_U = 42 / STAR_LABEL_TEXTURE_WIDTH;
 const STARBASE_BADGE_RADIUS_V = 42 / STAR_LABEL_TEXTURE_HEIGHT;
@@ -283,6 +286,7 @@ export class StarFieldRenderer {
 
   private starLabelMeshes: Mesh[] = [];
   private starNames: string[] = [];
+  private starHasHabitedPlanet: boolean[] = [];
   private visibleStarIds: Set<number> | null = null;
   private knownStarIds: Set<number> | null = null;
 
@@ -300,7 +304,7 @@ export class StarFieldRenderer {
   private elapsedTime = 0;
   private starsVisible = true;
   private bloomEnabled = true;
-  private onIconClick?: (type: "ship" | "starbase", shiftKey: boolean, starId?: number) => void;
+  private onIconClick?: (type: GalaxyIconClickType, shiftKey: boolean, starId?: number) => void;
 
   constructor(
     scene: Scene,
@@ -416,15 +420,14 @@ export class StarFieldRenderer {
     this.pulseFloor = new Float32Array(stars.length).fill(SUBTLE_PULSE_FLOOR);
     this.pulsePhase = new Float32Array(stars.length).fill(0);
 
-    // Create star name labels
-    console.log(`Creating ${stars.length} star labels...`);
     for (let i = 0; i < stars.length; i++) {
       this.starNames.push(stars[i].name);
       const hasStarbase = this.starbaseSystemIds.has(stars[i].id);
-      const labelMesh = this.createStarLabel(stars[i], hasStarbase);
+      const hasHabitedPlanet = this.hasHabitedPlanet(stars[i]);
+      this.starHasHabitedPlanet[stars[i].id] = hasHabitedPlanet;
+      const labelMesh = this.createStarLabel(stars[i], hasStarbase, hasHabitedPlanet);
       this.starLabelMeshes.push(labelMesh);
     }
-    console.log(`Created ${this.starLabelMeshes.length} star label meshes`);
 
     for (let i = 0; i < stars.length; i++) {
       const star = stars[i];
@@ -587,7 +590,6 @@ export class StarFieldRenderer {
       const labelVisible = labelsVisible && this.isStarKnown(i);
       
       if (labelMesh.isVisible !== labelVisible) {
-        console.log(`Label ${i} visibility changed to ${labelVisible}, zoomOutBlend: ${this.zoomOutBlend}, threshold: ${STAR_LABEL_ZOOM_THRESHOLD}`);
         labelMesh.isVisible = labelVisible;
       }
 
@@ -607,8 +609,12 @@ export class StarFieldRenderer {
     }
   }
 
-  private createStarLabel(star: StarData, hasStarbase: boolean = false): Mesh {
-    console.log(`Creating label for star: ${star.name} at (${star.x}, ${star.z}), hasStarbase: ${hasStarbase}`);
+  private hasHabitedPlanet(star: StarData): boolean {
+    return star.system.planets.some((planet) => planet.isHabited === true);
+  }
+
+  private createStarLabel(star: StarData, hasStarbase = false, hasHabitedPlanet = false): Mesh {
+    const hasNameplate = hasStarbase || hasHabitedPlanet;
 
     const labelTexture = new DynamicTexture(
       "starLabelTexture_" + star.id,
@@ -623,39 +629,37 @@ export class StarFieldRenderer {
 
     const labelText = star.name;
     ctx.direction = "ltr";
-    ctx.textAlign = hasStarbase ? "center" : "right";
+    ctx.textAlign = hasNameplate ? "center" : "right";
     ctx.textBaseline = "middle";
     ctx.lineJoin = "round";
 
-    if (hasStarbase) {
-      this.drawStarbaseNameplate(ctx);
+    if (hasNameplate) {
+      this.drawGalaxyNameplate(ctx, hasStarbase, hasHabitedPlanet);
     }
 
-    const maxTextWidth = hasStarbase
+    const maxTextWidth = hasNameplate
       ? 300
       : STAR_LABEL_TEXTURE_WIDTH - STAR_LABEL_TEXTURE_PADDING_X * 2;
-    let fontSize = hasStarbase ? 64 : STAR_LABEL_FONT_SIZE;
+    let fontSize = hasNameplate ? 64 : STAR_LABEL_FONT_SIZE;
     do {
-      ctx.font = `${hasStarbase ? 800 : 700} ${fontSize}px ${STAR_LABEL_FONT_FAMILY}`;
+      ctx.font = `${hasNameplate ? 800 : 700} ${fontSize}px ${STAR_LABEL_FONT_FAMILY}`;
       if (ctx.measureText(labelText).width <= maxTextWidth) break;
       fontSize -= 4;
     } while (fontSize > STAR_LABEL_MIN_FONT_SIZE);
 
-    const x = hasStarbase ? 240 : STAR_LABEL_TEXTURE_WIDTH - STAR_LABEL_TEXTURE_PADDING_X;
+    const x = hasNameplate ? 240 : STAR_LABEL_TEXTURE_WIDTH - STAR_LABEL_TEXTURE_PADDING_X;
     const y = STAR_LABEL_TEXTURE_HEIGHT / 2;
     ctx.shadowColor = "rgba(0, 0, 0, 0.85)";
     ctx.shadowBlur = 10;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 2;
     ctx.strokeStyle = "rgba(0, 0, 0, 0.95)";
-    ctx.lineWidth = Math.max(hasStarbase ? 4 : 6, fontSize * (hasStarbase ? 0.07 : 0.12));
+    ctx.lineWidth = Math.max(hasNameplate ? 4 : 6, fontSize * (hasNameplate ? 0.07 : 0.12));
     ctx.strokeText(labelText, x, y);
-    ctx.fillStyle = hasStarbase ? "rgba(230, 255, 250, 0.98)" : "rgba(255, 255, 255, 0.96)";
+    ctx.fillStyle = hasNameplate ? "rgba(230, 255, 250, 0.98)" : "rgba(255, 255, 255, 0.96)";
     ctx.fillText(labelText, x, y);
     
     labelTexture.update(true);
-
-    console.log(`Dynamic texture created for ${star.name}, size: ${STAR_LABEL_TEXTURE_WIDTH}x${STAR_LABEL_TEXTURE_HEIGHT}`);
 
     // Create material with texture
     const material = new StandardMaterial("starLabelMat_" + star.id, this.scene);
@@ -670,35 +674,32 @@ export class StarFieldRenderer {
     material.useAlphaFromDiffuseTexture = true;
     material.transparencyMode = Material.MATERIAL_ALPHABLEND;
     material.alpha = 1.0;
-    
-    console.log(`Material created for ${star.name}`);
 
     // Create plane mesh
     const labelMesh = MeshBuilder.CreatePlane(
       "starLabel_mesh_" + star.id,
       {
-        width: (hasStarbase ? 11.4 : 10) * (hasStarbase ? STARBASE_LABEL_SCALE : NORMAL_STAR_LABEL_SCALE),
-        height: (hasStarbase ? 2.85 : 2.5) * (hasStarbase ? STARBASE_LABEL_SCALE : NORMAL_STAR_LABEL_SCALE),
+        width: (hasNameplate ? 11.4 : 10) * (hasNameplate ? STARBASE_LABEL_SCALE : NORMAL_STAR_LABEL_SCALE),
+        height: (hasNameplate ? 2.85 : 2.5) * (hasNameplate ? STARBASE_LABEL_SCALE : NORMAL_STAR_LABEL_SCALE),
       },
       this.scene,
     );
-    labelMesh.position = new Vector3(star.x, hasStarbase ? 9.75 : 6, star.z);
+    labelMesh.position = new Vector3(star.x, hasNameplate ? 9.75 : 6, star.z);
     labelMesh.material = material;
     labelMesh.isPickable = false;
     labelMesh.isVisible = false;
     labelMesh.renderingGroupId = 1;
-    
-    console.log(`Label mesh created for ${star.name} at position`, labelMesh.position);
 
     return labelMesh;
   }
 
-  private drawStarbaseNameplate(ctx: CanvasRenderingContext2D): void {
+  private drawGalaxyNameplate(ctx: CanvasRenderingContext2D, hasStarbase: boolean, hasHabitedPlanet: boolean): void {
     const plateX = 72;
     const plateY = 31;
     const plateW = 334;
     const plateH = 66;
-    const badgeX = 429;
+    const leftBadgeX = 43;
+    const rightBadgeX = 429;
     const badgeY = STAR_LABEL_TEXTURE_HEIGHT / 2;
     const badgeR = 38;
 
@@ -716,18 +717,13 @@ export class StarFieldRenderer {
     ctx.shadowBlur = 0;
     ctx.fillStyle = "rgba(35, 137, 116, 0.34)";
     ctx.fillRect(plateX + 6, plateY + 7, plateW - 12, 8);
-    this.drawHexBadge(ctx, badgeX, badgeY, badgeR);
-    ctx.restore();
-
-    ctx.save();
-    ctx.font = `700 20px ${STAR_LABEL_FONT_FAMILY}`;
-    ctx.textAlign = "left";
-    ctx.textBaseline = "middle";
-    ctx.fillStyle = "rgba(114, 230, 139, 0.85)";
-    ctx.shadowColor = "rgba(0, 0, 0, 0.7)";
-    ctx.shadowBlur = 3;
-    ctx.fillText("U", badgeX + badgeR + 12, badgeY - 16);
-    ctx.fillText("U", badgeX + badgeR + 23, badgeY - 16);
+    if (hasStarbase) {
+      this.drawHexBadge(ctx, rightBadgeX, badgeY, badgeR);
+    }
+    if (hasHabitedPlanet) {
+      const badgeX = hasStarbase ? leftBadgeX : rightBadgeX;
+      this.drawHabitedPlanetBadge(ctx, badgeX, badgeY, badgeR);
+    }
     ctx.restore();
   }
 
@@ -807,6 +803,77 @@ export class StarFieldRenderer {
     ctx.restore();
   }
 
+  private drawHabitedPlanetBadge(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
+    const drawHex = (r: number): void => {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const angle = -Math.PI / 6 + (i * Math.PI * 2) / 6;
+        const px = x + Math.cos(angle) * r;
+        const py = y + Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    };
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
+    ctx.shadowBlur = 8;
+    ctx.shadowOffsetY = 3;
+
+    drawHex(radius);
+    const bg = ctx.createLinearGradient(x - radius, y - radius, x + radius, y + radius);
+    bg.addColorStop(0, "rgba(24, 171, 126, 0.98)");
+    bg.addColorStop(0.58, "rgba(21, 100, 137, 0.98)");
+    bg.addColorStop(1, "rgba(226, 166, 61, 0.98)");
+    ctx.fillStyle = bg;
+    ctx.fill();
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "rgba(194, 255, 231, 0.96)";
+    ctx.stroke();
+
+    drawHex(radius * 0.76);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(7, 35, 40, 0.72)";
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.ellipse(x, y, radius * 0.45, radius * 0.32, -0.18, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(210, 252, 230, 0.98)";
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(9, 50, 51, 0.88)";
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(x - radius * 0.1, y - radius * 0.02, radius * 0.5, radius * 0.16, -0.34, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255, 232, 134, 0.95)";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(34, 124, 92, 0.9)";
+    ctx.beginPath();
+    ctx.moveTo(x - radius * 0.27, y - radius * 0.06);
+    ctx.bezierCurveTo(x - radius * 0.1, y - radius * 0.2, x + radius * 0.08, y - radius * 0.14, x + radius * 0.17, y);
+    ctx.bezierCurveTo(x + radius * 0.02, y + radius * 0.05, x - radius * 0.12, y + radius * 0.08, x - radius * 0.27, y - radius * 0.06);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255, 226, 105, 0.96)";
+    const lightR = Math.max(1.5, radius * 0.045);
+    const lights = [
+      [x - radius * 0.11, y + radius * 0.1],
+      [x + radius * 0.03, y + radius * 0.07],
+      [x + radius * 0.18, y + radius * 0.02],
+    ];
+    for (const [lx, ly] of lights) {
+      ctx.beginPath();
+      ctx.arc(lx, ly, lightR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
   private rebuildStarLabel(starId: number): void {
     if (starId < 0 || starId >= this.starPositions.length) return;
     const starPosition = this.starPositions[starId];
@@ -827,7 +894,11 @@ export class StarFieldRenderer {
       x: starPosition.x,
       z: starPosition.z,
     } as StarData;
-    this.starLabelMeshes[starId] = this.createStarLabel(star, this.starbaseSystemIds.has(starId));
+    this.starLabelMeshes[starId] = this.createStarLabel(
+      star,
+      this.starbaseSystemIds.has(starId),
+      this.starHasHabitedPlanet[starId] === true,
+    );
   }
 
   private isStarCurrentlyVisible(starId: number): boolean {
@@ -902,6 +973,25 @@ export class StarFieldRenderer {
     }
   }
 
+  setHabitedPlanetSystemIds(starIds: Iterable<number>): void {
+    const nextIds = new Set(starIds);
+    let changed = false;
+    const changedStarIds = new Set<number>();
+
+    for (let starId = 0; starId < this.starHasHabitedPlanet.length; starId++) {
+      const nextValue = nextIds.has(starId);
+      if ((this.starHasHabitedPlanet[starId] === true) === nextValue) continue;
+      this.starHasHabitedPlanet[starId] = nextValue;
+      changedStarIds.add(starId);
+      changed = true;
+    }
+
+    if (!changed) return;
+    for (const starId of changedStarIds) {
+      this.rebuildStarLabel(starId);
+    }
+  }
+
   setHighlightedStarIds(starIds: Iterable<number>): void {
     const nextIds = new Set(starIds);
     if (this.areSetsEqual(this.highlightedStarIds, nextIds)) return;
@@ -933,11 +1023,7 @@ export class StarFieldRenderer {
    * At higher values stars get larger and brighter for map readability.
    */
   setZoomOutBlend(zoomOutBlend: number): void {
-    const prevBlend = this.zoomOutBlend;
     this.zoomOutBlend = clamp01(zoomOutBlend);
-    if (Math.abs(this.zoomOutBlend - prevBlend) > 0.01) {
-      console.log(`Zoom blend updated: ${prevBlend.toFixed(2)} -> ${this.zoomOutBlend.toFixed(2)}, threshold: ${STAR_LABEL_ZOOM_THRESHOLD}`);
-    }
   }
 
   setStarsVisible(visible: boolean): void {
@@ -1295,6 +1381,7 @@ export class StarFieldRenderer {
     this.starPositions = [];
     this.starLabelMeshes = [];
     this.starNames = [];
+    this.starHasHabitedPlanet = [];
     this.playerShipIconSprites = [];
     this.starbaseIconSprites = [];
     this.playerShipSystemIds.clear();
@@ -1306,7 +1393,7 @@ export class StarFieldRenderer {
   }
 
   public setIconClickCallback(
-    callback: (type: "ship" | "starbase", shiftKey: boolean, starId?: number) => void,
+    callback: (type: GalaxyIconClickType, shiftKey: boolean, starId?: number) => void,
   ): void {
     this.onIconClick = callback;
   }
@@ -1339,7 +1426,6 @@ export class StarFieldRenderer {
 
   public checkIconClick(screenX: number, screenY: number, viewport: {width: number; height: number}, shiftKey: boolean): boolean {
     if (!this.onIconClick) {
-      console.log("No icon click callback set");
       return false;
     }
 
@@ -1359,9 +1445,7 @@ export class StarFieldRenderer {
     for (let starId = 0; starId < this.playerShipIconSprites.length; starId++) {
       const shipSprite = this.playerShipIconSprites[starId];
       const shipHitDist = this.distanceFromRayToPoint(ray, shipSprite.position);
-      console.log("Ship distance from ray:", shipHitDist, "visible:", shipSprite.isVisible);
       if (shipHitDist < 5 && shipSprite.isVisible) {
-        console.log("Ship icon clicked!");
         this.onIconClick("ship", shiftKey, starId);
         return true;
       }
@@ -1370,15 +1454,28 @@ export class StarFieldRenderer {
     for (const starId of this.starbaseSystemIds) {
       const labelMesh = this.starLabelMeshes[starId];
       if (!labelMesh?.isVisible) continue;
-      if (this.hitStarbaseBadge(ray, labelMesh)) {
+      if (this.hitLabelBadge(ray, labelMesh, STARBASE_BADGE_U)) {
         this.onIconClick("starbase", shiftKey, starId);
+        return true;
+      }
+    }
+
+    for (let starId = 0; starId < this.starHasHabitedPlanet.length; starId++) {
+      if (!this.starHasHabitedPlanet[starId]) continue;
+      const labelMesh = this.starLabelMeshes[starId];
+      if (!labelMesh?.isVisible) continue;
+      const badgeU = this.starbaseSystemIds.has(starId)
+        ? HABITED_PLANET_LEFT_BADGE_U
+        : STARBASE_BADGE_U;
+      if (this.hitLabelBadge(ray, labelMesh, badgeU)) {
+        this.onIconClick("habitedPlanet", shiftKey, starId);
         return true;
       }
     }
     return false;
   }
 
-  private hitStarbaseBadge(ray: any, labelMesh: Mesh): boolean {
+  private hitLabelBadge(ray: any, labelMesh: Mesh, badgeU: number): boolean {
     const normal = labelMesh.getDirection(Vector3.Forward());
     const denominator = Vector3.Dot(ray.direction, normal);
     if (Math.abs(denominator) < 0.0001) return false;
@@ -1393,7 +1490,7 @@ export class StarFieldRenderer {
     const height = labelMesh.getBoundingInfo().boundingBox.extendSize.y * 2;
     const u = local.x / width + 0.5;
     const v = 0.5 - local.y / height;
-    const dx = (u - STARBASE_BADGE_U) / STARBASE_BADGE_RADIUS_U;
+    const dx = (u - badgeU) / STARBASE_BADGE_RADIUS_U;
     const dy = (v - STARBASE_BADGE_V) / STARBASE_BADGE_RADIUS_V;
     return dx * dx + dy * dy <= 1;
   }

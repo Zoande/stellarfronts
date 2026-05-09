@@ -2,7 +2,11 @@ import { SceneManager } from "@/SceneManager";
 import { GalaxyScene } from "@/scenes/GalaxyScene";
 import { SystemScene } from "@/scenes/SystemScene";
 import type { IGameScene } from "@/SceneManager";
-import { generateStarMap } from "@/data/StarMap";
+import {
+  ensureHabitedHomePlanets,
+  generateStarMap,
+  normalizeCelestialObjectDetails,
+} from "@/data/StarMap";
 import type { StarData } from "@/data/StarMap";
 import { GALAXY_MAP } from "@/data/GalaxyMap";
 import { buildHyperlaneAdjacency, buildHyperlanePairs } from "@/data/Hyperlanes";
@@ -44,6 +48,11 @@ async function boot() {
   let cachedGalaxyViewState: GalaxyViewState | null = null;
   let cachedHyperlaneAdjacency: number[][] = [];
   let currentSystemStar: StarData | null = null;
+
+  const normalizeLocalStars = (stars: StarData[], homeStarIds: Iterable<number>): void => {
+    normalizeCelestialObjectDetails(stars);
+    ensureHabitedHomePlanets(stars, homeStarIds);
+  };
 
   const visualToggles: HudVisualToggles = {
     hyperlanes: true,
@@ -146,6 +155,9 @@ async function boot() {
 
   async function openGalaxyView(): Promise<void> {
     const factionHomeStarIds = factions.map((faction) => faction.homeStarId);
+    if (cachedGalaxyStars && cachedGalaxyStars.length > 0) {
+      normalizeLocalStars(cachedGalaxyStars, factionHomeStarIds);
+    }
     const options: GalaxySceneOptions = {
       factions,
       perspective,
@@ -170,6 +182,7 @@ async function boot() {
 
     if (activeGalaxyScene) {
       cachedGalaxyStars = activeGalaxyScene.getStars();
+      normalizeLocalStars(cachedGalaxyStars, factionHomeStarIds);
       rebuildHyperlaneAdjacency(cachedGalaxyStars);
     }
 
@@ -191,6 +204,9 @@ async function boot() {
     await switchScene(() => {
       const actualStarCount = cachedGalaxyStars ? cachedGalaxyStars.length : 500;
       const factionHomeStarIds = factions.map((faction) => faction.homeStarId);
+      if (cachedGalaxyStars && cachedGalaxyStars.length > 0) {
+        normalizeLocalStars(cachedGalaxyStars, factionHomeStarIds);
+      }
       const system = new SystemScene(
         engine,
         star,

@@ -2,6 +2,7 @@ import { SceneManager } from "@/SceneManager";
 import { GalaxyScene } from "@/scenes/GalaxyScene";
 import { SystemScene } from "@/scenes/SystemScene";
 import type { IGameScene } from "@/SceneManager";
+import { applyPlanetStatesToStars } from "@/data/StarMap";
 import type { StarData } from "@/data/StarMap";
 import type { GalaxyPerspective } from "@/data/Factions";
 import type { GalaxySceneOptions, GalaxyViewState } from "@/scenes/GalaxyScene";
@@ -9,7 +10,7 @@ import { buildHyperlaneAdjacency } from "@/data/Hyperlanes";
 import { HudOverlay } from "@/ui/HudOverlay";
 import type { HudConnectedSystem, HudVisualToggles } from "@/ui/HudOverlay";
 import { GameServerClient } from "./GameServerClient";
-import type { GameSnapshot, ServerShip } from "./GameProtocol";
+import type { ClientCommand, GameSnapshot, ServerShip } from "./GameProtocol";
 
 export interface BootOptions {
   perspective?: GalaxyPerspective;
@@ -29,6 +30,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   reportProgress(0.08, "Connecting to game server");
   const server = new GameServerClient(perspective);
   let snapshot = await server.connect();
+  applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
 
   reportProgress(0.28, "Receiving authoritative galaxy state");
 
@@ -64,6 +66,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const getFactionHomeStarIds = (): number[] => snapshot.factions.map((faction) => faction.homeStarId);
   const getStarbaseSystemIds = (): number[] => snapshot.starbases.map((starbase) => starbase.starId);
   const getShipSystemIds = (): number[] => snapshot.ships.map((ship) => ship.currentStarId);
+  const getCurrentFactionEconomy = () => (
+    perspective.mode === "faction"
+      ? snapshot.factionEconomies.find((economy) => economy.factionId === perspective.factionId) ?? null
+      : null
+  );
 
   const getPrimaryTransitShip = (): ServerShip | null => (
     snapshot.ships.find((ship) => ship.hyperlanePosition !== null) ?? null
@@ -140,10 +147,12 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       connectedSystems,
       toggles: visualToggles,
       clock: snapshot.clock,
+      economy: getCurrentFactionEconomy(),
     });
   }
 
   function applySnapshotToActiveScene(): void {
+    applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
     cachedGalaxyStars = snapshot.stars;
     if (!hyperlaneListsEqual(snapshot.hyperlanes, cachedHyperlanePairs)) {
       cachedHyperlanePairs = snapshot.hyperlanes;
@@ -156,6 +165,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       activeGalaxyScene.setStarOwnerships(snapshot.starOwnership);
       activeGalaxyScene.setStarbaseSystemIds(getStarbaseSystemIds());
       activeGalaxyScene.setServerShips(snapshot.ships);
+      activeGalaxyScene.setPlanetStates(snapshot.planetStates);
       activeGalaxyScene.setPlayerShipState(
         getPrimaryTransitShip()?.currentStarId ?? getPrimaryShipStarId(),
         getPrimaryTransit(),
@@ -165,6 +175,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     if (activeSystemScene) {
       activeSystemScene.setShipSystemPositions(getShipSystemPositions());
       activeSystemScene.setStarbaseSystemIds(getStarbaseSystemIds());
+      activeSystemScene.setPlanetStates(snapshot.planetStates);
     }
 
     updateHud();
@@ -182,6 +193,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   async function openGalaxyView(): Promise<void> {
     reportProgress(0.58, "Loading galaxy scene");
+    applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
 
     const optionsForGalaxy: GalaxySceneOptions = {
       stars: snapshot.stars,
@@ -196,6 +208,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       starOwnership: snapshot.starOwnership,
       visibleStarIds: snapshot.visibleStarIds,
       knownStarIds: snapshot.knownStarIds,
+      planetStates: snapshot.planetStates,
       onShipCommand: (action, targetStarId, shipId) => {
         if (!shipId) return;
         if (action === "move") {
@@ -203,6 +216,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         } else if (action === "build") {
           server.send({ type: "buildStarbase", shipId, targetStarId });
         }
+      },
+      onPlanetCommand: (command: ClientCommand) => {
+        server.send(command);
       },
     };
 
@@ -242,6 +258,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           playerShipStarId: getPrimaryShipStarId(),
           shipTransit: getPrimaryTransit(),
           shipSystemPositions: getShipSystemPositions(),
+          planetStates: snapshot.planetStates,
+          onPlanetCommand: (command: ClientCommand) => {
+            server.send(command);
+          },
         },
       );
       activeSystemScene = system;
@@ -273,6 +293,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   server.onSnapshot((nextSnapshot) => {
     snapshot = nextSnapshot;
+    applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
     applySnapshotToActiveScene();
   });
 
@@ -294,6 +315,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   });
 
   reportProgress(0.5, "Starting galaxy command sequence");
+  applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
   await openGalaxyView();
 
   console.log("StellarFronts game running");
