@@ -272,6 +272,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       }
       if (isFull || has("starbases")) {
         activeGalaxyScene.setStarbaseSystemIds(getStarbaseSystemIds());
+        activeGalaxyScene.setServerStarbases(snapshot.starbases);
       }
       if (isFull || has("ships")) {
         activeGalaxyScene.setServerShips(snapshot.ships);
@@ -288,9 +289,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     if (activeSystemScene) {
       if (isFull || has("clock") || has("ships")) {
         activeSystemScene.setShipSystemPositions(getShipSystemPositions());
+        activeSystemScene.setServerShips(snapshot.ships);
       }
       if (isFull || has("starbases")) {
         activeSystemScene.setStarbaseSystemIds(getStarbaseSystemIds());
+        activeSystemScene.setServerStarbases(snapshot.starbases);
       }
       if (isFull || has("planetStates")) {
         activeSystemScene.setPlanetStates(snapshot.planetStates);
@@ -324,6 +327,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       playerShipSystemIds: getShipSystemIds(),
       serverShips: snapshot.ships,
       starbaseSystemIds: getStarbaseSystemIds(),
+      starbases: snapshot.starbases,
       starOwnership: expandStarOwnership(),
       visibleStarIds: snapshot.visibleStarIds,
       knownStarIds: snapshot.knownStarIds,
@@ -377,7 +381,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         {
           homeSystemStarIds: getFactionHomeStarIds(),
           playerShipSystemIds: getShipSystemIds(),
+          serverShips: snapshot.ships,
           starbaseSystemIds: getStarbaseSystemIds(),
+          starbases: snapshot.starbases,
+          factions: snapshot.factions,
+          playerFactionId: perspective.mode === "faction" ? perspective.factionId : 0,
           playerShipStarId: getPrimaryShipStarId(),
           shipTransit: getPrimaryTransit(),
           shipSystemPositions: getShipSystemPositions(),

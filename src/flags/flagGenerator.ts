@@ -127,12 +127,12 @@ function createRandom(seed: string | number): () => number {
   };
 }
 
-function pickById<T extends { id: string }>(items: T[], id?: string): T {
+function pickById<T extends { id: string }>(items: T[], id?: string): T | undefined {
   if (id) {
     const match = items.find((item) => item.id === id);
     if (match) return match;
   }
-  return items[0];
+  return undefined;
 }
 
 function pickRandom<T>(items: T[], random: () => number): T {
@@ -141,11 +141,12 @@ function pickRandom<T>(items: T[], random: () => number): T {
 
 export function createFlagDesign(options: FlagGenerationOptions = {}): FlagDesign {
   const random = createRandom(options.seed ?? "flag-generator");
-  const container = pickById(FLAG_CONTAINERS, options.containerId);
-  const backgroundColor = pickById(FLAG_COLORS, options.colorId);
-  const accentColor = pickById(FLAG_COLORS, options.accentColorId) ?? pickRandom(FLAG_COLORS, random);
-  const pattern = pickById(FLAG_PATTERNS, options.patternId);
-  const primarySymbol = pickById(FLAG_SYMBOLS, options.primarySymbolId);
+  const container = pickById(FLAG_CONTAINERS, options.containerId) ?? pickRandom(FLAG_CONTAINERS, random);
+  const backgroundColor = pickById(FLAG_COLORS, options.colorId) ?? pickRandom(FLAG_COLORS, random);
+  const accentPool = FLAG_COLORS.filter((color) => color.id !== backgroundColor.id);
+  const accentColor = pickById(FLAG_COLORS, options.accentColorId) ?? pickRandom(accentPool.length > 0 ? accentPool : FLAG_COLORS, random);
+  const pattern = pickById(FLAG_PATTERNS, options.patternId) ?? pickRandom(FLAG_PATTERNS, random);
+  const primarySymbol = pickById(FLAG_SYMBOLS, options.primarySymbolId) ?? pickRandom(FLAG_SYMBOLS, random);
   const secondarySymbol = options.secondarySymbolId
     ? pickById(FLAG_SYMBOLS, options.secondarySymbolId)
     : random() > 0.45

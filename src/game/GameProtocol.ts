@@ -7,6 +7,11 @@ import type {
   PlanetState,
   UrbanSubDistrictKind,
 } from "../data/Economy";
+import type {
+  StarbaseConstructionQueueItem,
+  StarbaseEconomy,
+  StarbaseLevel,
+} from "../data/Starbase";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 
 export type ShipAction = "move" | "build" | "attack";
@@ -44,6 +49,10 @@ export interface ServerStarbase {
   starId: number;
   status: "online" | "building";
   buildProgress: number;
+  level: StarbaseLevel;
+  economy: StarbaseEconomy;
+  buildingSlots: Array<string | null>;
+  constructionQueue: StarbaseConstructionQueueItem[];
 }
 
 export interface ShipSystemPosition {

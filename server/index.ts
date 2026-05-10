@@ -35,6 +35,11 @@ import {
   recalculatePlanetStateEconomy,
   URBAN_SUB_DISTRICT_KINDS,
 } from "../src/data/Economy";
+import {
+  calculateStarbaseEconomy,
+  createEmptyStarbaseSlots,
+} from "../src/data/Starbase";
+import type { StarbaseLevel } from "../src/data/Starbase";
 import type {
   BuildingKind,
   BuildingSlotArea,
@@ -160,6 +165,10 @@ function calculateFactionMonthlyDelta(nextState: GameState, factionId: number) {
     if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
     delta = addResourceCounts(delta, planetState.economy.net);
   }
+  for (const starbase of nextState.starbases) {
+    if (starbase.ownerId !== factionId || starbase.status !== "online") continue;
+    delta = addResourceCounts(delta, starbase.economy.net);
+  }
   return delta;
 }
 
@@ -188,6 +197,24 @@ function normalizeResourceCounts(counts?: Partial<ResourceCounts>): ResourceCoun
   return {
     ...createEmptyResourceCounts(),
     ...counts,
+  };
+}
+
+function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarbase, "id" | "ownerId" | "starId">): ServerStarbase {
+  const level = (starbase.level ?? "outpost") as StarbaseLevel;
+  const buildingSlots = Array.isArray(starbase.buildingSlots)
+    ? createEmptyStarbaseSlots().map((_, index) => starbase.buildingSlots?.[index] ?? null)
+    : createEmptyStarbaseSlots();
+  return {
+    id: starbase.id,
+    ownerId: starbase.ownerId,
+    starId: starbase.starId,
+    status: starbase.status ?? "online",
+    buildProgress: starbase.buildProgress ?? 1,
+    level,
+    economy: calculateStarbaseEconomy(level),
+    buildingSlots,
+    constructionQueue: Array.isArray(starbase.constructionQueue) ? starbase.constructionQueue : [],
   };
 }
 
@@ -232,6 +259,10 @@ function createInitialState(): GameState {
     starId: faction.homeStarId,
     status: "online",
     buildProgress: 1,
+    level: "outpost",
+    economy: calculateStarbaseEconomy("outpost"),
+    buildingSlots: createEmptyStarbaseSlots(),
+    constructionQueue: [],
   }));
   const ships = factions.map<GameShip>((faction) => ({
     id: `ship-${faction.id}-1`,
@@ -286,6 +317,7 @@ async function loadState(): Promise<GameState> {
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.clock.lastUpdatedAt = parsed.clock.lastUpdatedAt ?? Date.now();
+    parsed.starbases = (parsed.starbases ?? []).map((starbase) => normalizeStarbase(starbase));
     parsed.ships = parsed.ships.map((ship) => ({
       ...ship,
       phaseElapsedMs: ship.phaseElapsedMs ?? Math.round((ship.phaseProgress ?? 0) * phaseDuration(ship.phase)),
@@ -982,6 +1014,10 @@ function completeShipOrder(ship: GameShip): void {
         starId,
         status: "online",
         buildProgress: 1,
+        level: "outpost",
+        economy: calculateStarbaseEconomy("outpost"),
+        buildingSlots: createEmptyStarbaseSlots(),
+        constructionQueue: [],
       });
       state.starOwnership[starId] = ship.ownerId;
     }

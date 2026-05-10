@@ -33,8 +33,9 @@ import { StarFieldRenderer } from "../systems/StarFieldRenderer";
 import type { GalaxyIconClickType, ShipIconStyle } from "../systems/StarFieldRenderer";
 import { SelectionPanel } from "../ui/SelectionPanel";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
+import { StarbasePanel } from "../ui/StarbasePanel";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
-import type { ClientCommand, ServerShip } from "../game/GameProtocol";
+import type { ClientCommand, ServerShip, ServerStarbase } from "../game/GameProtocol";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
 
@@ -62,6 +63,7 @@ export interface GalaxySceneOptions {
   playerShipTransit?: GalaxyShipTransit | null;
   serverShips?: ServerShip[];
   starbaseSystemIds?: Iterable<number>;
+  starbases?: ServerStarbase[];
   planetStates?: PlanetState[];
   habitedPlanetSystemIds?: Iterable<number>;
   onGameplayFrame?: (deltaTime: number) => void;
@@ -869,6 +871,7 @@ export class GalaxyScene implements IGameScene {
   private playerShipSystemIds = new Set<number>();
   private playerShipTransit: GalaxyShipTransit | null = null;
   private serverShips: ServerShip[] = [];
+  private starbases: ServerStarbase[] = [];
   private planetStates: PlanetState[] = [];
   private hasExplicitHabitedPlanetSystemIds = false;
   private starbaseSystemIds = new Set<number>();
@@ -884,6 +887,7 @@ export class GalaxyScene implements IGameScene {
   private readonly hoverScaleBoost = 1.3;
   private selectionPanel!: SelectionPanel;
   private objectPanel!: CelestialObjectPanel;
+  private starbasePanel!: StarbasePanel;
 
   private hyperlanesVisible = true;
   private centerCloudVisible = true;
@@ -956,6 +960,7 @@ export class GalaxyScene implements IGameScene {
     }
     this.playerShipTransit = this.options.playerShipTransit ?? null;
     this.serverShips = this.options.serverShips ?? [];
+    this.starbases = this.options.starbases ?? [];
     this.starbaseSystemIds = new Set(
       this.options.starbaseSystemIds
         ? Array.from(this.options.starbaseSystemIds)
@@ -1045,6 +1050,7 @@ export class GalaxyScene implements IGameScene {
       onShipAction: (action) => this.beginShipAction(action),
     });
     this.objectPanel = new CelestialObjectPanel();
+    this.starbasePanel = new StarbasePanel();
     this.starField.setIconClickCallback((type, shiftKey, starId) => {
       this.handleIconClick(type, shiftKey, starId);
     });
@@ -1721,16 +1727,9 @@ export class GalaxyScene implements IGameScene {
         this.selectedCommandShipId = null;
         this.clearShipAction();
       }
-      this.selectionPanel.select(
-        {
-          type: "starbase",
-          name: "Starbase 375",
-          hp: 88,
-          maxHp: 100,
-          class: "Outpost",
-        },
-        shiftKey,
-      );
+      if (starId !== undefined) {
+        this.openStarbasePanelForStar(starId);
+      }
       return;
     }
 
@@ -1761,6 +1760,31 @@ export class GalaxyScene implements IGameScene {
       accentColor: "rgba(102, 236, 199, 0.95)",
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
     });
+  }
+
+  private openStarbasePanelForStar(starId: number): void {
+    const star = this.stars[starId];
+    if (!star) return;
+    const starbase = this.starbases.find((candidate) => candidate.starId === starId);
+    const ownerId = starbase?.ownerId ?? this.starOwnership[starId] ?? -1;
+    const owner = this.factions.find((faction) => faction.id === ownerId) ?? null;
+
+    this.selectionPanel?.clear();
+    this.starbasePanel.show({
+      id: starbase?.id ?? `starbase-${starId}`,
+      name: `${star.name} Station`,
+      systemName: `${star.name} System`,
+      ownerName: owner?.name,
+      ownerColor: owner?.color,
+      status: starbase?.status ?? "online",
+      power: this.formatStarbasePower(starbase),
+      starbase,
+    });
+  }
+
+  private formatStarbasePower(starbase?: ServerStarbase): string {
+    const base = starbase?.status === "building" ? 6.8 : 13.0;
+    return `${base.toFixed(1)}K`;
   }
 
   private getPlanetState(planetId: string): PlanetState | undefined {
@@ -1931,6 +1955,10 @@ export class GalaxyScene implements IGameScene {
     }
   }
 
+  setServerStarbases(starbases: ServerStarbase[]): void {
+    this.starbases = starbases;
+  }
+
   setStarOwnership(starId: number, owner: number): void {
     if (starId < 0 || starId >= this.starOwnership.length) return;
     this.starOwnership[starId] = owner;
@@ -1979,6 +2007,7 @@ export class GalaxyScene implements IGameScene {
     this.canvas?.removeEventListener("mouseleave", this.onCanvasPointerLeave);
     this.selectionPanel?.clear();
     this.objectPanel?.dispose();
+    this.starbasePanel?.dispose();
     this.hyperlaneMesh?.dispose();
     this.hyperlaneMesh = null;
     if (this.ownershipOverlayMesh) {

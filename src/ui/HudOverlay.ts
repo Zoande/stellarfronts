@@ -1,6 +1,8 @@
 import type { GameClock } from "../game/GameProtocol";
 import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
 import type { FactionEconomyState } from "../data/Economy";
+import { createFlagDesign } from "../flags/flagGenerator";
+import { renderFlagSvg } from "../flags/renderFlagSvg";
 
 export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
 
@@ -245,16 +247,15 @@ const HUD_STYLE = `
   right: 0;
   transform: scale(1.3);
   transform-origin: top right;
-  min-width: 230px;
-  min-height: 34px;
+  min-width: 252px;
+  min-height: 39px;
   border-left: 1px solid rgba(94, 173, 142, 0.72);
   border-bottom: 1px solid rgba(94, 173, 142, 0.48);
   background:
     linear-gradient(180deg, rgba(9, 34, 25, 0.96), rgba(4, 13, 12, 0.98)),
     radial-gradient(circle at 12% 0%, rgba(246, 170, 77, 0.16), transparent 9rem);
-  padding: 4px 12px 5px 44px;
+  padding: 4px 12px 7px 42px;
   pointer-events: none;
-  text-align: right;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), inset 0 -1px 0 rgba(117, 255, 208, 0.08);
 }
 
@@ -274,6 +275,14 @@ const HUD_STYLE = `
   font-weight: 900;
 }
 
+.spaceHudClockGrid {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  grid-template-rows: auto auto 5px;
+  align-items: end;
+  gap: 0 10px;
+}
+
 #spaceHudResources {
   position: absolute;
   top: 0;
@@ -285,6 +294,7 @@ const HUD_STYLE = `
   gap: 0;
   max-width: calc(100vw - 250px);
   min-height: 34px;
+  padding-left: 64px;
   border-right: 1px solid rgba(94, 173, 142, 0.72);
   border-bottom: 1px solid rgba(94, 173, 142, 0.48);
   background:
@@ -292,6 +302,28 @@ const HUD_STYLE = `
     radial-gradient(circle at 30% 0%, rgba(90, 255, 195, 0.12), transparent 18rem);
   pointer-events: none;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 -1px 0 rgba(117, 255, 208, 0.08);
+}
+
+.spaceHudFactionFlag {
+  position: absolute;
+  left: 6px;
+  top: -5px;
+  width: 50px;
+  height: 50px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.58));
+  z-index: 2;
+}
+
+.spaceHudFactionFlag svg {
+  width: 50px;
+  height: 50px;
+  display: block;
+  overflow: visible;
 }
 
 .spaceHudResourceItem {
@@ -360,27 +392,71 @@ const HUD_STYLE = `
 
 .spaceHudClockLabel {
   display: block;
+  grid-column: 2;
+  grid-row: 1;
   color: rgba(175, 208, 197, 0.72);
   font-size: 7px;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+  text-align: right;
 }
 
 .spaceHudClockValue {
   display: block;
+  grid-column: 2;
+  grid-row: 2;
   color: #edf4ff;
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  text-align: right;
 }
 
 .spaceHudClockSpeed {
-  display: block;
+  display: grid;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: center;
+  min-height: 24px;
+  place-items: center;
+  padding: 0 6px;
+  border: 1px solid rgba(235, 142, 61, 0.56);
+  background: rgba(77, 39, 14, 0.34);
   color: rgba(246, 170, 77, 0.95);
-  font-size: 9px;
+  font-size: 8px;
+  line-height: 1.1;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  text-align: center;
+}
+
+.spaceHudClockProgress {
+  grid-column: 1 / span 2;
+  grid-row: 3;
+  height: 6px;
+  margin-top: 7px;
+  border: 1px solid rgba(94, 173, 142, 0.36);
+  background: rgba(1, 10, 10, 0.7);
+  overflow: hidden;
+}
+
+.spaceHudClockProgressFill {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left center;
+  background:
+    linear-gradient(90deg, rgba(235, 142, 61, 0.9), rgba(247, 209, 92, 0.98)),
+    radial-gradient(circle at 100% 50%, rgba(255, 255, 255, 0.9), transparent 1.2rem);
+  box-shadow: 0 0 10px rgba(246, 170, 77, 0.36);
+  animation: spaceHudDayProgress var(--clock-day-duration, 30s) linear infinite;
+  animation-delay: var(--clock-day-delay, 0s);
+}
+
+@keyframes spaceHudDayProgress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
 }
 
 .spaceHudToggleBtn {
@@ -535,12 +611,19 @@ function formatGameDate(yearValue: number): { year: number; month: number; day: 
   };
 }
 
+function getDayProgress(yearValue: number): number {
+  const year = Math.floor(yearValue);
+  const exactDayOfYear = Math.max(0, Math.min(GAME_DAYS_PER_YEAR, (yearValue - year) * GAME_DAYS_PER_YEAR));
+  return exactDayOfYear - Math.floor(exactDayOfYear);
+}
+
 export class HudOverlay {
   private readonly callbacks: HudCallbacks;
   private readonly root: HTMLDivElement;
   private readonly connectedContainer: HTMLDivElement;
   private readonly clockEl: HTMLDivElement;
   private readonly resourceEl: HTMLDivElement;
+  private readonly factionFlagSvg: string;
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
   private readonly toggleButtons: Record<HudToggleKey, HTMLButtonElement>;
@@ -548,6 +631,13 @@ export class HudOverlay {
   constructor(callbacks: HudCallbacks) {
     this.callbacks = callbacks;
     ensureHudStyles();
+    const flagDesign = createFlagDesign({ seed: `${Date.now()}-${Math.random()}` });
+    this.factionFlagSvg = renderFlagSvg(flagDesign, {
+      size: 34,
+      className: "spaceHudFactionFlagSvg",
+      title: "Faction flag",
+      idPrefix: "hud-faction-flag",
+    });
 
     this.root = document.createElement("div");
     this.root.id = "spaceHudRoot";
@@ -619,16 +709,23 @@ export class HudOverlay {
     if (state.clock) {
       const date = formatGameDate(state.clock.year);
       const daysPerThirtySeconds = state.clock.speedMultiplier;
+      const dayProgress = getDayProgress(state.clock.year);
+      const dayDuration = 30 / Math.max(0.01, daysPerThirtySeconds);
+      const delay = -dayProgress * dayDuration;
       this.clockEl.innerHTML = `
-        <span class="spaceHudClockLabel">Galactic Standard</span>
-        <span class="spaceHudClockValue">${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")}</span>
-        <span class="spaceHudClockSpeed">${daysPerThirtySeconds} ${daysPerThirtySeconds === 1 ? "day" : "days"} / 30 sec</span>
+        <div class="spaceHudClockGrid" style="--clock-day-duration: ${dayDuration}s; --clock-day-delay: ${delay}s;">
+          <span class="spaceHudClockSpeed">${daysPerThirtySeconds} ${daysPerThirtySeconds === 1 ? "day" : "days"}<br>/ 30 sec</span>
+          <span class="spaceHudClockLabel">Galactic Standard</span>
+          <span class="spaceHudClockValue">${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")}</span>
+          <span class="spaceHudClockProgress" aria-hidden="true"><span class="spaceHudClockProgressFill"></span></span>
+        </div>
       `;
     } else {
       this.clockEl.innerHTML = "";
     }
     if (state.economy) {
-      this.resourceEl.innerHTML = RESOURCE_KINDS.map((resource) => {
+      const flag = `<div class="spaceHudFactionFlag">${this.factionFlagSvg}</div>`;
+      const resources = RESOURCE_KINDS.map((resource) => {
         const stockpile = state.economy?.stockpiles[resource] ?? 0;
         const delta = state.economy?.monthlyDelta[resource] ?? 0;
         return `
@@ -642,6 +739,7 @@ export class HudOverlay {
           </div>
         `;
       }).join("");
+      this.resourceEl.innerHTML = `${flag}${resources}`;
     } else {
       this.resourceEl.innerHTML = "";
     }

@@ -69,6 +69,30 @@ const DISTRICT_LABELS: Record<DistrictKind, string> = {
   agriculture: "Agriculture",
 };
 
+const DISTRICT_ICON_BY_KIND: Record<DistrictKind, string> = {
+  city: `${DISTRICT_ICON_DIR}/City.png`,
+  generator: `${DISTRICT_ICON_DIR}/Generator.png`,
+  mining: `${DISTRICT_ICON_DIR}/Mining.png`,
+  agriculture: `${DISTRICT_ICON_DIR}/Agriculture.png`,
+};
+
+const BUILDING_ICON_BY_KIND: Record<BuildingKind, string> = {
+  housingComplex: `${BUILDING_ICON_DIR}/Housing_Complex.png`,
+  administrativeComplex: `${BUILDING_ICON_DIR}/Administrative_Complex.png`,
+  researchLabs: `${BUILDING_ICON_DIR}/Research_Labs.png`,
+  civilianFabricators: `${BUILDING_ICON_DIR}/Civilian_Fabricators.png`,
+  alloyFoundries: `${BUILDING_ICON_DIR}/Alloy_Foundries.png`,
+  commercialForum: `${BUILDING_ICON_DIR}/Commercial_Forum.png`,
+  foodProcessingPlant: `${BUILDING_ICON_DIR}/Food_Processing_Plant.png`,
+  agroIndustrialKitchens: `${BUILDING_ICON_DIR}/Agro-Industrial_Kitchens.png`,
+  mineralPurificationPlant: `${BUILDING_ICON_DIR}/Mineral_Purification_Plant.png`,
+  oreSmelter: `${BUILDING_ICON_DIR}/Ore_Smelter.png`,
+  energyGrid: `${BUILDING_ICON_DIR}/Energy_Grid.png`,
+  capacitorWorkshops: `${BUILDING_ICON_DIR}/Capacitor_Workshops.png`,
+  entertainmentForum: `${BUILDING_ICON_DIR}/Entertainment_Forum.png`,
+  securityOffice: `${BUILDING_ICON_DIR}/Security_Office.png`,
+};
+
 const HABITED_PLANET_BANNERS: Partial<Record<PlanetType, string>> = {
   Barren: `${PLANET_BANNER_DIR}/Barren_banner.png`,
   Gaseous: `${PLANET_BANNER_DIR}/Gaseous_banner.png`,
@@ -129,6 +153,7 @@ export class CelestialObjectPanel {
   private tooltipStickTimer: number | null = null;
   private tooltipHideTimer: number | null = null;
   private tooltipSticky = false;
+  private readonly keyedBuildingIconCache = new Map<string, string>();
   private position = { x: 24, y: 70 };
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
@@ -182,10 +207,14 @@ export class CelestialObjectPanel {
   }
 
   private getBuildingIconCandidates(definition: BuildingDefinition): string[] {
-    const spaced = encodeURI(`${BUILDING_ICON_DIR}/${definition.label}.png`);
-    const underscored = encodeURI(`${BUILDING_ICON_DIR}/${definition.label.replace(/\s+/g, "_")}.png`);
-    const kindName = encodeURI(`${BUILDING_ICON_DIR}/${definition.kind}.png`);
-    return Array.from(new Set([spaced, underscored, kindName]));
+    const mapped = BUILDING_ICON_BY_KIND[definition.kind];
+    const spaced = `${BUILDING_ICON_DIR}/${definition.label}.png`;
+    const underscored = `${BUILDING_ICON_DIR}/${definition.label.replace(/\s+/g, "_")}.png`;
+    const kindName = `${BUILDING_ICON_DIR}/${definition.kind}.png`;
+    const spellingFallback = definition.kind === "entertainmentForum"
+      ? `${BUILDING_ICON_DIR}/Entretainment_Forum.png`
+      : "";
+    return Array.from(new Set([mapped, spaced, underscored, spellingFallback, kindName].filter(Boolean).map((path) => encodeURI(path))));
   }
 
   private getBuildingIconCandidateAttribute(definition: BuildingDefinition): string {
@@ -194,10 +223,11 @@ export class CelestialObjectPanel {
 
   private getDistrictIconCandidates(kind: DistrictKind): string[] {
     const label = DISTRICT_LABELS[kind];
-    const spaced = encodeURI(`${DISTRICT_ICON_DIR}/${label}.png`);
-    const underscored = encodeURI(`${DISTRICT_ICON_DIR}/${label.replace(/\s+/g, "_")}.png`);
-    const kindName = encodeURI(`${DISTRICT_ICON_DIR}/${kind}.png`);
-    return Array.from(new Set([spaced, underscored, kindName]));
+    const mapped = DISTRICT_ICON_BY_KIND[kind];
+    const spaced = `${DISTRICT_ICON_DIR}/${label}.png`;
+    const underscored = `${DISTRICT_ICON_DIR}/${label.replace(/\s+/g, "_")}.png`;
+    const kindName = `${DISTRICT_ICON_DIR}/${kind}.png`;
+    return Array.from(new Set([mapped, spaced, underscored, kindName].map((path) => encodeURI(path))));
   }
 
   private getDistrictIconCandidateAttribute(kind: DistrictKind): string {
@@ -301,15 +331,31 @@ export class CelestialObjectPanel {
     this.panelElement.querySelectorAll<HTMLImageElement>("[data-building-icon]").forEach((image) => {
       const fallback = image.parentElement?.querySelector<HTMLElement>("[data-building-fallback]");
       const candidates = (image.dataset.buildingIconCandidates ?? "").split("|").filter(Boolean);
+      image.loading = "eager";
+      image.decoding = "async";
 
       const showFallback = (): void => {
         image.style.display = "none";
+        image.style.visibility = "hidden";
+        image.style.opacity = "0";
         if (fallback) fallback.style.display = "grid";
       };
 
       const showImage = (): void => {
         image.style.display = "block";
+        image.style.visibility = "visible";
+        image.style.opacity = "1";
         if (fallback) fallback.style.display = "none";
+      };
+
+      const showProcessedImage = (source: string): void => {
+        const keyedIcon = this.createKeyedBuildingIcon(image, source);
+        if (keyedIcon && image.src !== keyedIcon) {
+          image.onload = null;
+          image.onerror = null;
+          image.src = keyedIcon;
+        }
+        showImage();
       };
 
       const tryCandidate = (index: number): void => {
@@ -324,13 +370,17 @@ export class CelestialObjectPanel {
           return;
         }
 
+        image.style.display = "block";
+        image.style.visibility = "hidden";
+        image.style.opacity = "0";
+        if (fallback) fallback.style.display = "grid";
         image.dataset.buildingIconIndex = String(index);
-        image.onload = () => showImage();
+        image.onload = () => showProcessedImage(candidate);
         image.onerror = () => tryCandidate(index + 1);
         image.src = candidate;
 
         if (image.complete && image.naturalWidth > 0) {
-          showImage();
+          showProcessedImage(candidate);
         }
       };
 
@@ -345,14 +395,20 @@ export class CelestialObjectPanel {
     this.panelElement.querySelectorAll<HTMLImageElement>("[data-district-icon]").forEach((image) => {
       const fallback = image.parentElement?.querySelector<HTMLElement>("[data-district-fallback]");
       const candidates = (image.dataset.districtIconCandidates ?? "").split("|").filter(Boolean);
+      image.loading = "eager";
+      image.decoding = "async";
 
       const showFallback = (): void => {
         image.style.display = "none";
+        image.style.visibility = "hidden";
+        image.style.opacity = "0";
         if (fallback) fallback.style.display = "grid";
       };
 
       const showImage = (): void => {
         image.style.display = "block";
+        image.style.visibility = "visible";
+        image.style.opacity = "1";
         if (fallback) fallback.style.display = "none";
       };
 
@@ -368,6 +424,10 @@ export class CelestialObjectPanel {
           return;
         }
 
+        image.style.display = "block";
+        image.style.visibility = "hidden";
+        image.style.opacity = "0";
+        if (fallback) fallback.style.display = "grid";
         image.dataset.districtIconIndex = String(index);
         image.onload = () => showImage();
         image.onerror = () => tryCandidate(index + 1);
@@ -481,6 +541,81 @@ export class CelestialObjectPanel {
       anchor.addEventListener("focus", () => this.scheduleTooltip(anchor));
       anchor.addEventListener("blur", () => this.scheduleTooltipHide());
     });
+  }
+
+  private createKeyedBuildingIcon(image: HTMLImageElement, source: string): string | null {
+    const cached = this.keyedBuildingIconCache.get(source);
+    if (cached) return cached;
+    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return null;
+
+    try {
+      const width = image.naturalWidth;
+      const height = image.naturalHeight;
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) return null;
+
+      context.drawImage(image, 0, 0, width, height);
+      const imageData = context.getImageData(0, 0, width, height);
+      const pixels = imageData.data;
+      const totalPixels = width * height;
+      const visited = new Uint8Array(totalPixels);
+      const queue = new Int32Array(totalPixels);
+      let read = 0;
+      let write = 0;
+
+      const isNearWhiteBackground = (pixelIndex: number): boolean => {
+        const offset = pixelIndex * 4;
+        const red = pixels[offset];
+        const green = pixels[offset + 1];
+        const blue = pixels[offset + 2];
+        const alpha = pixels[offset + 3];
+        const max = Math.max(red, green, blue);
+        const min = Math.min(red, green, blue);
+        return alpha > 0 && min >= 205 && max - min <= 55;
+      };
+
+      const enqueue = (pixelIndex: number): void => {
+        if (pixelIndex < 0 || pixelIndex >= totalPixels || visited[pixelIndex] || !isNearWhiteBackground(pixelIndex)) return;
+        visited[pixelIndex] = 1;
+        queue[write] = pixelIndex;
+        write += 1;
+      };
+
+      for (let x = 0; x < width; x += 1) {
+        enqueue(x);
+        enqueue((height - 1) * width + x);
+      }
+      for (let y = 1; y < height - 1; y += 1) {
+        enqueue(y * width);
+        enqueue(y * width + width - 1);
+      }
+
+      while (read < write) {
+        const pixelIndex = queue[read];
+        read += 1;
+        const x = pixelIndex % width;
+        const y = Math.floor(pixelIndex / width);
+        if (x > 0) enqueue(pixelIndex - 1);
+        if (x < width - 1) enqueue(pixelIndex + 1);
+        if (y > 0) enqueue(pixelIndex - width);
+        if (y < height - 1) enqueue(pixelIndex + width);
+      }
+
+      for (let pixelIndex = 0; pixelIndex < totalPixels; pixelIndex += 1) {
+        if (!visited[pixelIndex]) continue;
+        pixels[pixelIndex * 4 + 3] = 0;
+      }
+
+      context.putImageData(imageData, 0, 0);
+      const keyedIcon = canvas.toDataURL("image/png");
+      this.keyedBuildingIconCache.set(source, keyedIcon);
+      return keyedIcon;
+    } catch {
+      return null;
+    }
   }
 
   private scheduleTooltip(anchor: HTMLElement): void {
@@ -706,7 +841,7 @@ export class CelestialObjectPanel {
       </div>
       <div class="coDistrictContent">
         <div class="coDistrictIcon ${kind}">
-          <img class="coDistrictIconArt" data-district-icon data-district-icon-candidates="${this.escapeHtml(this.getDistrictIconCandidateAttribute(kind))}" alt="" loading="lazy" decoding="async" style="display:none;" />
+          <img class="coDistrictIconArt" data-district-icon data-district-icon-candidates="${this.escapeHtml(this.getDistrictIconCandidateAttribute(kind))}" alt="" loading="eager" decoding="async" style="display:none;" />
           <div class="coDistrictFallback" data-district-fallback>${district?.code ?? ""}</div>
         </div>
         <div class="coDistrictMeta">
@@ -742,7 +877,7 @@ export class CelestialObjectPanel {
         const definition = BUILDING_DEFINITIONS[building];
         return `
           <span class="filled coBuildingIconSlot" data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState!, area, subDistrictIndex))}">
-            <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="lazy" decoding="async" style="display:none;" />
+            <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
             <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
           </span>
         `;
@@ -752,7 +887,7 @@ export class CelestialObjectPanel {
         const definition = BUILDING_DEFINITIONS[queued.buildingKind];
         return `
           <span class="queued coBuildingIconSlot" data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState!, area, subDistrictIndex, queued))}">
-            <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="lazy" decoding="async" style="display:none;" />
+            <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
             <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
             <small>${Math.ceil(queued.remainingDays)}d</small>
           </span>
@@ -804,7 +939,7 @@ export class CelestialObjectPanel {
                 ${isCompatible ? "" : "disabled"}
               >
                 <span class="coBuildCardIcon">
-                  <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="lazy" decoding="async" style="display:none;" />
+                  <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
                   <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
                 </span>
                 <span class="coBuildCardCopy">
@@ -1706,6 +1841,7 @@ export class CelestialObjectPanel {
 .coDistrictIcon {
   width: 62px;
   height: 62px;
+  position: relative;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
@@ -1713,11 +1849,26 @@ export class CelestialObjectPanel {
   background: linear-gradient(145deg, rgba(80, 110, 120, 0.9), rgba(18, 30, 34, 0.96));
   color: #e9fff8;
   font-weight: 900;
+  overflow: hidden;
 }
 
 .coDistrictIcon.generator { color: #dbe447; }
 .coDistrictIcon.mining { color: #f27761; }
 .coDistrictIcon.agriculture { color: #62e865; }
+
+.coDistrictIconArt {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  padding: 2px;
+}
+
+.coDistrictFallback {
+  position: relative;
+  z-index: 1;
+}
 
 .coDistrictMeta {
   min-width: 0;
@@ -1844,7 +1995,9 @@ export class CelestialObjectPanel {
   display: grid;
   place-items: center;
   border: 1px solid rgba(103, 255, 221, 0.58);
-  background: rgba(6, 26, 26, 0.62);
+  background:
+    radial-gradient(circle at 28% 18%, rgba(114, 255, 224, 0.13), transparent 44%),
+    linear-gradient(145deg, rgba(12, 53, 49, 0.86), rgba(3, 18, 21, 0.96));
   color: #9dffdf;
   font-weight: 800;
   font-size: 10px;
@@ -1855,6 +2008,7 @@ export class CelestialObjectPanel {
 
 .coBuildingIconSlot {
   position: relative;
+  isolation: isolate;
 }
 
 .coBuildingIconArt {
@@ -1864,11 +2018,14 @@ export class CelestialObjectPanel {
   height: 100%;
   object-fit: contain;
   padding: 3px;
+  z-index: 0;
 }
 
 .coBuildingInitials {
   width: 28px;
   height: 28px;
+  position: relative;
+  z-index: 1;
   display: grid;
   place-items: center;
   border: 1px solid rgba(226, 255, 244, 0.38);
@@ -1899,20 +2056,28 @@ export class CelestialObjectPanel {
 
 .coEmbeddedBuildings .filled {
   color: #e4efe9;
-  background: rgba(31, 56, 54, 0.82);
+  background:
+    radial-gradient(circle at 35% 20%, rgba(142, 255, 225, 0.14), transparent 48%),
+    linear-gradient(145deg, rgba(33, 71, 65, 0.92), rgba(6, 25, 28, 0.98));
 }
 
 .coEmbeddedBuildings .queued {
   color: #ffe989;
-  background: rgba(64, 49, 13, 0.74);
+  background:
+    radial-gradient(circle at 35% 20%, rgba(255, 235, 128, 0.16), transparent 48%),
+    linear-gradient(145deg, rgba(70, 55, 18, 0.88), rgba(16, 20, 18, 0.98));
   border-color: rgba(248, 218, 103, 0.72);
 }
 
 .coEmbeddedBuildings .queued small {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  z-index: 2;
   display: block;
-  margin-top: 2px;
   color: rgba(255, 237, 169, 0.72);
   font-size: 9px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
 
 .coEmbeddedBuildings .placeholder {
@@ -2024,11 +2189,12 @@ export class CelestialObjectPanel {
   display: grid;
   place-items: center;
   position: relative;
+  isolation: isolate;
   overflow: hidden;
   border: 1px solid rgba(226, 255, 244, 0.42);
   background:
-    radial-gradient(circle at 30% 20%, rgba(205, 255, 239, 0.2), transparent 48%),
-    linear-gradient(145deg, rgba(42, 92, 82, 0.92), rgba(9, 24, 28, 0.98));
+    radial-gradient(circle at 30% 20%, rgba(132, 255, 225, 0.18), transparent 48%),
+    linear-gradient(145deg, rgba(31, 86, 75, 0.94), rgba(5, 20, 24, 0.98));
   color: #eafff8;
   font-size: 16px;
   font-weight: 900;
