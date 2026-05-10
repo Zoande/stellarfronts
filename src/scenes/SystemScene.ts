@@ -78,6 +78,21 @@ const SYSTEM_LABEL_TEXTURE_WIDTH = 2048;
 const SYSTEM_LABEL_TEXTURE_HEIGHT = 512;
 const SYSTEM_LABEL_U_SCALE = -1;
 const SYSTEM_LABEL_U_OFFSET = 1;
+const STAR_BANNER_DIR = "/textures/planet-banners";
+
+const STAR_BANNER_TEXTURES: Record<StarType, string> = {
+  B: `${STAR_BANNER_DIR}/Star_B_banner.png`,
+  A: `${STAR_BANNER_DIR}/Star_A_banner.png`,
+  F: `${STAR_BANNER_DIR}/Star_F_banner.png`,
+  G: `${STAR_BANNER_DIR}/Star_G_banner.png`,
+  K: `${STAR_BANNER_DIR}/Star_K_banner.png`,
+  M: `${STAR_BANNER_DIR}/Star_M_banner.png`,
+  ["M Red Giant"]: `${STAR_BANNER_DIR}/Star_M_Red_Giant_banner.png`,
+  ["T Brown Dwarf"]: `${STAR_BANNER_DIR}/Star_T_Brown_Dwarf_banner.png`,
+  ["Neutron Star"]: `${STAR_BANNER_DIR}/Star_Neutron_Star_banner.png`,
+  Pulsar: `${STAR_BANNER_DIR}/Star_Pulsar_banner.png`,
+  ["Black Hole"]: `${STAR_BANNER_DIR}/Star_Black_Hole_banner.png`,
+};
 
 export class SystemScene implements IGameScene {
   public scene: Scene;
@@ -2134,7 +2149,7 @@ export class SystemScene implements IGameScene {
       subtitle: "Stellar Object",
       isHabited: false,
       objectDetails: this.star.objectDetails,
-      imageUrl: "/textures/star_surface.png",
+      imageUrl: this.getStarBannerTextureUrl(),
       accentColor: `rgba(${r}, ${g}, ${b}, 0.95)`,
     });
   }
@@ -2147,6 +2162,10 @@ export class SystemScene implements IGameScene {
     const cfg = PLANET_TYPES[planet.type];
     const variation = String(planet.textureVariation + 1).padStart(2, "0");
     return `${cfg.texturePrefix}_${variation}-1024x512.png`;
+  }
+
+  private getStarBannerTextureUrl(): string {
+    return STAR_BANNER_TEXTURES[this.star.type] ?? "/textures/star_surface.png";
   }
 
   private createFallbackPlanets(kind: StarVisualKind): PlanetConfig[] {

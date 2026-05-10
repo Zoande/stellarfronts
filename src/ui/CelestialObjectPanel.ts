@@ -1,4 +1,4 @@
-import type { CelestialObjectDetails, DistrictCounts, DistrictKind } from "../data/StarMap";
+import type { CelestialObjectDetails, DistrictCounts, DistrictKind, PlanetType, StarType } from "../data/StarMap";
 import {
   BUILDING_KINDS,
   BUILDING_BUILD_DAYS,
@@ -51,6 +51,9 @@ export interface CelestialObjectPanelData {
 }
 
 const STYLE_ID = "celestial-object-panel-style";
+const PLANET_BANNER_DIR = "/textures/planet-banners";
+const BUILDING_ICON_DIR = "/textures/buildings";
+const DISTRICT_ICON_DIR = "/textures/districts";
 
 const DISTRICTS: Array<{ kind: DistrictKind; label: string; code: string }> = [
   { kind: "city", label: "City Districts", code: "CT" },
@@ -58,6 +61,59 @@ const DISTRICTS: Array<{ kind: DistrictKind; label: string; code: string }> = [
   { kind: "mining", label: "Mining Districts", code: "MN" },
   { kind: "agriculture", label: "Agriculture Districts", code: "AG" },
 ];
+
+const DISTRICT_LABELS: Record<DistrictKind, string> = {
+  city: "City",
+  generator: "Generator",
+  mining: "Mining",
+  agriculture: "Agriculture",
+};
+
+const HABITED_PLANET_BANNERS: Partial<Record<PlanetType, string>> = {
+  Barren: `${PLANET_BANNER_DIR}/Barren_banner.png`,
+  Gaseous: `${PLANET_BANNER_DIR}/Gaseous_banner.png`,
+  Snowy: `${PLANET_BANNER_DIR}/Snowy_banner_city.png`,
+  Arid: `${PLANET_BANNER_DIR}/Arid_banner_city.png`,
+  Dusty: `${PLANET_BANNER_DIR}/Dusty_banner_city.png`,
+  Grassland: `${PLANET_BANNER_DIR}/Grassland_banner_city.png`,
+  Jungle: `${PLANET_BANNER_DIR}/Jungle_banner_city.png`,
+  Marshy: `${PLANET_BANNER_DIR}/Marsh_banner_city.png`,
+  Martian: `${PLANET_BANNER_DIR}/Martian_banner_city.png`,
+  Methane: `${PLANET_BANNER_DIR}/Methane_banner_city.png`,
+  Sandy: `${PLANET_BANNER_DIR}/Sandy_banner_city.png`,
+  Tundra: `${PLANET_BANNER_DIR}/Tundra_banner_city.png`,
+};
+
+const PLANET_NO_CITY_BANNERS: Record<PlanetType, string> = {
+  Barren: `${PLANET_BANNER_DIR}/Barren_banner.png`,
+  Gaseous: `${PLANET_BANNER_DIR}/Gaseous_banner.png`,
+  Snowy: `${PLANET_BANNER_DIR}/Snowy_banner.png`,
+  Arid: `${PLANET_BANNER_DIR}/Arid_banner.png`,
+  Dusty: `${PLANET_BANNER_DIR}/Dusty_banner.png`,
+  Grassland: `${PLANET_BANNER_DIR}/Grassland_banner.png`,
+  Jungle: `${PLANET_BANNER_DIR}/Jungle_banner.png`,
+  Marshy: `${PLANET_BANNER_DIR}/Marsh_banner.png`,
+  Martian: `${PLANET_BANNER_DIR}/Martian_banner.png`,
+  Methane: `${PLANET_BANNER_DIR}/Methane_banner.png`,
+  Sandy: `${PLANET_BANNER_DIR}/Sandy_banner.png`,
+  Tundra: `${PLANET_BANNER_DIR}/Tundra_banner.png`,
+};
+
+const STAR_BANNER_DIR = PLANET_BANNER_DIR;
+
+const STAR_BANNERS: Record<StarType, string> = {
+  B: `${STAR_BANNER_DIR}/Star_B_banner.png`,
+  A: `${STAR_BANNER_DIR}/Star_A_banner.png`,
+  F: `${STAR_BANNER_DIR}/Star_F_banner.png`,
+  G: `${STAR_BANNER_DIR}/Star_G_banner.png`,
+  K: `${STAR_BANNER_DIR}/Star_K_banner.png`,
+  M: `${STAR_BANNER_DIR}/Star_M_banner.png`,
+  ["M Red Giant"]: `${STAR_BANNER_DIR}/Star_M_Red_Giant_banner.png`,
+  ["T Brown Dwarf"]: `${STAR_BANNER_DIR}/Star_T_Brown_Dwarf_banner.png`,
+  ["Neutron Star"]: `${STAR_BANNER_DIR}/Star_Neutron_Star_banner.png`,
+  Pulsar: `${STAR_BANNER_DIR}/Star_Pulsar_banner.png`,
+  ["Black Hole"]: `${STAR_BANNER_DIR}/Star_Black_Hole_banner.png`,
+};
 
 export class CelestialObjectPanel {
   private root: HTMLDivElement;
@@ -93,6 +149,60 @@ export class CelestialObjectPanel {
     window.removeEventListener("pointermove", this.onPointerMove);
     window.removeEventListener("pointerup", this.onPointerUp);
   };
+
+  private getHeroBackgroundLayers(data: CelestialObjectPanelData): string | null {
+    if (data.kind === "star") {
+      const starType = data.objectDetails.typeName as StarType;
+      const starBanner = STAR_BANNERS[starType];
+      const fallbackTexture = data.imageUrl ?? null;
+      const layers = [starBanner, fallbackTexture];
+
+      return layers.filter((layer): layer is string => Boolean(layer))
+        .map((layer) => `url("${layer}")`)
+        .join(", ");
+    }
+
+    const planetType = data.objectDetails.typeName as PlanetType;
+
+    if (!planetType) {
+      return data.imageUrl ? `url("${data.imageUrl}")` : null;
+    }
+
+    const noCityBanner = PLANET_NO_CITY_BANNERS[planetType];
+    const cityBanner = HABITED_PLANET_BANNERS[planetType];
+    const fallbackTexture = data.imageUrl ?? null;
+
+    const layers = data.isHabited && cityBanner
+      ? [cityBanner, noCityBanner, fallbackTexture]
+      : [noCityBanner, fallbackTexture];
+
+    return layers.filter((layer): layer is string => Boolean(layer))
+      .map((layer) => `url("${layer}")`)
+      .join(", ");
+  }
+
+  private getBuildingIconCandidates(definition: BuildingDefinition): string[] {
+    const spaced = encodeURI(`${BUILDING_ICON_DIR}/${definition.label}.png`);
+    const underscored = encodeURI(`${BUILDING_ICON_DIR}/${definition.label.replace(/\s+/g, "_")}.png`);
+    const kindName = encodeURI(`${BUILDING_ICON_DIR}/${definition.kind}.png`);
+    return Array.from(new Set([spaced, underscored, kindName]));
+  }
+
+  private getBuildingIconCandidateAttribute(definition: BuildingDefinition): string {
+    return this.getBuildingIconCandidates(definition).join("|");
+  }
+
+  private getDistrictIconCandidates(kind: DistrictKind): string[] {
+    const label = DISTRICT_LABELS[kind];
+    const spaced = encodeURI(`${DISTRICT_ICON_DIR}/${label}.png`);
+    const underscored = encodeURI(`${DISTRICT_ICON_DIR}/${label.replace(/\s+/g, "_")}.png`);
+    const kindName = encodeURI(`${DISTRICT_ICON_DIR}/${kind}.png`);
+    return Array.from(new Set([spaced, underscored, kindName]));
+  }
+
+  private getDistrictIconCandidateAttribute(kind: DistrictKind): string {
+    return this.getDistrictIconCandidates(kind).join("|");
+  }
 
   constructor() {
     this.root = document.getElementById("spaceHudRoot") as HTMLDivElement;
@@ -180,10 +290,101 @@ export class CelestialObjectPanel {
 
     const hero = this.panelElement.querySelector<HTMLElement>("[data-co-hero]");
     const portrait = this.panelElement.querySelector<HTMLElement>("[data-co-portrait]");
+    const heroLayers = this.getHeroBackgroundLayers(data);
+    if (heroLayers) {
+      hero?.style.setProperty("background-image", `linear-gradient(90deg, rgba(3, 12, 16, 0.14), rgba(3, 12, 16, 0.78)), ${heroLayers}`);
+    }
     if (data.imageUrl) {
-      hero?.style.setProperty("background-image", `linear-gradient(90deg, rgba(3, 12, 16, 0.14), rgba(3, 12, 16, 0.78)), url("${data.imageUrl}")`);
       portrait?.style.setProperty("background-image", `url("${data.imageUrl}")`);
     }
+
+    this.panelElement.querySelectorAll<HTMLImageElement>("[data-building-icon]").forEach((image) => {
+      const fallback = image.parentElement?.querySelector<HTMLElement>("[data-building-fallback]");
+      const candidates = (image.dataset.buildingIconCandidates ?? "").split("|").filter(Boolean);
+
+      const showFallback = (): void => {
+        image.style.display = "none";
+        if (fallback) fallback.style.display = "grid";
+      };
+
+      const showImage = (): void => {
+        image.style.display = "block";
+        if (fallback) fallback.style.display = "none";
+      };
+
+      const tryCandidate = (index: number): void => {
+        if (index >= candidates.length) {
+          showFallback();
+          return;
+        }
+
+        const candidate = candidates[index];
+        if (!candidate) {
+          tryCandidate(index + 1);
+          return;
+        }
+
+        image.dataset.buildingIconIndex = String(index);
+        image.onload = () => showImage();
+        image.onerror = () => tryCandidate(index + 1);
+        image.src = candidate;
+
+        if (image.complete && image.naturalWidth > 0) {
+          showImage();
+        }
+      };
+
+      if (candidates.length === 0) {
+        showFallback();
+        return;
+      }
+
+      tryCandidate(Number(image.dataset.buildingIconIndex ?? "0"));
+    });
+
+    this.panelElement.querySelectorAll<HTMLImageElement>("[data-district-icon]").forEach((image) => {
+      const fallback = image.parentElement?.querySelector<HTMLElement>("[data-district-fallback]");
+      const candidates = (image.dataset.districtIconCandidates ?? "").split("|").filter(Boolean);
+
+      const showFallback = (): void => {
+        image.style.display = "none";
+        if (fallback) fallback.style.display = "grid";
+      };
+
+      const showImage = (): void => {
+        image.style.display = "block";
+        if (fallback) fallback.style.display = "none";
+      };
+
+      const tryCandidate = (index: number): void => {
+        if (index >= candidates.length) {
+          showFallback();
+          return;
+        }
+
+        const candidate = candidates[index];
+        if (!candidate) {
+          tryCandidate(index + 1);
+          return;
+        }
+
+        image.dataset.districtIconIndex = String(index);
+        image.onload = () => showImage();
+        image.onerror = () => tryCandidate(index + 1);
+        image.src = candidate;
+
+        if (image.complete && image.naturalWidth > 0) {
+          showImage();
+        }
+      };
+
+      if (candidates.length === 0) {
+        showFallback();
+        return;
+      }
+
+      tryCandidate(Number(image.dataset.districtIconIndex ?? "0"));
+    });
 
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-tab]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -504,7 +705,10 @@ export class CelestialObjectPanel {
         <button class="coTinyAction${buildDisabled}" type="button" data-co-tooltip="${tooltip}" data-co-build-district="${kind}"${buildDisabled ? " disabled" : ""}>+</button>
       </div>
       <div class="coDistrictContent">
-        <div class="coDistrictIcon ${kind}">${district?.code ?? ""}</div>
+        <div class="coDistrictIcon ${kind}">
+          <img class="coDistrictIconArt" data-district-icon data-district-icon-candidates="${this.escapeHtml(this.getDistrictIconCandidateAttribute(kind))}" alt="" loading="lazy" decoding="async" style="display:none;" />
+          <div class="coDistrictFallback" data-district-fallback>${district?.code ?? ""}</div>
+        </div>
         <div class="coDistrictMeta">
           ${showCityIndustry ? '<div class="coSpecialization">Space Age Industry</div>' : ""}
           <div class="coDistrictCount">${used}/${limit}${queuedLabel}</div>
@@ -538,7 +742,8 @@ export class CelestialObjectPanel {
         const definition = BUILDING_DEFINITIONS[building];
         return `
           <span class="filled coBuildingIconSlot" data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState!, area, subDistrictIndex))}">
-            <span class="coBuildingInitials">${this.escapeHtml(definition.initials)}</span>
+            <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="lazy" decoding="async" style="display:none;" />
+            <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
           </span>
         `;
       }
@@ -547,7 +752,8 @@ export class CelestialObjectPanel {
         const definition = BUILDING_DEFINITIONS[queued.buildingKind];
         return `
           <span class="queued coBuildingIconSlot" data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState!, area, subDistrictIndex, queued))}">
-            <span class="coBuildingInitials">${this.escapeHtml(definition.initials)}</span>
+            <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="lazy" decoding="async" style="display:none;" />
+            <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
             <small>${Math.ceil(queued.remainingDays)}d</small>
           </span>
         `;
@@ -597,7 +803,10 @@ export class CelestialObjectPanel {
                 data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, planetState, target.area, target.subDistrictIndex))}"
                 ${isCompatible ? "" : "disabled"}
               >
-                <span class="coBuildCardIcon">${this.escapeHtml(definition.initials)}</span>
+                <span class="coBuildCardIcon">
+                  <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="lazy" decoding="async" style="display:none;" />
+                  <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
+                </span>
                 <span class="coBuildCardCopy">
                   <strong>${this.escapeHtml(definition.label)}</strong>
                   <small>${isCompatible ? `${BUILDING_MINERAL_COSTS[building]} minerals | ${BUILDING_BUILD_DAYS[building]} days` : "Incompatible slot"}</small>
@@ -1648,6 +1857,15 @@ export class CelestialObjectPanel {
   position: relative;
 }
 
+.coBuildingIconArt {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 3px;
+}
+
 .coBuildingInitials {
   width: 28px;
   height: 28px;
@@ -1805,6 +2023,8 @@ export class CelestialObjectPanel {
   height: 48px;
   display: grid;
   place-items: center;
+  position: relative;
+  overflow: hidden;
   border: 1px solid rgba(226, 255, 244, 0.42);
   background:
     radial-gradient(circle at 30% 20%, rgba(205, 255, 239, 0.2), transparent 48%),
@@ -1843,6 +2063,10 @@ export class CelestialObjectPanel {
 
 .coBuildList .coBuildCardIcon {
   display: grid;
+}
+
+.coBuildList .coBuildCardIcon .coBuildingIconArt {
+  padding: 5px;
 }
 
 .coBuildList small {
