@@ -1,11 +1,14 @@
 import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
 import {
+  STARBASE_BUILDING_DEFINITIONS,
+  STARBASE_BUILDING_KINDS,
   STARBASE_LEVEL_DEFINITIONS,
-  STARBASE_LEVEL_ORDER,
   getNextStarbaseLevel,
+  hasQueuedStarbaseBuildingTarget,
 } from "../data/Starbase";
 import type { ResourceCounts } from "../data/Economy";
-import type { ServerStarbase } from "../game/GameProtocol";
+import type { StarbaseBuildingKind } from "../data/Starbase";
+import type { ClientCommand, ServerStarbase } from "../game/GameProtocol";
 
 export interface StarbasePanelData {
   id: string;
@@ -16,6 +19,7 @@ export interface StarbasePanelData {
   status?: string;
   power?: string;
   starbase?: ServerStarbase;
+  onStarbaseCommand?: (command: ClientCommand) => void;
 }
 
 const STYLE_ID = "starbase-panel-style";
@@ -30,6 +34,7 @@ export class StarbasePanel {
   private position = { x: 42, y: 74 };
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
+  private buildingPickerSlotIndex: number | null = null;
 
   private readonly onPointerMove = (ev: PointerEvent): void => {
     if (!this.isDragging || !this.panelElement) return;
@@ -59,6 +64,7 @@ export class StarbasePanel {
   public show(data: StarbasePanelData): void {
     if (this.currentData?.id !== data.id) {
       this.activeTab = "starbase";
+      this.buildingPickerSlotIndex = null;
     }
     this.currentData = data;
     if (!this.panelElement) {
@@ -84,6 +90,11 @@ export class StarbasePanel {
     this.activeTab = "starbase";
   }
 
+  public refreshStarbase(starbase: ServerStarbase): void {
+    if (!this.currentData || this.currentData.id !== starbase.id) return;
+    this.show({ ...this.currentData, starbase });
+  }
+
   public dispose(): void {
     this.close();
   }
@@ -105,6 +116,35 @@ export class StarbasePanel {
       button.addEventListener("click", () => {
         this.activeTab = (button.dataset.starbaseTab as StarbaseTab | undefined) ?? "starbase";
         this.show(data);
+      });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-sb-upgrade]")?.addEventListener("click", () => {
+      if (!data.starbase) return;
+      data.onStarbaseCommand?.({ type: "upgradeStarbase", starbaseId: data.starbase.id });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-building-slot]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const slotIndex = Number(button.dataset.sbBuildingSlot);
+        if (!Number.isInteger(slotIndex)) return;
+        this.buildingPickerSlotIndex = slotIndex;
+        this.show(data);
+      });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-sb-close-building-picker]")?.addEventListener("click", () => {
+      this.buildingPickerSlotIndex = null;
+      this.show(data);
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-pick-building]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!data.starbase || this.buildingPickerSlotIndex === null) return;
+        const buildingKind = button.dataset.sbPickBuilding as StarbaseBuildingKind | undefined;
+        if (!buildingKind) return;
+        data.onStarbaseCommand?.({
+          type: "buildStarbaseBuilding",
+          starbaseId: data.starbase.id,
+          slotIndex: this.buildingPickerSlotIndex,
+          buildingKind,
+        });
       });
     });
   }
@@ -161,8 +201,11 @@ export class StarbasePanel {
     const upgrade = definition.upgrade;
     const slots = Array.isArray(data.starbase?.buildingSlots)
       ? data.starbase.buildingSlots
-      : Array<string | null>(9).fill(null);
+      : Array<StarbaseBuildingKind | null>(9).fill(null);
     const queue = Array.isArray(data.starbase?.constructionQueue) ? data.starbase.constructionQueue : [];
+    const selectedSlotQueued = this.buildingPickerSlotIndex !== null
+      && hasQueuedStarbaseBuildingTarget(queue, this.buildingPickerSlotIndex);
+    if (selectedSlotQueued) this.buildingPickerSlotIndex = null;
     return `
       <section class="sbBody sbStarbaseBody">
         <div class="sbLeftColumn">
@@ -178,13 +221,14 @@ export class StarbasePanel {
               <span>Upgrade Target</span>
               <strong>${nextDefinition ? this.escapeHtml(nextDefinition.label) : "Maximum Level"}</strong>
               <small>${upgrade ? `${upgrade.alloyCost} alloys | ${upgrade.buildDays} days` : "No further upgrade"}</small>
-              <button type="button"${upgrade ? "" : " disabled"}>Upgrade</button>
+              <button type="button"${upgrade ? "" : " disabled"} data-sb-upgrade>Upgrade</button>
             </article>
           </div>
           <div class="sbSectionTitle">Starbase Buildings</div>
-          <div class="sbSlotGrid buildings">${this.renderSlots(slots, definition.buildingSlots)}</div>
+          <div class="sbSlotGrid buildings">${this.renderSlots(slots, definition.buildingSlots, queue)}</div>
         </div>
         <aside class="sbSideStack">
+          ${this.buildingPickerSlotIndex === null ? `
           <div class="sbEconomyPanel">
             <div class="sbEconomyColumn">
               <div class="sbSectionTitle">Starbase Production</div>
@@ -195,6 +239,7 @@ export class StarbasePanel {
               <div class="sbTokenGrid">${this.renderResourceTokens(data.starbase?.economy?.upkeep ?? definition.upkeep, "negative")}</div>
             </div>
           </div>
+          ` : this.renderBuildingPicker(this.buildingPickerSlotIndex)}
           <div class="sbQueue">
             <div class="sbSectionTitle">Starbase Queue</div>
             <div class="sbQueueList">
@@ -263,17 +308,53 @@ export class StarbasePanel {
     `;
   }
 
-  private renderSlots(labels: Array<string | null>, unlockedSlots: number): string {
+  private renderSlots(
+    labels: Array<StarbaseBuildingKind | null>,
+    unlockedSlots: number,
+    queue: ServerStarbase["constructionQueue"],
+  ): string {
     return Array.from({ length: 9 }, (_, index) => {
-      const label = labels[index] ?? null;
+      const buildingKind = labels[index] ?? null;
+      const definition = buildingKind ? STARBASE_BUILDING_DEFINITIONS[buildingKind] : null;
+      const queued = queue.find((item) => item.kind === "building" && item.slotIndex === index);
       const locked = index >= unlockedSlots;
+      const canClick = !locked && !definition && !queued;
       return `
-      <div class="sbSlot ${label ? "filled" : "empty"} ${locked ? "locked" : ""}">
-        <span>${label ? this.escapeHtml(label.split(" ").map((word) => word[0]).join("").slice(0, 2)) : "+"}</span>
-        <small>${locked ? "Locked" : label ? this.escapeHtml(label) : `Slot ${index + 1}`}</small>
-      </div>
+      <button class="sbSlot ${definition ? "filled" : "empty"} ${locked ? "locked" : ""} ${queued ? "queued" : ""}" type="button" ${canClick ? `data-sb-building-slot="${index}"` : "disabled"}>
+        <span>${definition ? this.escapeHtml(this.getInitials(definition.label)) : queued ? "Q" : "+"}</span>
+        <small>${locked ? "Locked" : queued ? `${this.escapeHtml(queued.label)} queued` : definition ? this.escapeHtml(definition.label) : `Slot ${index + 1}`}</small>
+      </button>
     `;
     }).join("");
+  }
+
+  private renderBuildingPicker(slotIndex: number): string {
+    return `
+      <div class="sbBuildingPicker">
+        <div class="sbPickerHeader">
+          <div>
+            <strong>Build Starbase Building</strong>
+            <span>Slot ${slotIndex + 1}</span>
+          </div>
+          <button type="button" data-sb-close-building-picker>X</button>
+        </div>
+        <div class="sbBuildingList">
+          ${STARBASE_BUILDING_KINDS.map((kind) => {
+            const definition = STARBASE_BUILDING_DEFINITIONS[kind];
+            return `
+              <button class="sbBuildingCard" type="button" data-sb-pick-building="${kind}">
+                <span class="sbBuildingIcon">${this.escapeHtml(this.getInitials(definition.label))}</span>
+                <span class="sbBuildingInfo">
+                  <strong>${this.escapeHtml(definition.label)}</strong>
+                  <small>${this.renderInlineCost(definition.cost)} | ${definition.buildDays} days</small>
+                  <em>${this.escapeHtml(definition.description)}</em>
+                </span>
+              </button>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
   }
 
   private renderResourceTokens(counts: ResourceCounts, className: "positive" | "negative"): string {
@@ -288,6 +369,17 @@ export class StarbasePanel {
     if (abs >= 1_000_000) return `${(abs / 1_000_000).toFixed(1)}M`;
     if (abs >= 1_000) return `${(abs / 1_000).toFixed(1)}K`;
     return abs.toFixed(abs >= 10 ? 0 : 1);
+  }
+
+  private renderInlineCost(counts: ResourceCounts): string {
+    const parts = RESOURCE_KINDS
+      .filter((resource) => Math.abs(counts[resource]) > 0.0001)
+      .map((resource) => `${this.formatCompact(counts[resource])} ${RESOURCE_LABELS[resource]}`);
+    return parts.length > 0 ? parts.join(", ") : "Free";
+  }
+
+  private getInitials(label: string): string {
+    return label.split(" ").map((word) => word[0]).join("").slice(0, 2).toUpperCase();
   }
 
   private renderTab(tab: StarbaseTab, label: string): string {
@@ -378,6 +470,7 @@ export class StarbasePanel {
   overflow: hidden;
   background:
     linear-gradient(90deg, rgba(1, 10, 15, 0.1), rgba(2, 13, 18, 0.74)),
+    url("/textures/starbase/Starbase_banner.png") center / cover no-repeat,
     radial-gradient(circle at 54% 38%, rgba(132, 234, 255, 0.38), transparent 12rem),
     linear-gradient(135deg, rgba(17, 65, 88, 0.96), rgba(6, 23, 48, 0.96) 42%, rgba(7, 44, 54, 0.92));
 }
@@ -387,10 +480,9 @@ export class StarbasePanel {
   position: absolute;
   inset: 18px 24px 58px;
   border: 1px solid rgba(164, 251, 255, 0.22);
-  background:
-    linear-gradient(90deg, rgba(118, 220, 255, 0.16) 0 20%, transparent 20% 24%, rgba(118, 220, 255, 0.12) 24% 52%, transparent 52% 57%, rgba(118, 220, 255, 0.14) 57%),
-    repeating-linear-gradient(90deg, transparent 0 34px, rgba(255, 255, 255, 0.08) 35px 36px);
+  background: linear-gradient(90deg, rgba(118, 220, 255, 0.08), rgba(255, 255, 255, 0.04));
   transform: skewX(-8deg);
+  opacity: 0.38;
 }
 
 .sbBannerGlow {
@@ -548,15 +640,28 @@ export class StarbasePanel {
   gap: 2px;
   border: 1px solid rgba(103, 255, 221, 0.36);
   background: linear-gradient(145deg, rgba(18, 70, 64, 0.68), rgba(4, 18, 22, 0.94));
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
 
 .sbSlot.empty {
   opacity: 0.48;
 }
 
+.sbSlot:disabled {
+  cursor: default;
+}
+
 .sbSlot.locked {
   opacity: 0.24;
   filter: grayscale(0.6);
+}
+
+.sbSlot.queued {
+  opacity: 0.78;
+  border-color: rgba(255, 209, 106, 0.58);
+  background: linear-gradient(145deg, rgba(72, 53, 18, 0.72), rgba(4, 18, 22, 0.94));
 }
 
 .sbSlot span {
@@ -583,6 +688,119 @@ export class StarbasePanel {
   display: grid;
   grid-template-rows: minmax(0, 1fr) minmax(96px, 0.52fr);
   gap: 8px;
+}
+
+.sbBuildingPicker {
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(103, 255, 221, 0.26);
+  background: rgba(5, 24, 25, 0.72);
+  padding: 8px;
+}
+
+.sbPickerHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sbPickerHeader div {
+  display: grid;
+  gap: 2px;
+}
+
+.sbPickerHeader strong {
+  font-size: 12px;
+}
+
+.sbPickerHeader span {
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.sbPickerHeader button {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(103, 255, 221, 0.5);
+  background: rgba(6, 42, 38, 0.72);
+  color: #d8fff6;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sbBuildingList {
+  max-height: 250px;
+  overflow-y: auto;
+  display: grid;
+  gap: 6px;
+  padding-right: 3px;
+  scrollbar-width: thin;
+}
+
+.sbBuildingList::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sbBuildingList::-webkit-scrollbar-thumb {
+  background: rgba(103, 255, 221, 0.34);
+  border-radius: 999px;
+}
+
+.sbBuildingCard {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 70px;
+  border: 1px solid rgba(103, 255, 221, 0.28);
+  background: linear-gradient(135deg, rgba(16, 57, 52, 0.76), rgba(4, 17, 21, 0.94));
+  color: #e9fff8;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sbBuildingCard:hover {
+  border-color: rgba(103, 255, 221, 0.72);
+}
+
+.sbBuildingIcon {
+  width: 34px;
+  height: 34px;
+  margin-left: 7px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(103, 255, 221, 0.42);
+  background: rgba(103, 255, 221, 0.1);
+  color: #a9ffea;
+  font-weight: 900;
+  font-size: 11px;
+}
+
+.sbBuildingInfo {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.sbBuildingInfo strong {
+  font-size: 12px;
+}
+
+.sbBuildingInfo small {
+  color: #ffd16a;
+  font-size: 10px;
+}
+
+.sbBuildingInfo em {
+  color: rgba(216, 238, 232, 0.62);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.25;
 }
 
 .sbEconomyPanel {

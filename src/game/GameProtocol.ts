@@ -10,6 +10,7 @@ import type {
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
+  StarbaseBuildingKind,
   StarbaseLevel,
 } from "../data/Starbase";
 import type { PlanetConfig, StarData } from "../data/StarMap";
@@ -51,7 +52,7 @@ export interface ServerStarbase {
   buildProgress: number;
   level: StarbaseLevel;
   economy: StarbaseEconomy;
-  buildingSlots: Array<string | null>;
+  buildingSlots: Array<StarbaseBuildingKind | null>;
   constructionQueue: StarbaseConstructionQueueItem[];
 }
 
@@ -122,6 +123,18 @@ export interface SetUrbanSubDistrictCommand {
   subDistrictKind: UrbanSubDistrictKind;
 }
 
+export interface BuildStarbaseBuildingCommand {
+  type: "buildStarbaseBuilding";
+  starbaseId: string;
+  slotIndex: number;
+  buildingKind: StarbaseBuildingKind;
+}
+
+export interface UpgradeStarbaseCommand {
+  type: "upgradeStarbase";
+  starbaseId: string;
+}
+
 export interface RequestSystemDetailsCommand {
   type: "requestSystemDetails";
   starId: number;
@@ -144,6 +157,8 @@ export type ClientCommand =
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
+  | BuildStarbaseBuildingCommand
+  | UpgradeStarbaseCommand
   | SetUrbanSubDistrictCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand;

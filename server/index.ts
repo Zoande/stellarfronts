@@ -37,9 +37,15 @@ import {
 } from "../src/data/Economy";
 import {
   calculateStarbaseEconomy,
+  createStarbaseBuildingQueueItem,
+  createStarbaseUpgradeQueueItem,
   createEmptyStarbaseSlots,
+  hasQueuedStarbaseBuildingTarget,
+  isStarbaseBuildingKind,
+  progressStarbaseConstructionQueue,
+  STARBASE_LEVEL_DEFINITIONS,
 } from "../src/data/Starbase";
-import type { StarbaseLevel } from "../src/data/Starbase";
+import type { StarbaseBuildingKind, StarbaseLevel } from "../src/data/Starbase";
 import type {
   BuildingKind,
   BuildingSlotArea,
@@ -203,7 +209,10 @@ function normalizeResourceCounts(counts?: Partial<ResourceCounts>): ResourceCoun
 function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarbase, "id" | "ownerId" | "starId">): ServerStarbase {
   const level = (starbase.level ?? "outpost") as StarbaseLevel;
   const buildingSlots = Array.isArray(starbase.buildingSlots)
-    ? createEmptyStarbaseSlots().map((_, index) => starbase.buildingSlots?.[index] ?? null)
+    ? createEmptyStarbaseSlots().map((_, index) => {
+      const building = starbase.buildingSlots?.[index] ?? null;
+      return building && isStarbaseBuildingKind(building) ? building : null;
+    })
     : createEmptyStarbaseSlots();
   return {
     id: starbase.id,
@@ -212,9 +221,14 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
     status: starbase.status ?? "online",
     buildProgress: starbase.buildProgress ?? 1,
     level,
-    economy: calculateStarbaseEconomy(level),
+    economy: calculateStarbaseEconomy(level, buildingSlots),
     buildingSlots,
-    constructionQueue: Array.isArray(starbase.constructionQueue) ? starbase.constructionQueue : [],
+    constructionQueue: Array.isArray(starbase.constructionQueue)
+      ? starbase.constructionQueue.map((item) => ({
+        ...item,
+        cost: normalizeResourceCounts(item.cost),
+      }))
+      : [],
   };
 }
 
@@ -835,19 +849,29 @@ function getFactionEconomy(factionId: number): FactionEconomyState | null {
 }
 
 function spendMinerals(socket: WebSocket, factionId: number, amount: number): boolean {
+  return spendResources(socket, factionId, { minerals: amount });
+}
+
+function spendResources(socket: WebSocket, factionId: number, cost: Partial<ResourceCounts>): boolean {
   const economy = getFactionEconomy(factionId);
   if (!economy) {
     reject(socket, "Faction economy unavailable.");
     return false;
   }
-  if (economy.stockpiles.minerals < amount) {
-    reject(socket, `Need ${amount} minerals.`);
-    return false;
+  const normalizedCost = normalizeResourceCounts(cost);
+  for (const resource of Object.keys(normalizedCost) as Array<keyof ResourceCounts>) {
+    const amount = normalizedCost[resource];
+    if (amount <= 0) continue;
+    if (economy.stockpiles[resource] < amount) {
+      reject(socket, `Need ${amount} ${resource}.`);
+      return false;
+    }
   }
-  economy.stockpiles = {
-    ...economy.stockpiles,
-    minerals: economy.stockpiles.minerals - amount,
-  };
+  const negativeCost = createEmptyResourceCounts();
+  for (const resource of Object.keys(normalizedCost) as Array<keyof ResourceCounts>) {
+    negativeCost[resource] = -normalizedCost[resource];
+  }
+  economy.stockpiles = addResourceCounts(economy.stockpiles, negativeCost);
   hasDirtyState = true;
   return true;
 }
@@ -874,6 +898,86 @@ function commitPlanetState(
   sendPlanetDetails(socket, perspective, nextPlanetState.id);
   queuePlanetDetailRefresh(nextPlanetState.id);
   broadcastUpdates(["clock", "factionEconomies", "habitedPlanetSystems"]);
+}
+
+function validateStarbaseCommand(socket: WebSocket, perspective: GalaxyPerspective, starbaseId: string): ServerStarbase | null {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) {
+    reject(socket, "Observer mode is read-only.");
+    return null;
+  }
+
+  const starbase = state.starbases.find((candidate) => candidate.id === starbaseId);
+  if (!starbase) {
+    reject(socket, "Starbase not found.");
+    return null;
+  }
+  if (starbase.ownerId !== factionId) {
+    reject(socket, "You do not own that starbase.");
+    return null;
+  }
+  if (!canAccessStar(perspective, starbase.starId)) {
+    reject(socket, "Starbase is not available.");
+    return null;
+  }
+  return starbase;
+}
+
+function commitStarbase(socket: WebSocket, message: string, nextStarbase: ServerStarbase): void {
+  const index = state.starbases.findIndex((starbase) => starbase.id === nextStarbase.id);
+  if (index < 0) {
+    reject(socket, "Starbase not found.");
+    return;
+  }
+  const normalized = normalizeStarbase(nextStarbase);
+  state.starbases[index] = normalized;
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  accept(socket, message);
+  broadcastUpdates(["clock", "starbases", "factionEconomies"]);
+}
+
+function handleUpgradeStarbase(socket: WebSocket, perspective: GalaxyPerspective, starbaseId: string): void {
+  const starbase = validateStarbaseCommand(socket, perspective, starbaseId);
+  if (!starbase) return;
+  if (starbase.status !== "online") return reject(socket, "Starbase is not online.");
+  if (!STARBASE_LEVEL_DEFINITIONS[starbase.level]?.upgrade) return reject(socket, "Starbase is already at maximum level.");
+  if (starbase.constructionQueue.some((item) => item.kind === "upgrade")) {
+    return reject(socket, "Starbase upgrade is already queued.");
+  }
+  const item = createStarbaseUpgradeQueueItem(starbase.level);
+  if (!item) return reject(socket, "Starbase cannot upgrade.");
+  if (!spendResources(socket, starbase.ownerId, item.cost)) return;
+  commitStarbase(socket, "Starbase upgrade queued.", {
+    ...starbase,
+    constructionQueue: [...starbase.constructionQueue, item],
+  });
+}
+
+function handleBuildStarbaseBuilding(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  starbaseId: string,
+  slotIndex: number,
+  buildingKind: StarbaseBuildingKind,
+): void {
+  const starbase = validateStarbaseCommand(socket, perspective, starbaseId);
+  if (!starbase) return;
+  if (!isStarbaseBuildingKind(buildingKind)) return reject(socket, "Invalid starbase building.");
+  const unlockedSlots = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.buildingSlots ?? 0;
+  if (!isValidSlotIndex(slotIndex, starbase.buildingSlots.length) || slotIndex >= unlockedSlots) {
+    return reject(socket, "Invalid starbase building slot.");
+  }
+  if (starbase.buildingSlots[slotIndex]) return reject(socket, "Starbase building slot is occupied.");
+  if (hasQueuedStarbaseBuildingTarget(starbase.constructionQueue, slotIndex)) {
+    return reject(socket, "Starbase building slot is already queued.");
+  }
+  const item = createStarbaseBuildingQueueItem(buildingKind, slotIndex);
+  if (!spendResources(socket, starbase.ownerId, item.cost)) return;
+  commitStarbase(socket, "Starbase building queued.", {
+    ...starbase,
+    constructionQueue: [...starbase.constructionQueue, item],
+  });
 }
 
 function isDistrictKind(value: string): value is DistrictKind {
@@ -1139,6 +1243,23 @@ function processPlanetConstruction(elapsedDays: number): boolean {
   return true;
 }
 
+function processStarbaseConstruction(elapsedDays: number): boolean {
+  if (elapsedDays <= 0) return false;
+  let changed = false;
+  state.starbases = state.starbases.map((starbase) => {
+    if (starbase.constructionQueue.length === 0) return starbase;
+    const result = progressStarbaseConstructionQueue(starbase, elapsedDays);
+    if (!result.changed) return starbase;
+    changed = true;
+    return result.starbase;
+  });
+
+  if (!changed) return false;
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  return true;
+}
+
 function processPopulationQuarters(previousQuarter: number, targetQuarter: number): boolean {
   const quarters = Math.max(0, targetQuarter - previousQuarter);
   if (quarters <= 0) return false;
@@ -1196,6 +1317,11 @@ function advanceState(now: number): Set<ServerUpdateField> {
     changed.add("factionEconomies");
   }
 
+  if (processStarbaseConstruction(elapsedGameDays)) {
+    changed.add("starbases");
+    changed.add("factionEconomies");
+  }
+
   const nextEconomyMonth = currentEconomyMonth();
   if (nextEconomyMonth > previousEconomyMonth) {
     if (processEconomyMonths(nextEconomyMonth)) {
@@ -1239,6 +1365,20 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
       command.slotIndex,
       command.buildingKind,
       command.subDistrictIndex,
+    );
+    return;
+  }
+  if (command.type === "upgradeStarbase") {
+    handleUpgradeStarbase(session.socket, session.perspective, command.starbaseId);
+    return;
+  }
+  if (command.type === "buildStarbaseBuilding") {
+    handleBuildStarbaseBuilding(
+      session.socket,
+      session.perspective,
+      command.starbaseId,
+      command.slotIndex,
+      command.buildingKind,
     );
     return;
   }

@@ -753,6 +753,7 @@ export class SystemScene implements IGameScene {
       status: starbase.status,
       power: this.formatStarbasePower(starbase),
       starbase,
+      onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
     });
   }
 
@@ -2618,6 +2619,9 @@ export class SystemScene implements IGameScene {
 
   setServerStarbases(starbases: ServerStarbase[]): void {
     this.starbases = starbases;
+    for (const starbase of starbases) {
+      this.starbasePanel?.refreshStarbase(starbase);
+    }
     this.refreshSystemEntityCards();
   }
 

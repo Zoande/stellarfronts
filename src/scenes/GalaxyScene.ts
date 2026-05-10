@@ -1779,6 +1779,7 @@ export class GalaxyScene implements IGameScene {
       status: starbase?.status ?? "online",
       power: this.formatStarbasePower(starbase),
       starbase,
+      onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
     });
   }
 
@@ -1957,6 +1958,9 @@ export class GalaxyScene implements IGameScene {
 
   setServerStarbases(starbases: ServerStarbase[]): void {
     this.starbases = starbases;
+    for (const starbase of starbases) {
+      this.starbasePanel?.refreshStarbase(starbase);
+    }
   }
 
   setStarOwnership(starId: number, owner: number): void {
