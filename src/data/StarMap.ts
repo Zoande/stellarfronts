@@ -5,7 +5,7 @@
  */
 
 import { createPlanetStateFromSeed } from "./Economy";
-import type { PlanetState } from "./Economy";
+import type { PlanetFeatureKind, PlanetState } from "./Economy";
 
 export type { PlanetState } from "./Economy";
 
@@ -470,6 +470,21 @@ const PLANET_DESCRIPTIONS: Record<PlanetType, string> = {
   [PlanetType.Tundra]: "A cold terrestrial world with hardy biomes, permafrost plains, and limited but reliable settlement zones.",
 };
 
+export const HUMAN_BASE_HABITABILITY_BY_PLANET_TYPE: Record<PlanetType, number> = {
+  [PlanetType.Barren]: 10,
+  [PlanetType.Gaseous]: 0,
+  [PlanetType.Snowy]: 45,
+  [PlanetType.Arid]: 50,
+  [PlanetType.Dusty]: 30,
+  [PlanetType.Grassland]: 80,
+  [PlanetType.Jungle]: 70,
+  [PlanetType.Marshy]: 65,
+  [PlanetType.Martian]: 25,
+  [PlanetType.Methane]: 0,
+  [PlanetType.Sandy]: 45,
+  [PlanetType.Tundra]: 40,
+};
+
 const STAR_DESCRIPTIONS: Record<StarType, string> = {
   [StarType.B]: "A brilliant blue-white main sequence star with intense radiation output and a short, energetic lifespan.",
   [StarType.A]: "A bright white main sequence star with strong luminosity and a relatively stable inner system.",
@@ -594,7 +609,7 @@ export function createPlanetObjectDetails(
     size,
     typeName: cfg.name,
     description: PLANET_DESCRIPTIONS[planet.type],
-    habitability: null,
+    habitability: HUMAN_BASE_HABITABILITY_BY_PLANET_TYPE[planet.type],
     districtLimits,
     builtDistricts,
   };
@@ -618,12 +633,28 @@ function ensureHabitedBuiltDistricts(planet: PlanetConfig): boolean {
   return true;
 }
 
+function createHomeworldPlanet(star: StarData, planetIndex: number): PlanetConfig {
+  const cfg = PLANET_TYPES[PlanetType.Grassland];
+  const diameter = (cfg.diameterMin + cfg.diameterMax) / 2;
+  const lastOrbit = star.system.planets.reduce((max, planet) => Math.max(max, planet.orbitRadius), 4);
+  const name = `${star.name} Homeworld`;
+  return withPlanetObjectDetails({
+    id: createPlanetId(star.id, planetIndex),
+    type: PlanetType.Grassland,
+    textureVariation: star.id % cfg.variations,
+    diameter,
+    orbitRadius: lastOrbit + 6,
+    orbitSpeed: 0.24 * cfg.orbitSpeedMultiplier,
+    name,
+    isHabited: true,
+  }, `${star.id}:${planetIndex}:${name}:homeworld`);
+}
+
 export function ensureHabitedHomePlanets(stars: StarData[], homeStarIds: Iterable<number>): boolean {
   let changed = false;
   const homeIds = new Set(homeStarIds);
   for (const star of stars) {
     if (!homeIds.has(star.id)) continue;
-    if (star.system.planets.length === 0) continue;
 
     const existingHabited = star.system.planets.find((planet) => planet.isHabited === true);
     if (existingHabited) {
@@ -631,12 +662,9 @@ export function ensureHabitedHomePlanets(stars: StarData[], homeStarIds: Iterabl
       continue;
     }
 
-    const habitedIndex = star.id % star.system.planets.length;
-    const planet = star.system.planets[habitedIndex];
-    planet.isHabited = true;
-    if (planet.objectDetails) {
-      ensureHabitedBuiltDistricts(planet);
-    }
+    const planet = createHomeworldPlanet(star, star.system.planets.length);
+    ensureHabitedBuiltDistricts(planet);
+    star.system.planets.push(planet);
     changed = true;
   }
   return changed;
@@ -661,6 +689,11 @@ export function normalizeCelestialObjectDetails(stars: StarData[]): boolean {
         planet.objectDetails = createPlanetObjectDetails(planet, `${star.id}:${i}:${planet.name}`);
         changed = true;
       }
+      const expectedHabitability = HUMAN_BASE_HABITABILITY_BY_PLANET_TYPE[planet.type];
+      if (planet.objectDetails.habitability !== expectedHabitability) {
+        planet.objectDetails.habitability = expectedHabitability;
+        changed = true;
+      }
       changed = ensureHabitedBuiltDistricts(planet) || changed;
     }
   }
@@ -672,6 +705,7 @@ export function createPlanetStateFromConfig(
   planetIndex: number,
   planet: PlanetConfig,
   existing?: Partial<PlanetState>,
+  seedFeatures?: PlanetFeatureKind[],
 ): PlanetState {
   return createPlanetStateFromSeed({
     id: planet.id || createPlanetId(starId, planetIndex),
@@ -679,17 +713,21 @@ export function createPlanetStateFromConfig(
     planetIndex,
     isHabited: planet.isHabited === true,
     habitability: planet.objectDetails.habitability,
+    features: seedFeatures,
     builtDistricts: normalizeDistrictCounts(planet.objectDetails.builtDistricts, planet.objectDetails.districtLimits),
     districtLimits: planet.objectDetails.districtLimits,
   }, existing);
 }
 
-export function buildPlanetStatesFromStars(stars: StarData[]): PlanetState[] {
+export function buildPlanetStatesFromStars(stars: StarData[], homeStarIds: Iterable<number> = []): PlanetState[] {
   const states: PlanetState[] = [];
   normalizeCelestialObjectDetails(stars);
+  const homeIds = new Set(homeStarIds);
   for (const star of stars) {
     for (let planetIndex = 0; planetIndex < star.system.planets.length; planetIndex++) {
-      states.push(createPlanetStateFromConfig(star.id, planetIndex, star.system.planets[planetIndex]));
+      const planet = star.system.planets[planetIndex];
+      const features = homeIds.has(star.id) && planet.isHabited === true ? ["homePlanet" as const] : undefined;
+      states.push(createPlanetStateFromConfig(star.id, planetIndex, planet, undefined, features));
     }
   }
   return states;
@@ -698,17 +736,20 @@ export function buildPlanetStatesFromStars(stars: StarData[]): PlanetState[] {
 export function normalizePlanetStates(
   stars: StarData[],
   existingStates: PlanetState[] = [],
+  homeStarIds: Iterable<number> = [],
 ): { planetStates: PlanetState[]; changed: boolean } {
   let changed = normalizeCelestialObjectDetails(stars);
   const byId = new Map(existingStates.map((state) => [state.id, state]));
   const normalized: PlanetState[] = [];
+  const homeIds = new Set(homeStarIds);
 
   for (const star of stars) {
     for (let planetIndex = 0; planetIndex < star.system.planets.length; planetIndex++) {
       const planet = star.system.planets[planetIndex];
       const expectedId = createPlanetId(star.id, planetIndex);
       const source = byId.get(planet.id) ?? byId.get(expectedId);
-      const nextState = createPlanetStateFromConfig(star.id, planetIndex, planet, source);
+      const features = homeIds.has(star.id) && planet.isHabited === true ? ["homePlanet" as const] : undefined;
+      const nextState = createPlanetStateFromConfig(star.id, planetIndex, planet, source, features);
 
       if (!source || JSON.stringify(source) !== JSON.stringify(nextState)) {
         changed = true;

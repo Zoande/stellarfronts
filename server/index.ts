@@ -17,12 +17,21 @@ import {
 import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import {
   addResourceCounts,
+  applyPopulationGrowth,
   BUILDING_KINDS,
+  BUILDING_MINERAL_COSTS,
   cloneResourceCounts,
+  createBuildingConstructionQueueItem,
+  createDistrictConstructionQueueItem,
   createEmptyResourceCounts,
   createInitialFactionEconomyState,
+  DISTRICT_MINERAL_COSTS,
+  filterInvalidQueuedBuildingsForSubDistrictChange,
   gameYearToMonthIndex,
+  getQueuedDistrictCount,
+  hasQueuedBuildingTarget,
   isBuildingCompatible,
+  progressPlanetConstructionQueue,
   recalculatePlanetStateEconomy,
   URBAN_SUB_DISTRICT_KINDS,
 } from "../src/data/Economy";
@@ -70,7 +79,7 @@ interface GameShip extends ServerShip {
 }
 
 interface GameState {
-  schemaVersion: 4;
+  schemaVersion: 6;
   stars: StarData[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
@@ -88,9 +97,11 @@ interface GameState {
 interface ClientSession {
   socket: WebSocket;
   perspective: GalaxyPerspective;
+  openPlanetId?: string | null;
 }
 
 const clients = new Set<ClientSession>();
+const pendingPlanetDetailRefreshes = new Set<string>();
 let state: GameState;
 let lastSaveAt = 0;
 let hasDirtyState = false;
@@ -131,8 +142,14 @@ function currentPopulationQuarter(nextState = state): number {
   return Math.floor(currentEconomyMonth(nextState) / 4);
 }
 
+function getPlanetDistrictLimitsFromState(nextState: GameState, planetState: PlanetState) {
+  return nextState.stars[planetState.starId]?.system.planets[planetState.planetIndex]?.objectDetails.districtLimits ?? undefined;
+}
+
 function recalculatePlanetEconomies(nextState = state): void {
-  nextState.planetStates = nextState.planetStates.map((planetState) => recalculatePlanetStateEconomy(planetState));
+  nextState.planetStates = nextState.planetStates.map((planetState) => (
+    recalculatePlanetStateEconomy(planetState, getPlanetDistrictLimitsFromState(nextState, planetState))
+  ));
   applyPlanetStatesToStars(nextState.stars, nextState.planetStates);
 }
 
@@ -149,6 +166,21 @@ function calculateFactionMonthlyDelta(nextState: GameState, factionId: number) {
 function refreshFactionEconomyDeltas(nextState = state): void {
   for (const economy of nextState.factionEconomies) {
     economy.monthlyDelta = calculateFactionMonthlyDelta(nextState, economy.factionId);
+  }
+}
+
+function queuePlanetDetailRefresh(planetId: string): void {
+  pendingPlanetDetailRefreshes.add(planetId);
+}
+
+function flushPlanetDetailRefreshes(): void {
+  if (pendingPlanetDetailRefreshes.size === 0) return;
+  const planetIds = new Set(pendingPlanetDetailRefreshes);
+  pendingPlanetDetailRefreshes.clear();
+  for (const client of clients) {
+    const planetId = client.openPlanetId;
+    if (!planetId || !planetIds.has(planetId)) continue;
+    sendPlanetDetails(client.socket, client.perspective, planetId);
   }
 }
 
@@ -190,7 +222,8 @@ function createInitialState(): GameState {
   const adjacency = buildHyperlaneAdjacency(hyperlanes, stars.length);
   const factions = buildFactions(stars, cfg);
   ensureHabitedHomePlanets(stars, factions.map((faction) => faction.homeStarId));
-  const planetStates = buildPlanetStatesFromStars(stars);
+  const homeStarIds = factions.map((faction) => faction.homeStarId);
+  const planetStates = buildPlanetStatesFromStars(stars, homeStarIds);
   applyPlanetStatesToStars(stars, planetStates);
   const starOwnership = buildHomeSystemOwnership(stars, factions);
   const starbases = factions.map<ServerStarbase>((faction) => ({
@@ -220,7 +253,7 @@ function createInitialState(): GameState {
   const now = Date.now();
   const startMonth = gameYearToMonthIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 4,
+    schemaVersion: 6,
     stars,
     planetStates,
     factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
@@ -248,7 +281,7 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
     const parsed = JSON.parse(raw) as GameState;
-    parsed.schemaVersion = 4;
+    parsed.schemaVersion = 6;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
@@ -267,7 +300,11 @@ async function loadState(): Promise<GameState> {
       parsed.stars,
       parsed.factions.map((faction) => faction.homeStarId),
     );
-    const normalizedPlanetStates = normalizePlanetStates(parsed.stars, parsed.planetStates ?? []);
+    const normalizedPlanetStates = normalizePlanetStates(
+      parsed.stars,
+      parsed.planetStates ?? [],
+      parsed.factions.map((faction) => faction.homeStarId),
+    );
     parsed.planetStates = normalizedPlanetStates.planetStates;
     recalculatePlanetEconomies(parsed);
     const normalizedFactionEconomies = normalizeFactionEconomies(parsed);
@@ -735,7 +772,7 @@ function sendPlanetDetails(socket: WebSocket, perspective: GalaxyPerspective, pl
 }
 
 function getPlanetDistrictLimits(planetState: PlanetState) {
-  return state.stars[planetState.starId]?.system.planets[planetState.planetIndex]?.objectDetails.districtLimits ?? null;
+  return getPlanetDistrictLimitsFromState(state, planetState) ?? null;
 }
 
 function validatePlanetCommand(socket: WebSocket, perspective: GalaxyPerspective, planetId: string): PlanetState | null {
@@ -761,6 +798,28 @@ function validatePlanetCommand(socket: WebSocket, perspective: GalaxyPerspective
   return planetState;
 }
 
+function getFactionEconomy(factionId: number): FactionEconomyState | null {
+  return state.factionEconomies.find((economy) => economy.factionId === factionId) ?? null;
+}
+
+function spendMinerals(socket: WebSocket, factionId: number, amount: number): boolean {
+  const economy = getFactionEconomy(factionId);
+  if (!economy) {
+    reject(socket, "Faction economy unavailable.");
+    return false;
+  }
+  if (economy.stockpiles.minerals < amount) {
+    reject(socket, `Need ${amount} minerals.`);
+    return false;
+  }
+  economy.stockpiles = {
+    ...economy.stockpiles,
+    minerals: economy.stockpiles.minerals - amount,
+  };
+  hasDirtyState = true;
+  return true;
+}
+
 function commitPlanetState(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -772,12 +831,16 @@ function commitPlanetState(
     reject(socket, "Planet not found.");
     return;
   }
-  state.planetStates[index] = recalculatePlanetStateEconomy(nextPlanetState);
+  state.planetStates[index] = recalculatePlanetStateEconomy(
+    nextPlanetState,
+    getPlanetDistrictLimitsFromState(state, nextPlanetState),
+  );
   applyPlanetStatesToStars(state.stars, state.planetStates);
   refreshFactionEconomyDeltas();
   hasDirtyState = true;
   accept(socket, message);
   sendPlanetDetails(socket, perspective, nextPlanetState.id);
+  queuePlanetDetailRefresh(nextPlanetState.id);
   broadcastUpdates(["clock", "factionEconomies", "habitedPlanetSystems"]);
 }
 
@@ -803,13 +866,17 @@ function handleBuildDistrict(
   if (planetState.builtDistricts[districtKind] >= limits[districtKind]) {
     return reject(socket, "District limit reached.");
   }
+  if (planetState.builtDistricts[districtKind] + getQueuedDistrictCount(planetState, districtKind) >= limits[districtKind]) {
+    return reject(socket, "District is already queued to its limit.");
+  }
+  const factionId = perspective.mode === "faction" ? perspective.factionId : null;
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const item = createDistrictConstructionQueueItem(districtKind);
+  if (!spendMinerals(socket, factionId, item.mineralCost)) return;
 
-  commitPlanetState(socket, perspective, "District built.", {
+  commitPlanetState(socket, perspective, "District queued.", {
     ...planetState,
-    builtDistricts: {
-      ...planetState.builtDistricts,
-      [districtKind]: planetState.builtDistricts[districtKind] + 1,
-    },
+    constructionQueue: [...planetState.constructionQueue, item],
   });
 }
 
@@ -836,21 +903,21 @@ function handleBuildPlanetBuilding(
     const subDistrict = planetState.urbanSubDistricts[subDistrictIndex];
     if (!isValidSlotIndex(slotIndex, subDistrict.buildings.length)) return reject(socket, "Invalid building slot.");
     if (subDistrict.buildings[slotIndex]) return reject(socket, "Building slot is occupied.");
+    if (hasQueuedBuildingTarget(planetState, area, slotIndex, subDistrictIndex)) {
+      return reject(socket, "Building slot is already queued.");
+    }
     if (!isBuildingCompatible(buildingKind, area, subDistrict.kind)) {
       return reject(socket, "Building is incompatible with this sub-district.");
     }
 
-    const urbanSubDistricts = planetState.urbanSubDistricts.map((candidate, index) => (
-      index === subDistrictIndex
-        ? {
-          ...candidate,
-          buildings: candidate.buildings.map((building, buildingIndex) => (
-            buildingIndex === slotIndex ? buildingKind : building
-          )),
-        }
-        : candidate
-    ));
-    commitPlanetState(socket, perspective, "Building constructed.", { ...planetState, urbanSubDistricts });
+    const factionId = perspective.mode === "faction" ? perspective.factionId : null;
+    if (factionId === null) return reject(socket, "Observer mode is read-only.");
+    const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex, subDistrictIndex);
+    if (!spendMinerals(socket, factionId, item.mineralCost)) return;
+    commitPlanetState(socket, perspective, "Building queued.", {
+      ...planetState,
+      constructionQueue: [...planetState.constructionQueue, item],
+    });
     return;
   }
 
@@ -858,14 +925,17 @@ function handleBuildPlanetBuilding(
   const slots = planetState.buildings[area];
   if (!isValidSlotIndex(slotIndex, slots.length)) return reject(socket, "Invalid building slot.");
   if (slots[slotIndex]) return reject(socket, "Building slot is occupied.");
+  if (hasQueuedBuildingTarget(planetState, area, slotIndex)) return reject(socket, "Building slot is already queued.");
   if (!isBuildingCompatible(buildingKind, area)) return reject(socket, "Building is incompatible with this district.");
 
-  commitPlanetState(socket, perspective, "Building constructed.", {
+  const factionId = perspective.mode === "faction" ? perspective.factionId : null;
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex);
+  if (!spendMinerals(socket, factionId, item.mineralCost)) return;
+
+  commitPlanetState(socket, perspective, "Building queued.", {
     ...planetState,
-    buildings: {
-      ...planetState.buildings,
-      [area]: slots.map((building, index) => (index === slotIndex ? buildingKind : building)),
-    },
+    constructionQueue: [...planetState.constructionQueue, item],
   });
 }
 
@@ -893,7 +963,12 @@ function handleSetUrbanSubDistrict(
     };
   });
 
-  commitPlanetState(socket, perspective, "Sub-district changed.", { ...planetState, urbanSubDistricts });
+  const constructionQueue = filterInvalidQueuedBuildingsForSubDistrictChange(
+    planetState,
+    subDistrictIndex,
+    subDistrictKind,
+  );
+  commitPlanetState(socket, perspective, "Sub-district changed.", { ...planetState, urbanSubDistricts, constructionQueue });
 }
 
 function completeShipOrder(ship: GameShip): void {
@@ -1005,10 +1080,51 @@ function processEconomyMonths(targetMonth: number): boolean {
   return processed;
 }
 
-function processPopulationQuarter(_targetQuarter: number): boolean {
-  // Population growth is intentionally not implemented yet. This hook exists so
-  // future population simulation has a single four-month cadence to attach to.
-  return false;
+function processPlanetConstruction(elapsedDays: number): boolean {
+  if (elapsedDays <= 0) return false;
+  let changed = false;
+  state.planetStates = state.planetStates.map((planetState) => {
+    if (!planetState.isHabited || planetState.constructionQueue.length === 0) return planetState;
+    const result = progressPlanetConstructionQueue(
+      planetState,
+      elapsedDays,
+      getPlanetDistrictLimitsFromState(state, planetState),
+    );
+    if (!result.changed) return planetState;
+    changed = true;
+    queuePlanetDetailRefresh(planetState.id);
+    return result.state;
+  });
+
+  if (!changed) return false;
+  applyPlanetStatesToStars(state.stars, state.planetStates);
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  return true;
+}
+
+function processPopulationQuarters(previousQuarter: number, targetQuarter: number): boolean {
+  const quarters = Math.max(0, targetQuarter - previousQuarter);
+  if (quarters <= 0) return false;
+
+  let changed = false;
+  state.planetStates = state.planetStates.map((planetState) => {
+    if (!planetState.isHabited) return planetState;
+    const nextPlanetState = applyPopulationGrowth(
+      planetState,
+      getPlanetDistrictLimitsFromState(state, planetState),
+      quarters,
+    );
+    if (nextPlanetState.population !== planetState.population) changed = true;
+    if (nextPlanetState.population !== planetState.population) queuePlanetDetailRefresh(planetState.id);
+    return nextPlanetState;
+  });
+
+  if (!changed) return false;
+  applyPlanetStatesToStars(state.stars, state.planetStates);
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  return true;
 }
 
 function advanceState(now: number): Set<ServerUpdateField> {
@@ -1019,6 +1135,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
   const previousPopulationQuarter = currentPopulationQuarter();
   const previousShipSignature = shipUpdateSignature();
   const scaledMs = elapsedMs * state.clock.speedMultiplier;
+  const elapsedGameDays = scaledMs / REAL_MS_PER_GAME_DAY;
   state.clock.year += (scaledMs / REAL_MS_PER_GAME_DAY) / GAME_DAYS_PER_YEAR;
   state.clock.lastUpdatedAt = now;
   changed.add("clock");
@@ -1039,6 +1156,10 @@ function advanceState(now: number): Set<ServerUpdateField> {
     changed.add("starbases");
   }
 
+  if (processPlanetConstruction(elapsedGameDays)) {
+    changed.add("factionEconomies");
+  }
+
   const nextEconomyMonth = currentEconomyMonth();
   if (nextEconomyMonth > previousEconomyMonth) {
     if (processEconomyMonths(nextEconomyMonth)) {
@@ -1047,7 +1168,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
   }
 
   const nextPopulationQuarter = currentPopulationQuarter();
-  if (nextPopulationQuarter > previousPopulationQuarter && processPopulationQuarter(nextPopulationQuarter)) {
+  if (nextPopulationQuarter > previousPopulationQuarter && processPopulationQuarters(previousPopulationQuarter, nextPopulationQuarter)) {
     changed.add("factionEconomies");
     changed.add("habitedPlanetSystems");
   }
@@ -1100,6 +1221,7 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "requestPlanetDetails") {
+    session.openPlanetId = command.planetId;
     sendPlanetDetails(session.socket, session.perspective, command.planetId);
     return;
   }
@@ -1127,6 +1249,7 @@ wss.on("connection", (socket) => {
     try {
       const command = JSON.parse(String(data)) as ClientCommand;
       handleCommand(session, command);
+      flushPlanetDetailRefreshes();
     } catch (error) {
       reject(socket, error instanceof Error ? error.message : "Invalid command.");
     }
@@ -1140,6 +1263,7 @@ wss.on("connection", (socket) => {
 setInterval(() => {
   const changed = advanceState(Date.now());
   broadcastUpdates(Array.from(changed));
+  flushPlanetDetailRefreshes();
   if (hasDirtyState && Date.now() - lastSaveAt >= SAVE_INTERVAL_MS) {
     void saveState().catch((error) => console.error("[GameServer] Failed to save state", error));
   }

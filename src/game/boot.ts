@@ -234,6 +234,20 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     });
   }
 
+  function sendPlanetCommand(command: ClientCommand): void {
+    server.send(command);
+    if (
+      command.type !== "buildDistrict"
+      && command.type !== "buildPlanetBuilding"
+      && command.type !== "setUrbanSubDistrict"
+    ) {
+      return;
+    }
+    window.setTimeout(() => {
+      void server.requestPlanetDetails(command.planetId).catch(() => undefined);
+    }, 50);
+  }
+
   function applySnapshotToActiveScene(changed?: ServerUpdateField[]): void {
     const isFull = !changed;
     const has = (field: ServerUpdateField): boolean => isFull || changed.includes(field);
@@ -313,8 +327,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       starOwnership: expandStarOwnership(),
       visibleStarIds: snapshot.visibleStarIds,
       knownStarIds: snapshot.knownStarIds,
-      planetStates: snapshot.planetStates,
-      habitedPlanetSystemIds: snapshot.habitedPlanetSystemIds,
+          planetStates: snapshot.planetStates,
+          habitedPlanetSystemIds: snapshot.habitedPlanetSystemIds,
       onShipCommand: (action, targetStarId, shipId) => {
         if (!shipId) return;
         if (action === "move") {
@@ -323,9 +337,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           server.send({ type: "buildStarbase", shipId, targetStarId });
         }
       },
-      onPlanetCommand: (command: ClientCommand) => {
-        server.send(command);
-      },
+      onPlanetCommand: sendPlanetCommand,
       onOpenHabitedPlanet: (starId) => openFirstHabitedPlanetFromGalaxy(starId),
     };
 
@@ -370,9 +382,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           shipTransit: getPrimaryTransit(),
           shipSystemPositions: getShipSystemPositions(),
           planetStates: details.planetStates,
-          onPlanetCommand: (command: ClientCommand) => {
-            server.send(command);
-          },
+          onPlanetCommand: sendPlanetCommand,
           onRequestPlanetDetails: async (planetId) => {
             const planetDetails = await server.requestPlanetDetails(planetId);
             cachePlanetDetails(planetDetails.starId, planetDetails.planet, planetDetails.planetState);
@@ -433,7 +443,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     const star = cachePlanetDetails(details.starId, details.planet, details.planetState);
     if (!star) return;
     if (activeSystemScene && currentSystemStar?.id === details.starId) {
-      activeSystemScene.setPlanetStates(snapshot.planetStates);
+      activeSystemScene.refreshPlanetDetails(details.planet, details.planetState);
     }
     activeGalaxyScene?.refreshPlanetDetails(details.planet, details.planetState);
     updateHud();

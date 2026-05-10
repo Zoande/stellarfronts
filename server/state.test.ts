@@ -4,10 +4,14 @@ import {
   applyPlanetStatesToStars,
   buildPlanetStatesFromStars,
   createPlanetId,
+  ensureHabitedHomePlanets,
   generateStarMap,
+  HUMAN_BASE_HABITABILITY_BY_PLANET_TYPE,
   normalizePlanetStates,
+  PlanetType,
 } from "../src/data/StarMap";
 import type { DistrictKind, PlanetConfig } from "../src/data/StarMap";
+import { getEffectiveSpeciesHabitability } from "../src/data/Economy";
 
 const DISTRICT_KINDS: DistrictKind[] = ["city", "generator", "mining", "agriculture"];
 
@@ -42,6 +46,28 @@ test("generated stars create stable planet states for every planet", () => {
       );
     }
   }
+});
+
+test("home systems receive tagged 100 percent human homeworlds", () => {
+  const stars = createTestStars();
+  const homeStarIds = [stars.find((star) => star.system.planets.length > 0)?.id ?? 0];
+  for (const starId of homeStarIds) {
+    const star = stars[starId];
+    star.system.planets = star.system.planets.filter((planet) => planet.isHabited !== true);
+  }
+
+  const changed = ensureHabitedHomePlanets(stars, homeStarIds);
+  const normalized = normalizePlanetStates(stars, [], homeStarIds);
+  const homeState = normalized.planetStates.find((state) => state.starId === homeStarIds[0] && state.isHabited);
+  const homePlanet = homeState ? stars[homeState.starId].system.planets[homeState.planetIndex] : null;
+
+  assert.equal(changed, true);
+  assert.ok(homeState, "home system should have a habited state");
+  assert.ok(homePlanet, "home system should have a habited planet config");
+  assert.equal(homePlanet?.type, PlanetType.Grassland);
+  assert.equal(homeState?.features.includes("homePlanet"), true);
+  assert.equal(homeState?.habitability, HUMAN_BASE_HABITABILITY_BY_PLANET_TYPE[PlanetType.Grassland]);
+  assert.equal(homeState ? getEffectiveSpeciesHabitability(homeState) : 0, 100);
 });
 
 test("legacy planet metadata migrates to stable IDs and clamped mutable state", () => {

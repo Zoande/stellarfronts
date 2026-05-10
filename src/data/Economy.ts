@@ -6,6 +6,18 @@ export type ResourceKind = "food" | "minerals" | "energy" | "goods" | "alloys" |
 
 export type ResourceCounts = Record<ResourceKind, number>;
 
+export type SpeciesId = "human";
+
+export interface SpeciesDefinition {
+  id: SpeciesId;
+  name: string;
+}
+
+export interface SpeciesPopulation {
+  speciesId: SpeciesId;
+  population: number;
+}
+
 export type JobClass = "upper" | "middle" | "lower";
 
 export type JobKind =
@@ -13,6 +25,8 @@ export type JobKind =
   | "researcher"
   | "artisan"
   | "metallurgist"
+  | "entertainer"
+  | "enforcer"
   | "farmer"
   | "miner"
   | "technician"
@@ -31,7 +45,9 @@ export type BuildingKind =
   | "mineralPurificationPlant"
   | "oreSmelter"
   | "energyGrid"
-  | "capacitorWorkshops";
+  | "capacitorWorkshops"
+  | "entertainmentForum"
+  | "securityOffice";
 
 export type UrbanSubDistrictKind =
   | "residential"
@@ -42,9 +58,106 @@ export type UrbanSubDistrictKind =
 
 export type BuildingSlotArea = DistrictKind | "urbanSubDistrict";
 
+export type PlanetFeatureKind = "homePlanet";
+
+export type PlanetModifierOperation = "add" | "multiply";
+
+export type PlanetModifierTarget =
+  | "housing"
+  | "amenities"
+  | "crime"
+  | "stability"
+  | "happiness"
+  | "planetCapacity"
+  | "populationGrowth"
+  | "jobOutput"
+  | "jobUpkeep"
+  | "constructionSpeed"
+  | "districtConstructionSpeed"
+  | "buildingConstructionSpeed"
+  | `habitability:${SpeciesId}`
+  | `jobCapacity:${JobKind}`
+  | `jobOutput:${JobKind}:${ResourceKind}`
+  | `jobUpkeep:${JobKind}:${ResourceKind}`
+  | `jobAmenities:${JobKind}`
+  | `popUpkeep:${ResourceKind}`
+  | `goodsUpkeep:${JobClass}`;
+
+export interface PlanetModifier {
+  id: string;
+  label: string;
+  source: string;
+  target: PlanetModifierTarget;
+  operation: PlanetModifierOperation;
+  value: number;
+}
+
+export interface PlanetFeatureDefinition {
+  kind: PlanetFeatureKind;
+  label: string;
+  description: string;
+  modifiers: PlanetModifier[];
+}
+
+export type ResourceDelta = Partial<Record<ResourceKind, number>>;
+
+export interface JobDefinition {
+  kind: JobKind;
+  label: string;
+  class: JobClass;
+  description: string;
+  output?: ResourceDelta;
+  upkeep?: ResourceDelta;
+  amenities?: number;
+  crimeReduction?: number;
+}
+
+export interface BuildingCompatibility {
+  area: BuildingSlotArea;
+  subDistrictKinds?: UrbanSubDistrictKind[];
+}
+
+export interface BuildingJobEffect {
+  job: JobKind;
+  amount: number;
+  perDistrict?: DistrictKind;
+}
+
+export interface BuildingDefinition {
+  kind: BuildingKind;
+  label: string;
+  initials: string;
+  description: string;
+  mineralCost: number;
+  buildDays: number;
+  compatibility: BuildingCompatibility[];
+  housing?: number;
+  jobs?: BuildingJobEffect[];
+}
+
+export type PlanetConstructionKind = "district" | "building";
+
+export interface PlanetConstructionQueueItem {
+  id: string;
+  kind: PlanetConstructionKind;
+  label: string;
+  mineralCost: number;
+  totalDays: number;
+  remainingDays: number;
+  districtKind?: DistrictKind;
+  buildingKind?: BuildingKind;
+  area?: BuildingSlotArea;
+  slotIndex?: number;
+  subDistrictIndex?: number;
+}
+
 export interface PopGroup {
   job: JobKind;
   class: JobClass;
+  speciesId: SpeciesId;
+  speciesName: string;
+  habitability: number;
+  happiness: number;
   population: number;
 }
 
@@ -60,6 +173,8 @@ export interface JobCapacity {
   researcher: number;
   artisan: number;
   metallurgist: number;
+  entertainer: number;
+  enforcer: number;
   farmer: number;
   miner: number;
   technician: number;
@@ -78,8 +193,28 @@ export interface PlanetEconomySummary {
   unemployedPopulation: number;
   housing: number;
   amenities: number;
+  happiness: number;
   crime: number;
   stability: number;
+  populationGrowth: PlanetPopulationGrowth;
+  activeModifiers: PlanetModifier[];
+}
+
+export interface PlanetPopulationGrowthFactors {
+  housing: number;
+  amenities: number;
+  stability: number;
+  crime: number;
+  employment: number;
+  capacity: number;
+}
+
+export interface PlanetPopulationGrowth {
+  capacity: number;
+  capacityPressure: number;
+  ratePerQuarter: number;
+  netPerQuarter: number;
+  factors: PlanetPopulationGrowthFactors;
 }
 
 export interface PlanetState {
@@ -89,9 +224,13 @@ export interface PlanetState {
   isHabited: boolean;
   habitability: number | null;
   population: number;
+  speciesPopulations: SpeciesPopulation[];
+  features: PlanetFeatureKind[];
   builtDistricts: DistrictCounts;
   buildings: DistrictBuildingSlots;
   urbanSubDistricts: UrbanSubDistrictState[];
+  constructionQueue: PlanetConstructionQueueItem[];
+  modifiers: PlanetModifier[];
   economy: PlanetEconomySummary;
 }
 
@@ -108,12 +247,28 @@ export interface PlanetEconomySeed {
   planetIndex: number;
   isHabited: boolean;
   habitability: number | null;
+  features?: PlanetFeatureKind[];
   builtDistricts: DistrictCounts;
   districtLimits: DistrictCounts;
 }
 
 export const PEOPLE_PER_MONTHLY_UNIT = 1_000_000;
 export const STARTING_HABITED_POPULATION = 10_000_000_000;
+const BASE_POPULATION_GROWTH_RATE_PER_QUARTER = 0.008;
+
+export const DISTRICT_MINERAL_COSTS: Record<DistrictKind, number> = {
+  city: 800,
+  generator: 650,
+  mining: 650,
+  agriculture: 650,
+};
+
+export const DISTRICT_BUILD_DAYS: Record<DistrictKind, number> = {
+  city: 180,
+  generator: 120,
+  mining: 120,
+  agriculture: 120,
+};
 
 export const RESOURCE_KINDS: ResourceKind[] = ["food", "minerals", "energy", "goods", "alloys", "research"];
 
@@ -122,6 +277,8 @@ export const JOB_KINDS: JobKind[] = [
   "researcher",
   "artisan",
   "metallurgist",
+  "entertainer",
+  "enforcer",
   "farmer",
   "miner",
   "technician",
@@ -132,6 +289,8 @@ export const JOB_KINDS: JobKind[] = [
 export const JOB_FILL_ORDER: JobKind[] = [
   "administrator",
   "researcher",
+  "enforcer",
+  "entertainer",
   "artisan",
   "metallurgist",
   "farmer",
@@ -145,6 +304,8 @@ export const JOB_CLASS_BY_KIND: Record<JobKind, JobClass> = {
   researcher: "middle",
   artisan: "middle",
   metallurgist: "middle",
+  entertainer: "middle",
+  enforcer: "middle",
   farmer: "lower",
   miner: "lower",
   technician: "lower",
@@ -161,32 +322,106 @@ export const RESOURCE_LABELS: Record<ResourceKind, string> = {
   research: "Research",
 };
 
-export const JOB_LABELS: Record<JobKind, string> = {
-  administrator: "Administrators",
-  researcher: "Researchers",
-  artisan: "Artisans",
-  metallurgist: "Metallurgists",
-  farmer: "Farmers",
-  miner: "Miners",
-  technician: "Technicians",
-  clerk: "Clerks",
-  unemployed: "Unemployed",
+export const HUMAN_SPECIES_ID: SpeciesId = "human";
+
+export const SPECIES_DEFINITIONS: Record<SpeciesId, SpeciesDefinition> = {
+  human: {
+    id: "human",
+    name: "Human",
+  },
 };
 
-export const BUILDING_LABELS: Record<BuildingKind, string> = {
-  housingComplex: "Housing Complex",
-  administrativeComplex: "Administrative Complex",
-  researchLabs: "Research Labs",
-  civilianFabricators: "Civilian Fabricators",
-  alloyFoundries: "Alloy Foundries",
-  commercialForum: "Commercial Forum",
-  foodProcessingPlant: "Food Processing Plant",
-  agroIndustrialKitchens: "Agro-Industrial Kitchens",
-  mineralPurificationPlant: "Mineral Purification Plant",
-  oreSmelter: "Ore Smelter",
-  energyGrid: "Energy Grid",
-  capacitorWorkshops: "Capacitor Workshops",
+export const SPECIES_IDS: SpeciesId[] = ["human"];
+
+export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
+  administrator: {
+    kind: "administrator",
+    label: "Administrators",
+    class: "upper",
+    description: "Coordinates planetary bureaucracy, services, and strategic direction.",
+    upkeep: { energy: 1, goods: 1 },
+    amenities: 3,
+  },
+  researcher: {
+    kind: "researcher",
+    label: "Researchers",
+    class: "middle",
+    description: "Turns energy and goods into stockpiled research.",
+    output: { research: 3 },
+    upkeep: { energy: 2, goods: 1 },
+  },
+  artisan: {
+    kind: "artisan",
+    label: "Artisans",
+    class: "middle",
+    description: "Refines minerals into civilian goods.",
+    output: { goods: 3 },
+    upkeep: { minerals: 4 },
+  },
+  metallurgist: {
+    kind: "metallurgist",
+    label: "Metallurgists",
+    class: "middle",
+    description: "Refines minerals into military and industrial alloys.",
+    output: { alloys: 2 },
+    upkeep: { minerals: 5 },
+  },
+  entertainer: {
+    kind: "entertainer",
+    label: "Entertainers",
+    class: "middle",
+    description: "Provides culture, recreation, and morale services.",
+    upkeep: { goods: 0.5 },
+    amenities: 5,
+  },
+  enforcer: {
+    kind: "enforcer",
+    label: "Enforcers",
+    class: "middle",
+    description: "Maintains public order and suppresses organized crime.",
+    upkeep: { energy: 0.5, goods: 0.2 },
+    crimeReduction: 0.02,
+  },
+  farmer: {
+    kind: "farmer",
+    label: "Farmers",
+    class: "lower",
+    description: "Produces food from agricultural land and hydroponic infrastructure.",
+    output: { food: 6 },
+  },
+  miner: {
+    kind: "miner",
+    label: "Miners",
+    class: "lower",
+    description: "Extracts minerals from planetary deposits.",
+    output: { minerals: 5 },
+  },
+  technician: {
+    kind: "technician",
+    label: "Technicians",
+    class: "lower",
+    description: "Operates power grids, reactors, and energy collection systems.",
+    output: { energy: 5 },
+  },
+  clerk: {
+    kind: "clerk",
+    label: "Clerks",
+    class: "lower",
+    description: "Handles services, commerce, and local administration.",
+    output: { energy: 1 },
+    amenities: 2,
+  },
+  unemployed: {
+    kind: "unemployed",
+    label: "Unemployed",
+    class: "lower",
+    description: "Population without assigned productive work.",
+  },
 };
+
+export const JOB_LABELS: Record<JobKind, string> = Object.fromEntries(
+  JOB_KINDS.map((job) => [job, JOB_DEFINITIONS[job].label]),
+) as Record<JobKind, string>;
 
 export const URBAN_SUB_DISTRICT_LABELS: Record<UrbanSubDistrictKind, string> = {
   residential: "Residential Arcology",
@@ -196,20 +431,191 @@ export const URBAN_SUB_DISTRICT_LABELS: Record<UrbanSubDistrictKind, string> = {
   heavyIndustry: "Heavy Industry",
 };
 
-export const BUILDING_KINDS: BuildingKind[] = [
-  "housingComplex",
-  "administrativeComplex",
-  "researchLabs",
-  "civilianFabricators",
-  "alloyFoundries",
-  "commercialForum",
-  "foodProcessingPlant",
-  "agroIndustrialKitchens",
-  "mineralPurificationPlant",
-  "oreSmelter",
-  "energyGrid",
-  "capacitorWorkshops",
-];
+export const PLANET_FEATURE_DEFINITIONS: Record<PlanetFeatureKind, PlanetFeatureDefinition> = {
+  homePlanet: {
+    kind: "homePlanet",
+    label: "Home Planet",
+    description: "The species' cradle world, with familiar biospheres, culture, infrastructure, and settlement patterns.",
+    modifiers: [
+      {
+        id: "feature-home-planet-human-habitability",
+        label: "Home Planet",
+        source: "planetFeature:homePlanet",
+        target: "habitability:human",
+        operation: "add",
+        value: 20,
+      },
+    ],
+  },
+};
+
+export const PLANET_FEATURE_KINDS: PlanetFeatureKind[] = ["homePlanet"];
+
+export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
+  housingComplex: {
+    kind: "housingComplex",
+    label: "Housing Complex",
+    initials: "HC",
+    description: "Dense residential towers and life-support extensions that expand planetary housing.",
+    mineralCost: 450,
+    buildDays: 90,
+    compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
+    housing: 1_000_000_000,
+  },
+  administrativeComplex: {
+    kind: "administrativeComplex",
+    label: "Administrative Complex",
+    initials: "AD",
+    description: "Offices, courts, and planning bureaus that create administrator jobs.",
+    mineralCost: 700,
+    buildDays: 120,
+    compatibility: [{ area: "city" }],
+    jobs: [{ job: "administrator", amount: 300_000_000 }],
+  },
+  researchLabs: {
+    kind: "researchLabs",
+    label: "Research Labs",
+    initials: "RL",
+    description: "Laboratory campuses that create researcher jobs.",
+    mineralCost: 850,
+    buildDays: 150,
+    compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["researchCampus"] }],
+    jobs: [{ job: "researcher", amount: 500_000_000 }],
+  },
+  civilianFabricators: {
+    kind: "civilianFabricators",
+    label: "Civilian Fabricators",
+    initials: "CF",
+    description: "Factory halls that create artisan jobs for civilian goods production.",
+    mineralCost: 800,
+    buildDays: 135,
+    compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["mixedIndustry", "civilianIndustry"] }],
+    jobs: [{ job: "artisan", amount: 500_000_000 }],
+  },
+  alloyFoundries: {
+    kind: "alloyFoundries",
+    label: "Alloy Foundries",
+    initials: "AF",
+    description: "Heavy furnace and forge facilities that create metallurgist jobs.",
+    mineralCost: 900,
+    buildDays: 150,
+    compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["mixedIndustry", "heavyIndustry"] }],
+    jobs: [{ job: "metallurgist", amount: 500_000_000 }],
+  },
+  commercialForum: {
+    kind: "commercialForum",
+    label: "Commercial Forum",
+    initials: "CM",
+    description: "Market districts and service hubs that create clerk jobs.",
+    mineralCost: 650,
+    buildDays: 105,
+    compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
+    jobs: [{ job: "clerk", amount: 500_000_000 }],
+  },
+  foodProcessingPlant: {
+    kind: "foodProcessingPlant",
+    label: "Food Processing Plant",
+    initials: "FP",
+    description: "Agricultural logistics and preservation plants that expand farmer jobs per agriculture district.",
+    mineralCost: 550,
+    buildDays: 90,
+    compatibility: [{ area: "agriculture" }],
+    jobs: [{ job: "farmer", amount: 250_000_000, perDistrict: "agriculture" }],
+  },
+  agroIndustrialKitchens: {
+    kind: "agroIndustrialKitchens",
+    label: "Agro-Industrial Kitchens",
+    initials: "AK",
+    description: "Food industry complexes that convert some farmer demand into artisan jobs.",
+    mineralCost: 750,
+    buildDays: 135,
+    compatibility: [{ area: "agriculture" }],
+    jobs: [
+      { job: "farmer", amount: -250_000_000, perDistrict: "agriculture" },
+      { job: "artisan", amount: 250_000_000, perDistrict: "agriculture" },
+    ],
+  },
+  mineralPurificationPlant: {
+    kind: "mineralPurificationPlant",
+    label: "Mineral Purification Plant",
+    initials: "MP",
+    description: "Ore sorting and purification works that expand miner jobs per mining district.",
+    mineralCost: 550,
+    buildDays: 90,
+    compatibility: [{ area: "mining" }],
+    jobs: [{ job: "miner", amount: 250_000_000, perDistrict: "mining" }],
+  },
+  oreSmelter: {
+    kind: "oreSmelter",
+    label: "Ore Smelter",
+    initials: "OS",
+    description: "Industrial smelters that convert some miner demand into metallurgist jobs.",
+    mineralCost: 800,
+    buildDays: 135,
+    compatibility: [{ area: "mining" }],
+    jobs: [
+      { job: "miner", amount: -250_000_000, perDistrict: "mining" },
+      { job: "metallurgist", amount: 250_000_000, perDistrict: "mining" },
+    ],
+  },
+  energyGrid: {
+    kind: "energyGrid",
+    label: "Energy Grid",
+    initials: "EG",
+    description: "Planetary power routing that expands technician jobs per generator district.",
+    mineralCost: 550,
+    buildDays: 90,
+    compatibility: [{ area: "generator" }],
+    jobs: [{ job: "technician", amount: 250_000_000, perDistrict: "generator" }],
+  },
+  capacitorWorkshops: {
+    kind: "capacitorWorkshops",
+    label: "Capacitor Workshops",
+    initials: "CW",
+    description: "Power component workshops that convert some technician demand into artisan jobs.",
+    mineralCost: 750,
+    buildDays: 135,
+    compatibility: [{ area: "generator" }],
+    jobs: [
+      { job: "technician", amount: -250_000_000, perDistrict: "generator" },
+      { job: "artisan", amount: 250_000_000, perDistrict: "generator" },
+    ],
+  },
+  entertainmentForum: {
+    kind: "entertainmentForum",
+    label: "Entertainment Forum",
+    initials: "EF",
+    description: "Theaters, parks, and media venues that create entertainer jobs for amenities.",
+    mineralCost: 700,
+    buildDays: 120,
+    compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
+    jobs: [{ job: "entertainer", amount: 500_000_000 }],
+  },
+  securityOffice: {
+    kind: "securityOffice",
+    label: "Security Office",
+    initials: "SO",
+    description: "Precincts and public safety offices that create enforcer jobs to reduce crime.",
+    mineralCost: 700,
+    buildDays: 120,
+    compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
+    jobs: [{ job: "enforcer", amount: 500_000_000 }],
+  },
+};
+
+export const BUILDING_KINDS = Object.keys(BUILDING_DEFINITIONS) as BuildingKind[];
+
+export const BUILDING_LABELS: Record<BuildingKind, string> = Object.fromEntries(
+  BUILDING_KINDS.map((building) => [building, BUILDING_DEFINITIONS[building].label]),
+) as Record<BuildingKind, string>;
+
+export const BUILDING_MINERAL_COSTS: Record<BuildingKind, number> = Object.fromEntries(
+  BUILDING_KINDS.map((building) => [building, BUILDING_DEFINITIONS[building].mineralCost]),
+) as Record<BuildingKind, number>;
+
+export const BUILDING_BUILD_DAYS: Record<BuildingKind, number> = Object.fromEntries(
+  BUILDING_KINDS.map((building) => [building, BUILDING_DEFINITIONS[building].buildDays]),
+) as Record<BuildingKind, number>;
 
 export const URBAN_SUB_DISTRICT_KINDS: UrbanSubDistrictKind[] = [
   "residential",
@@ -234,6 +640,8 @@ function emptyJobCapacity(): JobCapacity {
     researcher: 0,
     artisan: 0,
     metallurgist: 0,
+    entertainer: 0,
+    enforcer: 0,
     farmer: 0,
     miner: 0,
     technician: 0,
@@ -317,6 +725,225 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function createEmptyPopulationGrowth(): PlanetPopulationGrowth {
+  return {
+    capacity: 0,
+    capacityPressure: 0,
+    ratePerQuarter: 0,
+    netPerQuarter: 0,
+    factors: {
+      housing: 0,
+      amenities: 0,
+      stability: 0,
+      crime: 0,
+      employment: 0,
+      capacity: 0,
+    },
+  };
+}
+
+function cloneModifier(modifier: PlanetModifier): PlanetModifier {
+  return { ...modifier };
+}
+
+function cloneSpeciesPopulation(population: SpeciesPopulation): SpeciesPopulation {
+  return {
+    speciesId: population.speciesId,
+    population: population.population,
+  };
+}
+
+function normalizeModifier(modifier: Partial<PlanetModifier> | undefined): PlanetModifier | null {
+  if (!modifier?.id || !modifier.label || !modifier.source || !modifier.target) return null;
+  if (modifier.operation !== "add" && modifier.operation !== "multiply") return null;
+  const value = Number(modifier.value);
+  if (!Number.isFinite(value)) return null;
+  return {
+    id: modifier.id,
+    label: modifier.label,
+    source: modifier.source,
+    target: modifier.target,
+    operation: modifier.operation,
+    value,
+  };
+}
+
+function normalizeModifiers(modifiers: PlanetModifier[] | undefined): PlanetModifier[] {
+  return (modifiers ?? [])
+    .map((modifier) => normalizeModifier(modifier))
+    .filter((modifier): modifier is PlanetModifier => modifier !== null);
+}
+
+export function normalizePlanetFeatures(features: PlanetFeatureKind[] | undefined): PlanetFeatureKind[] {
+  const seen = new Set<PlanetFeatureKind>();
+  const normalized: PlanetFeatureKind[] = [];
+  for (const feature of features ?? []) {
+    if (!PLANET_FEATURE_KINDS.includes(feature) || seen.has(feature)) continue;
+    seen.add(feature);
+    normalized.push(feature);
+  }
+  return normalized;
+}
+
+function normalizeSpeciesPopulations(
+  populations: SpeciesPopulation[] | undefined,
+  fallbackPopulation: number,
+  isHabited: boolean,
+): SpeciesPopulation[] {
+  if (!isHabited) return [];
+
+  const bySpecies = new Map<SpeciesId, number>();
+  for (const entry of populations ?? []) {
+    if (!entry || !SPECIES_IDS.includes(entry.speciesId)) continue;
+    const population = Math.max(0, Math.floor(Number(entry.population) || 0));
+    if (population <= 0) continue;
+    bySpecies.set(entry.speciesId, (bySpecies.get(entry.speciesId) ?? 0) + population);
+  }
+
+  if (bySpecies.size === 0 && fallbackPopulation > 0) {
+    bySpecies.set(HUMAN_SPECIES_ID, Math.max(0, Math.floor(fallbackPopulation)));
+  }
+
+  const targetPopulation = Math.max(0, Math.floor(fallbackPopulation));
+  const currentPopulation = Array.from(bySpecies.values()).reduce((sum, population) => sum + population, 0);
+  if (currentPopulation > 0 && targetPopulation > 0 && currentPopulation !== targetPopulation) {
+    let runningTotal = 0;
+    for (const speciesId of SPECIES_IDS) {
+      const current = bySpecies.get(speciesId) ?? 0;
+      if (current <= 0) continue;
+      const scaled = Math.max(0, Math.round(targetPopulation * (current / currentPopulation)));
+      bySpecies.set(speciesId, scaled);
+      runningTotal += scaled;
+    }
+    let remainder = targetPopulation - runningTotal;
+    for (const speciesId of SPECIES_IDS) {
+      if (remainder === 0) break;
+      if (!bySpecies.has(speciesId)) continue;
+      const step = remainder > 0 ? 1 : -1;
+      const current = bySpecies.get(speciesId) ?? 0;
+      if (step < 0 && current <= 0) continue;
+      bySpecies.set(speciesId, current + step);
+      remainder -= step;
+    }
+  }
+
+  return SPECIES_IDS
+    .map((speciesId) => ({
+      speciesId,
+      population: bySpecies.get(speciesId) ?? 0,
+    }))
+    .filter((entry) => entry.population > 0);
+}
+
+function sumSpeciesPopulation(populations: SpeciesPopulation[]): number {
+  return populations.reduce((sum, entry) => sum + entry.population, 0);
+}
+
+export function getFeatureModifiers(features: PlanetFeatureKind[] | undefined): PlanetModifier[] {
+  const modifiers: PlanetModifier[] = [];
+  for (const feature of normalizePlanetFeatures(features)) {
+    modifiers.push(...PLANET_FEATURE_DEFINITIONS[feature].modifiers.map((modifier) => cloneModifier(modifier)));
+  }
+  return modifiers;
+}
+
+function getActiveModifiers(state: Pick<PlanetState, "features" | "modifiers">): PlanetModifier[] {
+  return [
+    ...normalizeModifiers(state.modifiers).map((modifier) => cloneModifier(modifier)),
+    ...getFeatureModifiers(state.features),
+  ];
+}
+
+function applyModifiers(value: number, modifiers: PlanetModifier[], target: PlanetModifierTarget): number {
+  let next = value;
+  for (const modifier of modifiers) {
+    if (modifier.target === target && modifier.operation === "add") next += modifier.value;
+  }
+  for (const modifier of modifiers) {
+    if (modifier.target === target && modifier.operation === "multiply") next *= 1 + modifier.value;
+  }
+  return next;
+}
+
+function getModifierMultiplier(modifiers: PlanetModifier[], target: PlanetModifierTarget): number {
+  return applyModifiers(1, modifiers, target);
+}
+
+function interpolate(value: number, inputMin: number, inputMax: number, outputMin: number, outputMax: number): number {
+  if (inputMax === inputMin) return outputMin;
+  const t = clamp((value - inputMin) / (inputMax - inputMin), 0, 1);
+  return outputMin + (outputMax - outputMin) * t;
+}
+
+export function getEffectiveSpeciesHabitability(
+  state: Pick<PlanetState, "habitability" | "features" | "modifiers">,
+  speciesId: SpeciesId = HUMAN_SPECIES_ID,
+): number {
+  const base = clamp(state.habitability ?? 0, 0, 100);
+  const modified = applyModifiers(base, getActiveModifiers(state), `habitability:${speciesId}`);
+  return clamp(Math.round(modified), 0, 100);
+}
+
+export function getHabitabilityProductionMultiplier(habitability: number): number {
+  if (habitability <= 80) return interpolate(habitability, 0, 80, 0.5, 1);
+  return interpolate(habitability, 80, 100, 1, 1.3);
+}
+
+export function getHabitabilityUpkeepMultiplier(habitability: number): number {
+  if (habitability <= 80) return interpolate(habitability, 0, 80, 1.5, 1);
+  return interpolate(habitability, 80, 100, 1, 0.7);
+}
+
+function getHabitabilityHappinessModifier(habitability: number): number {
+  if (habitability <= 80) return interpolate(habitability, 0, 80, -30, 0);
+  return interpolate(habitability, 80, 100, 0, 30);
+}
+
+function normalizeConstructionQueueItem(
+  item: Partial<PlanetConstructionQueueItem> | undefined,
+): PlanetConstructionQueueItem | null {
+  if (!item?.id || !item.label || (item.kind !== "district" && item.kind !== "building")) return null;
+  const totalDays = Math.max(1, Number(item.totalDays) || 1);
+  const remainingDays = Math.max(0, Math.min(totalDays, Number(item.remainingDays) || totalDays));
+  const mineralCost = Math.max(0, Math.round(Number(item.mineralCost) || 0));
+  if (item.kind === "district") {
+    if (!item.districtKind || !["city", "generator", "mining", "agriculture"].includes(item.districtKind)) return null;
+    return {
+      id: item.id,
+      kind: "district",
+      label: item.label,
+      mineralCost,
+      totalDays,
+      remainingDays,
+      districtKind: item.districtKind,
+    };
+  }
+  if (!item.buildingKind || !BUILDING_KINDS.includes(item.buildingKind)) return null;
+  if (!item.area || !(item.area === "urbanSubDistrict" || ["city", "generator", "mining", "agriculture"].includes(item.area))) return null;
+  const slotIndex = Math.max(0, Math.round(Number(item.slotIndex) || 0));
+  const subDistrictIndex = item.subDistrictIndex === undefined ? undefined : Math.max(0, Math.round(Number(item.subDistrictIndex)));
+  return {
+    id: item.id,
+    kind: "building",
+    label: item.label,
+    mineralCost,
+    totalDays,
+    remainingDays,
+    buildingKind: item.buildingKind,
+    area: item.area,
+    slotIndex,
+    subDistrictIndex,
+  };
+}
+
+export function normalizeConstructionQueue(
+  queue: PlanetConstructionQueueItem[] | undefined,
+): PlanetConstructionQueueItem[] {
+  return (queue ?? [])
+    .map((item) => normalizeConstructionQueueItem(item))
+    .filter((item): item is PlanetConstructionQueueItem => item !== null);
+}
+
 function normalizeBuildingSlots(
   slots: Array<BuildingKind | null> | undefined,
   length: number,
@@ -387,19 +1014,34 @@ export function createPlanetStateFromSeed(
   const urbanSubDistricts = isHabited
     ? normalizeUrbanSubDistricts(existing?.urbanSubDistricts)
     : normalizeUrbanSubDistricts([]);
+  const fallbackPopulation = isHabited
+    ? existing?.population === undefined
+      ? STARTING_HABITED_POPULATION
+      : Math.max(0, Math.floor(existing.population))
+    : 0;
+  const speciesPopulations = normalizeSpeciesPopulations(
+    existing?.speciesPopulations,
+    fallbackPopulation,
+    isHabited,
+  );
+  const population = sumSpeciesPopulation(speciesPopulations);
   const state: PlanetState = {
     id: seed.id,
     starId: seed.starId,
     planetIndex: seed.planetIndex,
     isHabited,
     habitability: existing?.habitability ?? seed.habitability,
-    population: isHabited ? Math.max(existing?.population ?? STARTING_HABITED_POPULATION, STARTING_HABITED_POPULATION) : 0,
+    population,
+    speciesPopulations,
+    features: normalizePlanetFeatures(existing?.features ?? seed.features),
     builtDistricts,
     buildings,
     urbanSubDistricts,
+    constructionQueue: normalizeConstructionQueue(existing?.constructionQueue),
+    modifiers: normalizeModifiers(existing?.modifiers),
     economy: createEmptyPlanetEconomySummary(),
   };
-  state.economy = calculatePlanetEconomy(state);
+  state.economy = calculatePlanetEconomy(state, seed.districtLimits);
   return state;
 }
 
@@ -415,13 +1057,17 @@ export function createEmptyPlanetEconomySummary(): PlanetEconomySummary {
     unemployedPopulation: 0,
     housing: 0,
     amenities: 0,
+    happiness: 50,
     crime: 0,
     stability: 50,
+    populationGrowth: createEmptyPopulationGrowth(),
+    activeModifiers: [],
   };
 }
 
-function addJobCapacity(capacity: JobCapacity, job: JobKind, amount: number): void {
-  capacity[job] = Math.max(0, capacity[job] + amount);
+function addJobCapacity(capacity: JobCapacity, job: JobKind, amount: number, modifiers: PlanetModifier[] = []): void {
+  const modifiedAmount = applyModifiers(amount, modifiers, `jobCapacity:${job}`);
+  capacity[job] = Math.max(0, capacity[job] + modifiedAmount);
 }
 
 function addResource(counts: ResourceCounts, kind: ResourceKind, amount: number): void {
@@ -433,186 +1079,313 @@ function applyJobResourceEffect(
   upkeep: ResourceCounts,
   job: JobKind,
   population: number,
+  modifiers: PlanetModifier[],
+  productionMultiplier: number,
+  upkeepMultiplier: number,
 ): number {
   const units = population / PEOPLE_PER_MONTHLY_UNIT;
-  switch (job) {
-    case "farmer":
-      addResource(production, "food", units * 6);
-      return 0;
-    case "miner":
-      addResource(production, "minerals", units * 5);
-      return 0;
-    case "technician":
-      addResource(production, "energy", units * 5);
-      return 0;
-    case "clerk":
-      addResource(production, "energy", units * 1);
-      return units * 2;
-    case "artisan":
-      addResource(upkeep, "minerals", units * 4);
-      addResource(production, "goods", units * 3);
-      return 0;
-    case "metallurgist":
-      addResource(upkeep, "minerals", units * 5);
-      addResource(production, "alloys", units * 2);
-      return 0;
-    case "researcher":
-      addResource(upkeep, "energy", units * 2);
-      addResource(upkeep, "goods", units * 1);
-      addResource(production, "research", units * 3);
-      return 0;
-    case "administrator":
-      addResource(upkeep, "energy", units * 1);
-      addResource(upkeep, "goods", units * 1);
-      return units * 3;
-    default:
-      return 0;
+  const addJobOutput = (resource: ResourceKind, amount: number): void => {
+    const generic = applyModifiers(amount, modifiers, "jobOutput");
+    addResource(production, resource, applyModifiers(generic, modifiers, `jobOutput:${job}:${resource}`) * productionMultiplier);
+  };
+  const addJobUpkeep = (resource: ResourceKind, amount: number): void => {
+    const generic = applyModifiers(amount, modifiers, "jobUpkeep");
+    addResource(upkeep, resource, applyModifiers(generic, modifiers, `jobUpkeep:${job}:${resource}`) * upkeepMultiplier);
+  };
+  const definition = JOB_DEFINITIONS[job];
+  for (const [resource, amount] of Object.entries(definition.output ?? {}) as Array<[ResourceKind, number]>) {
+    addJobOutput(resource, units * amount);
   }
+  for (const [resource, amount] of Object.entries(definition.upkeep ?? {}) as Array<[ResourceKind, number]>) {
+    addJobUpkeep(resource, units * amount);
+  }
+  return getJobAmenityEffect(job, population, modifiers, productionMultiplier);
 }
 
-function applyGoodsUpkeep(upkeep: ResourceCounts, jobClass: JobClass, population: number): void {
+function applyGoodsUpkeep(
+  upkeep: ResourceCounts,
+  jobClass: JobClass,
+  population: number,
+  modifiers: PlanetModifier[],
+  upkeepMultiplier: number,
+): void {
   const units = population / PEOPLE_PER_MONTHLY_UNIT;
   const upkeepPerUnit = jobClass === "upper" ? 0.4 : jobClass === "middle" ? 0.2 : 0.05;
-  addResource(upkeep, "goods", units * upkeepPerUnit);
+  addResource(upkeep, "goods", applyModifiers(units * upkeepPerUnit, modifiers, `goodsUpkeep:${jobClass}`) * upkeepMultiplier);
+}
+
+function getJobAmenityEffect(
+  job: JobKind,
+  population: number,
+  modifiers: PlanetModifier[],
+  productionMultiplier: number,
+): number {
+  const units = population / PEOPLE_PER_MONTHLY_UNIT;
+  const amenities = JOB_DEFINITIONS[job].amenities ?? 0;
+  return applyModifiers(units * amenities, modifiers, `jobAmenities:${job}`) * productionMultiplier;
+}
+
+function getJobCrimeReductionEffect(
+  job: JobKind,
+  population: number,
+  productionMultiplier: number,
+): number {
+  const units = population / PEOPLE_PER_MONTHLY_UNIT;
+  return units * (JOB_DEFINITIONS[job].crimeReduction ?? 0) * productionMultiplier;
 }
 
 function applyBuildingEffect(
   building: BuildingKind | null,
   capacity: JobCapacity,
   builtDistricts: DistrictCounts,
+  modifiers: PlanetModifier[] = [],
   context?: { housing: number },
 ): number {
   if (!building) return 0;
-  switch (building) {
-    case "housingComplex":
-      return 1_000_000_000;
-    case "administrativeComplex":
-      addJobCapacity(capacity, "administrator", 300_000_000);
-      return 0;
-    case "researchLabs":
-      addJobCapacity(capacity, "researcher", 500_000_000);
-      return 0;
-    case "civilianFabricators":
-      addJobCapacity(capacity, "artisan", 500_000_000);
-      return 0;
-    case "alloyFoundries":
-      addJobCapacity(capacity, "metallurgist", 500_000_000);
-      return 0;
-    case "commercialForum":
-      addJobCapacity(capacity, "clerk", 500_000_000);
-      return 0;
-    case "foodProcessingPlant":
-      addJobCapacity(capacity, "farmer", builtDistricts.agriculture * 250_000_000);
-      return 0;
-    case "agroIndustrialKitchens":
-      addJobCapacity(capacity, "farmer", -builtDistricts.agriculture * 250_000_000);
-      addJobCapacity(capacity, "artisan", builtDistricts.agriculture * 250_000_000);
-      return 0;
-    case "mineralPurificationPlant":
-      addJobCapacity(capacity, "miner", builtDistricts.mining * 250_000_000);
-      return 0;
-    case "oreSmelter":
-      addJobCapacity(capacity, "miner", -builtDistricts.mining * 250_000_000);
-      addJobCapacity(capacity, "metallurgist", builtDistricts.mining * 250_000_000);
-      return 0;
-    case "energyGrid":
-      addJobCapacity(capacity, "technician", builtDistricts.generator * 250_000_000);
-      return 0;
-    case "capacitorWorkshops":
-      addJobCapacity(capacity, "technician", -builtDistricts.generator * 250_000_000);
-      addJobCapacity(capacity, "artisan", builtDistricts.generator * 250_000_000);
-      return 0;
-    default:
-      return context?.housing ?? 0;
+  const definition = BUILDING_DEFINITIONS[building];
+  if (!definition) return context?.housing ?? 0;
+  for (const effect of definition.jobs ?? []) {
+    const multiplier = effect.perDistrict ? builtDistricts[effect.perDistrict] : 1;
+    addJobCapacity(capacity, effect.job, effect.amount * multiplier, modifiers);
   }
+  return definition.housing ?? 0;
 }
 
-export function calculatePlanetEconomy(state: PlanetState): PlanetEconomySummary {
+interface PopAssignment {
+  job: JobKind;
+  class: JobClass;
+  speciesId: SpeciesId;
+  population: number;
+}
+
+function getHousingHappinessModifier(housingRatio: number): number {
+  if (!Number.isFinite(housingRatio)) return 0;
+  if (housingRatio >= 1) return clamp((housingRatio - 1) / 0.5 * 20, 0, 20);
+  if (housingRatio <= 0.1) return -40;
+  return interpolate(housingRatio, 0.1, 1, -40, 0);
+}
+
+function getAmenitiesHappinessModifier(amenityRatio: number): number {
+  if (!Number.isFinite(amenityRatio)) return 0;
+  return clamp((amenityRatio - 1) * 10, -10, 10);
+}
+
+function getEmploymentHappinessModifier(unemploymentRatio: number): number {
+  return clamp(5 - unemploymentRatio * 25, -20, 5);
+}
+
+function getHappinessCrimePressure(happiness: number): number {
+  if (happiness >= 100) return 0;
+  if (happiness >= 80) return (100 - happiness) * 0.25;
+  return 5 + ((80 - happiness) / 80) * 95;
+}
+
+function mergePopGroup(groups: PopGroup[], next: PopGroup): void {
+  const existing = groups.find((group) => (
+    group.job === next.job
+    && group.class === next.class
+    && group.speciesId === next.speciesId
+    && group.habitability === next.habitability
+    && group.happiness === next.happiness
+  ));
+  if (existing) {
+    existing.population += next.population;
+    return;
+  }
+  groups.push({ ...next });
+}
+
+export function calculatePlanetEconomy(state: PlanetState, districtLimits?: DistrictCounts): PlanetEconomySummary {
   if (!state.isHabited) return createEmptyPlanetEconomySummary();
 
+  const activeModifiers = getActiveModifiers(state);
   const capacity = emptyJobCapacity();
   const built = state.builtDistricts;
   let housing = built.city * 1_500_000_000;
 
-  addJobCapacity(capacity, "farmer", built.agriculture * 1_000_000_000);
-  addJobCapacity(capacity, "miner", built.mining * 1_000_000_000);
-  addJobCapacity(capacity, "technician", built.generator * 1_000_000_000);
-  addJobCapacity(capacity, "clerk", built.city * 100_000_000);
+  addJobCapacity(capacity, "farmer", built.agriculture * 1_000_000_000, activeModifiers);
+  addJobCapacity(capacity, "miner", built.mining * 1_000_000_000, activeModifiers);
+  addJobCapacity(capacity, "technician", built.generator * 1_000_000_000, activeModifiers);
+  addJobCapacity(capacity, "clerk", built.city * 100_000_000, activeModifiers);
 
   for (const subDistrict of state.urbanSubDistricts) {
     switch (subDistrict.kind) {
       case "residential":
         housing += built.city * 1_000_000_000;
-        addJobCapacity(capacity, "clerk", built.city * 100_000_000);
+        addJobCapacity(capacity, "clerk", built.city * 100_000_000, activeModifiers);
         break;
       case "researchCampus":
         housing -= built.city * 500_000_000;
-        addJobCapacity(capacity, "researcher", built.city * 500_000_000);
+        addJobCapacity(capacity, "researcher", built.city * 500_000_000, activeModifiers);
         break;
       case "mixedIndustry":
         housing -= built.city * 500_000_000;
-        addJobCapacity(capacity, "artisan", built.city * 250_000_000);
-        addJobCapacity(capacity, "metallurgist", built.city * 250_000_000);
+        addJobCapacity(capacity, "artisan", built.city * 250_000_000, activeModifiers);
+        addJobCapacity(capacity, "metallurgist", built.city * 250_000_000, activeModifiers);
         break;
       case "civilianIndustry":
         housing -= built.city * 500_000_000;
-        addJobCapacity(capacity, "artisan", built.city * 500_000_000);
+        addJobCapacity(capacity, "artisan", built.city * 500_000_000, activeModifiers);
         break;
       case "heavyIndustry":
         housing -= built.city * 500_000_000;
-        addJobCapacity(capacity, "metallurgist", built.city * 500_000_000);
+        addJobCapacity(capacity, "metallurgist", built.city * 500_000_000, activeModifiers);
         break;
       default:
         break;
     }
 
     for (const building of subDistrict.buildings) {
-      housing += applyBuildingEffect(building, capacity, built);
+      housing += applyBuildingEffect(building, capacity, built, activeModifiers);
     }
   }
 
   for (const building of state.buildings.city) {
-    housing += applyBuildingEffect(building, capacity, built);
+    housing += applyBuildingEffect(building, capacity, built, activeModifiers);
   }
   for (const building of state.buildings.generator) {
-    applyBuildingEffect(building, capacity, built);
+    applyBuildingEffect(building, capacity, built, activeModifiers);
   }
   for (const building of state.buildings.mining) {
-    applyBuildingEffect(building, capacity, built);
+    applyBuildingEffect(building, capacity, built, activeModifiers);
   }
   for (const building of state.buildings.agriculture) {
-    applyBuildingEffect(building, capacity, built);
+    applyBuildingEffect(building, capacity, built, activeModifiers);
   }
 
   for (const job of JOB_KINDS) {
     capacity[job] = Math.max(0, Math.floor(capacity[job]));
   }
 
-  let remaining = Math.floor(state.population);
-  const popGroups: PopGroup[] = [];
+  housing = Math.max(0, applyModifiers(housing, activeModifiers, "housing"));
+
+  const speciesPopulations = normalizeSpeciesPopulations(state.speciesPopulations, state.population, state.isHabited);
+  const totalPopulation = sumSpeciesPopulation(speciesPopulations);
+  const remainingBySpecies = new Map(speciesPopulations.map((entry) => [entry.speciesId, entry.population]));
+  const assignments: PopAssignment[] = [];
   let employedPopulation = 0;
-  const production = createEmptyResourceCounts();
-  const upkeep = createEmptyResourceCounts();
-  let amenities = 0;
 
   for (const job of JOB_FILL_ORDER) {
-    const population = Math.min(remaining, capacity[job]);
-    if (population <= 0) continue;
+    let capacityRemaining = capacity[job];
+    if (capacityRemaining <= 0) continue;
     const jobClass = JOB_CLASS_BY_KIND[job];
-    popGroups.push({ job, class: jobClass, population });
-    remaining -= population;
-    employedPopulation += population;
-    amenities += applyJobResourceEffect(production, upkeep, job, population);
-    applyGoodsUpkeep(upkeep, jobClass, population);
+    for (const species of speciesPopulations) {
+      if (capacityRemaining <= 0) break;
+      const available = remainingBySpecies.get(species.speciesId) ?? 0;
+      const population = Math.min(available, capacityRemaining);
+      if (population <= 0) continue;
+      assignments.push({ job, class: jobClass, speciesId: species.speciesId, population });
+      remainingBySpecies.set(species.speciesId, available - population);
+      capacityRemaining -= population;
+      employedPopulation += population;
+    }
   }
 
-  const unemployedPopulation = Math.max(0, remaining);
-  if (unemployedPopulation > 0) {
-    popGroups.push({ job: "unemployed", class: "lower", population: unemployedPopulation });
+  let unemployedPopulation = 0;
+  for (const species of speciesPopulations) {
+    const population = Math.max(0, remainingBySpecies.get(species.speciesId) ?? 0);
+    if (population <= 0) continue;
+    assignments.push({ job: "unemployed", class: "lower", speciesId: species.speciesId, population });
+    unemployedPopulation += population;
   }
   capacity.unemployed = unemployedPopulation;
 
-  addResource(upkeep, "food", (state.population / PEOPLE_PER_MONTHLY_UNIT) * 1);
+  const unemploymentRatio = totalPopulation > 0 ? unemployedPopulation / totalPopulation : 0;
+  const housingRatio = totalPopulation > 0 ? housing / totalPopulation : 1;
+  let amenities = 0;
+  let crimeReduction = 0;
+
+  for (const assignment of assignments) {
+    if (assignment.job === "unemployed") continue;
+    const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId);
+    const productionMultiplier = getHabitabilityProductionMultiplier(habitability);
+    amenities += getJobAmenityEffect(
+      assignment.job,
+      assignment.population,
+      activeModifiers,
+      productionMultiplier,
+    );
+    crimeReduction += getJobCrimeReductionEffect(assignment.job, assignment.population, productionMultiplier);
+  }
+
+  amenities = applyModifiers(amenities, activeModifiers, "amenities");
+  const amenityNeed = totalPopulation / PEOPLE_PER_MONTHLY_UNIT;
+  const amenityRatio = amenityNeed > 0 ? amenities / amenityNeed : 1;
+  const sharedHousingHappiness = getHousingHappinessModifier(housingRatio);
+  const sharedAmenitiesHappiness = getAmenitiesHappinessModifier(amenityRatio);
+  const sharedEmploymentHappiness = getEmploymentHappinessModifier(unemploymentRatio);
+  const popGroups: PopGroup[] = [];
+  let weightedHappiness = 0;
+  let weightedCrimePressure = 0;
+  let weightedHighHappinessStability = 0;
+
+  for (const assignment of assignments) {
+    const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId);
+    const jobPenalty = assignment.job === "unemployed" ? -12 : 0;
+    const happiness = clamp(Math.round(applyModifiers(
+      50
+        + getHabitabilityHappinessModifier(habitability)
+        + sharedHousingHappiness
+        + sharedAmenitiesHappiness
+        + sharedEmploymentHappiness
+        + jobPenalty,
+      activeModifiers,
+      "happiness",
+    )), 0, 100);
+    const speciesName = SPECIES_DEFINITIONS[assignment.speciesId].name;
+    mergePopGroup(popGroups, {
+      job: assignment.job,
+      class: assignment.class,
+      speciesId: assignment.speciesId,
+      speciesName,
+      habitability,
+      happiness,
+      population: assignment.population,
+    });
+    weightedHappiness += happiness * assignment.population;
+    weightedCrimePressure += getHappinessCrimePressure(happiness) * assignment.population;
+    weightedHighHappinessStability += Math.max(0, happiness - 80) / 20 * 15 * assignment.population;
+  }
+
+  const happiness = totalPopulation > 0 ? weightedHappiness / totalPopulation : 50;
+  const rawCrime = totalPopulation > 0 ? weightedCrimePressure / totalPopulation : 0;
+  const crime = clamp(applyModifiers(rawCrime - crimeReduction, activeModifiers, "crime"), 0, 100);
+  const highHappinessStability = totalPopulation > 0 ? weightedHighHappinessStability / totalPopulation : 0;
+  const stability = clamp(
+    applyModifiers(50 + (20 - crime * 0.5) + highHappinessStability, activeModifiers, "stability"),
+    0,
+    100,
+  );
+  const stabilityProductionMultiplier = Math.max(0, 1 + (stability - 50) * 0.005);
+
+  const production = createEmptyResourceCounts();
+  const upkeep = createEmptyResourceCounts();
+
+  for (const group of popGroups) {
+    const habitabilityProductionMultiplier = getHabitabilityProductionMultiplier(group.habitability);
+    const habitabilityUpkeepMultiplier = getHabitabilityUpkeepMultiplier(group.habitability);
+    if (group.job !== "unemployed") {
+      applyJobResourceEffect(
+        production,
+        upkeep,
+        group.job,
+        group.population,
+        activeModifiers,
+        habitabilityProductionMultiplier * stabilityProductionMultiplier,
+        habitabilityUpkeepMultiplier,
+      );
+      applyGoodsUpkeep(upkeep, group.class, group.population, activeModifiers, habitabilityUpkeepMultiplier);
+    }
+  }
+
+  for (const species of speciesPopulations) {
+    const habitability = getEffectiveSpeciesHabitability(state, species.speciesId);
+    addResource(upkeep, "food", applyModifiers(
+      (species.population / PEOPLE_PER_MONTHLY_UNIT) * getHabitabilityUpkeepMultiplier(habitability),
+      activeModifiers,
+      "popUpkeep:food",
+    ));
+  }
 
   const net = createEmptyResourceCounts();
   const deficit = createEmptyResourceCounts();
@@ -621,14 +1394,7 @@ export function calculatePlanetEconomy(state: PlanetState): PlanetEconomySummary
     deficit[resource] = Math.max(0, -net[resource]);
   }
 
-  const unemploymentPercent = state.population > 0 ? (unemployedPopulation / state.population) * 100 : 0;
-  const housingShortage = Math.max(0, state.population - housing);
-  const housingShortagePercent = state.population > 0 ? (housingShortage / state.population) * 100 : 0;
-  const crime = clamp(unemploymentPercent + housingShortagePercent, 0, 100);
-  const amenityBalance = amenities - state.population / PEOPLE_PER_MONTHLY_UNIT;
-  const stability = clamp(50 + clamp(amenityBalance / 500, -20, 20) - crime * 0.2, 0, 100);
-
-  return {
+  const summaryWithoutGrowth: Omit<PlanetEconomySummary, "populationGrowth"> = {
     production,
     upkeep,
     net,
@@ -639,22 +1405,339 @@ export function calculatePlanetEconomy(state: PlanetState): PlanetEconomySummary
     unemployedPopulation,
     housing: Math.max(0, Math.floor(housing)),
     amenities,
+    happiness,
     crime,
     stability,
+    activeModifiers,
+  };
+
+  return {
+    ...summaryWithoutGrowth,
+    populationGrowth: calculatePopulationGrowth(state, summaryWithoutGrowth, districtLimits),
   };
 }
 
-export function recalculatePlanetStateEconomy(state: PlanetState): PlanetState {
+export function calculatePlanetCapacity(state: PlanetState, districtLimits?: DistrictCounts): number {
+  if (!state.isHabited) return 0;
+  const limits = districtLimits ?? state.builtDistricts;
+  const sizeProxy = Math.max(1, limits.city, state.builtDistricts.city);
+  const resourcePotential = Math.max(0, limits.generator + limits.mining + limits.agriculture);
+  const baseCapacity = sizeProxy * 1_600_000_000;
+  const resourceCapacity = resourcePotential * 250_000_000;
+  const urbanizedCapacity = state.builtDistricts.city * 400_000_000;
+  const modifiedCapacity = applyModifiers(baseCapacity + resourceCapacity + urbanizedCapacity, getActiveModifiers(state), "planetCapacity");
+  return Math.max(2_000_000_000, Math.floor(modifiedCapacity));
+}
+
+export function calculatePopulationGrowth(
+  state: PlanetState,
+  economy: Omit<PlanetEconomySummary, "populationGrowth">,
+  districtLimits?: DistrictCounts,
+): PlanetPopulationGrowth {
+  if (!state.isHabited || state.population <= 0) return createEmptyPopulationGrowth();
+
+  const capacity = calculatePlanetCapacity(state, districtLimits);
+  const capacityPressure = capacity > 0 ? state.population / capacity : 1;
+  const capacityCurve = clamp(1 - capacityPressure, -0.75, 1.15);
+  const housingRatio = state.population > 0 ? economy.housing / state.population : 1;
+  const amenityNeed = state.population / PEOPLE_PER_MONTHLY_UNIT;
+  const amenityRatio = amenityNeed > 0 ? economy.amenities / amenityNeed : 1;
+  const unemploymentRatio = state.population > 0 ? economy.unemployedPopulation / state.population : 0;
+
+  const factors: PlanetPopulationGrowthFactors = {
+    housing: clamp((housingRatio - 1) * 0.55, -0.35, 0.2),
+    amenities: clamp((amenityRatio - 1) * 0.12, -0.1, 0.08),
+    stability: clamp((economy.stability - 50) / 100 * 0.6, -0.3, 0.3),
+    crime: clamp(-economy.crime / 100 * 0.12, -0.12, 0),
+    employment: clamp(-unemploymentRatio * 0.56 + (unemploymentRatio <= 0.03 ? 0.04 : 0), -0.28, 0.04),
+    capacity: capacityCurve,
+  };
+  const managementPressure = factors.housing + factors.amenities + factors.stability + factors.crime + factors.employment;
+  const managementMultiplier = factors.capacity < 0
+    ? clamp(1 - managementPressure, 0.35, 2.2)
+    : clamp(1 + managementPressure, -0.6, 1.8);
+  const ratePerQuarter = applyModifiers(
+    BASE_POPULATION_GROWTH_RATE_PER_QUARTER * factors.capacity * managementMultiplier,
+    getActiveModifiers(state),
+    "populationGrowth",
+  );
+  const netPerQuarter = Math.round(state.population * ratePerQuarter);
+
+  return {
+    capacity,
+    capacityPressure,
+    ratePerQuarter,
+    netPerQuarter,
+    factors,
+  };
+}
+
+export function recalculatePlanetStateEconomy(state: PlanetState, districtLimits?: DistrictCounts): PlanetState {
+  const speciesPopulations = normalizeSpeciesPopulations(
+    state.speciesPopulations,
+    state.population,
+    state.isHabited,
+  );
   const normalized = {
     ...state,
+    population: sumSpeciesPopulation(speciesPopulations),
+    speciesPopulations,
+    features: normalizePlanetFeatures(state.features),
     builtDistricts: cloneDistricts(state.builtDistricts),
     buildings: normalizeBuildings(state.buildings),
     urbanSubDistricts: normalizeUrbanSubDistricts(state.urbanSubDistricts),
+    constructionQueue: normalizeConstructionQueue(state.constructionQueue),
+    modifiers: normalizeModifiers(state.modifiers),
   };
   return {
     ...normalized,
-    economy: calculatePlanetEconomy(normalized),
+    economy: calculatePlanetEconomy(normalized, districtLimits),
   };
+}
+
+export function applyPopulationGrowth(
+  state: PlanetState,
+  districtLimits?: DistrictCounts,
+  quarters = 1,
+): PlanetState {
+  let next = recalculatePlanetStateEconomy(state, districtLimits);
+  if (!next.isHabited || quarters <= 0) return next;
+
+  for (let i = 0; i < quarters; i++) {
+    const growth = next.economy.populationGrowth.netPerQuarter;
+    const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth);
+    next = recalculatePlanetStateEconomy({
+      ...next,
+      population: sumSpeciesPopulation(speciesPopulations),
+      speciesPopulations,
+    }, districtLimits);
+  }
+
+  return next;
+}
+
+function applyPopulationDeltaToSpecies(populations: SpeciesPopulation[], delta: number): SpeciesPopulation[] {
+  if (delta === 0 || populations.length === 0) return populations.map((entry) => cloneSpeciesPopulation(entry));
+  const total = sumSpeciesPopulation(populations);
+  if (total <= 0) {
+    return delta > 0
+      ? [{ speciesId: HUMAN_SPECIES_ID, population: delta }]
+      : [];
+  }
+
+  const targetTotal = Math.max(0, total + delta);
+  let runningTotal = 0;
+  const next = populations.map((entry) => {
+    const population = Math.max(0, Math.round(targetTotal * (entry.population / total)));
+    runningTotal += population;
+    return { speciesId: entry.speciesId, population };
+  });
+
+  let remainder = targetTotal - runningTotal;
+  for (let i = 0; remainder !== 0 && i < next.length; i++) {
+    const step = remainder > 0 ? 1 : -1;
+    if (step < 0 && next[i].population <= 0) continue;
+    next[i].population += step;
+    remainder -= step;
+  }
+
+  return next.filter((entry) => entry.population > 0);
+}
+
+function createConstructionId(prefix: string, parts: Array<string | number | undefined>): string {
+  return `${prefix}-${parts.filter((part) => part !== undefined).join("-")}-${Date.now().toString(36)}`;
+}
+
+export function createDistrictConstructionQueueItem(
+  districtKind: DistrictKind,
+  id = createConstructionId("district", [districtKind]),
+): PlanetConstructionQueueItem {
+  return {
+    id,
+    kind: "district",
+    label: `${districtKind[0].toUpperCase()}${districtKind.slice(1)} District`,
+    mineralCost: DISTRICT_MINERAL_COSTS[districtKind],
+    totalDays: DISTRICT_BUILD_DAYS[districtKind],
+    remainingDays: DISTRICT_BUILD_DAYS[districtKind],
+    districtKind,
+  };
+}
+
+export function createBuildingConstructionQueueItem(
+  buildingKind: BuildingKind,
+  area: BuildingSlotArea,
+  slotIndex: number,
+  subDistrictIndex?: number,
+  id = createConstructionId("building", [buildingKind, area, subDistrictIndex, slotIndex]),
+): PlanetConstructionQueueItem {
+  return {
+    id,
+    kind: "building",
+    label: BUILDING_LABELS[buildingKind],
+    mineralCost: BUILDING_MINERAL_COSTS[buildingKind],
+    totalDays: BUILDING_BUILD_DAYS[buildingKind],
+    remainingDays: BUILDING_BUILD_DAYS[buildingKind],
+    buildingKind,
+    area,
+    slotIndex,
+    subDistrictIndex,
+  };
+}
+
+export function getQueuedDistrictCount(state: PlanetState, districtKind: DistrictKind): number {
+  return state.constructionQueue.filter((item) => item.kind === "district" && item.districtKind === districtKind).length;
+}
+
+export function hasQueuedBuildingTarget(
+  state: PlanetState,
+  area: BuildingSlotArea,
+  slotIndex: number,
+  subDistrictIndex?: number,
+): boolean {
+  return state.constructionQueue.some((item) => (
+    item.kind === "building"
+    && item.area === area
+    && item.slotIndex === slotIndex
+    && item.subDistrictIndex === subDistrictIndex
+  ));
+}
+
+function getSubDistrictKindForItem(
+  state: PlanetState,
+  item: PlanetConstructionQueueItem,
+): UrbanSubDistrictKind | undefined {
+  if (item.area !== "urbanSubDistrict" || item.subDistrictIndex === undefined) return undefined;
+  return state.urbanSubDistricts[item.subDistrictIndex]?.kind;
+}
+
+function canCompleteConstructionItem(
+  state: PlanetState,
+  item: PlanetConstructionQueueItem,
+  districtLimits: DistrictCounts,
+): boolean {
+  if (item.kind === "district") {
+    return Boolean(item.districtKind && state.builtDistricts[item.districtKind] < districtLimits[item.districtKind]);
+  }
+  if (!item.buildingKind || !item.area || item.slotIndex === undefined) return false;
+  if (item.area === "urbanSubDistrict") {
+    if (item.subDistrictIndex === undefined) return false;
+    const subDistrict = state.urbanSubDistricts[item.subDistrictIndex];
+    if (!subDistrict || item.slotIndex < 0 || item.slotIndex >= subDistrict.buildings.length) return false;
+    if (subDistrict.buildings[item.slotIndex]) return false;
+    return isBuildingCompatible(item.buildingKind, item.area, subDistrict.kind);
+  }
+  const slots = state.buildings[item.area];
+  if (!slots || item.slotIndex < 0 || item.slotIndex >= slots.length) return false;
+  if (slots[item.slotIndex]) return false;
+  return isBuildingCompatible(item.buildingKind, item.area);
+}
+
+function completeConstructionItem(
+  state: PlanetState,
+  item: PlanetConstructionQueueItem,
+): PlanetState {
+  if (item.kind === "district" && item.districtKind) {
+    return {
+      ...state,
+      builtDistricts: {
+        ...state.builtDistricts,
+        [item.districtKind]: state.builtDistricts[item.districtKind] + 1,
+      },
+    };
+  }
+
+  if (item.kind !== "building" || !item.buildingKind || !item.area || item.slotIndex === undefined) return state;
+  if (item.area === "urbanSubDistrict") {
+    if (item.subDistrictIndex === undefined) return state;
+    return {
+      ...state,
+      urbanSubDistricts: state.urbanSubDistricts.map((subDistrict, index) => (
+        index === item.subDistrictIndex
+          ? {
+            ...subDistrict,
+            buildings: subDistrict.buildings.map((building, buildingIndex) => (
+              buildingIndex === item.slotIndex ? item.buildingKind! : building
+            )),
+          }
+          : subDistrict
+      )),
+    };
+  }
+
+  return {
+    ...state,
+    buildings: {
+      ...state.buildings,
+      [item.area]: state.buildings[item.area].map((building, index) => (
+        index === item.slotIndex ? item.buildingKind! : building
+      )),
+    },
+  };
+}
+
+export function getConstructionSpeedMultiplier(
+  state: PlanetState,
+  kind?: PlanetConstructionKind,
+): number {
+  const activeModifiers = getActiveModifiers(state);
+  const base = getModifierMultiplier(activeModifiers, "constructionSpeed");
+  const typed = kind === "district"
+    ? getModifierMultiplier(activeModifiers, "districtConstructionSpeed")
+    : kind === "building"
+      ? getModifierMultiplier(activeModifiers, "buildingConstructionSpeed")
+      : 1;
+  return Math.max(0.1, base * typed);
+}
+
+export function progressPlanetConstructionQueue(
+  state: PlanetState,
+  elapsedDays: number,
+  districtLimits?: DistrictCounts,
+): { state: PlanetState; changed: boolean; completed: PlanetConstructionQueueItem[] } {
+  let next = recalculatePlanetStateEconomy(state, districtLimits);
+  const limits = districtLimits ?? next.builtDistricts;
+  let days = Math.max(0, elapsedDays);
+  const completed: PlanetConstructionQueueItem[] = [];
+  let changed = false;
+
+  while (days > 0 && next.constructionQueue.length > 0) {
+    const [current, ...rest] = next.constructionQueue;
+    const speed = getConstructionSpeedMultiplier(next, current.kind);
+    const workDays = days * speed;
+    if (workDays < current.remainingDays) {
+      current.remainingDays -= workDays;
+      next = { ...next, constructionQueue: [current, ...rest] };
+      changed = true;
+      days = 0;
+      break;
+    }
+
+    const consumedRealDays = current.remainingDays / speed;
+    days = Math.max(0, days - consumedRealDays);
+    const completedItem = { ...current, remainingDays: 0 };
+    let withoutItem = { ...next, constructionQueue: rest };
+    if (canCompleteConstructionItem(withoutItem, completedItem, limits)) {
+      withoutItem = completeConstructionItem(withoutItem, completedItem);
+      completed.push(completedItem);
+    }
+    next = recalculatePlanetStateEconomy(withoutItem, limits);
+    changed = true;
+  }
+
+  return { state: next, changed, completed };
+}
+
+export function filterInvalidQueuedBuildingsForSubDistrictChange(
+  state: PlanetState,
+  subDistrictIndex: number,
+  nextKind: UrbanSubDistrictKind,
+): PlanetConstructionQueueItem[] {
+  return state.constructionQueue.filter((item) => {
+    if (item.kind !== "building" || item.area !== "urbanSubDistrict" || item.subDistrictIndex !== subDistrictIndex) {
+      return true;
+    }
+    return Boolean(item.buildingKind && isBuildingCompatible(item.buildingKind, "urbanSubDistrict", nextKind));
+  });
 }
 
 export function isBuildingCompatible(
@@ -662,33 +1745,11 @@ export function isBuildingCompatible(
   area: BuildingSlotArea,
   subDistrictKind?: UrbanSubDistrictKind,
 ): boolean {
-  switch (building) {
-    case "housingComplex":
-      return area === "city" || (area === "urbanSubDistrict" && subDistrictKind === "residential");
-    case "administrativeComplex":
-      return area === "city";
-    case "researchLabs":
-      return area === "city" || (area === "urbanSubDistrict" && subDistrictKind === "researchCampus");
-    case "civilianFabricators":
-      return area === "city"
-        || (area === "urbanSubDistrict" && (subDistrictKind === "mixedIndustry" || subDistrictKind === "civilianIndustry"));
-    case "alloyFoundries":
-      return area === "city"
-        || (area === "urbanSubDistrict" && (subDistrictKind === "mixedIndustry" || subDistrictKind === "heavyIndustry"));
-    case "commercialForum":
-      return area === "city" || (area === "urbanSubDistrict" && subDistrictKind === "residential");
-    case "foodProcessingPlant":
-    case "agroIndustrialKitchens":
-      return area === "agriculture";
-    case "mineralPurificationPlant":
-    case "oreSmelter":
-      return area === "mining";
-    case "energyGrid":
-    case "capacitorWorkshops":
-      return area === "generator";
-    default:
-      return false;
-  }
+  return BUILDING_DEFINITIONS[building]?.compatibility.some((rule) => {
+    if (rule.area !== area) return false;
+    if (area !== "urbanSubDistrict") return true;
+    return Boolean(subDistrictKind && rule.subDistrictKinds?.includes(subDistrictKind));
+  }) ?? false;
 }
 
 export function getCompatibleBuildings(

@@ -2266,6 +2266,20 @@ export class SystemScene implements IGameScene {
     }
   }
 
+  refreshPlanetDetails(planet: PlanetConfig, planetState: PlanetState): void {
+    const nextPlanetStates = this.planetStates.filter((candidate) => candidate.id !== planetState.id);
+    nextPlanetStates.push(planetState);
+    this.planetStates = nextPlanetStates;
+    this.star.system.planets[planetState.planetIndex] = planet;
+    this.planetConfigs = this.star.system.planets;
+    this.objectPanel?.refreshPlanetState(
+      planet.id,
+      planetState,
+      planet.objectDetails,
+      planet.isHabited === true,
+    );
+  }
+
   dispose(): void {
     window.removeEventListener("keydown", this.onEscapeKey);
     if (this.pointerObserver) {
