@@ -37,15 +37,19 @@ import {
 } from "../src/data/Economy";
 import {
   calculateStarbaseEconomy,
+  countStarbaseShipyards,
   createStarbaseBuildingQueueItem,
+  createStarbaseShipQueueItem,
   createStarbaseUpgradeQueueItem,
   createEmptyStarbaseSlots,
   hasQueuedStarbaseBuildingTarget,
   isStarbaseBuildingKind,
+  isStarbaseShipKind,
   progressStarbaseConstructionQueue,
+  progressStarbaseShipQueue,
   STARBASE_LEVEL_DEFINITIONS,
 } from "../src/data/Starbase";
-import type { StarbaseBuildingKind, StarbaseLevel } from "../src/data/Starbase";
+import type { StarbaseBuildingKind, StarbaseLevel, StarbaseShipKind } from "../src/data/Starbase";
 import type {
   BuildingKind,
   BuildingSlotArea,
@@ -229,6 +233,17 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
         cost: normalizeResourceCounts(item.cost),
       }))
       : [],
+    shipQueue: Array.isArray(starbase.shipQueue)
+      ? starbase.shipQueue
+        .filter((item) => item.shipKind && isStarbaseShipKind(item.shipKind))
+        .map((item) => ({
+          ...item,
+          remainingDays: Math.max(0, Number(item.remainingDays) || 0),
+          totalDays: Math.max(1, Number(item.totalDays) || 1),
+          alloyUpkeepPerDay: Math.max(0, Number(item.alloyUpkeepPerDay) || 0),
+          crewDemand: Math.max(0, Number(item.crewDemand) || 0),
+        }))
+      : [],
   };
 }
 
@@ -273,10 +288,11 @@ function createInitialState(): GameState {
     starId: faction.homeStarId,
     status: "online",
     buildProgress: 1,
-    level: "outpost",
-    economy: calculateStarbaseEconomy("outpost"),
+    level: "starbase",
+    economy: calculateStarbaseEconomy("starbase"),
     buildingSlots: createEmptyStarbaseSlots(),
     constructionQueue: [],
+    shipQueue: [],
   }));
   const ships = factions.map<GameShip>((faction) => ({
     id: `ship-${faction.id}-1`,
@@ -331,7 +347,20 @@ async function loadState(): Promise<GameState> {
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.clock.lastUpdatedAt = parsed.clock.lastUpdatedAt ?? Date.now();
-    parsed.starbases = (parsed.starbases ?? []).map((starbase) => normalizeStarbase(starbase));
+    const homeStarIds = new Set(parsed.factions.map((faction) => faction.homeStarId));
+    let homeStarbaseChanged = false;
+    parsed.starbases = (parsed.starbases ?? []).map((starbase) => {
+      const normalized = normalizeStarbase(starbase);
+      if (homeStarIds.has(normalized.starId) && normalized.level === "outpost") {
+        homeStarbaseChanged = true;
+        return {
+          ...normalized,
+          level: "starbase" as StarbaseLevel,
+          economy: calculateStarbaseEconomy("starbase", normalized.buildingSlots),
+        };
+      }
+      return normalized;
+    });
     parsed.ships = parsed.ships.map((ship) => ({
       ...ship,
       phaseElapsedMs: ship.phaseElapsedMs ?? Math.round((ship.phaseProgress ?? 0) * phaseDuration(ship.phase)),
@@ -358,7 +387,7 @@ async function loadState(): Promise<GameState> {
     parsed.factionEconomies = normalizedFactionEconomies;
     refreshFactionEconomyDeltas(parsed);
     const planetStateApplied = applyPlanetStatesToStars(parsed.stars, parsed.planetStates);
-    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged) {
+    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || homeStarbaseChanged) {
       hasDirtyState = true;
     }
     refreshDiscovery(parsed);
@@ -980,6 +1009,24 @@ function handleBuildStarbaseBuilding(
   });
 }
 
+function handleBuildStarbaseShip(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  starbaseId: string,
+  shipKind: StarbaseShipKind,
+): void {
+  const starbase = validateStarbaseCommand(socket, perspective, starbaseId);
+  if (!starbase) return;
+  if (!isStarbaseShipKind(shipKind)) return reject(socket, "Invalid ship design.");
+  const shipyardCount = countStarbaseShipyards(starbase.buildingSlots);
+  if (shipyardCount <= 0) return reject(socket, "Starbase has no completed shipyards.");
+  const item = createStarbaseShipQueueItem(shipKind);
+  commitStarbase(socket, "Ship queued.", {
+    ...starbase,
+    shipQueue: [...starbase.shipQueue, item],
+  });
+}
+
 function isDistrictKind(value: string): value is DistrictKind {
   return value === "city" || value === "generator" || value === "mining" || value === "agriculture";
 }
@@ -1122,6 +1169,7 @@ function completeShipOrder(ship: GameShip): void {
         economy: calculateStarbaseEconomy("outpost"),
         buildingSlots: createEmptyStarbaseSlots(),
         constructionQueue: [],
+        shipQueue: [],
       });
       state.starOwnership[starId] = ship.ownerId;
     }
@@ -1260,6 +1308,30 @@ function processStarbaseConstruction(elapsedDays: number): boolean {
   return true;
 }
 
+function processStarbaseShipQueues(elapsedDays: number): boolean {
+  if (elapsedDays <= 0) return false;
+  let changed = false;
+  state.starbases = state.starbases.map((starbase) => {
+    if (starbase.shipQueue.length === 0) return starbase;
+    const result = progressStarbaseShipQueue(starbase, elapsedDays);
+    if (!result.changed) return starbase;
+
+    const economy = getFactionEconomy(starbase.ownerId);
+    if (economy && result.alloysConsumed > 0) {
+      const cost = createEmptyResourceCounts();
+      cost.alloys = -result.alloysConsumed;
+      economy.stockpiles = addResourceCounts(economy.stockpiles, cost);
+    }
+    changed = true;
+    return result.starbase;
+  });
+
+  if (!changed) return false;
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  return true;
+}
+
 function processPopulationQuarters(previousQuarter: number, targetQuarter: number): boolean {
   const quarters = Math.max(0, targetQuarter - previousQuarter);
   if (quarters <= 0) return false;
@@ -1322,6 +1394,11 @@ function advanceState(now: number): Set<ServerUpdateField> {
     changed.add("factionEconomies");
   }
 
+  if (processStarbaseShipQueues(elapsedGameDays)) {
+    changed.add("starbases");
+    changed.add("factionEconomies");
+  }
+
   const nextEconomyMonth = currentEconomyMonth();
   if (nextEconomyMonth > previousEconomyMonth) {
     if (processEconomyMonths(nextEconomyMonth)) {
@@ -1380,6 +1457,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
       command.slotIndex,
       command.buildingKind,
     );
+    return;
+  }
+  if (command.type === "buildStarbaseShip") {
+    handleBuildStarbaseShip(session.socket, session.perspective, command.starbaseId, command.shipKind);
     return;
   }
   if (command.type === "setUrbanSubDistrict") {

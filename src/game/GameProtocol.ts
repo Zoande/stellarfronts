@@ -12,6 +12,8 @@ import type {
   StarbaseEconomy,
   StarbaseBuildingKind,
   StarbaseLevel,
+  StarbaseShipKind,
+  StarbaseShipQueueItem,
 } from "../data/Starbase";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 
@@ -54,6 +56,7 @@ export interface ServerStarbase {
   economy: StarbaseEconomy;
   buildingSlots: Array<StarbaseBuildingKind | null>;
   constructionQueue: StarbaseConstructionQueueItem[];
+  shipQueue: StarbaseShipQueueItem[];
 }
 
 export interface ShipSystemPosition {
@@ -135,6 +138,12 @@ export interface UpgradeStarbaseCommand {
   starbaseId: string;
 }
 
+export interface BuildStarbaseShipCommand {
+  type: "buildStarbaseShip";
+  starbaseId: string;
+  shipKind: StarbaseShipKind;
+}
+
 export interface RequestSystemDetailsCommand {
   type: "requestSystemDetails";
   starId: number;
@@ -159,6 +168,7 @@ export type ClientCommand =
   | BuildPlanetBuildingCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
+  | BuildStarbaseShipCommand
   | SetUrbanSubDistrictCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand;

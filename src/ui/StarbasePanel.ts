@@ -3,6 +3,9 @@ import {
   STARBASE_BUILDING_DEFINITIONS,
   STARBASE_BUILDING_KINDS,
   STARBASE_LEVEL_DEFINITIONS,
+  STARBASE_SHIP_DEFINITIONS,
+  STARBASE_SHIP_KINDS,
+  countStarbaseShipyards,
   getNextStarbaseLevel,
   hasQueuedStarbaseBuildingTarget,
 } from "../data/Starbase";
@@ -147,6 +150,18 @@ export class StarbasePanel {
         });
       });
     });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-build-ship]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (!data.starbase) return;
+        const shipKind = button.dataset.sbBuildShip as keyof typeof STARBASE_SHIP_DEFINITIONS | undefined;
+        if (!shipKind) return;
+        data.onStarbaseCommand?.({
+          type: "buildStarbaseShip",
+          starbaseId: data.starbase.id,
+          shipKind,
+        });
+      });
+    });
   }
 
   private applyPosition(): void {
@@ -287,25 +302,90 @@ export class StarbasePanel {
   }
 
   private renderShipyard(data: StarbasePanelData): string {
+    const starbase = data.starbase;
+    const shipyardCount = starbase ? countStarbaseShipyards(starbase.buildingSlots) : 0;
+    const shipQueue = starbase?.shipQueue ?? [];
+    const activeCount = Math.min(shipyardCount, shipQueue.length);
     return `
-      <section class="sbBody sbDetailBody">
-        <article class="sbDefenseCard">
-          <span>Shipyards</span>
-          <strong>2 Active Slips</strong>
-          <p>Ship production queues and template selection will be wired here later.</p>
+      <section class="sbBody sbShipyardBody">
+        <article class="sbShipyardColumn sbOrbitColumn">
+          <div class="sbShipyardSummary">
+            <div class="sbShipyardIcon">SY</div>
+            <div>
+              <span>Shipyards</span>
+              <strong>${shipyardCount}</strong>
+              <small>${activeCount} active slip${activeCount === 1 ? "" : "s"}</small>
+            </div>
+          </div>
+          <div class="sbSectionTitle">Orbiting Ships</div>
+          <div class="sbOrbitList">
+            <div class="sbQueueEmpty">No orbiting ships tracked yet.</div>
+            ${Array.from({ length: 7 }, (_, index) => `<div class="sbOrbitPlaceholder"><span>--${index + 1}</span><small>Future orbit slot</small></div>`).join("")}
+          </div>
         </article>
-        <article class="sbDefenseCard">
-          <span>Fleet Assembly</span>
-          <strong>Idle</strong>
-          <p>Placeholder rally point, reinforcement, and fleet merge controls.</p>
+        <article class="sbShipyardColumn">
+          <div class="sbSectionTitle">Modifier Effects</div>
+          <div class="sbModifierGrid">
+            <span>Build Speed +0%</span>
+            <span>Alloy Efficiency +0%</span>
+            <span>Crew Training +0%</span>
+          </div>
+          <div class="sbSectionTitle">Shipyard Queue</div>
+          <div class="sbShipQueueList">
+            ${shipQueue.length === 0
+              ? '<div class="sbQueueEmpty">No ships queued.</div>'
+              : shipQueue.map((item, index) => {
+                const totalDays = Math.max(1, item.totalDays);
+                const progress = Math.max(0, Math.min(100, ((totalDays - item.remainingDays) / totalDays) * 100));
+                const isActive = index < shipyardCount;
+                return `
+                  <div class="sbShipQueueItem ${isActive ? "active" : ""}">
+                    <div>
+                      <strong>${this.escapeHtml(item.label)}</strong>
+                      <span>${isActive ? "Building" : "Waiting"} | ${Math.ceil(item.remainingDays)}d</span>
+                    </div>
+                    <small>${this.formatCompact(item.alloyUpkeepPerDay)}/d alloys</small>
+                    <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
+                  </div>
+                `;
+              }).join("")}
+          </div>
         </article>
-        <article class="sbDefenseCard">
-          <span>Repair Dock</span>
-          <strong>Available</strong>
-          <p>Future repair, retrofit, and mothball operations.</p>
+        <article class="sbShipyardColumn">
+          <div class="sbSectionTitle">Shipbuilding Demand</div>
+          <div class="sbDemandPanel">
+            <span>Active alloy demand: ${this.formatCompact(this.getActiveShipAlloyDemand(starbase))} / day</span>
+            <span>Queued crew demand: ${this.formatCompact(shipQueue.reduce((total, item) => total + item.crewDemand, 0))}</span>
+            <span>Completed ships: held for future fleet spawning</span>
+          </div>
+          <div class="sbSectionTitle">Available Ships</div>
+          <div class="sbAvailableShipList">
+            ${STARBASE_SHIP_KINDS.map((kind) => {
+              const definition = STARBASE_SHIP_DEFINITIONS[kind];
+              const predictedAlloys = definition.alloyUpkeepPerDay * definition.buildDays;
+              return `
+                <button class="sbAvailableShipCard" type="button" data-sb-build-ship="${kind}" ${shipyardCount > 0 ? "" : "disabled"}>
+                  <span class="sbShipIcon">◆</span>
+                  <span>
+                    <strong>${this.escapeHtml(definition.label)}</strong>
+                    <small>${this.escapeHtml(definition.className)}</small>
+                    <em>${this.formatCompact(predictedAlloys)} alloys predicted | ${definition.buildDays} days | ${this.formatCompact(definition.crewDemand)} crew</em>
+                  </span>
+                </button>
+              `;
+            }).join("")}
+          </div>
         </article>
       </section>
     `;
+  }
+
+  private getActiveShipAlloyDemand(starbase?: ServerStarbase): number {
+    if (!starbase) return 0;
+    const shipyardCount = countStarbaseShipyards(starbase.buildingSlots);
+    return starbase.shipQueue
+      .slice(0, shipyardCount)
+      .reduce((total, item) => total + item.alloyUpkeepPerDay, 0);
   }
 
   private renderSlots(
@@ -897,6 +977,224 @@ export class StarbasePanel {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+
+.sbShipyardBody {
+  display: grid;
+  grid-template-columns: 1fr 1.08fr 1.16fr;
+  gap: 8px;
+}
+
+.sbShipyardColumn {
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(103, 255, 221, 0.26);
+  background: rgba(5, 24, 25, 0.72);
+  padding: 8px;
+}
+
+.sbShipyardSummary {
+  min-height: 64px;
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: linear-gradient(135deg, rgba(16, 57, 52, 0.76), rgba(4, 17, 21, 0.92));
+  padding: 7px;
+}
+
+.sbShipyardIcon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(103, 255, 221, 0.42);
+  background: rgba(103, 255, 221, 0.12);
+  color: #a9ffea;
+  font-weight: 900;
+}
+
+.sbShipyardSummary span,
+.sbShipyardSummary small {
+  color: rgba(206, 232, 226, 0.66);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.sbShipyardSummary strong {
+  display: block;
+  color: #eafff8;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.sbOrbitList,
+.sbShipQueueList,
+.sbAvailableShipList {
+  min-height: 0;
+  max-height: 236px;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding-right: 3px;
+  scrollbar-width: thin;
+}
+
+.sbOrbitList::-webkit-scrollbar,
+.sbShipQueueList::-webkit-scrollbar,
+.sbAvailableShipList::-webkit-scrollbar {
+  width: 6px;
+}
+
+.sbOrbitList::-webkit-scrollbar-thumb,
+.sbShipQueueList::-webkit-scrollbar-thumb,
+.sbAvailableShipList::-webkit-scrollbar-thumb {
+  background: rgba(103, 255, 221, 0.34);
+  border-radius: 999px;
+}
+
+.sbOrbitPlaceholder {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  min-height: 28px;
+  border-left: 3px solid rgba(103, 255, 221, 0.74);
+  border-bottom: 1px solid rgba(103, 255, 221, 0.14);
+  background: rgba(1, 8, 10, 0.36);
+  padding: 3px 6px;
+}
+
+.sbOrbitPlaceholder span {
+  color: #eafff8;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.sbOrbitPlaceholder small {
+  color: rgba(206, 232, 226, 0.38);
+  font-size: 10px;
+}
+
+.sbModifierGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.sbModifierGrid span {
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: rgba(0, 0, 0, 0.18);
+  color: #75ff9b;
+  font-size: 10px;
+}
+
+.sbShipQueueItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid rgba(103, 255, 221, 0.2);
+  background: rgba(1, 8, 10, 0.46);
+}
+
+.sbShipQueueItem.active {
+  border-color: rgba(103, 255, 221, 0.58);
+  box-shadow: inset 3px 0 0 rgba(103, 255, 221, 0.78);
+}
+
+.sbShipQueueItem strong,
+.sbShipQueueItem span,
+.sbShipQueueItem small {
+  display: block;
+}
+
+.sbShipQueueItem strong {
+  font-size: 12px;
+}
+
+.sbShipQueueItem span,
+.sbShipQueueItem small {
+  color: rgba(206, 232, 226, 0.66);
+  font-size: 10px;
+}
+
+.sbShipQueueItem .sbQueueBar {
+  grid-column: 1 / span 2;
+  margin-top: 0;
+}
+
+.sbDemandPanel {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 1px solid rgba(103, 255, 221, 0.18);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.sbDemandPanel span {
+  color: rgba(216, 238, 232, 0.72);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.sbAvailableShipCard {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 58px;
+  border: 1px solid rgba(103, 255, 221, 0.28);
+  background: linear-gradient(135deg, rgba(16, 57, 52, 0.76), rgba(4, 17, 21, 0.94));
+  color: #e9fff8;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sbAvailableShipCard:disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.sbAvailableShipCard:not(:disabled):hover {
+  border-color: rgba(103, 255, 221, 0.72);
+}
+
+.sbShipIcon {
+  display: grid;
+  place-items: center;
+  color: #dffcff;
+  font-size: 18px;
+}
+
+.sbAvailableShipCard strong,
+.sbAvailableShipCard small,
+.sbAvailableShipCard em {
+  display: block;
+}
+
+.sbAvailableShipCard strong {
+  font-size: 12px;
+}
+
+.sbAvailableShipCard small {
+  color: #75ff9b;
+  font-size: 10px;
+}
+
+.sbAvailableShipCard em {
+  color: rgba(216, 238, 232, 0.62);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.25;
 }
 
 .sbDefenseCard {

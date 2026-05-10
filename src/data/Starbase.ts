@@ -3,12 +3,14 @@ import type { ResourceCounts } from "./Economy";
 
 export type StarbaseLevel = "outpost" | "starbase" | "starhold" | "starFortress";
 export type StarbaseBuildingKind =
+  | "shipyard"
   | "solarArray"
   | "hydroponicsBay"
   | "orbitalFabricator"
   | "alloyAssemblyDock"
   | "researchAnnex"
   | "logisticsDepot";
+export type StarbaseShipKind = "corvette";
 
 export interface StarbaseEconomy {
   production: ResourceCounts;
@@ -45,6 +47,16 @@ export interface StarbaseConstructionQueueItem {
   slotIndex?: number;
 }
 
+export interface StarbaseShipQueueItem {
+  id: string;
+  shipKind: StarbaseShipKind;
+  label: string;
+  totalDays: number;
+  remainingDays: number;
+  alloyUpkeepPerDay: number;
+  crewDemand: number;
+}
+
 export interface StarbaseBuildingDefinition {
   kind: StarbaseBuildingKind;
   label: string;
@@ -53,6 +65,18 @@ export interface StarbaseBuildingDefinition {
   upkeep: ResourceCounts;
   cost: ResourceCounts;
   buildDays: number;
+  shipyards?: number;
+}
+
+export interface StarbaseShipDefinition {
+  kind: StarbaseShipKind;
+  label: string;
+  className: string;
+  description: string;
+  buildDays: number;
+  alloyUpkeepPerDay: number;
+  crewDemand: number;
+  upkeep: ResourceCounts;
 }
 
 function resources(values: Partial<ResourceCounts>): ResourceCounts {
@@ -107,6 +131,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
 };
 
 export const STARBASE_BUILDING_KINDS: StarbaseBuildingKind[] = [
+  "shipyard",
   "solarArray",
   "hydroponicsBay",
   "orbitalFabricator",
@@ -116,6 +141,16 @@ export const STARBASE_BUILDING_KINDS: StarbaseBuildingKind[] = [
 ];
 
 export const STARBASE_BUILDING_DEFINITIONS: Record<StarbaseBuildingKind, StarbaseBuildingDefinition> = {
+  shipyard: {
+    kind: "shipyard",
+    label: "Shipyard",
+    description: "Dedicated construction slip for assembling military and utility hulls in orbit.",
+    production: resources({}),
+    upkeep: resources({ energy: 8, goods: 2, alloys: 1 }),
+    cost: resources({ minerals: 420, alloys: 120 }),
+    buildDays: 300,
+    shipyards: 1,
+  },
   solarArray: {
     kind: "solarArray",
     label: "Solar Array",
@@ -169,6 +204,21 @@ export const STARBASE_BUILDING_DEFINITIONS: Record<StarbaseBuildingKind, Starbas
     upkeep: resources({}),
     cost: resources({ minerals: 300, alloys: 45 }),
     buildDays: 240,
+  },
+};
+
+export const STARBASE_SHIP_KINDS: StarbaseShipKind[] = ["corvette"];
+
+export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDefinition> = {
+  corvette: {
+    kind: "corvette",
+    label: "Corvette",
+    className: "Falcon-class",
+    description: "Fast escort hull for patrols, interception, and early fleet operations.",
+    buildDays: 180,
+    alloyUpkeepPerDay: 2,
+    crewDemand: 1_200,
+    upkeep: resources({ energy: 1.2, alloys: 0.2 }),
   },
 };
 
@@ -250,6 +300,32 @@ export function hasQueuedStarbaseBuildingTarget(
   return queue.some((item) => item.kind === "building" && item.slotIndex === slotIndex);
 }
 
+export function countStarbaseShipyards(buildingSlots: Array<StarbaseBuildingKind | null>): number {
+  return buildingSlots.reduce((total, buildingKind) => (
+    total + (buildingKind ? STARBASE_BUILDING_DEFINITIONS[buildingKind]?.shipyards ?? 0 : 0)
+  ), 0);
+}
+
+export function createStarbaseShipQueueItem(
+  shipKind: StarbaseShipKind,
+  id = createConstructionId("starbase-ship", [shipKind]),
+): StarbaseShipQueueItem {
+  const definition = STARBASE_SHIP_DEFINITIONS[shipKind];
+  return {
+    id,
+    shipKind,
+    label: definition.label,
+    totalDays: definition.buildDays,
+    remainingDays: definition.buildDays,
+    alloyUpkeepPerDay: definition.alloyUpkeepPerDay,
+    crewDemand: definition.crewDemand,
+  };
+}
+
+export function isStarbaseShipKind(value: string): value is StarbaseShipKind {
+  return STARBASE_SHIP_KINDS.includes(value as StarbaseShipKind);
+}
+
 function completeStarbaseConstructionItem<T extends {
   level: StarbaseLevel;
   buildingSlots: Array<StarbaseBuildingKind | null>;
@@ -316,4 +392,57 @@ export function progressStarbaseConstructionQueue<T extends {
   }
 
   return { starbase: next, changed, completed };
+}
+
+export function progressStarbaseShipQueue<T extends {
+  buildingSlots: Array<StarbaseBuildingKind | null>;
+  shipQueue: StarbaseShipQueueItem[];
+}>(
+  starbase: T,
+  elapsedDays: number,
+): { starbase: T; changed: boolean; completed: StarbaseShipQueueItem[]; alloysConsumed: number } {
+  const shipyardCount = countStarbaseShipyards(starbase.buildingSlots);
+  if (shipyardCount <= 0 || elapsedDays <= 0 || starbase.shipQueue.length === 0) {
+    return { starbase, changed: false, completed: [], alloysConsumed: 0 };
+  }
+
+  let queue = starbase.shipQueue
+    .filter((item) => item.remainingDays > 0)
+    .map((item) => ({ ...item }));
+  let days = Math.max(0, elapsedDays);
+  const completed: StarbaseShipQueueItem[] = [];
+  let alloysConsumed = 0;
+  let changed = false;
+
+  while (days > 0 && queue.length > 0) {
+    const active = queue.slice(0, shipyardCount);
+    if (active.length === 0) break;
+    const step = Math.min(days, ...active.map((item) => Math.max(0, item.remainingDays)));
+    if (step <= 0) break;
+
+    for (let index = 0; index < active.length; index += 1) {
+      const item = queue[index];
+      item.remainingDays = Math.max(0, item.remainingDays - step);
+      alloysConsumed += item.alloyUpkeepPerDay * step;
+    }
+    days = Math.max(0, days - step);
+    changed = true;
+
+    const remaining: StarbaseShipQueueItem[] = [];
+    for (const item of queue) {
+      if (item.remainingDays <= 0) {
+        completed.push({ ...item, remainingDays: 0 });
+      } else {
+        remaining.push(item);
+      }
+    }
+    queue = remaining;
+  }
+
+  return {
+    starbase: { ...starbase, shipQueue: queue },
+    changed,
+    completed,
+    alloysConsumed,
+  };
 }

@@ -63,6 +63,7 @@ export interface GalaxySceneOptions {
   playerShipTransit?: GalaxyShipTransit | null;
   serverShips?: ServerShip[];
   starbaseSystemIds?: Iterable<number>;
+  promotedStarbaseSystemIds?: Iterable<number>;
   starbases?: ServerStarbase[];
   planetStates?: PlanetState[];
   habitedPlanetSystemIds?: Iterable<number>;
@@ -875,6 +876,7 @@ export class GalaxyScene implements IGameScene {
   private planetStates: PlanetState[] = [];
   private hasExplicitHabitedPlanetSystemIds = false;
   private starbaseSystemIds = new Set<number>();
+  private promotedStarbaseSystemIds = new Set<number>();
   private selectedShip = false;
   private selectedCommandShipStarId = -1;
   private selectedCommandShipId: string | null = null;
@@ -966,6 +968,11 @@ export class GalaxyScene implements IGameScene {
         ? Array.from(this.options.starbaseSystemIds)
         : this.factions.map((faction) => faction.homeStarId),
     );
+    this.promotedStarbaseSystemIds = new Set(
+      this.options.promotedStarbaseSystemIds
+        ? Array.from(this.options.promotedStarbaseSystemIds)
+        : this.getPromotedStarbaseSystemIds(),
+    );
     if ("visibleStarIds" in this.options) {
       this.explicitVisibleStarIds = this.options.visibleStarIds
         ? new Set(this.options.visibleStarIds)
@@ -1034,7 +1041,7 @@ export class GalaxyScene implements IGameScene {
       this.scene,
       this.stars,
       this.playerShipStarId,
-      Array.from(this.starbaseSystemIds),
+      Array.from(this.promotedStarbaseSystemIds),
       Array.from(this.playerShipSystemIds),
       this.getShipIconStyles(),
     );
@@ -1949,18 +1956,29 @@ export class GalaxyScene implements IGameScene {
 
   setStarbaseSystemIds(starIds: Iterable<number>): void {
     this.starbaseSystemIds = new Set(starIds);
-    this.starField?.setStarbaseSystemIds(this.starbaseSystemIds);
     if (this.activeShipAction === "build") {
       this.targetableStarIds = this.getReachableStarIds("build");
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
     }
   }
 
+  setPromotedStarbaseSystemIds(starIds: Iterable<number>): void {
+    this.promotedStarbaseSystemIds = new Set(starIds);
+    this.starField?.setStarbaseSystemIds(this.promotedStarbaseSystemIds);
+  }
+
   setServerStarbases(starbases: ServerStarbase[]): void {
     this.starbases = starbases;
+    this.setPromotedStarbaseSystemIds(this.getPromotedStarbaseSystemIds());
     for (const starbase of starbases) {
       this.starbasePanel?.refreshStarbase(starbase);
     }
+  }
+
+  private getPromotedStarbaseSystemIds(): number[] {
+    return this.starbases
+      .filter((starbase) => starbase.status === "online" && starbase.level !== "outpost")
+      .map((starbase) => starbase.starId);
   }
 
   setStarOwnership(starId: number, owner: number): void {

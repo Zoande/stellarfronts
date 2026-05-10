@@ -40,6 +40,18 @@ const RESOURCE_ICON_LABELS: Record<string, string> = {
   research: "RS",
 };
 
+const SIDEBAR_ITEMS = [
+  { label: "Government", icon: "GV" },
+  { label: "Society", icon: "SC" },
+  { label: "Technology", icon: "TC" },
+  { label: "Leaders", icon: "LD" },
+  { label: "Planets", icon: "PL" },
+  { label: "Fleets", icon: "FL" },
+  { label: "Diplomacy", icon: "DP" },
+  { label: "Espionage", icon: "ES" },
+  { label: "Market", icon: "MK" },
+] as const;
+
 const HUD_STYLE = `
 #spaceHudRoot {
   --hud-ink: #d6dde7;
@@ -239,6 +251,104 @@ const HUD_STYLE = `
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--hud-muted);
+}
+
+#spaceHudSidebar {
+  position: absolute;
+  left: 0;
+  top: 92px;
+  bottom: 86px;
+  width: 54px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
+  padding: 8px 5px;
+  pointer-events: auto;
+}
+
+#spaceHudSidebar::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 7px;
+  border-right: 1px solid rgba(94, 173, 142, 0.44);
+  background:
+    linear-gradient(180deg, rgba(5, 28, 25, 0), rgba(6, 45, 39, 0.86) 16%, rgba(6, 45, 39, 0.86) 84%, rgba(5, 28, 25, 0)),
+    radial-gradient(circle at 100% 50%, rgba(108, 255, 218, 0.18), transparent 4rem);
+}
+
+.spaceHudSidebarBtn {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  margin-left: 3px;
+  border: 1px solid rgba(94, 173, 142, 0.44);
+  border-left-color: rgba(94, 173, 142, 0.72);
+  background:
+    linear-gradient(135deg, rgba(9, 46, 39, 0.92), rgba(3, 14, 16, 0.96)),
+    radial-gradient(circle at 35% 20%, rgba(127, 255, 220, 0.16), transparent 2.6rem);
+  color: #dffff5;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 0 100%);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  transition: transform 0.14s ease, border-color 0.14s ease, background-color 0.14s ease;
+}
+
+.spaceHudSidebarBtn::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  right: 5px;
+  height: 2px;
+  background: rgba(127, 255, 220, 0.26);
+}
+
+.spaceHudSidebarBtn::after {
+  content: attr(aria-label);
+  position: absolute;
+  left: 48px;
+  top: 50%;
+  transform: translateY(-50%) translateX(-4px);
+  min-width: 116px;
+  padding: 7px 10px;
+  border: 1px solid rgba(94, 173, 142, 0.52);
+  background: linear-gradient(90deg, rgba(5, 28, 25, 0.96), rgba(6, 18, 20, 0.96));
+  color: #dffff5;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.spaceHudSidebarBtn:hover {
+  transform: translateX(3px);
+  border-color: rgba(127, 255, 220, 0.82);
+  background:
+    linear-gradient(135deg, rgba(14, 66, 56, 0.98), rgba(4, 19, 21, 0.98)),
+    radial-gradient(circle at 35% 20%, rgba(127, 255, 220, 0.2), transparent 2.6rem);
+}
+
+.spaceHudSidebarBtn:hover::after {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+.spaceHudSidebarBtn span {
+  position: relative;
+  z-index: 1;
 }
 
 #spaceHudClock {
@@ -571,6 +681,18 @@ const HUD_STYLE = `
   .spaceHudResourceItem {
     min-width: 94px;
   }
+
+  #spaceHudSidebar {
+    top: 112px;
+    bottom: 132px;
+    width: 46px;
+  }
+
+  .spaceHudSidebarBtn {
+    width: 36px;
+    height: 36px;
+    font-size: 9px;
+  }
 }
 `;
 
@@ -623,6 +745,7 @@ export class HudOverlay {
   private readonly connectedContainer: HTMLDivElement;
   private readonly clockEl: HTMLDivElement;
   private readonly resourceEl: HTMLDivElement;
+  private readonly sidebarEl: HTMLDivElement;
   private readonly factionFlagSvg: string;
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
@@ -653,6 +776,18 @@ export class HudOverlay {
 
     this.resourceEl = document.createElement("div");
     this.resourceEl.id = "spaceHudResources";
+
+    this.sidebarEl = document.createElement("div");
+    this.sidebarEl.id = "spaceHudSidebar";
+    for (const item of SIDEBAR_ITEMS) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "spaceHudSidebarBtn";
+      button.setAttribute("aria-label", item.label);
+      button.title = item.label;
+      button.innerHTML = `<span>${item.icon}</span>`;
+      this.sidebarEl.appendChild(button);
+    }
 
     this.titleEl = document.createElement("div");
     this.titleEl.id = "spaceHudTitle";
@@ -700,6 +835,7 @@ export class HudOverlay {
     this.root.appendChild(bottom);
     this.root.appendChild(this.clockEl);
     this.root.appendChild(this.resourceEl);
+    this.root.appendChild(this.sidebarEl);
     this.root.appendChild(toggles);
     document.body.appendChild(this.root);
   }

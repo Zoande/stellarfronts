@@ -66,6 +66,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   const getFactionHomeStarIds = (): number[] => snapshot.factions.map((faction) => faction.homeStarId);
   const getStarbaseSystemIds = (): number[] => snapshot.starbases.map((starbase) => starbase.starId);
+  const getPromotedStarbaseSystemIds = (): number[] => (
+    snapshot.starbases
+      .filter((starbase) => starbase.status === "online" && starbase.level !== "outpost")
+      .map((starbase) => starbase.starId)
+  );
   const getShipSystemIds = (): number[] => snapshot.ships.map((ship) => ship.currentStarId);
   const expandStarOwnership = (): number[] => {
     const ownerByStar = new Array<number>(snapshot.stars.length).fill(-1);
@@ -272,6 +277,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       }
       if (isFull || has("starbases")) {
         activeGalaxyScene.setStarbaseSystemIds(getStarbaseSystemIds());
+        activeGalaxyScene.setPromotedStarbaseSystemIds(getPromotedStarbaseSystemIds());
         activeGalaxyScene.setServerStarbases(snapshot.starbases);
       }
       if (isFull || has("ships")) {
@@ -327,6 +333,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       playerShipSystemIds: getShipSystemIds(),
       serverShips: snapshot.ships,
       starbaseSystemIds: getStarbaseSystemIds(),
+      promotedStarbaseSystemIds: getPromotedStarbaseSystemIds(),
       starbases: snapshot.starbases,
       starOwnership: expandStarOwnership(),
       visibleStarIds: snapshot.visibleStarIds,
