@@ -2,21 +2,20 @@ import { useState } from 'react';
 import '../styles/Auth.css';
 
 interface SignupPageProps {
-  onSignupSubmit: (email: string, username: string) => void;
+  onSignupSubmit: (username: string, password: string) => Promise<void>;
   onBackToLogin: () => void;
 }
 
 export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPageProps) {
-  const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
 
-  const handleSignup = (e: React.FormEvent) => {
+  const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!email.trim() || !username.trim() || !password.trim()) {
+
+    if (!username.trim() || !password.trim()) {
       setError('Please fill in all fields');
       return;
     }
@@ -31,13 +30,12 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
       return;
     }
 
-    setError('');
-    onSignupSubmit(email, username);
-  };
-
-  const handleOAuthClick = (provider: string) => {
-    console.log(`OAuth Signup: ${provider}`);
-    onSignupSubmit(`${provider}@stellarfronts.com`, `user_${provider}`);
+    try {
+      setError('');
+      await onSignupSubmit(username, password);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Account creation failed');
+    }
   };
 
   return (
@@ -48,18 +46,6 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
       </div>
 
       <form onSubmit={handleSignup} className="auth-form">
-        <div className="form-group">
-          <label htmlFor="email">Email</label>
-          <input
-            id="email"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="your@email.com"
-            className="form-input"
-          />
-        </div>
-
         <div className="form-group">
           <label htmlFor="signup-username">Username</label>
           <input
@@ -108,7 +94,7 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
       </div>
 
       <div className="oauth-buttons">
-        <button type="button" onClick={() => handleOAuthClick('google')} className="btn btn-oauth btn-google" aria-label="Sign up with Google">
+        <button type="button" className="btn btn-oauth btn-google" aria-label="Sign up with Google" disabled>
           <svg width="18" height="18" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="oauth-svg">
             <path fill="#EA4335" d="M24 12.24c3.54 0 6.36 1.22 8.26 2.22l6.02-5.86C35.6 5.02 30.08 3.2 24 3.2 14.7 3.2 6.99 8.86 3.5 16.9l6.98 5.42C12.9 15.6 17.95 12.24 24 12.24z"/>
             <path fill="#34A853" d="M46.5 24c0-1.6-.15-2.8-.46-4.02H24v8.02h12.98c-.57 3.08-2.3 5.5-4.9 7.22l7.45 5.78C43.86 37.36 46.5 31.12 46.5 24z"/>
@@ -118,7 +104,7 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
           <span className="oauth-label">Google</span>
         </button>
 
-        <button type="button" onClick={() => handleOAuthClick('microsoft')} className="btn btn-oauth btn-microsoft" aria-label="Sign up with Microsoft">
+        <button type="button" className="btn btn-oauth btn-microsoft" aria-label="Sign up with Microsoft" disabled>
           <svg width="18" height="18" viewBox="0 0 24 24" className="oauth-svg" xmlns="http://www.w3.org/2000/svg">
             <rect x="1" y="1" width="10" height="10" fill="#F1511B" />
             <rect x="13" y="1" width="10" height="10" fill="#FFB900" />

@@ -2,19 +2,18 @@ import { BrowserRouter as Router } from 'react-router-dom';
 import { useEffect, useState, useCallback } from 'react';
 import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
-import EmailVerificationPage from './pages/EmailVerificationPage';
-import SuccessPage from './pages/SuccessPage';
 import GamePage from './pages/GamePage';
 import HomePage from './pages/HomePage';
 import { LoadingScreen } from './components/LoadingScreen';
 import BackgroundScene from './components/BackgroundScene';
 import { preloadAuthAssets } from './utils/preloadAuthAssets';
-import type { GalaxyPerspective } from './data/Factions';
+import { getCurrentSession, login as loginRequest, logout as logoutRequest, signup as signupRequest } from './auth/client';
+import type { AuthAccount } from './auth/types';
 
 export interface AuthState {
   isLoggedIn: boolean;
-  username: string;
-  mode: 'login' | 'signup' | 'email-verify' | 'success' | 'home';
+  account: AuthAccount | null;
+  mode: 'login' | 'signup' | 'home';
 }
 
 interface HomeTransitionState {
@@ -70,10 +69,11 @@ function App() {
   const [authSceneProgress, setAuthSceneProgress] = useState(0);
   const [authLoadingDetail, setAuthLoadingDetail] = useState('Preparing login assets');
   const [authBackgroundReady, setAuthBackgroundReady] = useState(false);
+  const [authSessionReady, setAuthSessionReady] = useState(false);
   const [showAuthStartupLoading, setShowAuthStartupLoading] = useState(true);
   const [auth, setAuth] = useState<AuthState>({
     isLoggedIn: false,
-    username: '',
+    account: null,
     mode: 'login',
   });
   const [homeTransition, setHomeTransition] = useState<HomeTransitionState>({
@@ -84,7 +84,6 @@ function App() {
     progress: 0,
     detail: 'Confirming command credentials',
   });
-  const [selectedPerspective, setSelectedPerspective] = useState<GalaxyPerspective | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,6 +97,28 @@ function App() {
       setAuthAssetProgress(1);
       setAuthLoadingDetail('Login assets are ready');
     });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void getCurrentSession()
+      .then((account) => {
+        if (cancelled || !account) return;
+        setAuth({
+          isLoggedIn: true,
+          account,
+          mode: 'home',
+        });
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) setAuthSessionReady(true);
+      });
 
     return () => {
       cancelled = true;
@@ -190,8 +211,14 @@ function App() {
     });
   };
 
-  const handleLoginSuccess = (username: string) => {
-    startHomeTransition(username, 'login', 'Login accepted');
+  const handleLoginSubmit = async (username: string, password: string) => {
+    const account = await loginRequest({ username, password });
+    startHomeTransition(account.username, 'login', 'Login accepted');
+    setAuth({
+      isLoggedIn: true,
+      account,
+      mode: 'home',
+    });
   };
 
   const handleSignupClick = () => {
@@ -208,33 +235,48 @@ function App() {
     }));
   };
 
-  const handleSignupSubmit = (_email: string, username: string) => {
-    startHomeTransition(username, 'signup', 'Account created');
-  };
-
-  const handleEmailVerified = () => {
-    startHomeTransition(auth.username, 'verify', 'Email verified');
-  };
-
-  const handleEnterGame = () => {
-    setAuth((prev) => ({
-      ...prev,
+  const handleSignupSubmit = async (username: string, password: string) => {
+    const account = await signupRequest({ username, password });
+    startHomeTransition(account.username, 'signup', 'Account created');
+    setAuth({
       isLoggedIn: true,
-    }));
+      account,
+      mode: 'home',
+    });
   };
 
-  const handleOpenHome = () => {
-    startHomeTransition(auth.username, 'success', 'Preparing command center');
+  const handleLogout = async () => {
+    try {
+      await logoutRequest();
+    } catch {
+      // Clear local auth state even if the auth server is unavailable.
+    }
+
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', '/');
+    }
+
+    setAuth({
+      isLoggedIn: false,
+      account: null,
+      mode: 'login',
+    });
+    setHomeTransition({
+      isActive: false,
+      isVisible: false,
+      username: '',
+      source: 'login',
+      progress: 0,
+      detail: 'Confirming command credentials',
+    });
   };
 
-  const handleStartGameFromHome = (perspective: GalaxyPerspective) => {
-    setSelectedPerspective(perspective);
+  const handleStartGameFromHome = () => {
     if (typeof window !== 'undefined') {
       window.history.pushState({}, '', '/game');
     }
     setAuth((prev) => ({
       ...prev,
-      isLoggedIn: true,
       mode: 'home',
     }));
   };
@@ -242,9 +284,7 @@ function App() {
   const isGameRoute = typeof window !== 'undefined' && window.location.pathname === '/game';
   const homeTransitionTitle = homeTransition.source === 'signup'
     ? 'Creating command profile'
-    : homeTransition.source === 'verify'
-      ? 'Finalizing account'
-      : 'Opening command center';
+    : 'Opening command center';
 
   const handleHomeTransitionHidden = () => {
     if (typeof window !== 'undefined') {
@@ -253,7 +293,7 @@ function App() {
 
     setAuth({
       isLoggedIn: true,
-      username: homeTransition.username,
+      account: auth.account,
       mode: 'home',
     });
 
@@ -270,31 +310,17 @@ function App() {
         onBackToLogin={handleBackToLogin}
       />
     )
-    : auth.mode === 'email-verify'
-      ? (
-        <EmailVerificationPage
-          onVerified={handleEmailVerified}
-          username={auth.username}
-        />
-      )
-      : auth.mode === 'success'
-        ? (
-          <SuccessPage
-            message={auth.isLoggedIn ? `Welcome back, ${auth.username}!` : 'Account created successfully!'}
-            onEnterGame={handleOpenHome}
-          />
-        )
-        : (
-          <LoginPage
-            onLoginSuccess={handleLoginSuccess}
-            onSignupClick={handleSignupClick}
-          />
-        );
+    : (
+      <LoginPage
+        onLoginSubmit={handleLoginSubmit}
+        onSignupClick={handleSignupClick}
+      />
+    );
 
-  if (isGameRoute && auth.isLoggedIn && selectedPerspective) {
+  if (isGameRoute && auth.isLoggedIn && auth.account) {
     return (
       <Router>
-        <GamePage username={auth.username} selectedPerspective={selectedPerspective} />
+        <GamePage username={auth.account.username} onLogout={handleLogout} />
       </Router>
     );
   }
@@ -305,7 +331,18 @@ function App() {
     return (
       <Router>
         {shouldRenderHomeBehindLoader && (
-          <HomePage username={homeTransition.username} onContinuePlaying={handleStartGameFromHome} />
+          <HomePage
+            account={auth.account ?? {
+              id: 0,
+              username: homeTransition.username,
+              accountType: 'observer',
+              factionId: null,
+              createdAt: 0,
+              updatedAt: 0,
+            }}
+            onContinuePlaying={handleStartGameFromHome}
+            onLogout={handleLogout}
+          />
         )}
         <LoadingScreen
           theme="auth"
@@ -324,7 +361,11 @@ function App() {
   if (auth.isLoggedIn && auth.mode === 'home') {
     return (
       <Router>
-        <HomePage username={auth.username} onContinuePlaying={handleStartGameFromHome} />
+        <HomePage
+          account={auth.account ?? { id: 0, username: '', accountType: 'observer', factionId: null, createdAt: 0, updatedAt: 0 }}
+          onContinuePlaying={handleStartGameFromHome}
+          onLogout={handleLogout}
+        />
       </Router>
     );
   }
@@ -344,7 +385,7 @@ function App() {
             title="StellarFronts Login"
             progress={authLoadingProgress}
             detail={authLoadingDetail}
-            isVisible={!authBackgroundReady}
+            isVisible={!(authBackgroundReady && authSessionReady)}
             onHidden={handleAuthStartupLoadingHidden}
             zIndex={220}
           />

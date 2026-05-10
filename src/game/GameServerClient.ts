@@ -1,4 +1,3 @@
-import type { GalaxyPerspective } from "../data/Factions";
 import type {
   ClientCommand,
   GameSnapshot,
@@ -16,12 +15,6 @@ type PendingRequest<T> = {
   reject: (error: Error) => void;
 };
 
-function perspectivesMatch(a: GameSnapshot["perspective"], b: GameSnapshot["perspective"]): boolean {
-  if (a.mode !== b.mode) return false;
-  if (a.mode === "observer" && b.mode === "observer") return true;
-  return a.mode === "faction" && b.mode === "faction" && a.factionId === b.factionId;
-}
-
 export class GameServerClient {
   private socket: WebSocket | null = null;
   private latestSnapshot: GameSnapshot | null = null;
@@ -31,10 +24,7 @@ export class GameServerClient {
   private systemDetailsRequests = new Map<number, PendingRequest<SystemDetailsEvent>>();
   private planetDetailsRequests = new Map<string, PendingRequest<PlanetDetailsEvent>>();
 
-  constructor(
-    private readonly perspective: GalaxyPerspective,
-    private readonly url = "ws://localhost:8787",
-  ) {}
+  constructor(private readonly url = "ws://localhost:8787") {}
 
   async connect(): Promise<GameSnapshot> {
     if (this.latestSnapshot) return this.latestSnapshot;
@@ -45,7 +35,7 @@ export class GameServerClient {
       let resolved = false;
 
       socket.addEventListener("open", () => {
-        this.send({ type: "join", perspective: this.perspective });
+        this.send({ type: "join" });
       });
 
       socket.addEventListener("message", (event) => {
@@ -53,7 +43,7 @@ export class GameServerClient {
         if (parsed.type === "snapshot") {
           this.latestSnapshot = parsed;
           for (const handler of this.snapshotHandlers) handler(parsed);
-          if (!resolved && perspectivesMatch(parsed.perspective, this.perspective)) {
+          if (!resolved) {
             resolved = true;
             resolve(parsed);
           }

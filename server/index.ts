@@ -72,6 +72,8 @@ import type {
   ServerUpdateField,
   ShipTransitPhase,
 } from "../src/game/GameProtocol";
+import type { AuthAccount } from "../src/auth/types";
+import { authStore, getPerspectiveFromAccount, parseSessionTokenFromCookie } from "./auth-store";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = path.join(__dirname, "state", "game-state.json");
@@ -111,6 +113,7 @@ interface GameState {
 
 interface ClientSession {
   socket: WebSocket;
+  account: AuthAccount;
   perspective: GalaxyPerspective;
   openPlanetId?: string | null;
 }
@@ -1417,7 +1420,6 @@ function advanceState(now: number): Set<ServerUpdateField> {
 
 function handleCommand(session: ClientSession, command: ClientCommand): void {
   if (command.type === "join") {
-    session.perspective = command.perspective;
     sendEvent(session.socket, createSnapshot(session.perspective));
     return;
   }
@@ -1497,8 +1499,21 @@ advanceState(Date.now());
 await saveState(state);
 
 const wss = new WebSocketServer({ port: PORT });
-wss.on("connection", (socket) => {
-  const session: ClientSession = { socket, perspective: { mode: "observer" } };
+wss.on("connection", (socket, request) => {
+  const token = parseSessionTokenFromCookie(request.headers.cookie);
+  const account = token ? authStore.getAccountFromSessionToken(token) : null;
+  if (!account) {
+    sendEvent(socket, { type: "serverInfo", message: "Authentication required." });
+    socket.close();
+    return;
+  }
+
+  const session: ClientSession = {
+    socket,
+    account,
+    perspective: getPerspectiveFromAccount(account),
+    openPlanetId: null,
+  };
   clients.add(session);
   sendEvent(socket, { type: "serverInfo", message: "Connected to StellarFronts game server." });
 

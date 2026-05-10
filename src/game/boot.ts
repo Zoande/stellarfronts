@@ -5,7 +5,6 @@ import type { IGameScene } from "@/SceneManager";
 import { applyPlanetStatesToStars } from "@/data/StarMap";
 import type { PlanetConfig, StarData } from "@/data/StarMap";
 import type { PlanetState } from "@/data/Economy";
-import type { GalaxyPerspective } from "@/data/Factions";
 import type { GalaxySceneOptions, GalaxyViewState } from "@/scenes/GalaxyScene";
 import { buildHyperlaneAdjacency } from "@/data/Hyperlanes";
 import { HudOverlay } from "@/ui/HudOverlay";
@@ -14,11 +13,10 @@ import { GameServerClient } from "./GameServerClient";
 import type { ClientCommand, GameSnapshot, ServerShip, ServerUpdateField } from "./GameProtocol";
 
 export interface BootOptions {
-  perspective?: GalaxyPerspective;
   onProgress?: (progress: number, detail: string) => void;
 }
 
-export async function boot(container: HTMLDivElement, options: BootOptions = {}) {
+export async function boot(container: HTMLDivElement, options: BootOptions = {}): Promise<() => void> {
   const canvas = container.querySelector("#renderCanvas") as HTMLCanvasElement;
   if (!canvas) throw new Error("Canvas not found in container");
 
@@ -26,10 +24,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     options.onProgress?.(progress, detail);
   };
 
-  const perspective: GalaxyPerspective = options.perspective ?? { mode: "observer" };
-
   reportProgress(0.08, "Connecting to game server");
-  const server = new GameServerClient(perspective);
+  const server = new GameServerClient();
   let snapshot = await server.connect();
   applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
 
@@ -80,9 +76,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     return ownerByStar;
   };
   const getCurrentFactionEconomy = () => (
-    perspective.mode === "faction"
-      ? snapshot.factionEconomies.find((economy) => economy.factionId === perspective.factionId) ?? null
-      : null
+    (() => {
+      const perspectiveFactionId = snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : null;
+      if (perspectiveFactionId === null) return null;
+      return snapshot.factionEconomies.find((economy) => economy.factionId === perspectiveFactionId) ?? null;
+    })()
   );
 
   const gameDaysPerYear = 360;
@@ -120,8 +118,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   };
 
   const getPrimaryShipStarId = (): number => {
-    if (perspective.mode === "faction") {
-      const ownShip = snapshot.ships.find((ship) => ship.ownerId === perspective.factionId);
+    const perspectiveFactionId = snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : null;
+    if (perspectiveFactionId !== null) {
+      const ownShip = snapshot.ships.find((ship) => ship.ownerId === perspectiveFactionId);
       if (ownShip) return ownShip.currentStarId;
     }
     return snapshot.ships[0]?.currentStarId ?? -1;
@@ -326,8 +325,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     const optionsForGalaxy: GalaxySceneOptions = {
       stars: snapshot.stars,
       factions: snapshot.factions,
-      perspective,
-      playerFactionId: perspective.mode === "faction" ? perspective.factionId : 0,
+      perspective: snapshot.perspective,
+      playerFactionId: snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : 0,
       playerShipStarId: getPrimaryShipStarId(),
       playerShipTransit: getPrimaryTransit(),
       playerShipSystemIds: getShipSystemIds(),
@@ -392,7 +391,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           starbaseSystemIds: getStarbaseSystemIds(),
           starbases: snapshot.starbases,
           factions: snapshot.factions,
-          playerFactionId: perspective.mode === "faction" ? perspective.factionId : 0,
+          playerFactionId: snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : 0,
           playerShipStarId: getPrimaryShipStarId(),
           shipTransit: getPrimaryTransit(),
           shipSystemPositions: getShipSystemPositions(),
@@ -446,6 +445,23 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     },
   });
 
+  const handleKeyDown = (ev: KeyboardEvent) => {
+    const speedByKey: Record<string, number> = {
+      "1": 1,
+      "2": 2,
+      "3": 3,
+      "4": 4,
+      "5": 5,
+      "6": 50,
+      "7": 100,
+      "8": 200,
+      "9": 500,
+    };
+    const multiplier = speedByKey[ev.key];
+    if (!multiplier) return;
+    server.send({ type: "setSpeedMultiplier", multiplier });
+  };
+
   server.onSnapshot((nextSnapshot, changed) => {
     snapshot = nextSnapshot;
     if (!changed || changed.includes("planetStates")) {
@@ -464,26 +480,18 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     updateHud();
   });
 
-  window.addEventListener("keydown", (ev) => {
-    const speedByKey: Record<string, number> = {
-      "1": 1,
-      "2": 2,
-      "3": 3,
-      "4": 4,
-      "5": 5,
-      "6": 50,
-      "7": 100,
-      "8": 200,
-      "9": 500,
-    };
-    const multiplier = speedByKey[ev.key];
-    if (!multiplier) return;
-    server.send({ type: "setSpeedMultiplier", multiplier });
-  });
+  window.addEventListener("keydown", handleKeyDown);
 
   reportProgress(0.5, "Starting galaxy command sequence");
   applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
   await openGalaxyView();
 
   console.log("StellarFronts game running");
+
+  return () => {
+    window.removeEventListener("keydown", handleKeyDown);
+    hud?.dispose();
+    server.dispose();
+    mgr.dispose();
+  };
 }

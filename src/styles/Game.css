@@ -33,6 +33,44 @@
   pointer-events: none;
 }
 
+.game-logout-rail {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  z-index: 45;
+}
+
+.game-logout-btn {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(168, 182, 200, 0.46);
+  background: linear-gradient(180deg, rgba(11, 16, 23, 0.94), rgba(6, 9, 14, 0.98));
+  color: #d6dde7;
+  font-family: 'Orbitron', 'Rajdhani', 'Trebuchet MS', sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.game-logout-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(213, 222, 235, 0.82);
+  box-shadow:
+    0 14px 30px rgba(0, 0, 0, 0.42),
+    0 0 22px rgba(130, 180, 255, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.game-logout-btn:active {
+  transform: translateY(0);
+}
+
 .game-start-overlay {
   position: absolute;
   inset: 0;

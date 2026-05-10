@@ -156,7 +156,6 @@ export interface RequestPlanetDetailsCommand {
 
 export interface JoinCommand {
   type: "join";
-  perspective: GalaxyPerspective;
 }
 
 export type ClientCommand =
