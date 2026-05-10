@@ -341,7 +341,6 @@ function App() {
               updatedAt: 0,
             }}
             onContinuePlaying={handleStartGameFromHome}
-            onLogout={handleLogout}
           />
         )}
         <LoadingScreen
@@ -364,7 +363,6 @@ function App() {
         <HomePage
           account={auth.account ?? { id: 0, username: '', accountType: 'observer', factionId: null, createdAt: 0, updatedAt: 0 }}
           onContinuePlaying={handleStartGameFromHome}
-          onLogout={handleLogout}
         />
       </Router>
     );

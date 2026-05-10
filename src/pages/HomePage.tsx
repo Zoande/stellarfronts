@@ -8,7 +8,6 @@ import '../styles/Home.css';
 interface HomePageProps {
   account: AuthAccount;
   onContinuePlaying: () => void;
-  onLogout: () => void;
 }
 
 interface ProgressStat {
@@ -73,7 +72,7 @@ function MedalIcon({ variant }: { variant: ProgressStat['variant'] }) {
   );
 }
 
-export default function HomePage({ account, onContinuePlaying, onLogout }: HomePageProps) {
+export default function HomePage({ account, onContinuePlaying }: HomePageProps) {
   const factions = useMemo(() => {
     const cfg = GALAXY_MAP;
     const initialStars = generateStarMap(
@@ -121,9 +120,6 @@ export default function HomePage({ account, onContinuePlaying, onLogout }: HomeP
               {item}
             </button>
           ))}
-          <button type="button" className="home-logout-btn" onClick={onLogout}>
-            Log out
-          </button>
         </header>
 
         <section className="home-tabs" aria-label="Home sections">
