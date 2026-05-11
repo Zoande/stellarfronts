@@ -73,6 +73,7 @@ export class GameServerClient {
             visibleStarIds,
             knownStarIds,
             ships: parsed.ships ?? this.latestSnapshot.ships,
+            fleets: parsed.fleets ?? this.latestSnapshot.fleets,
             starbases: parsed.starbases ?? this.latestSnapshot.starbases,
           };
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);

@@ -73,6 +73,7 @@ export interface StarbaseShipDefinition {
   label: string;
   className: string;
   description: string;
+  speed: number;
   buildDays: number;
   alloyUpkeepPerDay: number;
   crewDemand: number;
@@ -215,6 +216,7 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     label: "Corvette",
     className: "Falcon-class",
     description: "Fast escort hull for patrols, interception, and early fleet operations.",
+    speed: 1,
     buildDays: 180,
     alloyUpkeepPerDay: 2,
     crewDemand: 1_200,

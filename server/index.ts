@@ -48,6 +48,7 @@ import {
   progressStarbaseConstructionQueue,
   progressStarbaseShipQueue,
   STARBASE_LEVEL_DEFINITIONS,
+  STARBASE_SHIP_DEFINITIONS,
 } from "../src/data/Starbase";
 import type { StarbaseBuildingKind, StarbaseLevel, StarbaseShipKind } from "../src/data/Starbase";
 import type {
@@ -66,6 +67,7 @@ import type {
   GameClock,
   GameUpdate,
   GameSnapshot,
+  ServerFleet,
   ServerEvent,
   ServerShip,
   ServerStarbase,
@@ -90,13 +92,16 @@ const ARRIVE_DURATION_MS = 150_000;
 const BUILD_DURATION_MS = 1_800_000;
 const SAVE_INTERVAL_MS = 5_000;
 const SERVER_TICK_INTERVAL_MS = REAL_MS_PER_GAME_DAY;
+const DEFAULT_SHIP_SPEED = STARBASE_SHIP_DEFINITIONS.corvette.speed;
 
-interface GameShip extends ServerShip {
+interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
 }
 
+interface GameShip extends ServerShip {}
+
 interface GameState {
-  schemaVersion: 6;
+  schemaVersion: 7;
   stars: StarData[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
@@ -106,6 +111,7 @@ interface GameState {
   starOwnership: number[];
   starbases: ServerStarbase[];
   ships: GameShip[];
+  fleets: GameFleet[];
   discoveredByFaction: Record<string, number[]>;
   lastKnownOwnershipByFaction: Record<string, number[]>;
   clock: GameClock & { lastUpdatedAt: number };
@@ -123,6 +129,13 @@ const pendingPlanetDetailRefreshes = new Set<string>();
 let state: GameState;
 let lastSaveAt = 0;
 let hasDirtyState = false;
+let runtimeIdCounter = 0;
+
+function createRuntimeId(prefix: string, parts: Array<string | number | undefined> = []): string {
+  runtimeIdCounter += 1;
+  const cleanParts = parts.filter((part) => part !== undefined && part !== "");
+  return `${prefix}-${cleanParts.join("-")}-${Date.now().toString(36)}-${runtimeIdCounter.toString(36)}`;
+}
 
 function systemCenterPosition() {
   return { x: 23, y: 4.8, z: -19 };
@@ -250,6 +263,188 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
   };
 }
 
+function getShipDefinition(shipKind?: string) {
+  const kind = shipKind && isStarbaseShipKind(shipKind) ? shipKind : "corvette";
+  return STARBASE_SHIP_DEFINITIONS[kind];
+}
+
+function createShip(
+  ownerId: number,
+  fleetId: string,
+  shipKind: StarbaseShipKind = "corvette",
+  id = createRuntimeId("ship", [ownerId, shipKind]),
+): GameShip {
+  const definition = getShipDefinition(shipKind);
+  return {
+    id,
+    ownerId,
+    fleetId,
+    shipKind,
+    speed: definition.speed,
+    hp: 100,
+    maxHp: 100,
+  };
+}
+
+function createFleet(
+  ownerId: number,
+  currentStarId: number,
+  shipIds: string[],
+  id = createRuntimeId("fleet", [ownerId, currentStarId]),
+): GameFleet {
+  return {
+    id,
+    ownerId,
+    shipIds,
+    currentStarId,
+    targetStarId: null,
+    phase: "idle",
+    phaseStartedAtYear: GAME_START_YEAR,
+    phaseDurationDays: 0,
+    route: [currentStarId],
+    routeIndex: 0,
+    phaseProgress: 0,
+    phaseElapsedMs: 0,
+    orderType: null,
+    speed: DEFAULT_SHIP_SPEED,
+    systemPosition: systemCenterPosition(),
+    hyperlanePosition: null,
+  };
+}
+
+function normalizeShip(
+  ship: Partial<ServerShip> & { id: string; ownerId: number },
+  fallbackFleetId: string,
+): GameShip {
+  const definition = getShipDefinition(ship.shipKind);
+  const shipKind = definition.kind;
+  const maxHp = Math.max(1, Number(ship.maxHp) || 100);
+  return {
+    id: ship.id,
+    ownerId: Number.isInteger(ship.ownerId) ? ship.ownerId : 0,
+    fleetId: ship.fleetId || fallbackFleetId,
+    shipKind,
+    speed: Math.max(0.05, Number(ship.speed) || definition.speed),
+    hp: Math.max(0, Math.min(maxHp, Number(ship.hp) || maxHp)),
+    maxHp,
+  };
+}
+
+function normalizeFleet(
+  fleet: Partial<ServerFleet> & {
+    id: string;
+    ownerId: number;
+    currentStarId: number;
+    phaseElapsedMs?: number;
+  },
+): GameFleet {
+  const currentStarId = Number.isInteger(fleet.currentStarId) ? fleet.currentStarId : 0;
+  const phase = (fleet.phase ?? "idle") as ShipTransitPhase;
+  const targetStarId = Number.isInteger(fleet.targetStarId) ? Number(fleet.targetStarId) : null;
+  return {
+    id: fleet.id,
+    ownerId: Number.isInteger(fleet.ownerId) ? fleet.ownerId : 0,
+    shipIds: Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [],
+    currentStarId,
+    targetStarId,
+    phase,
+    phaseStartedAtYear: fleet.phaseStartedAtYear ?? GAME_START_YEAR,
+    phaseDurationDays: fleet.phaseDurationDays ?? phaseDurationDays(phase),
+    route: Array.isArray(fleet.route) && fleet.route.length > 0 ? fleet.route : [currentStarId],
+    routeIndex: Math.max(0, Number(fleet.routeIndex) || 0),
+    phaseProgress: Math.max(0, Math.min(1, Number(fleet.phaseProgress) || 0)),
+    phaseElapsedMs: fleet.phaseElapsedMs ?? Math.round((fleet.phaseProgress ?? 0) * phaseDuration(phase)),
+    orderType: fleet.orderType === "move" || fleet.orderType === "build" ? fleet.orderType : null,
+    speed: Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
+    systemPosition: fleet.systemPosition ?? systemCenterPosition(),
+    hyperlanePosition: fleet.hyperlanePosition ?? null,
+  };
+}
+
+function createLegacyFleetFromShip(ship: Partial<ServerShip> & {
+  id: string;
+  ownerId: number;
+  currentStarId?: number;
+  targetStarId?: number | null;
+  phase?: ShipTransitPhase;
+  phaseStartedAtYear?: number;
+  phaseDurationDays?: number;
+  route?: number[];
+  routeIndex?: number;
+  phaseProgress?: number;
+  phaseElapsedMs?: number;
+  orderType?: "move" | "build" | null;
+  systemPosition?: ReturnType<typeof systemCenterPosition>;
+  hyperlanePosition?: ServerFleet["hyperlanePosition"];
+}): GameFleet {
+  const currentStarId = Number.isInteger(ship.currentStarId) ? ship.currentStarId! : 0;
+  return normalizeFleet({
+    id: ship.fleetId || ship.id.replace(/^ship/, "fleet"),
+    ownerId: Number.isInteger(ship.ownerId) ? ship.ownerId : 0,
+    shipIds: [ship.id],
+    currentStarId,
+    targetStarId: Number.isInteger(ship.targetStarId) ? ship.targetStarId! : null,
+    phase: ship.phase ?? "idle",
+    phaseStartedAtYear: ship.phaseStartedAtYear ?? GAME_START_YEAR,
+    phaseDurationDays: ship.phaseDurationDays ?? phaseDurationDays(ship.phase ?? "idle"),
+    route: ship.route ?? [currentStarId],
+    routeIndex: ship.routeIndex ?? 0,
+    phaseProgress: ship.phaseProgress ?? 0,
+    phaseElapsedMs: ship.phaseElapsedMs,
+    orderType: ship.orderType ?? null,
+    systemPosition: ship.systemPosition ?? systemCenterPosition(),
+    hyperlanePosition: ship.hyperlanePosition ?? null,
+  });
+}
+
+function syncFleetMembership(nextState: GameState): boolean {
+  let changed = false;
+  const fleetsById = new Map(nextState.fleets.map((fleet) => [fleet.id, fleet]));
+  const shipsByFleet = new Map<string, GameShip[]>();
+
+  for (const ship of nextState.ships) {
+    let fleet = fleetsById.get(ship.fleetId);
+    if (!fleet) {
+      const ownerHomeStarId = nextState.factions.find((faction) => faction.id === ship.ownerId)?.homeStarId ?? 0;
+      fleet = createFleet(ship.ownerId, ownerHomeStarId, [], ship.fleetId);
+      nextState.fleets.push(fleet);
+      fleetsById.set(fleet.id, fleet);
+      changed = true;
+    }
+    if (fleet.ownerId !== ship.ownerId) {
+      ship.ownerId = fleet.ownerId;
+      changed = true;
+    }
+    const ships = shipsByFleet.get(ship.fleetId) ?? [];
+    ships.push(ship);
+    shipsByFleet.set(ship.fleetId, ships);
+  }
+
+  nextState.fleets = nextState.fleets.filter((fleet) => {
+    const ships = shipsByFleet.get(fleet.id) ?? [];
+    if (ships.length === 0) {
+      changed = true;
+      return false;
+    }
+    const shipIds = ships.map((ship) => ship.id);
+    if (
+      shipIds.length !== fleet.shipIds.length
+      || shipIds.some((id, index) => id !== fleet.shipIds[index])
+    ) {
+      fleet.shipIds = shipIds;
+      changed = true;
+    }
+    const nextSpeed = Math.min(...ships.map((ship) => Math.max(0.05, ship.speed)));
+    if (Math.abs(fleet.speed - nextSpeed) > 0.0001) {
+      fleet.speed = nextSpeed;
+      changed = true;
+    }
+    return true;
+  });
+
+  return changed;
+}
+
 function normalizeFactionEconomies(
   nextState: Omit<GameState, "factionEconomies"> & { factionEconomies?: FactionEconomyState[] },
 ): FactionEconomyState[] {
@@ -297,27 +492,21 @@ function createInitialState(): GameState {
     constructionQueue: [],
     shipQueue: [],
   }));
-  const ships = factions.map<GameShip>((faction) => ({
-    id: `ship-${faction.id}-1`,
-    ownerId: faction.id,
-    currentStarId: faction.homeStarId,
-    targetStarId: null,
-    phase: "idle",
-    phaseStartedAtYear: GAME_START_YEAR,
-    phaseDurationDays: 0,
-    route: [faction.homeStarId],
-    routeIndex: 0,
-    phaseProgress: 0,
-    phaseElapsedMs: 0,
-    orderType: null,
-    systemPosition: systemCenterPosition(),
-    hyperlanePosition: null,
-  }));
+  const ships: GameShip[] = [];
+  const fleets = factions.map<GameFleet>((faction) => {
+    const fleetId = `fleet-${faction.id}-1`;
+    const ship = createShip(faction.id, fleetId, "corvette", `ship-${faction.id}-1`);
+    ships.push(ship);
+    const fleet = createFleet(faction.id, faction.homeStarId, [ship.id], fleetId);
+    fleet.phaseStartedAtYear = GAME_START_YEAR;
+    fleet.speed = ship.speed;
+    return fleet;
+  });
 
   const now = Date.now();
   const startMonth = gameYearToMonthIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 6,
+    schemaVersion: 7,
     stars,
     planetStates,
     factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
@@ -327,6 +516,7 @@ function createInitialState(): GameState {
     starOwnership,
     starbases,
     ships,
+    fleets,
     discoveredByFaction: {},
     lastKnownOwnershipByFaction: {},
     clock: {
@@ -345,7 +535,7 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
     const parsed = JSON.parse(raw) as GameState;
-    parsed.schemaVersion = 6;
+    parsed.schemaVersion = 7;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
@@ -364,15 +554,23 @@ async function loadState(): Promise<GameState> {
       }
       return normalized;
     });
-    parsed.ships = parsed.ships.map((ship) => ({
-      ...ship,
-      phaseElapsedMs: ship.phaseElapsedMs ?? Math.round((ship.phaseProgress ?? 0) * phaseDuration(ship.phase)),
-      phaseStartedAtYear: ship.phaseStartedAtYear
-        ?? parsed.clock.year - (ship.phaseProgress ?? 0) * phaseDurationYears(ship.phase),
-      phaseDurationDays: ship.phaseDurationDays ?? phaseDurationDays(ship.phase),
-      systemPosition: ship.systemPosition ?? systemCenterPosition(),
-      hyperlanePosition: ship.hyperlanePosition ?? null,
-    }));
+    const rawShips = Array.isArray(parsed.ships) ? parsed.ships : [];
+    const rawFleets = Array.isArray(parsed.fleets) ? parsed.fleets : [];
+    if (rawFleets.length === 0 && rawShips.length > 0) {
+      parsed.fleets = rawShips.map((ship) => createLegacyFleetFromShip(ship as Parameters<typeof createLegacyFleetFromShip>[0]));
+      parsed.ships = rawShips.map((ship) => {
+        const legacyFleetId = (ship as Partial<ServerShip>).fleetId || ship.id.replace(/^ship/, "fleet");
+        return normalizeShip(ship, legacyFleetId);
+      });
+      hasDirtyState = true;
+    } else {
+      parsed.fleets = rawFleets.map((fleet) => normalizeFleet(fleet));
+      const fallbackFleetId = parsed.fleets[0]?.id ?? "fleet-0";
+      parsed.ships = rawShips.map((ship) => normalizeShip(ship, ship.fleetId || fallbackFleetId));
+    }
+    if (syncFleetMembership(parsed)) {
+      hasDirtyState = true;
+    }
     const metadataChanged = normalizeCelestialObjectDetails(parsed.stars);
     const habitationChanged = ensureHabitedHomePlanets(
       parsed.stars,
@@ -409,14 +607,16 @@ async function saveState(nextState = state): Promise<void> {
   hasDirtyState = false;
 }
 
-function phaseDuration(phase: ShipTransitPhase): number {
+function phaseDuration(phase: ShipTransitPhase, fleet?: Pick<ServerFleet, "speed">): number {
+  const speed = Math.max(0.05, fleet?.speed ?? DEFAULT_SHIP_SPEED);
+  const travelScale = 1 / speed;
   switch (phase) {
     case "departingSystem":
-      return DEPART_DURATION_MS;
+      return DEPART_DURATION_MS * travelScale;
     case "jumpingHyperlane":
-      return JUMP_DURATION_MS;
+      return JUMP_DURATION_MS * travelScale;
     case "arrivingSystem":
-      return ARRIVE_DURATION_MS;
+      return ARRIVE_DURATION_MS * travelScale;
     case "buildingStarbase":
       return BUILD_DURATION_MS;
     default:
@@ -424,21 +624,21 @@ function phaseDuration(phase: ShipTransitPhase): number {
   }
 }
 
-function phaseDurationDays(phase: ShipTransitPhase): number {
+function phaseDurationDays(phase: ShipTransitPhase, fleet?: Pick<ServerFleet, "speed">): number {
   if (phase === "idle") return 0;
-  return phaseDuration(phase) / REAL_MS_PER_GAME_DAY;
+  return phaseDuration(phase, fleet) / REAL_MS_PER_GAME_DAY;
 }
 
-function phaseDurationYears(phase: ShipTransitPhase): number {
-  return phaseDurationDays(phase) / GAME_DAYS_PER_YEAR;
+function phaseDurationYears(phase: ShipTransitPhase, fleet?: Pick<ServerFleet, "speed">): number {
+  return phaseDurationDays(phase, fleet) / GAME_DAYS_PER_YEAR;
 }
 
-function setShipPhase(ship: GameShip, phase: ShipTransitPhase): void {
-  ship.phase = phase;
-  ship.phaseElapsedMs = 0;
-  ship.phaseProgress = 0;
-  ship.phaseStartedAtYear = state?.clock?.year ?? ship.phaseStartedAtYear ?? GAME_START_YEAR;
-  ship.phaseDurationDays = phaseDurationDays(phase);
+function setFleetPhase(fleet: GameFleet, phase: ShipTransitPhase): void {
+  fleet.phase = phase;
+  fleet.phaseElapsedMs = 0;
+  fleet.phaseProgress = 0;
+  fleet.phaseStartedAtYear = state?.clock?.year ?? fleet.phaseStartedAtYear ?? GAME_START_YEAR;
+  fleet.phaseDurationDays = phaseDurationDays(phase, fleet);
 }
 
 function addDiscoveryFrom(nextState: GameState, sourceStarId: number, visible: Set<number>): void {
@@ -459,12 +659,12 @@ function computeCurrentVisibleSet(nextState: GameState, factionId: number): Set<
     }
   }
 
-  for (const ship of nextState.ships) {
-    if (ship.ownerId !== factionId) continue;
-    addDiscoveryFrom(nextState, ship.currentStarId, visible);
-    if (ship.hyperlanePosition) {
-      addDiscoveryFrom(nextState, ship.hyperlanePosition.fromStarId, visible);
-      addDiscoveryFrom(nextState, ship.hyperlanePosition.toStarId, visible);
+  for (const fleet of nextState.fleets) {
+    if (fleet.ownerId !== factionId) continue;
+    addDiscoveryFrom(nextState, fleet.currentStarId, visible);
+    if (fleet.hyperlanePosition) {
+      addDiscoveryFrom(nextState, fleet.hyperlanePosition.fromStarId, visible);
+      addDiscoveryFrom(nextState, fleet.hyperlanePosition.toStarId, visible);
     }
   }
 
@@ -502,12 +702,12 @@ function getKnownOwnership(ownerId: number, starId: number): number {
   return knownOwnership[starId] ?? -1;
 }
 
-function isShipVisible(ship: ServerShip, visible: Set<number> | null, perspective: GalaxyPerspective): boolean {
+function isFleetVisible(fleet: ServerFleet, visible: Set<number> | null, perspective: GalaxyPerspective): boolean {
   if (visible === null) return true;
-  if (perspective.mode === "faction" && ship.ownerId === perspective.factionId) return true;
-  if (visible.has(ship.currentStarId)) return true;
-  return !!ship.hyperlanePosition
-    && (visible.has(ship.hyperlanePosition.fromStarId) || visible.has(ship.hyperlanePosition.toStarId));
+  if (perspective.mode === "faction" && fleet.ownerId === perspective.factionId) return true;
+  if (visible.has(fleet.currentStarId)) return true;
+  return !!fleet.hyperlanePosition
+    && (visible.has(fleet.hyperlanePosition.fromStarId) || visible.has(fleet.hyperlanePosition.toStarId));
 }
 
 function createRedactedStar(star: StarData): StarData {
@@ -610,6 +810,9 @@ function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField
   if (changed.includes("ships")) {
     update.ships = visibleState.ships;
   }
+  if (changed.includes("fleets")) {
+    update.fleets = visibleState.fleets;
+  }
   if (changed.includes("starbases")) {
     update.starbases = visibleState.starbases;
   }
@@ -634,7 +837,9 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
   const starbases = visibleSet
     ? state.starbases.filter((starbase) => visibleSet.has(starbase.starId))
     : state.starbases;
-  const ships = state.ships.filter((ship) => isShipVisible(ship, visibleSet, perspective));
+  const fleets = state.fleets.filter((fleet) => isFleetVisible(fleet, visibleSet, perspective));
+  const visibleFleetIds = new Set(fleets.map((fleet) => fleet.id));
+  const ships = state.ships.filter((ship) => visibleFleetIds.has(ship.fleetId));
   const hyperlanes = visibleSet
     ? state.hyperlanes.filter(([a, b]) => knownSet?.has(a) || knownSet?.has(b))
     : state.hyperlanes;
@@ -658,6 +863,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     visibleStarIds,
     knownStarIds,
     ships,
+    fleets,
     starbases,
     planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
     factionEconomies,
@@ -700,11 +906,11 @@ function routeIsAllowed(route: number[], ownerId: number): boolean {
   return true;
 }
 
-function findRoute(ship: GameShip, targetStarId: number): number[] | null {
-  const discovered = new Set(state.discoveredByFaction[String(ship.ownerId)] ?? []);
+function findRoute(fleet: GameFleet, targetStarId: number): number[] | null {
+  const discovered = new Set(state.discoveredByFaction[String(fleet.ownerId)] ?? []);
   if (!discovered.has(targetStarId)) return null;
-  const queue: number[] = [ship.currentStarId];
-  const previous = new Map<number, number | null>([[ship.currentStarId, null]]);
+  const queue: number[] = [fleet.currentStarId];
+  const previous = new Map<number, number | null>([[fleet.currentStarId, null]]);
 
   while (queue.length > 0) {
     const current = queue.shift()!;
@@ -712,8 +918,8 @@ function findRoute(ship: GameShip, targetStarId: number): number[] | null {
     for (const neighbor of state.adjacency[current] ?? []) {
       if (previous.has(neighbor)) continue;
       if (!discovered.has(neighbor)) continue;
-      const owner = getKnownOwnership(ship.ownerId, neighbor);
-      if (owner >= 0 && owner !== ship.ownerId) continue;
+      const owner = getKnownOwnership(fleet.ownerId, neighbor);
+      if (owner >= 0 && owner !== fleet.ownerId) continue;
       previous.set(neighbor, current);
       queue.push(neighbor);
     }
@@ -727,74 +933,134 @@ function findRoute(ship: GameShip, targetStarId: number): number[] | null {
     cursor = previous.get(cursor) ?? null;
   }
   route.reverse();
-  return route.length > 1 && routeIsAllowed(route, ship.ownerId) ? route : null;
+  return route.length > 1 && routeIsAllowed(route, fleet.ownerId) ? route : null;
 }
 
-function startOrder(ship: GameShip, targetStarId: number, orderType: "move" | "build"): void {
-  if (orderType === "build" && ship.currentStarId === targetStarId) {
-    ship.targetStarId = targetStarId;
-    ship.orderType = orderType;
-    ship.route = [ship.currentStarId];
-    ship.routeIndex = 0;
-    setShipPhase(ship, "buildingStarbase");
-    ship.systemPosition = systemCenterPosition();
-    ship.hyperlanePosition = null;
+function startOrder(fleet: GameFleet, targetStarId: number, orderType: "move" | "build"): void {
+  if (orderType === "build" && fleet.currentStarId === targetStarId) {
+    fleet.targetStarId = targetStarId;
+    fleet.orderType = orderType;
+    fleet.route = [fleet.currentStarId];
+    fleet.routeIndex = 0;
+    setFleetPhase(fleet, "buildingStarbase");
+    fleet.systemPosition = systemCenterPosition();
+    fleet.hyperlanePosition = null;
     return;
   }
 
-  const route = findRoute(ship, targetStarId);
+  const route = findRoute(fleet, targetStarId);
   if (!route) throw new Error("No discovered safe route to target.");
-  ship.targetStarId = targetStarId;
-  ship.orderType = orderType;
-  ship.route = route;
-  ship.routeIndex = 0;
-  setShipPhase(ship, "departingSystem");
-  ship.systemPosition = systemCenterPosition();
-  ship.hyperlanePosition = null;
+  fleet.targetStarId = targetStarId;
+  fleet.orderType = orderType;
+  fleet.route = route;
+  fleet.routeIndex = 0;
+  setFleetPhase(fleet, "departingSystem");
+  fleet.systemPosition = systemCenterPosition();
+  fleet.hyperlanePosition = null;
 }
 
 function validateCommandPerspective(perspective: GalaxyPerspective): number | null {
   return perspective.mode === "faction" ? perspective.factionId : null;
 }
 
-function handleMove(socket: WebSocket, perspective: GalaxyPerspective, shipId: string, targetStarId: number): void {
+function resolveFleetForCommand(fleetId?: string, shipId?: string): GameFleet | null {
+  if (fleetId) {
+    return state.fleets.find((candidate) => candidate.id === fleetId) ?? null;
+  }
+  if (!shipId) return null;
+  const ship = state.ships.find((candidate) => candidate.id === shipId);
+  if (ship) {
+    return state.fleets.find((candidate) => candidate.id === ship.fleetId) ?? null;
+  }
+  return state.fleets.find((candidate) => candidate.id === shipId) ?? null;
+}
+
+function handleMove(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string | undefined, shipId: string | undefined, targetStarId: number): void {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) return reject(socket, "Observer mode is read-only.");
-  const ship = state.ships.find((candidate) => candidate.id === shipId);
-  if (!ship) return reject(socket, "Ship not found.");
-  if (ship.ownerId !== factionId) return reject(socket, "You do not own that ship.");
-  if (ship.phase !== "idle") return reject(socket, "Ship is already busy.");
+  const fleet = resolveFleetForCommand(fleetId, shipId);
+  if (!fleet) return reject(socket, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (fleet.phase !== "idle") return reject(socket, "Fleet is already busy.");
   const targetOwner = getKnownOwnership(factionId, targetStarId);
   if (targetOwner >= 0 && targetOwner !== factionId) return reject(socket, "Cannot enter another faction's territory.");
   try {
-    startOrder(ship, targetStarId, "move");
+    startOrder(fleet, targetStarId, "move");
     hasDirtyState = true;
     refreshDiscovery();
     accept(socket, "Move order accepted.");
-    broadcastUpdates(["clock", "ships", "visibility"]);
+    broadcastUpdates(["clock", "fleets", "visibility"]);
   } catch (error) {
     reject(socket, error instanceof Error ? error.message : "Move order rejected.");
   }
 }
 
-function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, shipId: string, targetStarId: number): void {
+function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string | undefined, shipId: string | undefined, targetStarId: number): void {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) return reject(socket, "Observer mode is read-only.");
-  const ship = state.ships.find((candidate) => candidate.id === shipId);
-  if (!ship) return reject(socket, "Ship not found.");
-  if (ship.ownerId !== factionId) return reject(socket, "You do not own that ship.");
-  if (ship.phase !== "idle") return reject(socket, "Ship is already busy.");
+  const fleet = resolveFleetForCommand(fleetId, shipId);
+  if (!fleet) return reject(socket, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (fleet.phase !== "idle") return reject(socket, "Fleet is already busy.");
   if (getKnownOwnership(factionId, targetStarId) !== -1) return reject(socket, "Can only build in unowned systems.");
   if (state.starbases.some((starbase) => starbase.starId === targetStarId)) return reject(socket, "System already has a starbase.");
   try {
-    startOrder(ship, targetStarId, "build");
+    startOrder(fleet, targetStarId, "build");
     hasDirtyState = true;
     refreshDiscovery();
     accept(socket, "Build order accepted.");
-    broadcastUpdates(["clock", "ships", "visibility"]);
+    broadcastUpdates(["clock", "fleets", "visibility"]);
   } catch (error) {
     reject(socket, error instanceof Error ? error.message : "Build order rejected.");
   }
+}
+
+function handleMergeFleets(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  targetFleetId: string,
+  sourceFleetIds: string[],
+): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const targetFleet = state.fleets.find((fleet) => fleet.id === targetFleetId);
+  if (!targetFleet) return reject(socket, "Target fleet not found.");
+  if (targetFleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (targetFleet.phase !== "idle") return reject(socket, "Target fleet is busy.");
+
+  const uniqueSourceIds = Array.from(new Set(sourceFleetIds)).filter((id) => id !== targetFleetId);
+  if (uniqueSourceIds.length === 0) return reject(socket, "No fleets selected to merge.");
+
+  const sourceFleets = uniqueSourceIds
+    .map((id) => state.fleets.find((fleet) => fleet.id === id))
+    .filter((fleet): fleet is GameFleet => !!fleet);
+
+  if (sourceFleets.length !== uniqueSourceIds.length) return reject(socket, "A source fleet was not found.");
+  for (const fleet of sourceFleets) {
+    if (fleet.ownerId !== factionId) return reject(socket, "You do not own all selected fleets.");
+    if (fleet.phase !== "idle") return reject(socket, "All fleets must be idle to merge.");
+    if (fleet.currentStarId !== targetFleet.currentStarId) {
+      return reject(socket, "Fleets must be in the same system to merge.");
+    }
+  }
+
+  const mergedShipIds = [...targetFleet.shipIds];
+  for (const fleet of sourceFleets) {
+    for (const shipId of fleet.shipIds) {
+      if (!mergedShipIds.includes(shipId)) mergedShipIds.push(shipId);
+    }
+  }
+
+  const removedFleetIds = new Set(sourceFleets.map((fleet) => fleet.id));
+  state.ships = state.ships.map((ship) => (
+    removedFleetIds.has(ship.fleetId) ? { ...ship, fleetId: targetFleet.id } : ship
+  ));
+  targetFleet.shipIds = mergedShipIds;
+  state.fleets = state.fleets.filter((fleet) => !removedFleetIds.has(fleet.id));
+  syncFleetMembership(state);
+  hasDirtyState = true;
+  accept(socket, "Fleets merged.");
+  broadcastUpdates(["clock", "ships", "fleets", "visibility"]);
 }
 
 function getPlanetState(planetId: string): PlanetState | null {
@@ -1157,14 +1423,14 @@ function handleSetUrbanSubDistrict(
   commitPlanetState(socket, perspective, "Sub-district changed.", { ...planetState, urbanSubDistricts, constructionQueue });
 }
 
-function completeShipOrder(ship: GameShip): void {
-  if (ship.orderType === "build" && ship.targetStarId !== null) {
-    const starId = ship.targetStarId;
+function completeFleetOrder(fleet: GameFleet): void {
+  if (fleet.orderType === "build" && fleet.targetStarId !== null) {
+    const starId = fleet.targetStarId;
     const starbaseExists = state.starbases.some((starbase) => starbase.starId === starId);
     if (!starbaseExists) {
       state.starbases.push({
-        id: `starbase-${ship.ownerId}-${starId}-${Date.now()}`,
-        ownerId: ship.ownerId,
+        id: createRuntimeId("starbase", [fleet.ownerId, starId]),
+        ownerId: fleet.ownerId,
         starId,
         status: "online",
         buildProgress: 1,
@@ -1174,83 +1440,85 @@ function completeShipOrder(ship: GameShip): void {
         constructionQueue: [],
         shipQueue: [],
       });
-      state.starOwnership[starId] = ship.ownerId;
+      state.starOwnership[starId] = fleet.ownerId;
     }
   }
 
-  ship.targetStarId = null;
-  ship.orderType = null;
-  ship.route = [ship.currentStarId];
-  ship.routeIndex = 0;
-  setShipPhase(ship, "idle");
-  ship.hyperlanePosition = null;
-  ship.systemPosition = systemCenterPosition();
+  fleet.targetStarId = null;
+  fleet.orderType = null;
+  fleet.route = [fleet.currentStarId];
+  fleet.routeIndex = 0;
+  setFleetPhase(fleet, "idle");
+  fleet.hyperlanePosition = null;
+  fleet.systemPosition = systemCenterPosition();
 }
 
-function advanceShip(ship: GameShip, scaledMs: number): void {
+function advanceFleet(fleet: GameFleet, scaledMs: number): void {
   let remaining = scaledMs;
-  while (remaining > 0 && ship.phase !== "idle") {
-    const duration = phaseDuration(ship.phase);
-    const available = duration - ship.phaseElapsedMs;
+  while (remaining > 0 && fleet.phase !== "idle") {
+    const duration = phaseDuration(fleet.phase, fleet);
+    const available = duration - fleet.phaseElapsedMs;
     const step = Math.min(remaining, available);
-    ship.phaseElapsedMs += step;
-    ship.phaseProgress = Math.max(0, Math.min(1, ship.phaseElapsedMs / duration));
+    fleet.phaseElapsedMs += step;
+    fleet.phaseProgress = Math.max(0, Math.min(1, fleet.phaseElapsedMs / duration));
     remaining -= step;
 
-    if (ship.phase === "departingSystem") {
-      ship.systemPosition = interpolateSystemPosition(systemCenterPosition(), systemExitPosition(), ship.phaseProgress);
-    } else if (ship.phase === "jumpingHyperlane") {
-      const fromStarId = ship.route[ship.routeIndex];
-      const toStarId = ship.route[ship.routeIndex + 1];
-      ship.hyperlanePosition = { fromStarId, toStarId, progress: ship.phaseProgress };
-    } else if (ship.phase === "arrivingSystem") {
-      ship.systemPosition = interpolateSystemPosition(systemEntryPosition(), systemCenterPosition(), ship.phaseProgress);
+    if (fleet.phase === "departingSystem") {
+      fleet.systemPosition = interpolateSystemPosition(systemCenterPosition(), systemExitPosition(), fleet.phaseProgress);
+    } else if (fleet.phase === "jumpingHyperlane") {
+      const fromStarId = fleet.route[fleet.routeIndex];
+      const toStarId = fleet.route[fleet.routeIndex + 1];
+      fleet.hyperlanePosition = { fromStarId, toStarId, progress: fleet.phaseProgress };
+    } else if (fleet.phase === "arrivingSystem") {
+      fleet.systemPosition = interpolateSystemPosition(systemEntryPosition(), systemCenterPosition(), fleet.phaseProgress);
     }
 
-    if (ship.phaseElapsedMs < duration) break;
+    if (fleet.phaseElapsedMs < duration) break;
 
-    ship.phaseElapsedMs = 0;
-    ship.phaseProgress = 0;
+    fleet.phaseElapsedMs = 0;
+    fleet.phaseProgress = 0;
 
-    if (ship.phase === "departingSystem") {
-      setShipPhase(ship, "jumpingHyperlane");
-      const fromStarId = ship.route[ship.routeIndex];
-      const toStarId = ship.route[ship.routeIndex + 1];
-      ship.hyperlanePosition = { fromStarId, toStarId, progress: 0 };
-    } else if (ship.phase === "jumpingHyperlane") {
-      ship.currentStarId = ship.route[ship.routeIndex + 1];
-      ship.routeIndex += 1;
-      ship.hyperlanePosition = null;
-      setShipPhase(ship, "arrivingSystem");
-      ship.systemPosition = systemEntryPosition();
-    } else if (ship.phase === "arrivingSystem") {
-      if (ship.routeIndex < ship.route.length - 1) {
-        setShipPhase(ship, "departingSystem");
-        ship.systemPosition = systemCenterPosition();
-      } else if (ship.orderType === "build") {
-        setShipPhase(ship, "buildingStarbase");
-        ship.systemPosition = systemCenterPosition();
+    if (fleet.phase === "departingSystem") {
+      setFleetPhase(fleet, "jumpingHyperlane");
+      const fromStarId = fleet.route[fleet.routeIndex];
+      const toStarId = fleet.route[fleet.routeIndex + 1];
+      fleet.hyperlanePosition = { fromStarId, toStarId, progress: 0 };
+    } else if (fleet.phase === "jumpingHyperlane") {
+      fleet.currentStarId = fleet.route[fleet.routeIndex + 1];
+      fleet.routeIndex += 1;
+      fleet.hyperlanePosition = null;
+      setFleetPhase(fleet, "arrivingSystem");
+      fleet.systemPosition = systemEntryPosition();
+    } else if (fleet.phase === "arrivingSystem") {
+      if (fleet.routeIndex < fleet.route.length - 1) {
+        setFleetPhase(fleet, "departingSystem");
+        fleet.systemPosition = systemCenterPosition();
+      } else if (fleet.orderType === "build") {
+        setFleetPhase(fleet, "buildingStarbase");
+        fleet.systemPosition = systemCenterPosition();
       } else {
-        completeShipOrder(ship);
+        completeFleetOrder(fleet);
       }
-    } else if (ship.phase === "buildingStarbase") {
-      completeShipOrder(ship);
+    } else if (fleet.phase === "buildingStarbase") {
+      completeFleetOrder(fleet);
     }
   }
 }
 
-function shipUpdateSignature(): string {
-  return JSON.stringify(state.ships.map((ship) => ({
-    id: ship.id,
-    ownerId: ship.ownerId,
-    currentStarId: ship.currentStarId,
-    targetStarId: ship.targetStarId,
-    phase: ship.phase,
-    phaseStartedAtYear: ship.phaseStartedAtYear,
-    phaseDurationDays: ship.phaseDurationDays,
-    route: ship.route,
-    routeIndex: ship.routeIndex,
-    orderType: ship.orderType,
+function fleetUpdateSignature(): string {
+  return JSON.stringify(state.fleets.map((fleet) => ({
+    id: fleet.id,
+    ownerId: fleet.ownerId,
+    shipIds: fleet.shipIds,
+    currentStarId: fleet.currentStarId,
+    targetStarId: fleet.targetStarId,
+    phase: fleet.phase,
+    phaseStartedAtYear: fleet.phaseStartedAtYear,
+    phaseDurationDays: fleet.phaseDurationDays,
+    route: fleet.route,
+    routeIndex: fleet.routeIndex,
+    orderType: fleet.orderType,
+    speed: fleet.speed,
   })));
 }
 
@@ -1311,9 +1579,25 @@ function processStarbaseConstruction(elapsedDays: number): boolean {
   return true;
 }
 
-function processStarbaseShipQueues(elapsedDays: number): boolean {
-  if (elapsedDays <= 0) return false;
-  let changed = false;
+function spawnCompletedShip(starbase: ServerStarbase, item: { shipKind: StarbaseShipKind }): void {
+  const fleetId = createRuntimeId("fleet", [starbase.ownerId, starbase.starId]);
+  const ship = createShip(
+    starbase.ownerId,
+    fleetId,
+    item.shipKind,
+    createRuntimeId("ship", [starbase.ownerId, item.shipKind]),
+  );
+  const fleet = createFleet(starbase.ownerId, starbase.starId, [ship.id], fleetId);
+  fleet.phaseStartedAtYear = state.clock.year;
+  fleet.speed = ship.speed;
+  state.ships.push(ship);
+  state.fleets.push(fleet);
+}
+
+function processStarbaseShipQueues(elapsedDays: number): { starbasesChanged: boolean; fleetsChanged: boolean } {
+  if (elapsedDays <= 0) return { starbasesChanged: false, fleetsChanged: false };
+  let starbasesChanged = false;
+  let fleetsChanged = false;
   state.starbases = state.starbases.map((starbase) => {
     if (starbase.shipQueue.length === 0) return starbase;
     const result = progressStarbaseShipQueue(starbase, elapsedDays);
@@ -1325,14 +1609,21 @@ function processStarbaseShipQueues(elapsedDays: number): boolean {
       cost.alloys = -result.alloysConsumed;
       economy.stockpiles = addResourceCounts(economy.stockpiles, cost);
     }
-    changed = true;
+    for (const completed of result.completed) {
+      spawnCompletedShip(starbase, completed);
+      fleetsChanged = true;
+    }
+    starbasesChanged = true;
     return result.starbase;
   });
 
-  if (!changed) return false;
+  if (!starbasesChanged && !fleetsChanged) return { starbasesChanged: false, fleetsChanged: false };
+  if (fleetsChanged) {
+    refreshDiscovery();
+  }
   refreshFactionEconomyDeltas();
   hasDirtyState = true;
-  return true;
+  return { starbasesChanged, fleetsChanged };
 }
 
 function processPopulationQuarters(previousQuarter: number, targetQuarter: number): boolean {
@@ -1365,25 +1656,25 @@ function advanceState(now: number): Set<ServerUpdateField> {
   if (elapsedMs <= 0) return changed;
   const previousEconomyMonth = currentEconomyMonth();
   const previousPopulationQuarter = currentPopulationQuarter();
-  const previousShipSignature = shipUpdateSignature();
+  const previousFleetSignature = fleetUpdateSignature();
   const scaledMs = elapsedMs * state.clock.speedMultiplier;
   const elapsedGameDays = scaledMs / REAL_MS_PER_GAME_DAY;
   state.clock.year += (scaledMs / REAL_MS_PER_GAME_DAY) / GAME_DAYS_PER_YEAR;
   state.clock.lastUpdatedAt = now;
   changed.add("clock");
 
-  const movingBefore = state.ships.some((ship) => ship.phase !== "idle");
-  for (const ship of state.ships) {
-    advanceShip(ship, scaledMs);
+  const movingBefore = state.fleets.some((fleet) => fleet.phase !== "idle");
+  for (const fleet of state.fleets) {
+    advanceFleet(fleet, scaledMs);
   }
-  const movingAfter = state.ships.some((ship) => ship.phase !== "idle");
+  const movingAfter = state.fleets.some((fleet) => fleet.phase !== "idle");
   if (movingBefore || movingAfter) {
     refreshDiscovery();
   }
 
-  if (shipUpdateSignature() !== previousShipSignature) {
+  if (fleetUpdateSignature() !== previousFleetSignature) {
     hasDirtyState = true;
-    changed.add("ships");
+    changed.add("fleets");
     changed.add("visibility");
     changed.add("starbases");
   }
@@ -1397,9 +1688,15 @@ function advanceState(now: number): Set<ServerUpdateField> {
     changed.add("factionEconomies");
   }
 
-  if (processStarbaseShipQueues(elapsedGameDays)) {
+  const shipQueueResult = processStarbaseShipQueues(elapsedGameDays);
+  if (shipQueueResult.starbasesChanged || shipQueueResult.fleetsChanged) {
     changed.add("starbases");
     changed.add("factionEconomies");
+    if (shipQueueResult.fleetsChanged) {
+      changed.add("ships");
+      changed.add("fleets");
+      changed.add("visibility");
+    }
   }
 
   const nextEconomyMonth = currentEconomyMonth();
@@ -1423,12 +1720,16 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     sendEvent(session.socket, createSnapshot(session.perspective));
     return;
   }
-  if (command.type === "moveShip") {
-    handleMove(session.socket, session.perspective, command.shipId, command.targetStarId);
+  if (command.type === "moveShip" || command.type === "moveFleet") {
+    handleMove(session.socket, session.perspective, command.fleetId, command.shipId, command.targetStarId);
     return;
   }
   if (command.type === "buildStarbase") {
-    handleBuild(session.socket, session.perspective, command.shipId, command.targetStarId);
+    handleBuild(session.socket, session.perspective, command.fleetId, command.shipId, command.targetStarId);
+    return;
+  }
+  if (command.type === "mergeFleets") {
+    handleMergeFleets(session.socket, session.perspective, command.targetFleetId, command.sourceFleetIds);
     return;
   }
   if (command.type === "buildDistrict") {

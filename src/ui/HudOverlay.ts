@@ -5,6 +5,16 @@ import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
 
 export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
+export type HudSidebarItemKey =
+  | "government"
+  | "society"
+  | "technology"
+  | "leaders"
+  | "planets"
+  | "fleets"
+  | "diplomacy"
+  | "espionage"
+  | "market";
 
 export type HudVisualToggles = Record<HudToggleKey, boolean>;
 
@@ -26,6 +36,7 @@ export interface HudCallbacks {
   onExitSystem: () => void;
   onNavigateConnectedSystem: (systemId: number) => void;
   onToggleVisual: (key: HudToggleKey, enabled: boolean) => void;
+  onSidebarItem?: (key: HudSidebarItemKey) => void;
 }
 
 const STYLE_ID = "space-rts-hud-style";
@@ -40,16 +51,16 @@ const RESOURCE_ICON_LABELS: Record<string, string> = {
   research: "RS",
 };
 
-const SIDEBAR_ITEMS = [
-  { label: "Government", icon: "GV" },
-  { label: "Society", icon: "SC" },
-  { label: "Technology", icon: "TC" },
-  { label: "Leaders", icon: "LD" },
-  { label: "Planets", icon: "PL" },
-  { label: "Fleets", icon: "FL" },
-  { label: "Diplomacy", icon: "DP" },
-  { label: "Espionage", icon: "ES" },
-  { label: "Market", icon: "MK" },
+const SIDEBAR_ITEMS: Array<{ key: HudSidebarItemKey; label: string; icon: string }> = [
+  { key: "government", label: "Government", icon: "GV" },
+  { key: "society", label: "Society", icon: "SC" },
+  { key: "technology", label: "Technology", icon: "TC" },
+  { key: "leaders", label: "Leaders", icon: "LD" },
+  { key: "planets", label: "Planets", icon: "PL" },
+  { key: "fleets", label: "Fleets", icon: "FL" },
+  { key: "diplomacy", label: "Diplomacy", icon: "DP" },
+  { key: "espionage", label: "Espionage", icon: "ES" },
+  { key: "market", label: "Market", icon: "MK" },
 ] as const;
 
 const HUD_STYLE = `
@@ -786,6 +797,9 @@ export class HudOverlay {
       button.setAttribute("aria-label", item.label);
       button.title = item.label;
       button.innerHTML = `<span>${item.icon}</span>`;
+      button.addEventListener("click", () => {
+        this.callbacks.onSidebarItem?.(item.key);
+      });
       this.sidebarEl.appendChild(button);
     }
 

@@ -356,7 +356,7 @@ export class StarbasePanel {
           <div class="sbDemandPanel">
             <span>Active alloy demand: ${this.formatCompact(this.getActiveShipAlloyDemand(starbase))} / day</span>
             <span>Queued crew demand: ${this.formatCompact(shipQueue.reduce((total, item) => total + item.crewDemand, 0))}</span>
-            <span>Completed ships: held for future fleet spawning</span>
+            <span>Completed ships: spawn as new fleets in orbit</span>
           </div>
           <div class="sbSectionTitle">Available Ships</div>
           <div class="sbAvailableShipList">

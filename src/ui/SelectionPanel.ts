@@ -5,7 +5,7 @@
 
 import type { ShipAction } from "../game/GameplayTypes";
 
-export type SelectionType = "ship" | "starbase";
+export type SelectionType = "ship" | "fleet" | "starbase";
 
 export interface SelectionData {
   type: SelectionType;
@@ -91,7 +91,8 @@ export class SelectionPanel {
   border-color: rgba(230, 200, 150, 0.7);
 }
 
-.spaceSelectionPanel.ship {
+.spaceSelectionPanel.ship,
+.spaceSelectionPanel.fleet {
   border-color: var(--selection-color);
 }
 
@@ -109,7 +110,8 @@ export class SelectionPanel {
   color: rgba(230, 200, 150, 0.95);
 }
 
-.spaceSelectionPanel.ship .spaceSelectionPanelTitle {
+.spaceSelectionPanel.ship .spaceSelectionPanelTitle,
+.spaceSelectionPanel.fleet .spaceSelectionPanelTitle {
   color: var(--selection-color);
 }
 
@@ -157,7 +159,8 @@ export class SelectionPanel {
   transition: width 0.2s ease;
 }
 
-.spaceSelectionPanel.ship .spaceSelectionPanelHpFill {
+.spaceSelectionPanel.ship .spaceSelectionPanelHpFill,
+.spaceSelectionPanel.fleet .spaceSelectionPanelHpFill {
   background: linear-gradient(90deg, var(--selection-color-soft), var(--selection-color));
 }
 
@@ -178,7 +181,7 @@ export class SelectionPanel {
 
 .spaceSelectionActions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   margin-top: 10px;
 }
@@ -302,12 +305,13 @@ export class SelectionPanel {
     const detailLine = data.detail
       ? `<div class="spaceSelectionPanelDetail">${this.escapeHtml(data.detail)}</div>`
       : "";
-    const actionButtons = data.type === "ship" && data.canCommand
+    const actionButtons = (data.type === "ship" || data.type === "fleet") && data.canCommand
       ? `
         <div class="spaceSelectionActions">
           <button class="spaceSelectionActionBtn ${this.activeShipAction === "move" ? "active" : ""}" type="button" data-action="move">Move</button>
           <button class="spaceSelectionActionBtn ${this.activeShipAction === "build" ? "active" : ""}" type="button" data-action="build">Build</button>
           <button class="spaceSelectionActionBtn" type="button" data-action="attack">Attack</button>
+          <button class="spaceSelectionActionBtn" type="button" data-action="merge">Merge</button>
         </div>
       `
       : "";

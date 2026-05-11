@@ -17,7 +17,7 @@ import type {
 } from "../data/Starbase";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 
-export type ShipAction = "move" | "build" | "attack";
+export type ShipAction = "move" | "build" | "attack" | "merge";
 
 export type ShipTransitPhase =
   | "idle"
@@ -38,6 +38,7 @@ export type ServerUpdateField =
   | "habitedPlanetSystems"
   | "factionEconomies"
   | "ships"
+  | "fleets"
   | "starbases";
 
 export interface ServerStar extends StarData {}
@@ -74,6 +75,17 @@ export interface ShipHyperlanePosition {
 export interface ServerShip {
   id: string;
   ownerId: number;
+  fleetId: string;
+  shipKind: StarbaseShipKind;
+  speed: number;
+  hp: number;
+  maxHp: number;
+}
+
+export interface ServerFleet {
+  id: string;
+  ownerId: number;
+  shipIds: string[];
   currentStarId: number;
   targetStarId: number | null;
   phase: ShipTransitPhase;
@@ -83,20 +95,29 @@ export interface ServerShip {
   routeIndex: number;
   phaseProgress: number;
   orderType: "move" | "build" | null;
+  speed: number;
   systemPosition: ShipSystemPosition;
   hyperlanePosition: ShipHyperlanePosition | null;
 }
 
 export interface MoveCommand {
-  type: "moveShip";
-  shipId: string;
+  type: "moveFleet" | "moveShip";
+  fleetId?: string;
+  shipId?: string;
   targetStarId: number;
 }
 
 export interface BuildCommand {
   type: "buildStarbase";
-  shipId: string;
+  fleetId?: string;
+  shipId?: string;
   targetStarId: number;
+}
+
+export interface MergeFleetsCommand {
+  type: "mergeFleets";
+  targetFleetId: string;
+  sourceFleetIds: string[];
 }
 
 export interface SetSpeedCommand {
@@ -162,6 +183,7 @@ export type ClientCommand =
   | JoinCommand
   | MoveCommand
   | BuildCommand
+  | MergeFleetsCommand
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
@@ -186,6 +208,7 @@ export interface GameSnapshot {
   visibleStarIds: number[] | null;
   knownStarIds: number[] | null;
   ships: ServerShip[];
+  fleets: ServerFleet[];
   starbases: ServerStarbase[];
 }
 
@@ -204,6 +227,7 @@ export interface GameUpdate {
   visibleStarIds?: number[] | null;
   knownStarIds?: number[] | null;
   ships?: ServerShip[];
+  fleets?: ServerFleet[];
   starbases?: ServerStarbase[];
 }
 

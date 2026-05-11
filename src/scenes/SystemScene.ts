@@ -44,8 +44,8 @@ import type { PlanetConfig, StarData, StarVisualKind } from "../data/StarMap";
 import type { PlanetState } from "../data/Economy";
 import type { FactionInfo } from "../data/Factions";
 import { OrbitSystem } from "../systems/OrbitSystem";
-import type { GalaxyShipTransit, HyperlaneExitPoint } from "../game/GameplayTypes";
-import type { ClientCommand, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
+import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { SelectionPanel } from "../ui/SelectionPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
@@ -59,7 +59,8 @@ export interface SystemSceneOptions {
   homeSystemStarIds?: number[];
   playerShipStarId?: number;
   playerShipSystemIds?: number[];
-  shipSystemPositions?: Record<number, { x: number; y: number; z: number }>;
+  fleetSystemPositions?: Record<number, { x: number; y: number; z: number }>;
+  serverFleets?: ServerFleet[];
   serverShips?: ServerShip[];
   starbaseSystemIds?: number[];
   starbases?: ServerStarbase[];
@@ -70,6 +71,7 @@ export interface SystemSceneOptions {
   hyperlaneExits?: HyperlaneExitPoint[];
   onGameplayFrame?: (deltaTime: number) => void;
   onPlanetCommand?: (command: ClientCommand) => void;
+  onFleetCommand?: (command: ClientCommand) => void;
   onRequestPlanetDetails?: (planetId: string) => Promise<{ planet: PlanetConfig; planetState: PlanetState }>;
 }
 
@@ -111,7 +113,8 @@ export class SystemScene implements IGameScene {
   private homeSystemStarIds: Set<number>;
   private playerShipStarId: number;
   private playerShipSystemIds: Set<number>;
-  private shipSystemPositions: Record<number, { x: number; y: number; z: number }>;
+  private fleetSystemPositions: Record<number, { x: number; y: number; z: number }>;
+  private serverFleets: ServerFleet[];
   private serverShips: ServerShip[];
   private starbaseSystemIds: Set<number>;
   private starbases: ServerStarbase[];
@@ -159,6 +162,7 @@ export class SystemScene implements IGameScene {
   private selectionPanel!: SelectionPanel;
   private starbasePanel!: StarbasePanel;
   private entityCardLayer: HTMLDivElement | null = null;
+  private selectedFleetId: string | null = null;
   private readonly factionFlagSvgCache = new Map<number, string>();
   private pointerObserver: Observer<PointerInfo> | null = null;
   private starOccluded = false;
@@ -226,7 +230,8 @@ export class SystemScene implements IGameScene {
         ?? options.homeSystemStarIds
         ?? (this.playerShipStarId >= 0 ? [this.playerShipStarId] : []),
     );
-    this.shipSystemPositions = options.shipSystemPositions ?? {};
+    this.fleetSystemPositions = options.fleetSystemPositions ?? {};
+    this.serverFleets = options.serverFleets ?? [];
     this.serverShips = options.serverShips ?? [];
     this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
     this.starbases = options.starbases ?? [];
@@ -244,7 +249,7 @@ export class SystemScene implements IGameScene {
   }
 
   private hasPlayerShipPresence(): boolean {
-    if (this.shipSystemPositions[this.star.id]) return true;
+    if (this.fleetSystemPositions[this.star.id]) return true;
     if (this.playerShipSystemIds.has(this.star.id)) return true;
     if (this.playerShipStarId === this.star.id) return true;
     return !!this.shipTransit
@@ -425,7 +430,9 @@ export class SystemScene implements IGameScene {
     this.setupLighting();
     this.buildSystemObjects();
     this.objectPanel = new CelestialObjectPanel();
-    this.selectionPanel = new SelectionPanel(canvas);
+    this.selectionPanel = new SelectionPanel(canvas, {
+      onShipAction: (action) => this.handleSelectedFleetAction(action),
+    });
     this.starbasePanel = new StarbasePanel();
     this.installObjectLabelClicks();
     await this.createPlayerShipIfPresent();
@@ -587,9 +594,9 @@ export class SystemScene implements IGameScene {
     this.entityCardLayer?.remove();
     this.entityCardLayer = null;
 
-    const ships = this.getShipsInCurrentSystem();
+    const fleets = this.getFleetsInCurrentSystem();
     const starbases = this.getStarbasesInCurrentSystem();
-    if (ships.length === 0 && starbases.length === 0) return;
+    if (fleets.length === 0 && starbases.length === 0) return;
 
     this.injectSystemEntityCardStyles();
     const root = document.getElementById("spaceHudRoot") ?? document.body;
@@ -597,27 +604,27 @@ export class SystemScene implements IGameScene {
     layer.className = "systemEntityCardLayer";
     this.entityCardLayer = layer;
 
-    ships.forEach((ship, index) => {
-      const owner = this.getFaction(ship.ownerId);
+    fleets.forEach((fleet, index) => {
+      const owner = this.getFaction(fleet.ownerId);
       const card = document.createElement("button");
       card.type = "button";
-      card.className = "systemEntityCard ship";
-      card.dataset.entityKind = "ship";
-      card.dataset.entityId = ship.id;
+      card.className = "systemEntityCard fleet";
+      card.dataset.entityKind = "fleet";
+      card.dataset.entityId = fleet.id;
       card.dataset.offsetY = String(-28 - index * 36);
       card.style.setProperty("--entity-accent", this.factionColorCss(owner, "rgba(88, 211, 255, 0.95)"));
       card.innerHTML = `
-        <span class="systemEntityFlag">${this.getFactionFlagSvg(ship.ownerId)}</span>
+        <span class="systemEntityFlag">${this.getFactionFlagSvg(fleet.ownerId)}</span>
         <span class="systemEntityCopy">
-          <strong>${this.escapeHtml(this.formatFleetPower(ship, index))}</strong>
-          <small>${this.escapeHtml(this.formatShipStatus(ship))}</small>
+          <strong>${this.escapeHtml(this.formatFleetPower(fleet, index))}</strong>
+          <small>${this.escapeHtml(this.formatFleetStatus(fleet))}</small>
         </span>
         <span class="systemEntityIcon">F</span>
       `;
       card.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        this.selectShipFromCard(ship, ev.shiftKey);
+        this.selectFleetFromCard(fleet, ev.shiftKey);
       });
       layer.appendChild(card);
     });
@@ -657,8 +664,8 @@ export class SystemScene implements IGameScene {
       const kind = card.dataset.entityKind;
       const id = card.dataset.entityId;
       const offsetY = Number(card.dataset.offsetY ?? "0");
-      const anchor = kind === "ship"
-        ? this.getShipCardAnchor(id)
+      const anchor = kind === "fleet"
+        ? this.getFleetCardAnchor(id)
         : this.getStarbaseCardAnchor(id);
       const projected = anchor ? this.projectToScreen(anchor) : null;
       if (!projected) {
@@ -671,9 +678,9 @@ export class SystemScene implements IGameScene {
     }
   }
 
-  private getShipsInCurrentSystem(): ServerShip[] {
-    return this.serverShips.filter((ship) => (
-      ship.currentStarId === this.star.id && ship.phase !== "jumpingHyperlane"
+  private getFleetsInCurrentSystem(): ServerFleet[] {
+    return this.serverFleets.filter((fleet) => (
+      fleet.currentStarId === this.star.id && fleet.phase !== "jumpingHyperlane"
     ));
   }
 
@@ -681,14 +688,14 @@ export class SystemScene implements IGameScene {
     return this.starbases.filter((starbase) => starbase.starId === this.star.id);
   }
 
-  private getShipCardAnchor(shipId?: string): Vector3 | null {
-    if (!shipId) return null;
-    const ship = this.serverShips.find((candidate) => candidate.id === shipId);
-    if (!ship || ship.currentStarId !== this.star.id || ship.phase === "jumpingHyperlane") return null;
+  private getFleetCardAnchor(fleetId?: string): Vector3 | null {
+    if (!fleetId) return null;
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet || fleet.currentStarId !== this.star.id || fleet.phase === "jumpingHyperlane") return null;
     if (this.playerShipRoot?.isEnabled()) {
       return this.playerShipRoot.position.add(new Vector3(0, 2.6, 0));
     }
-    const position = this.shipSystemPositions[this.star.id] ?? this.playerShipTargetPosition;
+    const position = this.fleetSystemPositions[this.star.id] ?? this.playerShipTargetPosition;
     return new Vector3(position.x, position.y + 2.6, position.z);
   }
 
@@ -719,30 +726,50 @@ export class SystemScene implements IGameScene {
     };
   }
 
-  private selectShipFromCard(ship: ServerShip, shiftKey: boolean): void {
-    const owner = this.getFaction(ship.ownerId);
+  private selectFleetFromCard(fleet: ServerFleet, shiftKey: boolean): void {
+    const owner = this.getFaction(fleet.ownerId);
+    const ships = this.getShipsForFleet(fleet.id);
+    const shipCount = fleet.shipIds.length || ships.length || 1;
+    this.selectedFleetId = fleet.id;
     this.selectionPanel.select(
       {
-        type: "ship",
-        id: ship.id,
+        type: "fleet",
+        id: fleet.id,
         name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
         hp: 95,
         maxHp: 100,
-        class: "Patrol Fleet",
-        status: this.formatShipStatus(ship),
-        detail: ship.ownerId === this.playerFactionId
+        class: shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
+        status: this.formatFleetStatus(fleet),
+        detail: fleet.ownerId === this.playerFactionId
           ? "Fleet selected. Command controls remain in the galaxy map for now."
           : "Foreign fleet. Tactical details are limited.",
         ownerName: owner?.name ?? "Unknown",
         ownerColor: owner?.color,
-        canCommand: false,
+        canCommand: fleet.ownerId === this.playerFactionId,
       },
       shiftKey,
     );
   }
 
+  private handleSelectedFleetAction(action: ShipAction): void {
+    if (action !== "merge") return;
+    const targetFleet = this.serverFleets.find((fleet) => fleet.id === this.selectedFleetId);
+    if (!targetFleet || targetFleet.ownerId !== this.playerFactionId || targetFleet.phase !== "idle") return;
+    const sourceFleetIds = this.serverFleets
+      .filter((fleet) => (
+        fleet.id !== targetFleet.id
+        && fleet.ownerId === targetFleet.ownerId
+        && fleet.currentStarId === targetFleet.currentStarId
+        && fleet.phase === "idle"
+      ))
+      .map((fleet) => fleet.id);
+    if (sourceFleetIds.length === 0) return;
+    this.options.onFleetCommand?.({ type: "mergeFleets", targetFleetId: targetFleet.id, sourceFleetIds });
+  }
+
   private openStarbasePanel(starbase: ServerStarbase): void {
     const owner = this.getFaction(starbase.ownerId);
+    this.selectedFleetId = null;
     this.selectionPanel.clear();
     this.starbasePanel.show({
       id: starbase.id,
@@ -779,12 +806,17 @@ export class SystemScene implements IGameScene {
     return `rgba(${r}, ${g}, ${b}, 0.95)`;
   }
 
-  private formatFleetPower(ship: ServerShip, index: number): string {
+  private getShipsForFleet(fleetId: string): ServerShip[] {
+    return this.serverShips.filter((ship) => ship.fleetId === fleetId);
+  }
+
+  private formatFleetPower(fleet: ServerFleet, index: number): string {
     let hash = 0;
-    for (let i = 0; i < ship.id.length; i += 1) {
-      hash = (hash * 31 + ship.id.charCodeAt(i)) >>> 0;
+    for (let i = 0; i < fleet.id.length; i += 1) {
+      hash = (hash * 31 + fleet.id.charCodeAt(i)) >>> 0;
     }
-    const value = 118_000 + ((hash + index * 7919) % 24_000);
+    const shipCount = Math.max(1, fleet.shipIds.length || this.getShipsForFleet(fleet.id).length);
+    const value = (118_000 + ((hash + index * 7919) % 24_000)) * shipCount;
     return `${Math.round(value / 1000)}K`;
   }
 
@@ -793,8 +825,8 @@ export class SystemScene implements IGameScene {
     return `${base.toFixed(1)}K`;
   }
 
-  private formatShipStatus(ship: ServerShip): string {
-    switch (ship.phase) {
+  private formatFleetStatus(fleet: ServerFleet): string {
+    switch (fleet.phase) {
       case "departingSystem":
         return "Departing";
       case "arrivingSystem":
@@ -1520,7 +1552,7 @@ export class SystemScene implements IGameScene {
 
     this.playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
     this.playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
-    const serverPosition = this.shipSystemPositions[this.star.id];
+    const serverPosition = this.fleetSystemPositions[this.star.id];
     if (serverPosition) {
       this.playerShipBasePosition.set(serverPosition.x, serverPosition.y, serverPosition.z);
       this.playerShipTargetPosition.copyFrom(this.playerShipBasePosition);
@@ -2574,8 +2606,8 @@ export class SystemScene implements IGameScene {
     }
   }
 
-  setShipSystemPositions(positions: Record<number, { x: number; y: number; z: number }>): void {
-    this.shipSystemPositions = positions;
+  setFleetSystemPositions(positions: Record<number, { x: number; y: number; z: number }>): void {
+    this.fleetSystemPositions = positions;
     const position = positions[this.star.id];
     if (!position) {
       this.playerShipRoot?.setEnabled(false);
@@ -2593,6 +2625,15 @@ export class SystemScene implements IGameScene {
     }
 
     this.playerShipRoot.setEnabled(this.starsVisible);
+    this.refreshSystemEntityCards();
+  }
+
+  setServerFleets(fleets: ServerFleet[]): void {
+    this.serverFleets = fleets;
+    if (this.selectedFleetId && !fleets.some((fleet) => fleet.id === this.selectedFleetId)) {
+      this.selectedFleetId = null;
+      this.selectionPanel?.clear();
+    }
     this.refreshSystemEntityCards();
   }
 
