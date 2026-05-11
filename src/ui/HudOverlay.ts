@@ -1,3 +1,5 @@
+import type { GameClock } from "../game/GameProtocol";
+
 export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
 
 export type HudVisualToggles = Record<HudToggleKey, boolean>;
@@ -12,6 +14,7 @@ export interface HudState {
   canExitSystem: boolean;
   connectedSystems: HudConnectedSystem[];
   toggles: HudVisualToggles;
+  clock?: GameClock;
 }
 
 export interface HudCallbacks {
@@ -223,6 +226,47 @@ const HUD_STYLE = `
   color: var(--hud-muted);
 }
 
+#spaceHudClock {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  min-width: 190px;
+  border: 1px solid var(--hud-line);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(16, 22, 30, 0.96) 0%, rgba(8, 12, 18, 0.98) 100%);
+  padding: 10px 12px;
+  pointer-events: none;
+  text-align: right;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
+}
+
+.spaceHudClockLabel {
+  display: block;
+  color: var(--hud-muted);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.spaceHudClockValue {
+  display: block;
+  color: #edf4ff;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.spaceHudClockSpeed {
+  display: block;
+  margin-top: 3px;
+  color: rgba(150, 210, 255, 0.92);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .spaceHudToggleBtn {
   min-height: 30px;
   border-radius: 4px;
@@ -346,6 +390,7 @@ export class HudOverlay {
   private readonly callbacks: HudCallbacks;
   private readonly root: HTMLDivElement;
   private readonly connectedContainer: HTMLDivElement;
+  private readonly clockEl: HTMLDivElement;
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
   private readonly toggleButtons: Record<HudToggleKey, HTMLButtonElement>;
@@ -362,6 +407,9 @@ export class HudOverlay {
 
     this.connectedContainer = document.createElement("div");
     this.connectedContainer.id = "spaceHudConnected";
+
+    this.clockEl = document.createElement("div");
+    this.clockEl.id = "spaceHudClock";
 
     this.titleEl = document.createElement("div");
     this.titleEl.id = "spaceHudTitle";
@@ -407,12 +455,22 @@ export class HudOverlay {
     };
 
     this.root.appendChild(bottom);
+    this.root.appendChild(this.clockEl);
     this.root.appendChild(toggles);
     document.body.appendChild(this.root);
   }
 
   update(state: HudState): void {
     this.titleEl.textContent = state.title;
+    if (state.clock) {
+      this.clockEl.innerHTML = `
+        <span class="spaceHudClockLabel">Game Clock</span>
+        <span class="spaceHudClockValue">Year ${state.clock.year.toFixed(1)}</span>
+        <span class="spaceHudClockSpeed">${state.clock.speedMultiplier}x Simulation</span>
+      `;
+    } else {
+      this.clockEl.innerHTML = "";
+    }
     this.exitButton.disabled = !state.canExitSystem;
 
     this.connectedContainer.innerHTML = "";

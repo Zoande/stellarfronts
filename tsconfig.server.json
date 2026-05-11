@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "lib": ["ES2022"],
+    "types": ["node", "ws"]
+  },
+  "include": ["server/**/*.ts", "src/data/**/*.ts", "src/game/GameProtocol.ts"]
+}

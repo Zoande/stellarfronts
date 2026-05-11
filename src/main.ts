@@ -1,10 +1,11 @@
 import { SceneManager } from "@/SceneManager";
-import { buildHyperlaneAdjacency, buildHyperlanePairs, GalaxyScene } from "@/scenes/GalaxyScene";
+import { GalaxyScene } from "@/scenes/GalaxyScene";
 import { SystemScene } from "@/scenes/SystemScene";
 import type { IGameScene } from "@/SceneManager";
 import { generateStarMap } from "@/data/StarMap";
 import type { StarData } from "@/data/StarMap";
 import { GALAXY_MAP } from "@/data/GalaxyMap";
+import { buildHyperlaneAdjacency, buildHyperlanePairs } from "@/data/Hyperlanes";
 import {
   buildFactions,
   computeVisibleStarIds,
@@ -144,9 +145,12 @@ async function boot() {
   }
 
   async function openGalaxyView(): Promise<void> {
+    const factionHomeStarIds = factions.map((faction) => faction.homeStarId);
     const options: GalaxySceneOptions = {
       factions,
       perspective,
+      playerShipSystemIds: factionHomeStarIds,
+      starbaseSystemIds: factionHomeStarIds,
       visibilityJumps: FOG_OF_WAR_MAX_JUMPS,
     };
     if (cachedGalaxyStars && cachedGalaxyStars.length > 0) {
@@ -186,12 +190,17 @@ async function boot() {
 
     await switchScene(() => {
       const actualStarCount = cachedGalaxyStars ? cachedGalaxyStars.length : 500;
+      const factionHomeStarIds = factions.map((faction) => faction.homeStarId);
       const system = new SystemScene(
         engine,
         star,
         () => openGalaxyView(),
         actualStarCount,
-        { homeSystemStarIds: factions.map((faction) => faction.homeStarId) },
+        {
+          homeSystemStarIds: factionHomeStarIds,
+          playerShipSystemIds: factionHomeStarIds,
+          starbaseSystemIds: factionHomeStarIds,
+        },
       );
       activeSystemScene = system;
       currentSystemStar = star;

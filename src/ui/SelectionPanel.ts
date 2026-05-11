@@ -9,12 +9,16 @@ export type SelectionType = "ship" | "starbase";
 
 export interface SelectionData {
   type: SelectionType;
+  id?: string;
   name: string;
   hp: number;
   maxHp: number;
   class?: string;
   status?: string;
   detail?: string;
+  ownerName?: string;
+  ownerColor?: [number, number, number];
+  canCommand?: boolean;
 }
 
 export interface SelectionPanelCallbacks {
@@ -23,7 +27,7 @@ export interface SelectionPanelCallbacks {
 
 export class SelectionPanel {
   private root: HTMLDivElement;
-  private selections: Map<SelectionType, SelectionData> = new Map();
+  private selections: Map<string, SelectionData> = new Map();
   private styleId = "space-selection-panel-style";
   private containerElement: HTMLDivElement | null = null;
   private canvasElement: HTMLCanvasElement | null = null;
@@ -55,6 +59,9 @@ export class SelectionPanel {
   display: flex;
   flex-direction: column-reverse;
   gap: 12px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  padding-right: 6px;
   pointer-events: auto;
   z-index: 49;
   user-select: none;
@@ -63,10 +70,14 @@ export class SelectionPanel {
 }
 
 .spaceSelectionPanel {
+  --selection-color: rgba(150, 200, 230, 0.95);
+  --selection-color-soft: rgba(150, 200, 230, 0.22);
   min-width: 240px;
   border-radius: 6px;
-  border: 1px solid var(--hud-line-strong);
-  background: linear-gradient(180deg, var(--hud-panel-alt) 0%, var(--hud-panel) 100%);
+  border: 1px solid var(--selection-color);
+  background:
+    linear-gradient(180deg, var(--selection-color-soft) 0%, rgba(6, 13, 24, 0.1) 36%),
+    linear-gradient(180deg, var(--hud-panel-alt) 0%, var(--hud-panel) 100%);
   padding: 12px;
   font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
   color: var(--hud-ink);
@@ -81,7 +92,7 @@ export class SelectionPanel {
 }
 
 .spaceSelectionPanel.ship {
-  border-color: rgba(150, 200, 230, 0.7);
+  border-color: var(--selection-color);
 }
 
 .spaceSelectionPanelTitle {
@@ -99,7 +110,7 @@ export class SelectionPanel {
 }
 
 .spaceSelectionPanel.ship .spaceSelectionPanelTitle {
-  color: rgba(150, 200, 230, 0.95);
+  color: var(--selection-color);
 }
 
 .spaceSelectionPanelContent {
@@ -147,7 +158,7 @@ export class SelectionPanel {
 }
 
 .spaceSelectionPanel.ship .spaceSelectionPanelHpFill {
-  background: linear-gradient(90deg, rgba(100, 150, 200, 0.8), rgba(80, 130, 180, 0.9));
+  background: linear-gradient(90deg, var(--selection-color-soft), var(--selection-color));
 }
 
 .spaceSelectionPanelHpPercent {
@@ -187,14 +198,14 @@ export class SelectionPanel {
 }
 
 .spaceSelectionActionBtn:hover {
-  border-color: rgba(150, 200, 230, 0.86);
+  border-color: var(--selection-color);
   background: linear-gradient(180deg, rgba(37, 52, 68, 0.98) 0%, rgba(22, 33, 44, 0.98) 100%);
 }
 
 .spaceSelectionActionBtn.active {
-  border-color: rgba(90, 220, 255, 0.92);
+  border-color: var(--selection-color);
   color: #edfaff;
-  box-shadow: 0 0 16px rgba(90, 210, 255, 0.22);
+  box-shadow: 0 0 16px var(--selection-color-soft);
 }
     `;
     document.head.appendChild(style);
@@ -204,12 +215,16 @@ export class SelectionPanel {
     if (!shiftKey) {
       this.selections.clear();
     }
-    this.selections.set(data.type, data);
+    this.selections.set(this.getSelectionKey(data), data);
     this.render();
   }
 
   public deselect(type: SelectionType): void {
-    this.selections.delete(type);
+    for (const key of Array.from(this.selections.keys())) {
+      if (key.startsWith(`${type}:`)) {
+        this.selections.delete(key);
+      }
+    }
     this.render();
   }
 
@@ -257,6 +272,10 @@ export class SelectionPanel {
   private createPanelElement(data: SelectionData): HTMLDivElement {
     const panel = document.createElement("div");
     panel.className = `spaceSelectionPanel ${data.type}`;
+    if (data.ownerColor) {
+      panel.style.setProperty("--selection-color", this.colorToCss(data.ownerColor, 0.95));
+      panel.style.setProperty("--selection-color-soft", this.colorToCss(data.ownerColor, 0.24));
+    }
 
     const hpPercent = Math.round((data.hp / data.maxHp) * 100);
     const hpWidth = (data.hp / data.maxHp) * 100;
@@ -267,15 +286,23 @@ export class SelectionPanel {
       classLine = `
         <div class="spaceSelectionPanelRow">
           <span class="spaceSelectionPanelLabel">Class</span>
-          <span class="spaceSelectionPanelValue">${data.class}</span>
+          <span class="spaceSelectionPanelValue">${this.escapeHtml(data.class)}</span>
         </div>
       `;
     }
 
-    const detailLine = data.detail
-      ? `<div class="spaceSelectionPanelDetail">${data.detail}</div>`
+    const ownerLine = data.ownerName
+      ? `
+        <div class="spaceSelectionPanelRow">
+          <span class="spaceSelectionPanelLabel">Owner</span>
+          <span class="spaceSelectionPanelValue">${this.escapeHtml(data.ownerName)}</span>
+        </div>
+      `
       : "";
-    const actionButtons = data.type === "ship"
+    const detailLine = data.detail
+      ? `<div class="spaceSelectionPanelDetail">${this.escapeHtml(data.detail)}</div>`
+      : "";
+    const actionButtons = data.type === "ship" && data.canCommand
       ? `
         <div class="spaceSelectionActions">
           <button class="spaceSelectionActionBtn ${this.activeShipAction === "move" ? "active" : ""}" type="button" data-action="move">Move</button>
@@ -286,12 +313,13 @@ export class SelectionPanel {
       : "";
 
     panel.innerHTML = `
-      <div class="spaceSelectionPanelTitle">${data.name}</div>
+      <div class="spaceSelectionPanelTitle">${this.escapeHtml(data.name)}</div>
       <div class="spaceSelectionPanelContent">
         <div class="spaceSelectionPanelRow">
           <span class="spaceSelectionPanelLabel">Status</span>
-          <span class="spaceSelectionPanelValue">${status}</span>
+          <span class="spaceSelectionPanelValue">${this.escapeHtml(status)}</span>
         </div>
+        ${ownerLine}
         ${classLine}
         ${detailLine}
         <div class="spaceSelectionPanelRow">
@@ -316,5 +344,25 @@ export class SelectionPanel {
     }
 
     return panel;
+  }
+
+  private getSelectionKey(data: SelectionData): string {
+    return `${data.type}:${data.id ?? data.type}`;
+  }
+
+  private colorToCss(color: [number, number, number], alpha: number): string {
+    const r = Math.round(Math.max(0, Math.min(1, color[0])) * 255);
+    const g = Math.round(Math.max(0, Math.min(1, color[1])) * 255);
+    const b = Math.round(Math.max(0, Math.min(1, color[2])) * 255);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 }
