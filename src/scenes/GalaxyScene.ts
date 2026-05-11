@@ -35,7 +35,7 @@ import { SelectionPanel } from "../ui/SelectionPanel";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
-import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { ClientCommand, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
 
@@ -63,6 +63,7 @@ export interface GalaxySceneOptions {
   playerShipTransit?: GalaxyShipTransit | null;
   serverFleets?: ServerFleet[];
   serverShips?: ServerShip[];
+  battles?: ServerBattle[];
   starbaseSystemIds?: Iterable<number>;
   promotedStarbaseSystemIds?: Iterable<number>;
   starbases?: ServerStarbase[];
@@ -875,6 +876,7 @@ export class GalaxyScene implements IGameScene {
   private playerShipTransit: GalaxyShipTransit | null = null;
   private serverFleets: ServerFleet[] = [];
   private serverShips: ServerShip[] = [];
+  private battles: ServerBattle[] = [];
   private starbases: ServerStarbase[] = [];
   private planetStates: PlanetState[] = [];
   private hasExplicitHabitedPlanetSystemIds = false;
@@ -966,6 +968,7 @@ export class GalaxyScene implements IGameScene {
     this.playerShipTransit = this.options.playerShipTransit ?? null;
     this.serverFleets = this.options.serverFleets ?? [];
     this.serverShips = this.options.serverShips ?? [];
+    this.battles = this.options.battles ?? [];
     this.starbases = this.options.starbases ?? [];
     this.starbaseSystemIds = new Set(
       this.options.starbaseSystemIds
@@ -1473,6 +1476,39 @@ export class GalaxyScene implements IGameScene {
     return this.serverShips.filter((ship) => ship.fleetId === fleetId);
   }
 
+  private getBattleForFleet(fleetId: string | null): ServerBattle | null {
+    if (!fleetId) return null;
+    return this.battles.find((battle) => (
+      battle.phase !== "resolved"
+      && (battle.attackerFleetIds.includes(fleetId) || battle.defenderFleetIds.includes(fleetId))
+    )) ?? null;
+  }
+
+  private getFleetDefense(fleetId: string | null): {
+    shield: number;
+    maxShield: number;
+    armor: number;
+    maxArmor: number;
+    hull: number;
+    maxHull: number;
+  } {
+    const ships = this.getShipsForFleet(fleetId);
+    if (ships.length === 0) {
+      return { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 };
+    }
+    return ships.reduce(
+      (total, ship) => ({
+        shield: total.shield + ship.shield,
+        maxShield: total.maxShield + ship.maxShield,
+        armor: total.armor + ship.armor,
+        maxArmor: total.maxArmor + ship.maxArmor,
+        hull: total.hull + ship.hull,
+        maxHull: total.maxHull + ship.maxHull,
+      }),
+      { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 },
+    );
+  }
+
   private getShipIconStyles(): ShipIconStyle[] {
     const styles: ShipIconStyle[] = [];
     for (const starId of this.playerShipSystemIds) {
@@ -1541,6 +1577,14 @@ export class GalaxyScene implements IGameScene {
 
     if (action === "merge") {
       this.mergeSelectedFleetWithLocalFleets();
+      return;
+    }
+
+    if (action === "retreat") {
+      if (this.selectedCommandShipId) {
+        this.options.onFleetCommand?.({ type: "retreatFleet", fleetId: this.selectedCommandShipId });
+      }
+      this.clearShipAction();
       return;
     }
 
@@ -1735,6 +1779,11 @@ export class GalaxyScene implements IGameScene {
       const canCommand = this.isOwnShipOwner(ownerId);
       const fleetShips = this.getShipsForFleet(serverFleet?.id ?? null);
       const fleetSize = serverFleet?.shipIds.length ?? (fleetShips.length || 1);
+      const defense = this.getFleetDefense(serverFleet?.id ?? null);
+      const battle = this.getBattleForFleet(serverFleet?.id ?? null);
+      const actions = battle
+        ? ["retreat"]
+        : ["move", "build", "attack", "merge"];
 
       if (canCommand) {
         this.selectedShip = true;
@@ -1752,18 +1801,27 @@ export class GalaxyScene implements IGameScene {
           type: "fleet",
           id: serverFleet?.id ?? String(shipStarId),
           name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
-          hp: 95,
-          maxHp: 100,
+          hp: defense.hull,
+          maxHp: defense.maxHull,
+          shield: defense.shield,
+          maxShield: defense.maxShield,
+          armor: defense.armor,
+          maxArmor: defense.maxArmor,
+          hull: defense.hull,
+          maxHull: defense.maxHull,
           class: fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
-          status: serverFleet && serverFleet.phase !== "idle"
-            ? serverFleet.phase
-            : this.playerShipTransit && shipStarId === this.playerShipStarId ? "Moving" : "Operational",
+          status: battle
+            ? "Engaged"
+            : serverFleet && serverFleet.phase !== "idle"
+              ? serverFleet.phase
+              : this.playerShipTransit && shipStarId === this.playerShipStarId ? "Moving" : "Operational",
           detail: canCommand
-            ? "Select a command, then choose a highlighted system."
+            ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : "Select a command, then choose a highlighted system.")
             : "Foreign fleet. Command controls unavailable.",
           ownerName: owner?.name ?? "Unknown",
           ownerColor: owner?.color,
           canCommand,
+          actions: canCommand ? actions : undefined,
         },
         shiftKey,
       );
@@ -1940,6 +1998,10 @@ export class GalaxyScene implements IGameScene {
   setServerShips(ships: ServerShip[]): void {
     this.serverShips = ships;
     this.starField?.setShipIconStyles(this.getShipIconStyles());
+  }
+
+  setBattles(battles: ServerBattle[]): void {
+    this.battles = battles;
   }
 
   setServerFleets(fleets: ServerFleet[]): void {

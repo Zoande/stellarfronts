@@ -12,6 +12,30 @@ export type StarbaseBuildingKind =
   | "logisticsDepot";
 export type StarbaseShipKind = "corvette";
 
+export type WeaponKind = "laser";
+
+export interface WeaponMountDefinition {
+  kind: WeaponKind;
+  barrels: number;
+  damage: number;
+  shieldPenetration: number;
+  armorPenetration: number;
+  accuracy: number;
+}
+
+export interface CombatStats {
+  maxShield: number;
+  maxArmor: number;
+  maxHull: number;
+  evasion: number;
+  sensorRange: number;
+  weaponMounts: WeaponMountDefinition[];
+}
+
+export const WEAPON_KIND_DEFINITIONS: Record<WeaponKind, { range: number }> = {
+  laser: { range: 2 },
+};
+
 export interface StarbaseEconomy {
   production: ResourceCounts;
   upkeep: ResourceCounts;
@@ -32,6 +56,7 @@ export interface StarbaseLevelDefinition {
   buildingSlots: number;
   production: ResourceCounts;
   upkeep: ResourceCounts;
+  combat: CombatStats;
   upgrade?: StarbaseUpgradeDefinition;
 }
 
@@ -78,6 +103,7 @@ export interface StarbaseShipDefinition {
   alloyUpkeepPerDay: number;
   crewDemand: number;
   upkeep: ResourceCounts;
+  combat: CombatStats;
 }
 
 function resources(values: Partial<ResourceCounts>): ResourceCounts {
@@ -91,6 +117,22 @@ function createConstructionId(prefix: string, parts: Array<string | number | und
   return `${prefix}-${parts.filter((part) => part !== undefined).join("-")}-${Date.now().toString(36)}`;
 }
 
+function createLaserMount(overrides: Partial<WeaponMountDefinition> = {}): WeaponMountDefinition {
+  return {
+    kind: "laser",
+    barrels: 2,
+    damage: 12,
+    shieldPenetration: 0.12,
+    armorPenetration: 0.35,
+    accuracy: 0.82,
+    ...overrides,
+  };
+}
+
+function repeatMount(mount: WeaponMountDefinition, count: number): WeaponMountDefinition[] {
+  return Array.from({ length: Math.max(1, count) }, () => ({ ...mount }));
+}
+
 export const STARBASE_LEVEL_ORDER: StarbaseLevel[] = ["outpost", "starbase", "starhold", "starFortress"];
 
 export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefinition> = {
@@ -101,6 +143,14 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     buildingSlots: 2,
     production: resources({}),
     upkeep: resources({ energy: 8, food: 0.5, goods: 0.5, alloys: 1 }),
+    combat: {
+      maxShield: 180,
+      maxArmor: 120,
+      maxHull: 320,
+      evasion: 0.05,
+      sensorRange: 3,
+      weaponMounts: repeatMount(createLaserMount({ damage: 14, barrels: 2, accuracy: 0.78 }), 1),
+    },
     upgrade: { targetLevel: "starbase", alloyCost: 500, cost: resources({ alloys: 500 }), buildDays: 360 },
   },
   starbase: {
@@ -110,6 +160,14 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     buildingSlots: 4,
     production: resources({}),
     upkeep: resources({ energy: 24, food: 4, goods: 4, alloys: 6 }),
+    combat: {
+      maxShield: 320,
+      maxArmor: 220,
+      maxHull: 520,
+      evasion: 0.05,
+      sensorRange: 3,
+      weaponMounts: repeatMount(createLaserMount({ damage: 16, barrels: 3, accuracy: 0.8 }), 2),
+    },
     upgrade: { targetLevel: "starhold", alloyCost: 1250, cost: resources({ alloys: 1250, minerals: 250 }), buildDays: 720 },
   },
   starhold: {
@@ -119,6 +177,14 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     buildingSlots: 6,
     production: resources({}),
     upkeep: resources({ energy: 46, food: 10, goods: 10, alloys: 14, minerals: 4 }),
+    combat: {
+      maxShield: 520,
+      maxArmor: 380,
+      maxHull: 900,
+      evasion: 0.04,
+      sensorRange: 3,
+      weaponMounts: repeatMount(createLaserMount({ damage: 20, barrels: 3, accuracy: 0.82, armorPenetration: 0.4 }), 3),
+    },
     upgrade: { targetLevel: "starFortress", alloyCost: 3000, cost: resources({ alloys: 3000, minerals: 900 }), buildDays: 1080 },
   },
   starFortress: {
@@ -128,6 +194,14 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     buildingSlots: 9,
     production: resources({}),
     upkeep: resources({ energy: 78, food: 18, goods: 18, alloys: 26, minerals: 12 }),
+    combat: {
+      maxShield: 900,
+      maxArmor: 700,
+      maxHull: 1500,
+      evasion: 0.03,
+      sensorRange: 3,
+      weaponMounts: repeatMount(createLaserMount({ damage: 24, barrels: 4, accuracy: 0.84, armorPenetration: 0.45 }), 4),
+    },
   },
 };
 
@@ -221,6 +295,14 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     alloyUpkeepPerDay: 2,
     crewDemand: 1_200,
     upkeep: resources({ energy: 1.2, alloys: 0.2 }),
+    combat: {
+      maxShield: 120,
+      maxArmor: 80,
+      maxHull: 100,
+      evasion: 0.2,
+      sensorRange: 3,
+      weaponMounts: [createLaserMount({ damage: 12, barrels: 2, accuracy: 0.82 })],
+    },
   },
 };
 

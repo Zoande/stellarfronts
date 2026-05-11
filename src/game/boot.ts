@@ -301,6 +301,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
 
     if (activeGalaxyScene) {
+      if (isFull || has("battles") || has("visibility")) {
+        activeGalaxyScene.setBattles(snapshot.battles);
+      }
       if (isFull || has("visibility")) {
         activeGalaxyScene.setVisibleStarIds(snapshot.visibleStarIds);
         activeGalaxyScene.setKnownStarIds(snapshot.knownStarIds);
@@ -330,6 +333,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
 
     if (activeSystemScene) {
+      if (isFull || has("battles") || has("visibility")) {
+        activeSystemScene.setBattles(snapshot.battles);
+      }
       if (isFull || has("clock") || has("fleets")) {
         activeSystemScene.setFleetSystemPositions(getFleetSystemPositions());
         activeSystemScene.setServerFleets(snapshot.fleets);
@@ -374,6 +380,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       playerShipSystemIds: getFleetSystemIds(),
       serverFleets: snapshot.fleets,
       serverShips: snapshot.ships,
+      battles: snapshot.battles,
       starbaseSystemIds: getStarbaseSystemIds(),
       promotedStarbaseSystemIds: getPromotedStarbaseSystemIds(),
       starbases: snapshot.starbases,
@@ -433,6 +440,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           playerShipSystemIds: getFleetSystemIds(),
           serverFleets: snapshot.fleets,
           serverShips: snapshot.ships,
+          battles: snapshot.battles,
           starbaseSystemIds: getStarbaseSystemIds(),
           starbases: snapshot.starbases,
           factions: snapshot.factions,

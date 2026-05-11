@@ -1,4 +1,4 @@
-export type ShipAction = "move" | "build" | "attack" | "merge";
+export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat";
 
 export interface GalaxyShipTransit {
   fromStarId: number;

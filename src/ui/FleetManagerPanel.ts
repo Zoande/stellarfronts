@@ -218,7 +218,7 @@ export class FleetManagerPanel {
     const ships = this.getShipsForFleet(data, fleet.id);
     const index = Math.max(0, data.fleets.findIndex((candidate) => candidate.id === fleet.id));
     const shipCount = this.getFleetShipCount(data, fleet);
-    const hp = this.getFleetHp(data, fleet);
+    const defense = this.getFleetDefense(data, fleet);
     return `
       <div class="fmSelectedHeader">
         <div>
@@ -232,11 +232,11 @@ export class FleetManagerPanel {
         ${this.renderStat("Status", this.formatFleetStatus(fleet))}
         ${this.renderStat("Owner", owner?.name ?? "Unknown")}
         ${this.renderStat("Class", shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`)}
-        ${this.renderStat("Integrity", `${hp.hp} / ${hp.maxHp}`)}
+        ${this.renderStat("Shields", `${Math.round(defense.shield)} / ${Math.round(defense.maxShield)}`)}
+        ${this.renderStat("Armor", `${Math.round(defense.armor)} / ${Math.round(defense.maxArmor)}`)}
+        ${this.renderStat("Hull", `${Math.round(defense.hull)} / ${Math.round(defense.maxHull)}`)}
         ${this.renderStat("Speed", `${this.formatCompact(fleet.speed)} ly/day`)}
         ${this.renderStat("Order", this.formatFleetOrder(fleet))}
-        ${this.renderStat("Armor", "Placeholder")}
-        ${this.renderStat("Evasion", "Placeholder")}
       </div>
       <div class="fmSectionTitle fmCompositionTitle">Fleet Composition</div>
       <div class="fmCompositionList">
@@ -271,6 +271,9 @@ export class FleetManagerPanel {
 
   private renderShipRow(ship: ServerShip): string {
     const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind];
+    const shieldPct = ship.maxShield > 0 ? Math.round((ship.shield / ship.maxShield) * 100) : 0;
+    const armorPct = ship.maxArmor > 0 ? Math.round((ship.armor / ship.maxArmor) * 100) : 0;
+    const hullPct = ship.maxHull > 0 ? Math.round((ship.hull / ship.maxHull) * 100) : 0;
     return `
       <div class="fmCompositionRow">
         <span class="fmShipIcon">${this.escapeHtml(this.getInitials(definition?.label ?? ship.shipKind))}</span>
@@ -278,7 +281,7 @@ export class FleetManagerPanel {
           <strong>${this.escapeHtml(definition?.label ?? ship.shipKind)}</strong>
           <small>${this.escapeHtml(definition?.className ?? "Unknown class")}</small>
         </span>
-        <em>${Math.round((ship.hp / Math.max(1, ship.maxHp)) * 100)}%</em>
+        <em>S ${shieldPct}% | A ${armorPct}% | H ${hullPct}%</em>
       </div>
     `;
   }
@@ -405,15 +408,28 @@ export class FleetManagerPanel {
     return data.fleets.reduce((total, fleet) => total + this.getFleetShipCount(data, fleet), 0);
   }
 
-  private getFleetHp(data: FleetManagerPanelData, fleet: ServerFleet): { hp: number; maxHp: number } {
+  private getFleetDefense(data: FleetManagerPanelData, fleet: ServerFleet): {
+    shield: number;
+    maxShield: number;
+    armor: number;
+    maxArmor: number;
+    hull: number;
+    maxHull: number;
+  } {
     const ships = this.getShipsForFleet(data, fleet.id);
-    if (ships.length === 0) return { hp: 95, maxHp: 100 };
+    if (ships.length === 0) {
+      return { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 };
+    }
     return ships.reduce(
       (total, ship) => ({
-        hp: total.hp + ship.hp,
-        maxHp: total.maxHp + ship.maxHp,
+        shield: total.shield + ship.shield,
+        maxShield: total.maxShield + ship.maxShield,
+        armor: total.armor + ship.armor,
+        maxArmor: total.maxArmor + ship.maxArmor,
+        hull: total.hull + ship.hull,
+        maxHull: total.maxHull + ship.maxHull,
       }),
-      { hp: 0, maxHp: 0 },
+      { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 },
     );
   }
 
@@ -487,12 +503,34 @@ export class FleetManagerPanel {
   }
 
   private getFleetPowerValue(data: FleetManagerPanelData, fleet: ServerFleet, index: number): number {
-    let hash = 0;
-    for (let i = 0; i < fleet.id.length; i += 1) {
-      hash = (hash * 31 + fleet.id.charCodeAt(i)) >>> 0;
+    const ships = this.getShipsForFleet(data, fleet.id);
+    const roundsToKillEstimate = 4;
+    if (ships.length === 0) {
+      const fallback = STARBASE_SHIP_DEFINITIONS.corvette;
+      const weaponDamage = fallback.combat.weaponMounts.reduce(
+        (total, mount) => total + mount.damage * mount.barrels,
+        0,
+      );
+      const perShip =
+        fallback.combat.maxShield * 0.5
+        + fallback.combat.maxArmor * 0.8
+        + fallback.combat.maxHull * 1.0
+        + weaponDamage * roundsToKillEstimate;
+      return perShip * Math.max(1, fleet.shipIds.length);
     }
-    const shipCount = Math.max(1, this.getFleetShipCount(data, fleet));
-    return (118_000 + ((hash + index * 7919) % 24_000)) * shipCount;
+    return ships.reduce((total, ship) => {
+      const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind] ?? STARBASE_SHIP_DEFINITIONS.corvette;
+      const weaponDamage = definition.combat.weaponMounts.reduce(
+        (sum, mount) => sum + mount.damage * mount.barrels,
+        0,
+      );
+      const shipPower =
+        ship.maxShield * 0.5
+        + ship.maxArmor * 0.8
+        + ship.maxHull * 1.0
+        + weaponDamage * roundsToKillEstimate;
+      return total + shipPower;
+    }, 0);
   }
 
   private formatFleetPower(data: FleetManagerPanelData, fleet: ServerFleet, index: number): string {

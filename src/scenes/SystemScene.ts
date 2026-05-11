@@ -45,10 +45,11 @@ import type { PlanetState } from "../data/Economy";
 import type { FactionInfo } from "../data/Factions";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
-import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { BattleZone, ClientCommand, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { SelectionPanel } from "../ui/SelectionPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
+import { STARBASE_SHIP_DEFINITIONS } from "../data/Starbase";
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
@@ -62,6 +63,7 @@ export interface SystemSceneOptions {
   fleetSystemPositions?: Record<number, { x: number; y: number; z: number }>;
   serverFleets?: ServerFleet[];
   serverShips?: ServerShip[];
+  battles?: ServerBattle[];
   starbaseSystemIds?: number[];
   starbases?: ServerStarbase[];
   factions?: FactionInfo[];
@@ -91,6 +93,16 @@ const SYSTEM_LABEL_U_SCALE = -1;
 const SYSTEM_LABEL_U_OFFSET = 1;
 const STAR_BANNER_DIR = "/textures/planet-banners";
 
+const BATTLE_SHIP_TARGET_SIZE = 0.65;
+const BATTLE_BEAM_TTL = 0.45;
+const BATTLE_ZONE_SPREAD = 3.6;
+const BATTLE_ZONE_POSITIONS: Record<BattleZone, Vector3> = {
+  0: new Vector3(-18, 4.2, -6),
+  1: new Vector3(-8, 4.1, -2),
+  2: new Vector3(8, 4.0, 2),
+  3: new Vector3(18, 3.9, 6),
+};
+
 const STAR_BANNER_TEXTURES: Record<StarType, string> = {
   B: `${STAR_BANNER_DIR}/Star_B_banner.png`,
   A: `${STAR_BANNER_DIR}/Star_A_banner.png`,
@@ -116,6 +128,7 @@ export class SystemScene implements IGameScene {
   private fleetSystemPositions: Record<number, { x: number; y: number; z: number }>;
   private serverFleets: ServerFleet[];
   private serverShips: ServerShip[];
+  private battles: ServerBattle[];
   private starbaseSystemIds: Set<number>;
   private starbases: ServerStarbase[];
   private factions: FactionInfo[];
@@ -145,6 +158,13 @@ export class SystemScene implements IGameScene {
   private playerShipThrusterMaterial: StandardMaterial | null = null;
   private playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
   private playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
+
+  private battleShipTemplate: TransformNode | null = null;
+  private battleShipTemplatePromise: Promise<void> | null = null;
+  private battleShipRoots = new Map<string, TransformNode>();
+  private battleShipTargets = new Map<string, Vector3>();
+  private battleBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
+  private battleRoundSeen = new Map<string, number>();
 
   private starbaseRoot: TransformNode | null = null;
   private starbaseLight: PointLight | null = null;
@@ -233,6 +253,7 @@ export class SystemScene implements IGameScene {
     this.fleetSystemPositions = options.fleetSystemPositions ?? {};
     this.serverFleets = options.serverFleets ?? [];
     this.serverShips = options.serverShips ?? [];
+    this.battles = options.battles ?? [];
     this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
     this.starbases = options.starbases ?? [];
     this.factions = options.factions ?? [];
@@ -437,6 +458,7 @@ export class SystemScene implements IGameScene {
     this.installObjectLabelClicks();
     await this.createPlayerShipIfPresent();
     await this.createStarbaseIfPresent();
+    this.refreshBattleShips();
     this.refreshSystemEntityCards();
     this.setStarsVisible(this.starsVisible);
     this.setBloomEnabled(this.bloomEnabled);
@@ -474,6 +496,33 @@ export class SystemScene implements IGameScene {
         this.playerShipBasePosition.y + Math.sin(this.elapsed * 1.15) * 0.32;
       this.playerShipRoot.position.z = this.playerShipBasePosition.z;
       this.playerShipRoot.rotation.y += dt * 0.16;
+    }
+
+    if (this.battleShipRoots.size > 0) {
+      const moveT = Math.min(1, dt * 5);
+      for (const [shipId, root] of this.battleShipRoots) {
+        const target = this.battleShipTargets.get(shipId);
+        if (!target) continue;
+        root.position.x = root.position.x + (target.x - root.position.x) * moveT;
+        root.position.y = root.position.y + (target.y - root.position.y) * moveT;
+        root.position.z = root.position.z + (target.z - root.position.z) * moveT;
+        root.rotation.y += dt * 0.35;
+      }
+    }
+
+    if (this.battleBeams.length > 0) {
+      const nextBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
+      for (const beam of this.battleBeams) {
+        beam.ttl -= dt;
+        if (beam.ttl <= 0) {
+          beam.mesh.dispose();
+          continue;
+        }
+        const alpha = Math.max(0, beam.ttl / beam.maxTtl);
+        beam.mesh.alpha = alpha;
+        nextBeams.push(beam);
+      }
+      this.battleBeams = nextBeams;
     }
     if (this.playerShipThrusterMaterial) {
       const thrusterPulse = 0.65 + 0.35 * Math.sin(this.elapsed * 5.8);
@@ -730,28 +779,44 @@ export class SystemScene implements IGameScene {
     const owner = this.getFaction(fleet.ownerId);
     const ships = this.getShipsForFleet(fleet.id);
     const shipCount = fleet.shipIds.length || ships.length || 1;
+    const defense = this.getFleetDefense(fleet.id);
+    const battle = this.getBattleForFleet(fleet.id);
+    const actions: ShipAction[] = battle ? ["retreat"] : ["merge"];
     this.selectedFleetId = fleet.id;
     this.selectionPanel.select(
       {
         type: "fleet",
         id: fleet.id,
         name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
-        hp: 95,
-        maxHp: 100,
+        hp: defense.hull,
+        maxHp: defense.maxHull,
+        shield: defense.shield,
+        maxShield: defense.maxShield,
+        armor: defense.armor,
+        maxArmor: defense.maxArmor,
+        hull: defense.hull,
+        maxHull: defense.maxHull,
         class: shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
-        status: this.formatFleetStatus(fleet),
+        status: battle ? "Engaged" : this.formatFleetStatus(fleet),
         detail: fleet.ownerId === this.playerFactionId
-          ? "Fleet selected. Command controls remain in the galaxy map for now."
+          ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : "Fleet selected. Command controls remain in the galaxy map for now.")
           : "Foreign fleet. Tactical details are limited.",
         ownerName: owner?.name ?? "Unknown",
         ownerColor: owner?.color,
         canCommand: fleet.ownerId === this.playerFactionId,
+        actions: fleet.ownerId === this.playerFactionId ? actions : undefined,
       },
       shiftKey,
     );
   }
 
   private handleSelectedFleetAction(action: ShipAction): void {
+    if (action === "retreat") {
+      if (this.selectedFleetId) {
+        this.options.onFleetCommand?.({ type: "retreatFleet", fleetId: this.selectedFleetId });
+      }
+      return;
+    }
     if (action !== "merge") return;
     const targetFleet = this.serverFleets.find((fleet) => fleet.id === this.selectedFleetId);
     if (!targetFleet || targetFleet.ownerId !== this.playerFactionId || targetFleet.phase !== "idle") return;
@@ -810,14 +875,70 @@ export class SystemScene implements IGameScene {
     return this.serverShips.filter((ship) => ship.fleetId === fleetId);
   }
 
-  private formatFleetPower(fleet: ServerFleet, index: number): string {
-    let hash = 0;
-    for (let i = 0; i < fleet.id.length; i += 1) {
-      hash = (hash * 31 + fleet.id.charCodeAt(i)) >>> 0;
+  private getBattleForFleet(fleetId: string): ServerBattle | null {
+    return this.battles.find((battle) => (
+      battle.phase !== "resolved"
+      && (battle.attackerFleetIds.includes(fleetId) || battle.defenderFleetIds.includes(fleetId))
+    )) ?? null;
+  }
+
+  private getFleetDefense(fleetId: string): {
+    shield: number;
+    maxShield: number;
+    armor: number;
+    maxArmor: number;
+    hull: number;
+    maxHull: number;
+  } {
+    const ships = this.getShipsForFleet(fleetId);
+    if (ships.length === 0) {
+      return { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 };
     }
-    const shipCount = Math.max(1, fleet.shipIds.length || this.getShipsForFleet(fleet.id).length);
-    const value = (118_000 + ((hash + index * 7919) % 24_000)) * shipCount;
-    return `${Math.round(value / 1000)}K`;
+    return ships.reduce(
+      (total, ship) => ({
+        shield: total.shield + ship.shield,
+        maxShield: total.maxShield + ship.maxShield,
+        armor: total.armor + ship.armor,
+        maxArmor: total.maxArmor + ship.maxArmor,
+        hull: total.hull + ship.hull,
+        maxHull: total.maxHull + ship.maxHull,
+      }),
+      { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 },
+    );
+  }
+
+  private hasActiveBattleInSystem(): boolean {
+    return this.battles.some((battle) => battle.starId === this.star.id && battle.phase !== "resolved");
+  }
+
+  private formatFleetPower(fleet: ServerFleet, index: number): string {
+    const ships = this.getShipsForFleet(fleet.id);
+    const roundsToKillEstimate = 4;
+    const power = ships.reduce((total, ship) => {
+      const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind] ?? STARBASE_SHIP_DEFINITIONS.corvette;
+      const weaponDamage = definition.combat.weaponMounts.reduce(
+        (sum, mount) => sum + mount.damage * mount.barrels,
+        0,
+      );
+      const shipPower =
+        ship.maxShield * 0.5
+        + ship.maxArmor * 0.8
+        + ship.maxHull * 1.0
+        + weaponDamage * roundsToKillEstimate;
+      return total + shipPower;
+    }, 0);
+    const fallback = STARBASE_SHIP_DEFINITIONS.corvette;
+    const fallbackWeaponDamage = fallback.combat.weaponMounts.reduce(
+      (sum, mount) => sum + mount.damage * mount.barrels,
+      0,
+    );
+    const fallbackPower =
+      fallback.combat.maxShield * 0.5
+      + fallback.combat.maxArmor * 0.8
+      + fallback.combat.maxHull * 1.0
+      + fallbackWeaponDamage * roundsToKillEstimate;
+    const value = ships.length > 0 ? power : fallbackPower * Math.max(1, fleet.shipIds.length);
+    return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : `${Math.round(value / 1000)}K`;
   }
 
   private formatStarbasePower(starbase: ServerStarbase): string {
@@ -826,6 +947,7 @@ export class SystemScene implements IGameScene {
   }
 
   private formatFleetStatus(fleet: ServerFleet): string {
+    if (this.getBattleForFleet(fleet.id)) return "Engaged";
     switch (fleet.phase) {
       case "departingSystem":
         return "Departing";
@@ -1818,6 +1940,170 @@ export class SystemScene implements IGameScene {
     body.material = bodyMat;
   }
 
+  private hashString(value: string): number {
+    let hash = 0;
+    for (let i = 0; i < value.length; i += 1) {
+      hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+    }
+    return hash;
+  }
+
+  private getBattleZonePosition(zone: BattleZone, seed: string): Vector3 {
+    const base = BATTLE_ZONE_POSITIONS[zone];
+    const hash = this.hashString(seed);
+    const spread = BATTLE_ZONE_SPREAD;
+    const offsetX = ((hash & 0xff) / 255 - 0.5) * spread;
+    const offsetY = (((hash >> 8) & 0xff) / 255 - 0.5) * 0.8;
+    const offsetZ = (((hash >> 16) & 0xff) / 255 - 0.5) * spread;
+    return new Vector3(base.x + offsetX, base.y + offsetY, base.z + offsetZ);
+  }
+
+  private async ensureBattleShipTemplate(): Promise<void> {
+    if (this.battleShipTemplate) return;
+    if (this.battleShipTemplatePromise) return this.battleShipTemplatePromise;
+    this.battleShipTemplatePromise = (async () => {
+      try {
+        const result = await SceneLoader.ImportMeshAsync(
+          "",
+          PLAYER_SHIP_MODEL_ROOT,
+          PLAYER_SHIP_MODEL_FILE,
+          this.scene,
+        );
+        const meshes = result.meshes.filter((mesh) => (
+          typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
+        ));
+        if (meshes.length === 0) {
+          throw new Error("Fighter_01.obj did not produce renderable meshes.");
+        }
+
+        const bounds = this.computeMeshBounds(meshes);
+        const maxDimension = Math.max(
+          0.001,
+          bounds.max.x - bounds.min.x,
+          bounds.max.y - bounds.min.y,
+          bounds.max.z - bounds.min.z,
+        );
+        const shipScale = BATTLE_SHIP_TARGET_SIZE / maxDimension;
+
+        const templateRoot = new TransformNode("battleShipTemplateRoot", this.scene);
+        const assetRoot = new TransformNode("battleShipTemplateAsset", this.scene);
+        assetRoot.parent = templateRoot;
+        assetRoot.position = bounds.center.scale(-1);
+
+        for (const mesh of meshes) {
+          mesh.parent = assetRoot;
+          mesh.isPickable = false;
+          mesh.alwaysSelectAsActiveMesh = true;
+          this.applyPlayerShipMaterialStyle(mesh.material);
+        }
+
+        templateRoot.scaling.setAll(shipScale);
+        templateRoot.setEnabled(false);
+        this.battleShipTemplate = templateRoot;
+      } catch (err) {
+        console.warn("Failed to load battle ship model", err);
+      } finally {
+        this.battleShipTemplatePromise = null;
+      }
+    })();
+    return this.battleShipTemplatePromise;
+  }
+
+  private createBattleShipInstance(shipId: string): TransformNode | null {
+    if (!this.battleShipTemplate) return null;
+    const clone = this.battleShipTemplate.clone(`battleShip-${shipId}`, null);
+    if (!clone) return null;
+    clone.setEnabled(this.starsVisible);
+    for (const mesh of clone.getChildMeshes()) {
+      mesh.isPickable = false;
+    }
+    this.battleShipRoots.set(shipId, clone);
+    this.battleShipTargets.set(shipId, clone.position.clone());
+    return clone;
+  }
+
+  private refreshBattleShips(): void {
+    const battlesInSystem = this.battles.filter((battle) => (
+      battle.starId === this.star.id && battle.phase !== "resolved"
+    ));
+    const shipStates = battlesInSystem.flatMap((battle) => battle.ships).filter((ship) => !ship.destroyed);
+    const shipIds = new Set(shipStates.map((ship) => ship.shipId));
+
+    if (shipIds.size === 0) {
+      for (const [, root] of this.battleShipRoots) {
+        root.dispose();
+      }
+      this.battleShipRoots.clear();
+      this.battleShipTargets.clear();
+      this.battleRoundSeen.clear();
+      if (this.playerShipRoot) {
+        this.playerShipRoot.setEnabled(this.starsVisible);
+      }
+      return;
+    }
+
+    void this.ensureBattleShipTemplate().then(() => {
+      for (const [shipId, root] of Array.from(this.battleShipRoots.entries())) {
+        if (!shipIds.has(shipId)) {
+          root.dispose();
+          this.battleShipRoots.delete(shipId);
+          this.battleShipTargets.delete(shipId);
+        }
+      }
+
+      for (const shipState of shipStates) {
+        const existingRoot = this.battleShipRoots.get(shipState.shipId);
+        const root = existingRoot ?? this.createBattleShipInstance(shipState.shipId);
+        if (!root) continue;
+        const target = this.getBattleZonePosition(shipState.zone, shipState.shipId);
+        if (!existingRoot) {
+          root.position.copyFrom(target);
+        }
+        this.battleShipTargets.set(shipState.shipId, target);
+      }
+
+      if (this.playerShipRoot) {
+        this.playerShipRoot.setEnabled(false);
+      }
+
+      this.queueBattleRoundBeams(battlesInSystem);
+    });
+  }
+
+  private getBattleEntityPosition(entityId: string): Vector3 | null {
+    const shipRoot = this.battleShipRoots.get(entityId);
+    if (shipRoot) return shipRoot.position.clone();
+    if (this.starbaseRoot && this.starbaseRoot.isEnabled() && this.starbases.some((sb) => sb.id === entityId)) {
+      return this.starbaseRoot.position.clone();
+    }
+    return null;
+  }
+
+  private queueBattleRoundBeams(battles: ServerBattle[]): void {
+    for (const battle of battles) {
+      const latestRound = battle.recentRounds[battle.recentRounds.length - 1];
+      if (!latestRound) continue;
+      const lastSeen = this.battleRoundSeen.get(battle.id) ?? -1;
+      if (latestRound.round <= lastSeen) continue;
+      this.battleRoundSeen.set(battle.id, latestRound.round);
+
+      for (const action of latestRound.actions) {
+        if (!action.fired) continue;
+        const from = this.getBattleEntityPosition(action.actorId);
+        const to = this.getBattleEntityPosition(action.fired.targetId);
+        if (!from || !to) continue;
+        const beam = MeshBuilder.CreateLines(
+          `battleBeam-${battle.id}-${action.actorId}-${latestRound.round}`,
+          { points: [from, to] },
+          this.scene,
+        );
+        beam.color = action.fired.hit ? new Color3(0.6, 0.9, 1.0) : new Color3(1.0, 0.5, 0.3);
+        beam.isPickable = false;
+        this.battleBeams.push({ mesh: beam, ttl: BATTLE_BEAM_TTL, maxTtl: BATTLE_BEAM_TTL });
+      }
+    }
+  }
+
   private createRedGiantAtmosphere(starDiameter: number, starTint: Color3): void {
     if (!this.starMesh) return;
 
@@ -2597,6 +2883,9 @@ export class SystemScene implements IGameScene {
     if (this.playerShipRoot) {
       this.playerShipRoot.setEnabled(visible);
     }
+    for (const [, root] of this.battleShipRoots) {
+      root.setEnabled(visible);
+    }
   }
 
   setBloomEnabled(enabled: boolean): void {
@@ -2616,6 +2905,11 @@ export class SystemScene implements IGameScene {
     }
 
     this.playerShipTargetPosition.set(position.x, position.y, position.z);
+    if (this.hasActiveBattleInSystem()) {
+      this.playerShipRoot?.setEnabled(false);
+      this.refreshSystemEntityCards();
+      return;
+    }
     if (!this.playerShipRoot) {
       this.playerShipBasePosition.copyFrom(this.playerShipTargetPosition);
       void this.createPlayerShipIfPresent().then(() => {
@@ -2639,6 +2933,12 @@ export class SystemScene implements IGameScene {
 
   setServerShips(ships: ServerShip[]): void {
     this.serverShips = ships;
+    this.refreshSystemEntityCards();
+  }
+
+  setBattles(battles: ServerBattle[]): void {
+    this.battles = battles;
+    this.refreshBattleShips();
     this.refreshSystemEntityCards();
   }
 
@@ -2721,6 +3021,16 @@ export class SystemScene implements IGameScene {
     this.objectPanel?.dispose();
     this.selectionPanel?.clear();
     this.starbasePanel?.dispose();
+    for (const [, root] of this.battleShipRoots) {
+      root.dispose();
+    }
+    this.battleShipRoots.clear();
+    for (const beam of this.battleBeams) {
+      beam.mesh.dispose();
+    }
+    this.battleBeams = [];
+    this.battleShipTemplate?.dispose();
+    this.battleShipTemplate = null;
     this.entityCardLayer?.remove();
     this.entityCardLayer = null;
     this.orbitSystem.dispose();

@@ -17,7 +17,9 @@ import type {
 } from "../data/Starbase";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 
-export type ShipAction = "move" | "build" | "attack" | "merge";
+export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat";
+
+export type FleetFormation = "line" | "vanguard" | "echelon" | "defensive";
 
 export type ShipTransitPhase =
   | "idle"
@@ -39,7 +41,8 @@ export type ServerUpdateField =
   | "factionEconomies"
   | "ships"
   | "fleets"
-  | "starbases";
+  | "starbases"
+  | "battles";
 
 export interface ServerStar extends StarData {}
 
@@ -80,12 +83,19 @@ export interface ServerShip {
   speed: number;
   hp: number;
   maxHp: number;
+  shield: number;
+  maxShield: number;
+  armor: number;
+  maxArmor: number;
+  hull: number;
+  maxHull: number;
 }
 
 export interface ServerFleet {
   id: string;
   ownerId: number;
   shipIds: string[];
+  formation: FleetFormation;
   currentStarId: number;
   targetStarId: number | null;
   phase: ShipTransitPhase;
@@ -98,6 +108,81 @@ export interface ServerFleet {
   speed: number;
   systemPosition: ShipSystemPosition;
   hyperlanePosition: ShipHyperlanePosition | null;
+}
+
+export type BattlePhase = "opening" | "engaged" | "retreating" | "resolved";
+export type BattleSide = "attacker" | "defender";
+export type BattleZone = 0 | 1 | 2 | 3;
+
+export interface ServerBattleAction {
+  actorId: string;
+  movedToZone?: BattleZone;
+  fired?: {
+    targetId: string;
+    hit: boolean;
+    shieldDamage: number;
+    armorDamage: number;
+    hullDamage: number;
+    targetDestroyed: boolean;
+  };
+}
+
+export interface ServerBattleRound {
+  round: number;
+  actions: ServerBattleAction[];
+}
+
+export interface ServerBattleShipState {
+  shipId: string;
+  fleetId: string;
+  ownerId: number;
+  side: BattleSide;
+  zone: BattleZone;
+  targetId?: string | null;
+  shield: number;
+  maxShield: number;
+  armor: number;
+  maxArmor: number;
+  hull: number;
+  maxHull: number;
+  destroyed: boolean;
+  lastHitRound: number;
+}
+
+export interface ServerBattleStarbaseState {
+  starbaseId: string;
+  ownerId: number;
+  zone: BattleZone;
+  shield: number;
+  maxShield: number;
+  armor: number;
+  maxArmor: number;
+  hull: number;
+  maxHull: number;
+  destroyed: boolean;
+  lastHitRound: number;
+}
+
+export interface ServerBattleResult {
+  winnerFactionId: number;
+  survivingShipIds: string[];
+  capturedStarbase: boolean;
+}
+
+export interface ServerBattle {
+  id: string;
+  starId: number;
+  attackerFactionId: number;
+  defenderFactionId: number;
+  attackerFleetIds: string[];
+  defenderFleetIds: string[];
+  starbaseId?: string | null;
+  ships: ServerBattleShipState[];
+  starbase?: ServerBattleStarbaseState | null;
+  round: number;
+  phase: BattlePhase;
+  recentRounds: ServerBattleRound[];
+  result?: ServerBattleResult;
 }
 
 export interface MoveCommand {
@@ -165,6 +250,11 @@ export interface BuildStarbaseShipCommand {
   shipKind: StarbaseShipKind;
 }
 
+export interface RetreatFleetCommand {
+  type: "retreatFleet";
+  fleetId: string;
+}
+
 export interface RequestSystemDetailsCommand {
   type: "requestSystemDetails";
   starId: number;
@@ -192,7 +282,8 @@ export type ClientCommand =
   | BuildStarbaseShipCommand
   | SetUrbanSubDistrictCommand
   | RequestSystemDetailsCommand
-  | RequestPlanetDetailsCommand;
+  | RequestPlanetDetailsCommand
+  | RetreatFleetCommand;
 
 export interface GameSnapshot {
   type: "snapshot";
@@ -210,6 +301,7 @@ export interface GameSnapshot {
   ships: ServerShip[];
   fleets: ServerFleet[];
   starbases: ServerStarbase[];
+  battles: ServerBattle[];
 }
 
 export interface GameUpdate {
@@ -229,6 +321,7 @@ export interface GameUpdate {
   ships?: ServerShip[];
   fleets?: ServerFleet[];
   starbases?: ServerStarbase[];
+  battles?: ServerBattle[];
 }
 
 export interface CommandResultEvent {
