@@ -7,6 +7,7 @@ import {
 import type { StarbaseShipKind } from "../data/Starbase";
 import type { StarData } from "../data/StarMap";
 import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import { computeFleetPower } from "../game/combatPower";
 
 export interface FleetManagerPanelData {
   fleets: ServerFleet[];
@@ -504,33 +505,7 @@ export class FleetManagerPanel {
 
   private getFleetPowerValue(data: FleetManagerPanelData, fleet: ServerFleet, index: number): number {
     const ships = this.getShipsForFleet(data, fleet.id);
-    const roundsToKillEstimate = 4;
-    if (ships.length === 0) {
-      const fallback = STARBASE_SHIP_DEFINITIONS.corvette;
-      const weaponDamage = fallback.combat.weaponMounts.reduce(
-        (total, mount) => total + mount.damage * mount.barrels,
-        0,
-      );
-      const perShip =
-        fallback.combat.maxShield * 0.5
-        + fallback.combat.maxArmor * 0.8
-        + fallback.combat.maxHull * 1.0
-        + weaponDamage * roundsToKillEstimate;
-      return perShip * Math.max(1, fleet.shipIds.length);
-    }
-    return ships.reduce((total, ship) => {
-      const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind] ?? STARBASE_SHIP_DEFINITIONS.corvette;
-      const weaponDamage = definition.combat.weaponMounts.reduce(
-        (sum, mount) => sum + mount.damage * mount.barrels,
-        0,
-      );
-      const shipPower =
-        ship.maxShield * 0.5
-        + ship.maxArmor * 0.8
-        + ship.maxHull * 1.0
-        + weaponDamage * roundsToKillEstimate;
-      return total + shipPower;
-    }, 0);
+    return computeFleetPower(ships, Math.max(1, this.getFleetShipCount(data, fleet)));
   }
 
   private formatFleetPower(data: FleetManagerPanelData, fleet: ServerFleet, index: number): string {

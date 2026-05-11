@@ -49,7 +49,7 @@ import type { BattleZone, ClientCommand, ServerBattle, ServerFleet, ServerShip, 
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { SelectionPanel } from "../ui/SelectionPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
-import { STARBASE_SHIP_DEFINITIONS } from "../data/Starbase";
+import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
@@ -913,37 +913,13 @@ export class SystemScene implements IGameScene {
 
   private formatFleetPower(fleet: ServerFleet, index: number): string {
     const ships = this.getShipsForFleet(fleet.id);
-    const roundsToKillEstimate = 4;
-    const power = ships.reduce((total, ship) => {
-      const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind] ?? STARBASE_SHIP_DEFINITIONS.corvette;
-      const weaponDamage = definition.combat.weaponMounts.reduce(
-        (sum, mount) => sum + mount.damage * mount.barrels,
-        0,
-      );
-      const shipPower =
-        ship.maxShield * 0.5
-        + ship.maxArmor * 0.8
-        + ship.maxHull * 1.0
-        + weaponDamage * roundsToKillEstimate;
-      return total + shipPower;
-    }, 0);
-    const fallback = STARBASE_SHIP_DEFINITIONS.corvette;
-    const fallbackWeaponDamage = fallback.combat.weaponMounts.reduce(
-      (sum, mount) => sum + mount.damage * mount.barrels,
-      0,
-    );
-    const fallbackPower =
-      fallback.combat.maxShield * 0.5
-      + fallback.combat.maxArmor * 0.8
-      + fallback.combat.maxHull * 1.0
-      + fallbackWeaponDamage * roundsToKillEstimate;
-    const value = ships.length > 0 ? power : fallbackPower * Math.max(1, fleet.shipIds.length);
+    const value = computeFleetPower(ships, Math.max(1, fleet.shipIds.length));
     return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : `${Math.round(value / 1000)}K`;
   }
 
   private formatStarbasePower(starbase: ServerStarbase): string {
-    const base = starbase.status === "building" ? 6.8 : 13.0;
-    return `${base.toFixed(1)}K`;
+    const power = computeStarbasePower(starbase);
+    return power >= 1_000_000 ? `${(power / 1_000_000).toFixed(1)}M` : `${Math.round(power / 1000)}K`;
   }
 
   private formatFleetStatus(fleet: ServerFleet): string {

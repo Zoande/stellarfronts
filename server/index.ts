@@ -968,10 +968,6 @@ function accept(socket: WebSocket, message: string): void {
 }
 
 function routeIsAllowed(route: number[], ownerId: number): boolean {
-  for (const starId of route) {
-    const owner = getKnownOwnership(ownerId, starId);
-    if (owner >= 0 && owner !== ownerId) return false;
-  }
   return true;
 }
 
@@ -987,8 +983,6 @@ function findRoute(fleet: GameFleet, targetStarId: number): number[] | null {
     for (const neighbor of state.adjacency[current] ?? []) {
       if (previous.has(neighbor)) continue;
       if (!discovered.has(neighbor)) continue;
-      const owner = getKnownOwnership(fleet.ownerId, neighbor);
-      if (owner >= 0 && owner !== fleet.ownerId) continue;
       previous.set(neighbor, current);
       queue.push(neighbor);
     }
@@ -1052,8 +1046,6 @@ function handleMove(socket: WebSocket, perspective: GalaxyPerspective, fleetId: 
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
   if (isFleetInBattle(fleet.id)) return reject(socket, "Fleet is engaged in battle.");
   if (fleet.phase !== "idle") return reject(socket, "Fleet is already busy.");
-  const targetOwner = getKnownOwnership(factionId, targetStarId);
-  if (targetOwner >= 0 && targetOwner !== factionId) return reject(socket, "Cannot enter another faction's territory.");
   try {
     startOrder(fleet, targetStarId, "move");
     hasDirtyState = true;
@@ -1614,6 +1606,46 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+interface CombatLayerState {
+  shield: number;
+  armor: number;
+  hull: number;
+  maxShield: number;
+  maxArmor: number;
+  maxHull: number;
+}
+
+function applyWeaponHit(
+  mount: WeaponMountDefinition,
+  target: CombatLayerState,
+): { destroyed: boolean; shieldDamage: number; armorDamage: number; hullDamage: number } {
+  const shieldPen = clamp(mount.shieldPenetration, 0, 1);
+  const armorPen = clamp(mount.armorPenetration, 0, 1);
+  const damage = Math.max(0, mount.damage * mount.barrels);
+
+  const shieldComponent = damage * (1 - shieldPen);
+  const shieldDamage = Math.min(target.shield, shieldComponent);
+  target.shield = Math.max(0, target.shield - shieldDamage);
+  const shieldOverflow = Math.max(0, shieldComponent - shieldDamage);
+  const afterShield = damage * shieldPen + shieldOverflow;
+
+  const armorComponent = afterShield * (1 - armorPen);
+  const armorDamage = Math.min(target.armor, armorComponent);
+  target.armor = Math.max(0, target.armor - armorDamage);
+  const armorOverflow = Math.max(0, armorComponent - armorDamage);
+  const afterArmor = afterShield * armorPen + armorOverflow;
+
+  const hullDamage = Math.min(target.hull, afterArmor);
+  target.hull = Math.max(0, target.hull - hullDamage);
+
+  return {
+    destroyed: target.hull <= 0,
+    shieldDamage,
+    armorDamage,
+    hullDamage,
+  };
+}
+
 function getWeaponRange(mount: WeaponMountDefinition): number {
   return WEAPON_KIND_DEFINITIONS[mount.kind]?.range ?? 1;
 }
@@ -2031,7 +2063,8 @@ function processBattles(arrivingFleets: GameFleet[]): {
       const isRetreating = battle.retreatingFleetIds.includes(shipState.fleetId);
 
       if (isRetreating) {
-        const nextZone = clamp(shipState.zone + 1, 0, 3) as BattleZone;
+        const retreatDirection = shipState.side === "attacker" ? 1 : -1;
+        const nextZone = clamp(shipState.zone + retreatDirection, 0, 3) as BattleZone;
         if (nextZone !== shipState.zone) {
           shipState.zone = nextZone;
           action.movedToZone = nextZone;
@@ -2079,34 +2112,6 @@ function processBattles(arrivingFleets: GameFleet[]): {
       let totalHullDamage = 0;
       let anyHit = false;
 
-      const applyHit = (mount: WeaponMountDefinition, target: { shield: number; armor: number; hull: number; maxShield: number; maxArmor: number; maxHull: number; }): { destroyed: boolean; shieldDamage: number; armorDamage: number; hullDamage: number } => {
-        const shieldPen = clamp(mount.shieldPenetration, 0, 1);
-        const armorPen = clamp(mount.armorPenetration, 0, 1);
-        const damage = Math.max(0, mount.damage * mount.barrels);
-
-        const shieldComponent = damage * (1 - shieldPen);
-        const shieldDamage = Math.min(target.shield, shieldComponent);
-        target.shield = Math.max(0, target.shield - shieldDamage);
-        const shieldOverflow = Math.max(0, shieldComponent - shieldDamage);
-        const afterShield = damage * shieldPen + shieldOverflow;
-
-        const armorComponent = afterShield * (1 - armorPen);
-        const armorDamage = Math.min(target.armor, armorComponent);
-        target.armor = Math.max(0, target.armor - armorDamage);
-        const armorOverflow = Math.max(0, armorComponent - armorDamage);
-        const afterArmor = afterShield * armorPen + armorOverflow;
-
-        const hullDamage = Math.min(target.hull, afterArmor);
-        target.hull = Math.max(0, target.hull - hullDamage);
-
-        return {
-          destroyed: target.hull <= 0,
-          shieldDamage,
-          armorDamage,
-          hullDamage,
-        };
-      };
-
       const targetEvasion = targetShip
         ? getShipEvasion(targetShip, fleetsById, shipsById)
         : (starbaseEntity ? STARBASE_LEVEL_DEFINITIONS[starbaseEntity.level]?.combat.evasion ?? 0 : 0);
@@ -2121,7 +2126,7 @@ function processBattles(arrivingFleets: GameFleet[]): {
         anyHit = true;
 
         if (targetShip) {
-          const result = applyHit(mount, targetShip);
+          const result = applyWeaponHit(mount, targetShip);
           totalShieldDamage += result.shieldDamage;
           totalArmorDamage += result.armorDamage;
           totalHullDamage += result.hullDamage;
@@ -2131,11 +2136,12 @@ function processBattles(arrivingFleets: GameFleet[]): {
             targetShip.destroyed = true;
           }
         } else if (targetIsStarbase && starbaseState) {
-          const result = applyHit(mount, starbaseState);
+          const result = applyWeaponHit(mount, starbaseState);
           totalShieldDamage += result.shieldDamage;
           totalArmorDamage += result.armorDamage;
           totalHullDamage += result.hullDamage;
           starbaseState.lastHitRound = battle.round;
+          hitTargets.add(starbaseState.starbaseId);
           if (result.destroyed) {
             starbaseState.destroyed = true;
           }
@@ -2174,27 +2180,7 @@ function processBattles(arrivingFleets: GameFleet[]): {
                 continue;
               }
               anyHit = true;
-              const result = (() => {
-                const shieldPen = clamp(mount.shieldPenetration, 0, 1);
-                const armorPen = clamp(mount.armorPenetration, 0, 1);
-                const damage = Math.max(0, mount.damage * mount.barrels);
-
-                const shieldComponent = damage * (1 - shieldPen);
-                const shieldDamage = Math.min(target.shield, shieldComponent);
-                target.shield = Math.max(0, target.shield - shieldDamage);
-                const shieldOverflow = Math.max(0, shieldComponent - shieldDamage);
-                const afterShield = damage * shieldPen + shieldOverflow;
-
-                const armorComponent = afterShield * (1 - armorPen);
-                const armorDamage = Math.min(target.armor, armorComponent);
-                target.armor = Math.max(0, target.armor - armorDamage);
-                const armorOverflow = Math.max(0, armorComponent - armorDamage);
-                const afterArmor = afterShield * armorPen + armorOverflow;
-
-                const hullDamage = Math.min(target.hull, afterArmor);
-                target.hull = Math.max(0, target.hull - hullDamage);
-                return { destroyed: target.hull <= 0, shieldDamage, armorDamage, hullDamage };
-              })();
+              const result = applyWeaponHit(mount, target);
               totalShieldDamage += result.shieldDamage;
               totalArmorDamage += result.armorDamage;
               totalHullDamage += result.hullDamage;
@@ -2227,6 +2213,15 @@ function processBattles(arrivingFleets: GameFleet[]): {
       shipState.shield = clamp(shipState.shield + regen, 0, shipState.maxShield);
     }
 
+    if (starbaseState && !starbaseState.destroyed) {
+      if (!hitTargets.has(starbaseState.starbaseId) && battle.round - starbaseState.lastHitRound >= SHIELD_REGEN_DELAY_ROUNDS) {
+        if (starbaseState.maxShield > 0) {
+          const regen = starbaseState.maxShield * SHIELD_REGEN_FRACTION;
+          starbaseState.shield = clamp(starbaseState.shield + regen, 0, starbaseState.maxShield);
+        }
+      }
+    }
+
     for (const shipState of shipStates) {
       if (shipState.destroyed) {
         destroyedShipIds.add(shipState.shipId);
@@ -2245,7 +2240,6 @@ function processBattles(arrivingFleets: GameFleet[]): {
       ship.armor = shipState.armor;
       ship.hull = shipState.hull;
       ship.hp = shipState.hull;
-      ship.maxHp = shipState.maxHull;
       shipsChanged = true;
     }
 
@@ -2265,7 +2259,15 @@ function processBattles(arrivingFleets: GameFleet[]): {
     const retreatingExits: string[] = [];
     for (const fleetId of battle.retreatingFleetIds) {
       const activeShips = shipStates.filter((ship) => ship.fleetId === fleetId && !ship.destroyed);
-      if (activeShips.length === 0 || activeShips.every((ship) => ship.zone >= 3)) {
+      if (activeShips.length === 0) {
+        retreatingExits.push(fleetId);
+        continue;
+      }
+      const retreatSide = activeShips[0]?.side ?? (battle.attackerFleetIds.includes(fleetId) ? "attacker" : "defender");
+      const hasExited = retreatSide === "attacker"
+        ? activeShips.every((ship) => ship.zone >= 3)
+        : activeShips.every((ship) => ship.zone <= 0);
+      if (hasExited) {
         retreatingExits.push(fleetId);
       }
     }

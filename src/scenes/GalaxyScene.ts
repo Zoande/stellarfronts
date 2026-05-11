@@ -34,6 +34,7 @@ import type { GalaxyIconClickType, ShipIconStyle } from "../systems/StarFieldRen
 import { SelectionPanel } from "../ui/SelectionPanel";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
+import { computeStarbasePower } from "../game/combatPower";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 
@@ -1892,8 +1893,9 @@ export class GalaxyScene implements IGameScene {
   }
 
   private formatStarbasePower(starbase?: ServerStarbase): string {
-    const base = starbase?.status === "building" ? 6.8 : 13.0;
-    return `${base.toFixed(1)}K`;
+    if (!starbase) return "0K";
+    const power = computeStarbasePower(starbase);
+    return power >= 1_000_000 ? `${(power / 1_000_000).toFixed(1)}M` : `${Math.round(power / 1000)}K`;
   }
 
   private getPlanetState(planetId: string): PlanetState | undefined {
