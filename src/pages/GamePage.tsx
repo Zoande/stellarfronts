@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import type { GalaxyPerspective } from '@/data/Factions';
+import { GameLogoutButton } from '@/components/GameLogoutButton';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import '../styles/Game.css';
 
 interface GamePageProps {
   username: string;
-  selectedPerspective: GalaxyPerspective;
+  onLogout: () => void;
 }
 
-export default function GamePage({ username, selectedPerspective }: GamePageProps) {
+export default function GamePage({ username, onLogout }: GamePageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bootedRef = useRef(false);
   const bootStartedAtRef = useRef(0);
@@ -31,6 +31,7 @@ export default function GamePage({ username, selectedPerspective }: GamePageProp
 
     let cancelled = false;
     let bootFailed = false;
+    let cleanupBoot: (() => void) | null = null;
     clearBootHideTimer();
     bootStartedAtRef.current = window.performance.now();
     setIsBooting(true);
@@ -52,13 +53,19 @@ export default function GamePage({ username, selectedPerspective }: GamePageProp
         if (cancelled || !containerRef.current) return;
         bootedRef.current = true;
         void boot(containerRef.current, {
-          perspective: selectedPerspective,
           onProgress: (progress, detail) => {
             if (cancelled) return;
             setBootProgress(progress * 100);
             setBootDetail(detail);
           },
         })
+          .then((cleanup) => {
+            cleanupBoot = cleanup;
+            if (cancelled) {
+              cleanupBoot?.();
+              cleanupBoot = null;
+            }
+          })
           .catch((error: unknown) => {
             if (cancelled) return;
             bootFailed = true;
@@ -80,17 +87,19 @@ export default function GamePage({ username, selectedPerspective }: GamePageProp
     return () => {
       cancelled = true;
       clearBootHideTimer();
+      cleanupBoot?.();
     };
-  }, [selectedPerspective]);
+  }, []);
 
   return (
     <div className="game-container" ref={containerRef}>
       <canvas id="renderCanvas"></canvas>
+      <GameLogoutButton onLogout={onLogout} />
       {showBootLoading && (
         <LoadingScreen
           theme="game"
           subtitle="Galaxy Command"
-          title={`Entering ${selectedPerspective?.mode === 'observer' ? 'Observer' : 'Faction'} View`}
+          title="Entering Command View"
           progress={bootProgress}
           detail={bootDetail}
           isVisible={isBooting}

@@ -300,4 +300,4 @@ Sample console output now shows:
 ### Related Data
 - Player Ship Detection: [src/data/PlayerShip.ts](src/data/PlayerShip.ts)
 - Galaxy Config: [src/data/GalaxyMap.ts](src/data/GalaxyMap.ts) (500 stars, seed=42)
-- Main Boot: [src/main.ts](src/main.ts) (scene switching logic)
+- Routed App Entry: [src/index.tsx](src/index.tsx) and [src/App.tsx](src/App.tsx)

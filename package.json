@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "server:dev": "tsx server/index.ts",
-    "dev:all": "concurrently \"npm run server:dev\" \"npm run dev\"",
+    "auth:dev": "tsx server/auth-server.ts",
+    "server:test": "node --import tsx --test server/*.test.ts",
+    "dev:all": "concurrently \"npm run server:dev\" \"npm run auth:dev\" \"npm run dev\"",
     "server:typecheck": "tsc -p tsconfig.server.json --noEmit",
     "build": "tsc && vite build",
     "preview": "vite preview"
@@ -18,12 +20,15 @@
     "@babylonjs/materials": "^7.54.3",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
+    "better-sqlite3": "^12.9.0",
+    "pureimage": "^0.4.18",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.15.0",
     "ws": "^8.20.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.6.0",
     "@types/ws": "^8.18.1",
     "concurrently": "^9.2.1",

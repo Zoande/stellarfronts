@@ -25,15 +25,33 @@ import {
   Ray,
   Quaternion,
   Matrix,
+  PointerEventTypes,
 } from "@babylonjs/core";
-import type { AbstractEngine, AbstractMesh, LinesMesh } from "@babylonjs/core";
+import type { AbstractEngine, AbstractMesh, LinesMesh, Observer, PointerInfo } from "@babylonjs/core";
 import "@babylonjs/loaders/OBJ/objFileLoader";
 import "@babylonjs/loaders/glTF";
 import type { IGameScene } from "../SceneManager";
-import { STAR_TYPES, StarType, PLANET_TYPES, PlanetType } from "../data/StarMap";
+import {
+  STAR_TYPES,
+  StarType,
+  PLANET_TYPES,
+  PlanetType,
+  applyPlanetStatesToStars,
+  createPlanetId,
+  withPlanetObjectDetails,
+} from "../data/StarMap";
 import type { PlanetConfig, StarData, StarVisualKind } from "../data/StarMap";
+import type { PlanetState } from "../data/Economy";
+import type { FactionInfo } from "../data/Factions";
 import { OrbitSystem } from "../systems/OrbitSystem";
-import type { GalaxyShipTransit, HyperlaneExitPoint } from "../game/GameplayTypes";
+import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
+import type { BattleZone, ClientCommand, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
+import { SelectionPanel } from "../ui/SelectionPanel";
+import { StarbasePanel } from "../ui/StarbasePanel";
+import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
+import { createFlagDesign } from "../flags/flagGenerator";
+import { renderFlagSvg } from "../flags/renderFlagSvg";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
 
 type ExitSystemHandler = () => void | Promise<void>;
@@ -42,11 +60,21 @@ export interface SystemSceneOptions {
   homeSystemStarIds?: number[];
   playerShipStarId?: number;
   playerShipSystemIds?: number[];
-  shipSystemPositions?: Record<number, { x: number; y: number; z: number }>;
+  fleetSystemPositions?: Record<number, { x: number; y: number; z: number }>;
+  serverFleets?: ServerFleet[];
+  serverShips?: ServerShip[];
+  battles?: ServerBattle[];
   starbaseSystemIds?: number[];
+  starbases?: ServerStarbase[];
+  factions?: FactionInfo[];
+  playerFactionId?: number;
+  planetStates?: PlanetState[];
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
   onGameplayFrame?: (deltaTime: number) => void;
+  onPlanetCommand?: (command: ClientCommand) => void;
+  onFleetCommand?: (command: ClientCommand) => void;
+  onRequestPlanetDetails?: (planetId: string) => Promise<{ planet: PlanetConfig; planetState: PlanetState }>;
 }
 
 const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
@@ -63,6 +91,31 @@ const SYSTEM_LABEL_TEXTURE_WIDTH = 2048;
 const SYSTEM_LABEL_TEXTURE_HEIGHT = 512;
 const SYSTEM_LABEL_U_SCALE = -1;
 const SYSTEM_LABEL_U_OFFSET = 1;
+const STAR_BANNER_DIR = "/textures/planet-banners";
+
+const BATTLE_SHIP_TARGET_SIZE = 0.65;
+const BATTLE_BEAM_TTL = 0.45;
+const BATTLE_ZONE_SPREAD = 3.6;
+const BATTLE_ZONE_POSITIONS: Record<BattleZone, Vector3> = {
+  0: new Vector3(-18, 4.2, -6),
+  1: new Vector3(-8, 4.1, -2),
+  2: new Vector3(8, 4.0, 2),
+  3: new Vector3(18, 3.9, 6),
+};
+
+const STAR_BANNER_TEXTURES: Record<StarType, string> = {
+  B: `${STAR_BANNER_DIR}/Star_B_banner.png`,
+  A: `${STAR_BANNER_DIR}/Star_A_banner.png`,
+  F: `${STAR_BANNER_DIR}/Star_F_banner.png`,
+  G: `${STAR_BANNER_DIR}/Star_G_banner.png`,
+  K: `${STAR_BANNER_DIR}/Star_K_banner.png`,
+  M: `${STAR_BANNER_DIR}/Star_M_banner.png`,
+  ["M Red Giant"]: `${STAR_BANNER_DIR}/Star_M_Red_Giant_banner.png`,
+  ["T Brown Dwarf"]: `${STAR_BANNER_DIR}/Star_T_Brown_Dwarf_banner.png`,
+  ["Neutron Star"]: `${STAR_BANNER_DIR}/Star_Neutron_Star_banner.png`,
+  Pulsar: `${STAR_BANNER_DIR}/Star_Pulsar_banner.png`,
+  ["Black Hole"]: `${STAR_BANNER_DIR}/Star_Black_Hole_banner.png`,
+};
 
 export class SystemScene implements IGameScene {
   public scene: Scene;
@@ -72,11 +125,19 @@ export class SystemScene implements IGameScene {
   private homeSystemStarIds: Set<number>;
   private playerShipStarId: number;
   private playerShipSystemIds: Set<number>;
-  private shipSystemPositions: Record<number, { x: number; y: number; z: number }>;
+  private fleetSystemPositions: Record<number, { x: number; y: number; z: number }>;
+  private serverFleets: ServerFleet[];
+  private serverShips: ServerShip[];
+  private battles: ServerBattle[];
   private starbaseSystemIds: Set<number>;
+  private starbases: ServerStarbase[];
+  private factions: FactionInfo[];
+  private playerFactionId: number;
+  private planetStates: PlanetState[];
   private shipTransit: GalaxyShipTransit | null;
   private hyperlaneExits: HyperlaneExitPoint[];
   private readonly onExitSystem: ExitSystemHandler;
+  private readonly options: SystemSceneOptions;
 
   private camera!: ArcRotateCamera;
   private glowLayer!: GlowLayer;
@@ -98,6 +159,13 @@ export class SystemScene implements IGameScene {
   private playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
   private playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
 
+  private battleShipTemplate: TransformNode | null = null;
+  private battleShipTemplatePromise: Promise<void> | null = null;
+  private battleShipRoots = new Map<string, TransformNode>();
+  private battleShipTargets = new Map<string, Vector3>();
+  private battleBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
+  private battleRoundSeen = new Map<string, number>();
+
   private starbaseRoot: TransformNode | null = null;
   private starbaseLight: PointLight | null = null;
   private hyperlaneExitMeshes: Mesh[] = [];
@@ -107,10 +175,18 @@ export class SystemScene implements IGameScene {
   private orbitRings: LinesMesh[] = [];
   private planetMeshes: Mesh[] = [];
   private planetLabelMeshes: Mesh[] = [];
+  private planetConfigs: PlanetConfig[] = [];
   private planetDiameters: number[] = [];
   private starLabelMesh: Mesh | null = null;
+  private objectPanel!: CelestialObjectPanel;
+  private selectionPanel!: SelectionPanel;
+  private starbasePanel!: StarbasePanel;
+  private entityCardLayer: HTMLDivElement | null = null;
+  private selectedFleetId: string | null = null;
+  private readonly factionFlagSvgCache = new Map<number, string>();
+  private pointerObserver: Observer<PointerInfo> | null = null;
   private starOccluded = false;
-  private debugLogOccluder = true;
+  private debugLogOccluder = false;
   private deepDebug = false;
   private isExiting = false;
   private elapsed = 0;
@@ -174,18 +250,27 @@ export class SystemScene implements IGameScene {
         ?? options.homeSystemStarIds
         ?? (this.playerShipStarId >= 0 ? [this.playerShipStarId] : []),
     );
-    this.shipSystemPositions = options.shipSystemPositions ?? {};
+    this.fleetSystemPositions = options.fleetSystemPositions ?? {};
+    this.serverFleets = options.serverFleets ?? [];
+    this.serverShips = options.serverShips ?? [];
+    this.battles = options.battles ?? [];
     this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
+    this.starbases = options.starbases ?? [];
+    this.factions = options.factions ?? [];
+    this.playerFactionId = options.playerFactionId ?? 0;
+    this.planetStates = options.planetStates ?? [];
+    applyPlanetStatesToStars([this.star], this.planetStates);
     this.shipTransit = options.shipTransit ?? null;
     this.hyperlaneExits = options.hyperlaneExits ?? [];
     this.onExitSystem = onExitSystem;
+    this.options = options;
     this.scene = new Scene(engine);
     this.scene.clearColor = new Color4(0.01, 0.015, 0.03, 1);
     console.log(`📍 SystemScene init: star.id=${star.id}, totalStarCount=${starCount}`);
   }
 
   private hasPlayerShipPresence(): boolean {
-    if (this.shipSystemPositions[this.star.id]) return true;
+    if (this.fleetSystemPositions[this.star.id]) return true;
     if (this.playerShipSystemIds.has(this.star.id)) return true;
     if (this.playerShipStarId === this.star.id) return true;
     return !!this.shipTransit
@@ -365,8 +450,16 @@ export class SystemScene implements IGameScene {
     this.setupCamera(canvas);
     this.setupLighting();
     this.buildSystemObjects();
+    this.objectPanel = new CelestialObjectPanel();
+    this.selectionPanel = new SelectionPanel(canvas, {
+      onShipAction: (action) => this.handleSelectedFleetAction(action),
+    });
+    this.starbasePanel = new StarbasePanel();
+    this.installObjectLabelClicks();
     await this.createPlayerShipIfPresent();
     await this.createStarbaseIfPresent();
+    this.refreshBattleShips();
+    this.refreshSystemEntityCards();
     this.setStarsVisible(this.starsVisible);
     this.setBloomEnabled(this.bloomEnabled);
 
@@ -403,6 +496,33 @@ export class SystemScene implements IGameScene {
         this.playerShipBasePosition.y + Math.sin(this.elapsed * 1.15) * 0.32;
       this.playerShipRoot.position.z = this.playerShipBasePosition.z;
       this.playerShipRoot.rotation.y += dt * 0.16;
+    }
+
+    if (this.battleShipRoots.size > 0) {
+      const moveT = Math.min(1, dt * 5);
+      for (const [shipId, root] of this.battleShipRoots) {
+        const target = this.battleShipTargets.get(shipId);
+        if (!target) continue;
+        root.position.x = root.position.x + (target.x - root.position.x) * moveT;
+        root.position.y = root.position.y + (target.y - root.position.y) * moveT;
+        root.position.z = root.position.z + (target.z - root.position.z) * moveT;
+        root.rotation.y += dt * 0.35;
+      }
+    }
+
+    if (this.battleBeams.length > 0) {
+      const nextBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
+      for (const beam of this.battleBeams) {
+        beam.ttl -= dt;
+        if (beam.ttl <= 0) {
+          beam.mesh.dispose();
+          continue;
+        }
+        const alpha = Math.max(0, beam.ttl / beam.maxTtl);
+        beam.mesh.alpha = alpha;
+        nextBeams.push(beam);
+      }
+      this.battleBeams = nextBeams;
     }
     if (this.playerShipThrusterMaterial) {
       const thrusterPulse = 0.65 + 0.35 * Math.sin(this.elapsed * 5.8);
@@ -450,6 +570,7 @@ export class SystemScene implements IGameScene {
     }
 
     this.updatePlanetLabels();
+    this.updateSystemEntityCards();
     this.updateStarOcclusionAndGlow();
   }
 
@@ -516,6 +637,410 @@ export class SystemScene implements IGameScene {
     const rotationMatrix = Matrix.Identity();
     Matrix.FromXYZAxesToRef(right, up, normal, rotationMatrix);
     labelMesh.rotationQuaternion = Quaternion.FromRotationMatrix(rotationMatrix);
+  }
+
+  private refreshSystemEntityCards(): void {
+    this.entityCardLayer?.remove();
+    this.entityCardLayer = null;
+
+    const fleets = this.getFleetsInCurrentSystem();
+    const starbases = this.getStarbasesInCurrentSystem();
+    if (fleets.length === 0 && starbases.length === 0) return;
+
+    this.injectSystemEntityCardStyles();
+    const root = document.getElementById("spaceHudRoot") ?? document.body;
+    const layer = document.createElement("div");
+    layer.className = "systemEntityCardLayer";
+    this.entityCardLayer = layer;
+
+    fleets.forEach((fleet, index) => {
+      const owner = this.getFaction(fleet.ownerId);
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "systemEntityCard fleet";
+      card.dataset.entityKind = "fleet";
+      card.dataset.entityId = fleet.id;
+      card.dataset.offsetY = String(-28 - index * 36);
+      card.style.setProperty("--entity-accent", this.factionColorCss(owner, "rgba(88, 211, 255, 0.95)"));
+      card.innerHTML = `
+        <span class="systemEntityFlag">${this.getFactionFlagSvg(fleet.ownerId)}</span>
+        <span class="systemEntityCopy">
+          <strong>${this.escapeHtml(this.formatFleetPower(fleet, index))}</strong>
+          <small>${this.escapeHtml(this.formatFleetStatus(fleet))}</small>
+        </span>
+        <span class="systemEntityIcon">F</span>
+      `;
+      card.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.selectFleetFromCard(fleet, ev.shiftKey);
+      });
+      layer.appendChild(card);
+    });
+
+    starbases.forEach((starbase, index) => {
+      const owner = this.getFaction(starbase.ownerId);
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "systemEntityCard starbase";
+      card.dataset.entityKind = "starbase";
+      card.dataset.entityId = starbase.id;
+      card.dataset.offsetY = String(-16 - index * 34);
+      card.style.setProperty("--entity-accent", this.factionColorCss(owner, "rgba(255, 207, 115, 0.95)"));
+      card.innerHTML = `
+        <span class="systemEntityFlag">${this.getFactionFlagSvg(starbase.ownerId)}</span>
+        <span class="systemEntityCopy">
+          <strong>${this.escapeHtml(this.formatStarbasePower(starbase))}</strong>
+          <small>${this.escapeHtml(starbase.status === "building" ? "Building" : "Starbase")}</small>
+        </span>
+        <span class="systemEntityIcon">SB</span>
+      `;
+      card.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.openStarbasePanel(starbase);
+      });
+      layer.appendChild(card);
+    });
+
+    root.appendChild(layer);
+    this.updateSystemEntityCards();
+  }
+
+  private updateSystemEntityCards(): void {
+    if (!this.entityCardLayer) return;
+    for (const card of Array.from(this.entityCardLayer.querySelectorAll<HTMLElement>(".systemEntityCard"))) {
+      const kind = card.dataset.entityKind;
+      const id = card.dataset.entityId;
+      const offsetY = Number(card.dataset.offsetY ?? "0");
+      const anchor = kind === "fleet"
+        ? this.getFleetCardAnchor(id)
+        : this.getStarbaseCardAnchor(id);
+      const projected = anchor ? this.projectToScreen(anchor) : null;
+      if (!projected) {
+        card.style.display = "none";
+        continue;
+      }
+      card.style.display = "grid";
+      card.style.left = `${projected.x}px`;
+      card.style.top = `${projected.y + offsetY}px`;
+    }
+  }
+
+  private getFleetsInCurrentSystem(): ServerFleet[] {
+    return this.serverFleets.filter((fleet) => (
+      fleet.currentStarId === this.star.id && fleet.phase !== "jumpingHyperlane"
+    ));
+  }
+
+  private getStarbasesInCurrentSystem(): ServerStarbase[] {
+    return this.starbases.filter((starbase) => starbase.starId === this.star.id);
+  }
+
+  private getFleetCardAnchor(fleetId?: string): Vector3 | null {
+    if (!fleetId) return null;
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet || fleet.currentStarId !== this.star.id || fleet.phase === "jumpingHyperlane") return null;
+    if (this.playerShipRoot?.isEnabled()) {
+      return this.playerShipRoot.position.add(new Vector3(0, 2.6, 0));
+    }
+    const position = this.fleetSystemPositions[this.star.id] ?? this.playerShipTargetPosition;
+    return new Vector3(position.x, position.y + 2.6, position.z);
+  }
+
+  private getStarbaseCardAnchor(starbaseId?: string): Vector3 | null {
+    if (!starbaseId) return null;
+    const starbase = this.starbases.find((candidate) => candidate.id === starbaseId);
+    if (!starbase || starbase.starId !== this.star.id) return null;
+    if (this.starbaseRoot?.isEnabled()) {
+      return this.starbaseRoot.position.add(new Vector3(0, 2.8, 0));
+    }
+    const starRadius = Math.max(0.6, this.starDiameter * 0.5);
+    return new Vector3(3.2, 8.5 + 2.8, -(starRadius + 4.5 + 10));
+  }
+
+  private projectToScreen(world: Vector3): { x: number; y: number } | null {
+    const canvas = this.engine.getRenderingCanvas();
+    const camera = this.scene.activeCamera ?? this.camera;
+    if (!canvas || !camera) return null;
+    const viewport = camera.viewport.toGlobal(this.engine.getRenderWidth(), this.engine.getRenderHeight());
+    const projected = Vector3.Project(world, Matrix.Identity(), this.scene.getTransformMatrix(), viewport);
+    if (projected.z < 0 || projected.z > 1) return null;
+    const rect = canvas.getBoundingClientRect();
+    const xScale = rect.width / Math.max(1, this.engine.getRenderWidth());
+    const yScale = rect.height / Math.max(1, this.engine.getRenderHeight());
+    return {
+      x: rect.left + projected.x * xScale,
+      y: rect.top + projected.y * yScale,
+    };
+  }
+
+  private selectFleetFromCard(fleet: ServerFleet, shiftKey: boolean): void {
+    const owner = this.getFaction(fleet.ownerId);
+    const ships = this.getShipsForFleet(fleet.id);
+    const shipCount = fleet.shipIds.length || ships.length || 1;
+    const defense = this.getFleetDefense(fleet.id);
+    const battle = this.getBattleForFleet(fleet.id);
+    const actions: ShipAction[] = battle ? ["retreat"] : ["merge"];
+    this.selectedFleetId = fleet.id;
+    this.selectionPanel.select(
+      {
+        type: "fleet",
+        id: fleet.id,
+        name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+        hp: defense.hull,
+        maxHp: defense.maxHull,
+        shield: defense.shield,
+        maxShield: defense.maxShield,
+        armor: defense.armor,
+        maxArmor: defense.maxArmor,
+        hull: defense.hull,
+        maxHull: defense.maxHull,
+        class: shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
+        status: battle ? "Engaged" : this.formatFleetStatus(fleet),
+        detail: fleet.ownerId === this.playerFactionId
+          ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : "Fleet selected. Command controls remain in the galaxy map for now.")
+          : "Foreign fleet. Tactical details are limited.",
+        ownerName: owner?.name ?? "Unknown",
+        ownerColor: owner?.color,
+        canCommand: fleet.ownerId === this.playerFactionId,
+        actions: fleet.ownerId === this.playerFactionId ? actions : undefined,
+      },
+      shiftKey,
+    );
+  }
+
+  private handleSelectedFleetAction(action: ShipAction): void {
+    if (action === "retreat") {
+      if (this.selectedFleetId) {
+        this.options.onFleetCommand?.({ type: "retreatFleet", fleetId: this.selectedFleetId });
+      }
+      return;
+    }
+    if (action !== "merge") return;
+    const targetFleet = this.serverFleets.find((fleet) => fleet.id === this.selectedFleetId);
+    if (!targetFleet || targetFleet.ownerId !== this.playerFactionId || targetFleet.phase !== "idle") return;
+    const sourceFleetIds = this.serverFleets
+      .filter((fleet) => (
+        fleet.id !== targetFleet.id
+        && fleet.ownerId === targetFleet.ownerId
+        && fleet.currentStarId === targetFleet.currentStarId
+        && fleet.phase === "idle"
+      ))
+      .map((fleet) => fleet.id);
+    if (sourceFleetIds.length === 0) return;
+    this.options.onFleetCommand?.({ type: "mergeFleets", targetFleetId: targetFleet.id, sourceFleetIds });
+  }
+
+  private openStarbasePanel(starbase: ServerStarbase): void {
+    const owner = this.getFaction(starbase.ownerId);
+    this.selectedFleetId = null;
+    this.selectionPanel.clear();
+    this.starbasePanel.show({
+      id: starbase.id,
+      name: `${this.star.name} Station`,
+      systemName: `${this.star.name} System`,
+      ownerName: owner?.name,
+      ownerColor: owner?.color,
+      status: starbase.status,
+      power: this.formatStarbasePower(starbase),
+      starbase,
+      onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
+    });
+  }
+
+  private getFaction(ownerId: number): FactionInfo | null {
+    return this.factions.find((faction) => faction.id === ownerId) ?? null;
+  }
+
+  private getFactionFlagSvg(ownerId: number): string {
+    const cached = this.factionFlagSvgCache.get(ownerId);
+    if (cached) return cached;
+    const svg = renderFlagSvg(createFlagDesign({ seed: `system-entity-${ownerId}` }), {
+      size: 26,
+      className: "systemEntityFlagSvg",
+      idPrefix: `system-entity-flag-${ownerId}`,
+    });
+    this.factionFlagSvgCache.set(ownerId, svg);
+    return svg;
+  }
+
+  private factionColorCss(faction: FactionInfo | null, fallback: string): string {
+    if (!faction) return fallback;
+    const [r, g, b] = faction.color.map((channel) => Math.round(Math.max(0, Math.min(1, channel)) * 255));
+    return `rgba(${r}, ${g}, ${b}, 0.95)`;
+  }
+
+  private getShipsForFleet(fleetId: string): ServerShip[] {
+    return this.serverShips.filter((ship) => ship.fleetId === fleetId);
+  }
+
+  private getBattleForFleet(fleetId: string): ServerBattle | null {
+    return this.battles.find((battle) => (
+      battle.phase !== "resolved"
+      && (battle.attackerFleetIds.includes(fleetId) || battle.defenderFleetIds.includes(fleetId))
+    )) ?? null;
+  }
+
+  private getFleetDefense(fleetId: string): {
+    shield: number;
+    maxShield: number;
+    armor: number;
+    maxArmor: number;
+    hull: number;
+    maxHull: number;
+  } {
+    const ships = this.getShipsForFleet(fleetId);
+    if (ships.length === 0) {
+      return { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 };
+    }
+    return ships.reduce(
+      (total, ship) => ({
+        shield: total.shield + ship.shield,
+        maxShield: total.maxShield + ship.maxShield,
+        armor: total.armor + ship.armor,
+        maxArmor: total.maxArmor + ship.maxArmor,
+        hull: total.hull + ship.hull,
+        maxHull: total.maxHull + ship.maxHull,
+      }),
+      { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 },
+    );
+  }
+
+  private hasActiveBattleInSystem(): boolean {
+    return this.battles.some((battle) => battle.starId === this.star.id && battle.phase !== "resolved");
+  }
+
+  private formatFleetPower(fleet: ServerFleet, index: number): string {
+    const ships = this.getShipsForFleet(fleet.id);
+    const value = computeFleetPower(ships, Math.max(1, fleet.shipIds.length));
+    return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : `${Math.round(value / 1000)}K`;
+  }
+
+  private formatStarbasePower(starbase: ServerStarbase): string {
+    const power = computeStarbasePower(starbase);
+    return power >= 1_000_000 ? `${(power / 1_000_000).toFixed(1)}M` : `${Math.round(power / 1000)}K`;
+  }
+
+  private formatFleetStatus(fleet: ServerFleet): string {
+    if (this.getBattleForFleet(fleet.id)) return "Engaged";
+    switch (fleet.phase) {
+      case "departingSystem":
+        return "Departing";
+      case "arrivingSystem":
+        return "Arriving";
+      case "buildingStarbase":
+        return "Building";
+      case "jumpingHyperlane":
+        return "In Transit";
+      case "idle":
+      default:
+        return "Operational";
+    }
+  }
+
+  private injectSystemEntityCardStyles(): void {
+    const styleId = "system-entity-card-style";
+    if (document.getElementById(styleId)) return;
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+.systemEntityCardLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 54;
+  pointer-events: none;
+  font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
+}
+
+.systemEntityCard {
+  --entity-accent: rgba(88, 211, 255, 0.95);
+  position: absolute;
+  min-width: 124px;
+  height: 34px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 5px 3px 4px;
+  pointer-events: auto;
+  border: 1px solid color-mix(in srgb, var(--entity-accent) 72%, transparent);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--entity-accent) 38%, rgba(5, 21, 28, 0.94)), rgba(4, 15, 20, 0.94)),
+    radial-gradient(circle at 18% 50%, color-mix(in srgb, var(--entity-accent) 28%, transparent), transparent 3rem);
+  color: #eaffff;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.42), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  transform: translate(-50%, -50%);
+  transition: transform 0.12s ease, filter 0.12s ease;
+}
+
+.systemEntityCard:hover {
+  filter: brightness(1.16);
+  transform: translate(-50%, -50%) scale(1.04);
+}
+
+.systemEntityCard.starbase {
+  border-color: rgba(255, 212, 116, 0.74);
+}
+
+.systemEntityFlag {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.6));
+}
+
+.systemEntityFlag svg {
+  width: 26px;
+  height: 26px;
+  display: block;
+  overflow: visible;
+}
+
+.systemEntityCopy {
+  min-width: 0;
+  display: grid;
+  line-height: 1;
+}
+
+.systemEntityCopy strong {
+  font-size: 12px;
+  font-weight: 900;
+  color: #ecfffb;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.systemEntityCopy small {
+  margin-top: 3px;
+  color: rgba(193, 230, 224, 0.72);
+  font-size: 7px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.systemEntityIcon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
+  background: color-mix(in srgb, var(--entity-accent) 34%, rgba(0, 0, 0, 0.4));
+  border: 1px solid color-mix(in srgb, var(--entity-accent) 82%, transparent);
+  color: #ffffff;
+  font-size: 10px;
+}
+    `;
+    document.head.appendChild(style);
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
   private updateStarOcclusionAndGlow(): void {
@@ -1107,13 +1632,7 @@ export class SystemScene implements IGameScene {
         ? this.star.system.planets
         : this.createFallbackPlanets(this.starKind);
 
-    // Mark one random planet as habited if this is a starting owned system
-    const isOwnedSystem = this.homeSystemStarIds.has(this.star.id);
-    if (isOwnedSystem && planets.length > 0) {
-      const habitedIndex = Math.floor(Math.random() * planets.length);
-      planets[habitedIndex].isHabited = true;
-    }
-
+    this.planetConfigs = planets;
     for (let i = 0; i < planets.length; i++) {
       this.createPlanet(i, planets[i]);
     }
@@ -1131,7 +1650,7 @@ export class SystemScene implements IGameScene {
 
     this.playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
     this.playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
-    const serverPosition = this.shipSystemPositions[this.star.id];
+    const serverPosition = this.fleetSystemPositions[this.star.id];
     if (serverPosition) {
       this.playerShipBasePosition.set(serverPosition.x, serverPosition.y, serverPosition.z);
       this.playerShipTargetPosition.copyFrom(this.playerShipBasePosition);
@@ -1395,6 +1914,170 @@ export class SystemScene implements IGameScene {
     bodyMat.emissiveColor = new Color3(0.04, 0.06, 0.1);
     bodyMat.specularColor = new Color3(0.65, 0.7, 0.78);
     body.material = bodyMat;
+  }
+
+  private hashString(value: string): number {
+    let hash = 0;
+    for (let i = 0; i < value.length; i += 1) {
+      hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+    }
+    return hash;
+  }
+
+  private getBattleZonePosition(zone: BattleZone, seed: string): Vector3 {
+    const base = BATTLE_ZONE_POSITIONS[zone];
+    const hash = this.hashString(seed);
+    const spread = BATTLE_ZONE_SPREAD;
+    const offsetX = ((hash & 0xff) / 255 - 0.5) * spread;
+    const offsetY = (((hash >> 8) & 0xff) / 255 - 0.5) * 0.8;
+    const offsetZ = (((hash >> 16) & 0xff) / 255 - 0.5) * spread;
+    return new Vector3(base.x + offsetX, base.y + offsetY, base.z + offsetZ);
+  }
+
+  private async ensureBattleShipTemplate(): Promise<void> {
+    if (this.battleShipTemplate) return;
+    if (this.battleShipTemplatePromise) return this.battleShipTemplatePromise;
+    this.battleShipTemplatePromise = (async () => {
+      try {
+        const result = await SceneLoader.ImportMeshAsync(
+          "",
+          PLAYER_SHIP_MODEL_ROOT,
+          PLAYER_SHIP_MODEL_FILE,
+          this.scene,
+        );
+        const meshes = result.meshes.filter((mesh) => (
+          typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
+        ));
+        if (meshes.length === 0) {
+          throw new Error("Fighter_01.obj did not produce renderable meshes.");
+        }
+
+        const bounds = this.computeMeshBounds(meshes);
+        const maxDimension = Math.max(
+          0.001,
+          bounds.max.x - bounds.min.x,
+          bounds.max.y - bounds.min.y,
+          bounds.max.z - bounds.min.z,
+        );
+        const shipScale = BATTLE_SHIP_TARGET_SIZE / maxDimension;
+
+        const templateRoot = new TransformNode("battleShipTemplateRoot", this.scene);
+        const assetRoot = new TransformNode("battleShipTemplateAsset", this.scene);
+        assetRoot.parent = templateRoot;
+        assetRoot.position = bounds.center.scale(-1);
+
+        for (const mesh of meshes) {
+          mesh.parent = assetRoot;
+          mesh.isPickable = false;
+          mesh.alwaysSelectAsActiveMesh = true;
+          this.applyPlayerShipMaterialStyle(mesh.material);
+        }
+
+        templateRoot.scaling.setAll(shipScale);
+        templateRoot.setEnabled(false);
+        this.battleShipTemplate = templateRoot;
+      } catch (err) {
+        console.warn("Failed to load battle ship model", err);
+      } finally {
+        this.battleShipTemplatePromise = null;
+      }
+    })();
+    return this.battleShipTemplatePromise;
+  }
+
+  private createBattleShipInstance(shipId: string): TransformNode | null {
+    if (!this.battleShipTemplate) return null;
+    const clone = this.battleShipTemplate.clone(`battleShip-${shipId}`, null);
+    if (!clone) return null;
+    clone.setEnabled(this.starsVisible);
+    for (const mesh of clone.getChildMeshes()) {
+      mesh.isPickable = false;
+    }
+    this.battleShipRoots.set(shipId, clone);
+    this.battleShipTargets.set(shipId, clone.position.clone());
+    return clone;
+  }
+
+  private refreshBattleShips(): void {
+    const battlesInSystem = this.battles.filter((battle) => (
+      battle.starId === this.star.id && battle.phase !== "resolved"
+    ));
+    const shipStates = battlesInSystem.flatMap((battle) => battle.ships).filter((ship) => !ship.destroyed);
+    const shipIds = new Set(shipStates.map((ship) => ship.shipId));
+
+    if (shipIds.size === 0) {
+      for (const [, root] of this.battleShipRoots) {
+        root.dispose();
+      }
+      this.battleShipRoots.clear();
+      this.battleShipTargets.clear();
+      this.battleRoundSeen.clear();
+      if (this.playerShipRoot) {
+        this.playerShipRoot.setEnabled(this.starsVisible);
+      }
+      return;
+    }
+
+    void this.ensureBattleShipTemplate().then(() => {
+      for (const [shipId, root] of Array.from(this.battleShipRoots.entries())) {
+        if (!shipIds.has(shipId)) {
+          root.dispose();
+          this.battleShipRoots.delete(shipId);
+          this.battleShipTargets.delete(shipId);
+        }
+      }
+
+      for (const shipState of shipStates) {
+        const existingRoot = this.battleShipRoots.get(shipState.shipId);
+        const root = existingRoot ?? this.createBattleShipInstance(shipState.shipId);
+        if (!root) continue;
+        const target = this.getBattleZonePosition(shipState.zone, shipState.shipId);
+        if (!existingRoot) {
+          root.position.copyFrom(target);
+        }
+        this.battleShipTargets.set(shipState.shipId, target);
+      }
+
+      if (this.playerShipRoot) {
+        this.playerShipRoot.setEnabled(false);
+      }
+
+      this.queueBattleRoundBeams(battlesInSystem);
+    });
+  }
+
+  private getBattleEntityPosition(entityId: string): Vector3 | null {
+    const shipRoot = this.battleShipRoots.get(entityId);
+    if (shipRoot) return shipRoot.position.clone();
+    if (this.starbaseRoot && this.starbaseRoot.isEnabled() && this.starbases.some((sb) => sb.id === entityId)) {
+      return this.starbaseRoot.position.clone();
+    }
+    return null;
+  }
+
+  private queueBattleRoundBeams(battles: ServerBattle[]): void {
+    for (const battle of battles) {
+      const latestRound = battle.recentRounds[battle.recentRounds.length - 1];
+      if (!latestRound) continue;
+      const lastSeen = this.battleRoundSeen.get(battle.id) ?? -1;
+      if (latestRound.round <= lastSeen) continue;
+      this.battleRoundSeen.set(battle.id, latestRound.round);
+
+      for (const action of latestRound.actions) {
+        if (!action.fired) continue;
+        const from = this.getBattleEntityPosition(action.actorId);
+        const to = this.getBattleEntityPosition(action.fired.targetId);
+        if (!from || !to) continue;
+        const beam = MeshBuilder.CreateLines(
+          `battleBeam-${battle.id}-${action.actorId}-${latestRound.round}`,
+          { points: [from, to] },
+          this.scene,
+        );
+        beam.color = action.fired.hit ? new Color3(0.6, 0.9, 1.0) : new Color3(1.0, 0.5, 0.3);
+        beam.isPickable = false;
+        this.battleBeams.push({ mesh: beam, ttl: BATTLE_BEAM_TTL, maxTtl: BATTLE_BEAM_TTL });
+      }
+    }
   }
 
   private createRedGiantAtmosphere(starDiameter: number, starTint: Color3): void {
@@ -1878,7 +2561,7 @@ export class SystemScene implements IGameScene {
     ctx.restore();
 
     if (drawBadge) {
-      this.drawSystemHexBadge(ctx, badgeX, badgeY, badgeR);
+      this.drawSystemHabitedPlanetBadge(ctx, badgeX, badgeY, badgeR);
     }
   }
 
@@ -1958,23 +2641,199 @@ export class SystemScene implements IGameScene {
     ctx.restore();
   }
 
+  private drawSystemHabitedPlanetBadge(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
+    const drawHex = (r: number): void => {
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const angle = -Math.PI / 6 + (i * Math.PI * 2) / 6;
+        const px = x + Math.cos(angle) * r;
+        const py = y + Math.sin(angle) * r;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+    };
+
+    ctx.save();
+    ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
+    ctx.shadowBlur = 28;
+    ctx.shadowOffsetY = 12;
+
+    drawHex(radius);
+    const bg = ctx.createLinearGradient(x - radius, y - radius, x + radius, y + radius);
+    bg.addColorStop(0, "rgba(24, 171, 126, 0.98)");
+    bg.addColorStop(0.58, "rgba(21, 100, 137, 0.98)");
+    bg.addColorStop(1, "rgba(226, 166, 61, 0.98)");
+    ctx.fillStyle = bg;
+    ctx.fill();
+    ctx.lineWidth = 20;
+    ctx.strokeStyle = "rgba(194, 255, 231, 0.96)";
+    ctx.stroke();
+
+    drawHex(radius * 0.76);
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = "rgba(7, 35, 40, 0.72)";
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.ellipse(x, y, radius * 0.45, radius * 0.32, -0.18, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(210, 252, 230, 0.98)";
+    ctx.fill();
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = "rgba(9, 50, 51, 0.88)";
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.ellipse(x - radius * 0.1, y - radius * 0.02, radius * 0.5, radius * 0.16, -0.34, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(255, 232, 134, 0.95)";
+    ctx.lineWidth = 9;
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(34, 124, 92, 0.9)";
+    ctx.beginPath();
+    ctx.moveTo(x - radius * 0.27, y - radius * 0.06);
+    ctx.bezierCurveTo(x - radius * 0.1, y - radius * 0.2, x + radius * 0.08, y - radius * 0.14, x + radius * 0.17, y);
+    ctx.bezierCurveTo(x + radius * 0.02, y + radius * 0.05, x - radius * 0.12, y + radius * 0.08, x - radius * 0.27, y - radius * 0.06);
+    ctx.fill();
+
+    ctx.fillStyle = "rgba(255, 226, 105, 0.96)";
+    const lightR = Math.max(4, radius * 0.045);
+    const lights = [
+      [x - radius * 0.11, y + radius * 0.1],
+      [x + radius * 0.03, y + radius * 0.07],
+      [x + radius * 0.18, y + radius * 0.02],
+    ];
+    for (const [lx, ly] of lights) {
+      ctx.beginPath();
+      ctx.arc(lx, ly, lightR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  private installObjectLabelClicks(): void {
+    this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
+      if (pointerInfo.type !== PointerEventTypes.POINTERDOWN) return;
+      const ev = pointerInfo.event as PointerEvent;
+      if (ev.button !== 0) return;
+      if (this.tryOpenObjectPanelAtPointer(ev)) {
+        ev.preventDefault();
+      }
+    });
+  }
+
+  private tryOpenObjectPanelAtPointer(ev: PointerEvent): boolean {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const ray = this.scene.createPickingRay(canvasX, canvasY, Matrix.Identity(), this.camera);
+
+    for (let i = 0; i < this.planetLabelMeshes.length; i++) {
+      const labelMesh = this.planetLabelMeshes[i];
+      const planet = this.planetConfigs[i];
+      if (!labelMesh || !planet || !labelMesh.isEnabled() || !this.hitLabelPlane(ray, labelMesh)) continue;
+      void this.showPlanetObjectPanel(planet);
+      return true;
+    }
+
+    if (this.starLabelMesh && this.starLabelMesh.isEnabled() && this.hitLabelPlane(ray, this.starLabelMesh)) {
+      this.showStarObjectPanel();
+      return true;
+    }
+
+    return false;
+  }
+
+  private hitLabelPlane(ray: Ray, labelMesh: Mesh): boolean {
+    const normal = labelMesh.getDirection(Vector3.Forward());
+    const denominator = Vector3.Dot(ray.direction, normal);
+    if (Math.abs(denominator) < 0.0001) return false;
+
+    const t = Vector3.Dot(labelMesh.position.subtract(ray.origin), normal) / denominator;
+    if (t < 0) return false;
+
+    const hitPoint = ray.origin.add(ray.direction.scale(t));
+    const inverseWorld = labelMesh.getWorldMatrix().clone().invert();
+    const local = Vector3.TransformCoordinates(hitPoint, inverseWorld);
+    const width = labelMesh.getBoundingInfo().boundingBox.extendSize.x * 2;
+    const height = labelMesh.getBoundingInfo().boundingBox.extendSize.y * 2;
+    return Math.abs(local.x) <= width / 2 && Math.abs(local.y) <= height / 2;
+  }
+
+  private async showPlanetObjectPanel(planet: PlanetConfig): Promise<void> {
+    let panelPlanet = planet;
+    let planetState = this.getPlanetState(planet.id);
+    if (this.options.onRequestPlanetDetails) {
+      try {
+        const details = await this.options.onRequestPlanetDetails(planet.id);
+        panelPlanet = details.planet;
+        planetState = details.planetState;
+      } catch (error) {
+        console.error("Failed to load planet details", error);
+      }
+    }
+    this.objectPanel.show({
+      kind: "planet",
+      objectId: panelPlanet.id,
+      name: panelPlanet.name,
+      subtitle: `${this.star.name} System`,
+      isHabited: panelPlanet.isHabited === true,
+      objectDetails: panelPlanet.objectDetails,
+      planetState,
+      imageUrl: this.getPlanetTextureUrl(panelPlanet),
+      accentColor: "rgba(102, 236, 199, 0.95)",
+      onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+    });
+  }
+
+  private showStarObjectPanel(): void {
+    const [r, g, b] = this.star.color.map((channel) => Math.round(channel * 255));
+    this.objectPanel.show({
+      kind: "star",
+      objectId: `star-${this.star.id}`,
+      name: this.star.name,
+      subtitle: "Stellar Object",
+      isHabited: false,
+      objectDetails: this.star.objectDetails,
+      imageUrl: this.getStarBannerTextureUrl(),
+      accentColor: `rgba(${r}, ${g}, ${b}, 0.95)`,
+    });
+  }
+
+  private getPlanetState(planetId: string): PlanetState | undefined {
+    return this.planetStates.find((planetState) => planetState.id === planetId);
+  }
+
+  private getPlanetTextureUrl(planet: PlanetConfig): string {
+    const cfg = PLANET_TYPES[planet.type];
+    const variation = String(planet.textureVariation + 1).padStart(2, "0");
+    return `${cfg.texturePrefix}_${variation}-1024x512.png`;
+  }
+
+  private getStarBannerTextureUrl(): string {
+    return STAR_BANNER_TEXTURES[this.star.type] ?? "/textures/star_surface.png";
+  }
+
   private createFallbackPlanets(kind: StarVisualKind): PlanetConfig[] {
     if (kind === "black-hole") {
       return [
-        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32, name: `${this.star.name} I` },
-        { type: PlanetType.Methane, textureVariation: 0, diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2, name: `${this.star.name} II` },
+        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32, name: `${this.star.name} I` }, `${this.star.id}:fallback:0`),
+        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 1), type: PlanetType.Methane, textureVariation: 0, diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2, name: `${this.star.name} II` }, `${this.star.id}:fallback:1`),
       ];
     }
     if (kind === "neutron-star" || kind === "pulsar") {
       return [
-        { type: PlanetType.Barren, textureVariation: 0, diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62, name: `${this.star.name} I` },
-        { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46, name: `${this.star.name} II` },
+        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62, name: `${this.star.name} I` }, `${this.star.id}:fallback:0`),
+        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 1), type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46, name: `${this.star.name} II` }, `${this.star.id}:fallback:1`),
       ];
     }
     return [
-      { type: PlanetType.Barren, textureVariation: 0, diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55, name: `${this.star.name} I` },
-      { type: PlanetType.Gaseous, textureVariation: 0, diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24, name: `${this.star.name} II` },
-      { type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4, name: `${this.star.name} III` },
+      withPlanetObjectDetails({ id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55, name: `${this.star.name} I` }, `${this.star.id}:fallback:0`),
+      withPlanetObjectDetails({ id: createPlanetId(this.star.id, 1), type: PlanetType.Gaseous, textureVariation: 0, diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24, name: `${this.star.name} II` }, `${this.star.id}:fallback:1`),
+      withPlanetObjectDetails({ id: createPlanetId(this.star.id, 2), type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4, name: `${this.star.name} III` }, `${this.star.id}:fallback:2`),
     ];
   }
 
@@ -2000,6 +2859,9 @@ export class SystemScene implements IGameScene {
     if (this.playerShipRoot) {
       this.playerShipRoot.setEnabled(visible);
     }
+    for (const [, root] of this.battleShipRoots) {
+      root.setEnabled(visible);
+    }
   }
 
   setBloomEnabled(enabled: boolean): void {
@@ -2009,15 +2871,21 @@ export class SystemScene implements IGameScene {
     }
   }
 
-  setShipSystemPositions(positions: Record<number, { x: number; y: number; z: number }>): void {
-    this.shipSystemPositions = positions;
+  setFleetSystemPositions(positions: Record<number, { x: number; y: number; z: number }>): void {
+    this.fleetSystemPositions = positions;
     const position = positions[this.star.id];
     if (!position) {
       this.playerShipRoot?.setEnabled(false);
+      this.refreshSystemEntityCards();
       return;
     }
 
     this.playerShipTargetPosition.set(position.x, position.y, position.z);
+    if (this.hasActiveBattleInSystem()) {
+      this.playerShipRoot?.setEnabled(false);
+      this.refreshSystemEntityCards();
+      return;
+    }
     if (!this.playerShipRoot) {
       this.playerShipBasePosition.copyFrom(this.playerShipTargetPosition);
       void this.createPlayerShipIfPresent().then(() => {
@@ -2027,6 +2895,27 @@ export class SystemScene implements IGameScene {
     }
 
     this.playerShipRoot.setEnabled(this.starsVisible);
+    this.refreshSystemEntityCards();
+  }
+
+  setServerFleets(fleets: ServerFleet[]): void {
+    this.serverFleets = fleets;
+    if (this.selectedFleetId && !fleets.some((fleet) => fleet.id === this.selectedFleetId)) {
+      this.selectedFleetId = null;
+      this.selectionPanel?.clear();
+    }
+    this.refreshSystemEntityCards();
+  }
+
+  setServerShips(ships: ServerShip[]): void {
+    this.serverShips = ships;
+    this.refreshSystemEntityCards();
+  }
+
+  setBattles(battles: ServerBattle[]): void {
+    this.battles = battles;
+    this.refreshBattleShips();
+    this.refreshSystemEntityCards();
   }
 
   setStarbaseSystemIds(starIds: Iterable<number>): void {
@@ -2034,17 +2923,92 @@ export class SystemScene implements IGameScene {
     if (this.starbaseSystemIds.has(this.star.id)) {
       if (this.starbaseRoot) {
         this.starbaseRoot.setEnabled(true);
+        this.refreshSystemEntityCards();
         return;
       }
-      void this.createStarbaseIfPresent();
+      void this.createStarbaseIfPresent().then(() => this.refreshSystemEntityCards());
       return;
     }
 
     this.starbaseRoot?.setEnabled(false);
+    this.refreshSystemEntityCards();
+  }
+
+  setServerStarbases(starbases: ServerStarbase[]): void {
+    this.starbases = starbases;
+    for (const starbase of starbases) {
+      this.starbasePanel?.refreshStarbase(starbase);
+    }
+    this.refreshSystemEntityCards();
+  }
+
+  setPlanetStates(planetStates: PlanetState[]): void {
+    this.planetStates = planetStates;
+    const previousHabited = this.planetConfigs.map((planet) => planet.isHabited === true);
+    applyPlanetStatesToStars([this.star], planetStates);
+    this.planetConfigs = this.star.system.planets.length > 0
+      ? this.star.system.planets
+      : this.planetConfigs;
+
+    for (let i = 0; i < this.planetConfigs.length; i++) {
+      if (previousHabited[i] === (this.planetConfigs[i].isHabited === true)) continue;
+      const oldLabel = this.planetLabelMeshes[i];
+      if (oldLabel) {
+        const material = oldLabel.material as StandardMaterial | null;
+        material?.diffuseTexture?.dispose();
+        material?.dispose();
+        oldLabel.dispose();
+      }
+      this.planetLabelMeshes[i] = this.createPlanetLabel(
+        i,
+        this.planetConfigs[i],
+        this.planetConfigs[i].orbitRadius,
+      );
+    }
+    for (const planetState of planetStates) {
+      if (planetState.starId !== this.star.id) continue;
+      const planet = this.star.system.planets[planetState.planetIndex];
+      if (planet) {
+        this.objectPanel?.refreshPlanetState(planet.id, planetState, planet.objectDetails, planet.isHabited === true);
+      }
+    }
+  }
+
+  refreshPlanetDetails(planet: PlanetConfig, planetState: PlanetState): void {
+    const nextPlanetStates = this.planetStates.filter((candidate) => candidate.id !== planetState.id);
+    nextPlanetStates.push(planetState);
+    this.planetStates = nextPlanetStates;
+    this.star.system.planets[planetState.planetIndex] = planet;
+    this.planetConfigs = this.star.system.planets;
+    this.objectPanel?.refreshPlanetState(
+      planet.id,
+      planetState,
+      planet.objectDetails,
+      planet.isHabited === true,
+    );
   }
 
   dispose(): void {
     window.removeEventListener("keydown", this.onEscapeKey);
+    if (this.pointerObserver) {
+      this.scene.onPointerObservable.remove(this.pointerObserver);
+      this.pointerObserver = null;
+    }
+    this.objectPanel?.dispose();
+    this.selectionPanel?.clear();
+    this.starbasePanel?.dispose();
+    for (const [, root] of this.battleShipRoots) {
+      root.dispose();
+    }
+    this.battleShipRoots.clear();
+    for (const beam of this.battleBeams) {
+      beam.mesh.dispose();
+    }
+    this.battleBeams = [];
+    this.battleShipTemplate?.dispose();
+    this.battleShipTemplate = null;
+    this.entityCardLayer?.remove();
+    this.entityCardLayer = null;
     this.orbitSystem.dispose();
     this.camera?.detachControl();
     this.scene.dispose();

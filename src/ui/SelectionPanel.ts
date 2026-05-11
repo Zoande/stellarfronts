@@ -5,7 +5,7 @@
 
 import type { ShipAction } from "../game/GameplayTypes";
 
-export type SelectionType = "ship" | "starbase";
+export type SelectionType = "ship" | "fleet" | "starbase";
 
 export interface SelectionData {
   type: SelectionType;
@@ -13,12 +13,19 @@ export interface SelectionData {
   name: string;
   hp: number;
   maxHp: number;
+  shield?: number;
+  maxShield?: number;
+  armor?: number;
+  maxArmor?: number;
+  hull?: number;
+  maxHull?: number;
   class?: string;
   status?: string;
   detail?: string;
   ownerName?: string;
   ownerColor?: [number, number, number];
   canCommand?: boolean;
+  actions?: ShipAction[];
 }
 
 export interface SelectionPanelCallbacks {
@@ -91,7 +98,8 @@ export class SelectionPanel {
   border-color: rgba(230, 200, 150, 0.7);
 }
 
-.spaceSelectionPanel.ship {
+.spaceSelectionPanel.ship,
+.spaceSelectionPanel.fleet {
   border-color: var(--selection-color);
 }
 
@@ -109,7 +117,8 @@ export class SelectionPanel {
   color: rgba(230, 200, 150, 0.95);
 }
 
-.spaceSelectionPanel.ship .spaceSelectionPanelTitle {
+.spaceSelectionPanel.ship .spaceSelectionPanelTitle,
+.spaceSelectionPanel.fleet .spaceSelectionPanelTitle {
   color: var(--selection-color);
 }
 
@@ -157,7 +166,8 @@ export class SelectionPanel {
   transition: width 0.2s ease;
 }
 
-.spaceSelectionPanel.ship .spaceSelectionPanelHpFill {
+.spaceSelectionPanel.ship .spaceSelectionPanelHpFill,
+.spaceSelectionPanel.fleet .spaceSelectionPanelHpFill {
   background: linear-gradient(90deg, var(--selection-color-soft), var(--selection-color));
 }
 
@@ -169,6 +179,39 @@ export class SelectionPanel {
   letter-spacing: 0.08em;
 }
 
+.spaceSelectionPanelLayerStack {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.spaceSelectionPanelLayerBar {
+  width: 100%;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 2px;
+  border: 1px solid var(--hud-line);
+  overflow: hidden;
+}
+
+.spaceSelectionPanelLayerFill {
+  height: 100%;
+  border-radius: 1px;
+  transition: width 0.2s ease;
+}
+
+.spaceSelectionPanelLayerFill.shield {
+  background: linear-gradient(90deg, rgba(78, 160, 220, 0.55), rgba(86, 202, 255, 0.9));
+}
+
+.spaceSelectionPanelLayerFill.armor {
+  background: linear-gradient(90deg, rgba(210, 145, 84, 0.6), rgba(255, 190, 122, 0.92));
+}
+
+.spaceSelectionPanelLayerFill.hull {
+  background: linear-gradient(90deg, rgba(120, 200, 120, 0.6), rgba(90, 210, 150, 0.95));
+}
+
 .spaceSelectionPanelDetail {
   color: var(--hud-muted);
   font-size: 10px;
@@ -178,7 +221,7 @@ export class SelectionPanel {
 
 .spaceSelectionActions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   margin-top: 10px;
 }
@@ -277,8 +320,17 @@ export class SelectionPanel {
       panel.style.setProperty("--selection-color-soft", this.colorToCss(data.ownerColor, 0.24));
     }
 
-    const hpPercent = Math.round((data.hp / data.maxHp) * 100);
-    const hpWidth = (data.hp / data.maxHp) * 100;
+    const hull = data.hull ?? data.hp;
+    const maxHull = Math.max(1, data.maxHull ?? data.maxHp);
+    const shield = data.shield ?? 0;
+    const maxShield = Math.max(0, data.maxShield ?? 0);
+    const armor = data.armor ?? 0;
+    const maxArmor = Math.max(0, data.maxArmor ?? 0);
+    const hullPercent = Math.round((hull / maxHull) * 100);
+    const hullWidth = (hull / maxHull) * 100;
+    const shieldWidth = maxShield > 0 ? (shield / maxShield) * 100 : 0;
+    const armorWidth = maxArmor > 0 ? (armor / maxArmor) * 100 : 0;
+    const showLayers = maxShield > 0 || maxArmor > 0;
 
     const status = data.status ?? "Operational";
     let classLine = "";
@@ -302,12 +354,27 @@ export class SelectionPanel {
     const detailLine = data.detail
       ? `<div class="spaceSelectionPanelDetail">${this.escapeHtml(data.detail)}</div>`
       : "";
-    const actionButtons = data.type === "ship" && data.canCommand
+    const actionLabels: Record<ShipAction, string> = {
+      move: "Move",
+      build: "Build",
+      attack: "Attack",
+      merge: "Merge",
+      retreat: "Retreat",
+    };
+    const actions = (data.actions && data.actions.length > 0)
+      ? data.actions
+      : ["move", "build", "attack", "merge"];
+    const actionButtons = (data.type === "ship" || data.type === "fleet") && data.canCommand
       ? `
         <div class="spaceSelectionActions">
-          <button class="spaceSelectionActionBtn ${this.activeShipAction === "move" ? "active" : ""}" type="button" data-action="move">Move</button>
-          <button class="spaceSelectionActionBtn ${this.activeShipAction === "build" ? "active" : ""}" type="button" data-action="build">Build</button>
-          <button class="spaceSelectionActionBtn" type="button" data-action="attack">Attack</button>
+          ${actions.map((action) => `
+            <button
+              class="spaceSelectionActionBtn ${this.activeShipAction === action ? "active" : ""}"
+              type="button"
+              data-action="${action}">
+              ${actionLabels[action as ShipAction] ?? action}
+            </button>
+          `).join("")}
         </div>
       `
       : "";
@@ -324,12 +391,26 @@ export class SelectionPanel {
         ${detailLine}
         <div class="spaceSelectionPanelRow">
           <span class="spaceSelectionPanelLabel">Integrity</span>
-          <span class="spaceSelectionPanelValue">${hpPercent}%</span>
+          <span class="spaceSelectionPanelValue">${hullPercent}%</span>
         </div>
-        <div class="spaceSelectionPanelHpBar">
-          <div class="spaceSelectionPanelHpFill" style="width: ${hpWidth}%"></div>
+        <div class="spaceSelectionPanelLayerStack">
+          ${showLayers ? `
+          <div class="spaceSelectionPanelLayerBar">
+            <div class="spaceSelectionPanelLayerFill shield" style="width: ${shieldWidth}%"></div>
+          </div>
+          <div class="spaceSelectionPanelLayerBar">
+            <div class="spaceSelectionPanelLayerFill armor" style="width: ${armorWidth}%"></div>
+          </div>
+          ` : ""}
+          <div class="spaceSelectionPanelLayerBar">
+            <div class="spaceSelectionPanelLayerFill hull" style="width: ${hullWidth}%"></div>
+          </div>
         </div>
-        <div class="spaceSelectionPanelHpPercent">${data.hp} / ${data.maxHp}</div>
+        <div class="spaceSelectionPanelHpPercent">
+          ${showLayers
+            ? `S ${Math.round(shield)} / ${Math.round(maxShield)} | A ${Math.round(armor)} / ${Math.round(maxArmor)} | H ${Math.round(hull)} / ${Math.round(maxHull)}`
+            : `${Math.round(hull)} / ${Math.round(maxHull)}`}
+        </div>
         ${actionButtons}
       </div>
     `;
