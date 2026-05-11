@@ -372,7 +372,7 @@ export class SelectionPanel {
               class="spaceSelectionActionBtn ${this.activeShipAction === action ? "active" : ""}"
               type="button"
               data-action="${action}">
-              ${actionLabels[action] ?? action}
+              ${actionLabels[action as ShipAction] ?? action}
             </button>
           `).join("")}
         </div>

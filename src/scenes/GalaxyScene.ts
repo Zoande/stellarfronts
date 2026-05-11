@@ -1782,7 +1782,7 @@ export class GalaxyScene implements IGameScene {
       const fleetSize = serverFleet?.shipIds.length ?? (fleetShips.length || 1);
       const defense = this.getFleetDefense(serverFleet?.id ?? null);
       const battle = this.getBattleForFleet(serverFleet?.id ?? null);
-      const actions = battle
+      const actions: ShipAction[] = battle
         ? ["retreat"]
         : ["move", "build", "attack", "merge"];
 
