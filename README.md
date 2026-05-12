@@ -127,3 +127,285 @@ Google and Microsoft login buttons are placeholders and currently disabled. Emai
 - `server/auth-server.ts` hosts the auth API.
 - The client talks to the auth server over HTTP and the game server over websocket.
 - The project uses PBKDF2 password hashing and SQLite for local persistence.
+
+## Deployment & Production Configuration
+
+StellarFronts is designed to run across two deployment targets:
+
+1. **Frontend**: Vercel (or other static host)
+2. **Backend**: Raspberry Pi with Cloudflare Tunnel
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Internet / Vercel                        │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │ https://stellarfronts.com (Frontend SPA)               │   │
+│  │ https://www.stellarfronts.com (Frontend SPA)           │   │
+│  └──────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────┘
+                              ↓
+┌──────────────────────────────────────────────────────────────────┐
+│              Cloudflare Tunnel (stellarfronts-game)              │
+│  ┌───────────────────────────────────────────────────────────┐   │
+│  │ api.stellarfronts.com ──→ localhost:8788 (Auth API)      │   │
+│  │ ws.stellarfronts.com  ──→ localhost:8787 (Game WebSocket)│   │
+│  └───────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────┘
+                              ↓
+┌──────────────────────────────────────────────────────────────────┐
+│                    Raspberry Pi Backend                          │
+│  ┌───────────────────────────────────────────────────────────┐   │
+│  │ :8788 Auth Server (HTTP)                                 │   │
+│  │ :8787 Game Server (WebSocket)                            │   │
+│  │ Game state & auth database (SQLite)                      │   │
+│  └───────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Frontend Environment Variables (Vercel)
+
+Set these in Vercel project settings or `.env.production`:
+
+```env
+VITE_AUTH_SERVER_URL=https://api.stellarfronts.com
+VITE_WS_URL=wss://ws.stellarfronts.com
+```
+
+### Backend Environment Variables (Raspberry Pi)
+
+Set these before starting the servers:
+
+```bash
+# Auth Server (port 8788)
+export AUTH_SERVER_PORT=8788
+export ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
+
+# Game/WebSocket Server (port 8787)
+export GAME_SERVER_PORT=8787
+export WS_ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
+
+# Session Cookies (for HTTPS + cross-subdomain)
+export COOKIE_DOMAIN=.stellarfronts.com
+export COOKIE_SECURE=true
+```
+
+### Cloudflare Tunnel Configuration
+
+File: `~/.cloudflared/config.yml`
+
+```yaml
+tunnel: stellarfronts-game
+credentials-file: /home/pi/.cloudflare/TUNNEL_ID.json
+
+ingress:
+  - hostname: api.stellarfronts.com
+    service: http://localhost:8788
+    originRequest:
+      disableChunkedEncoding: false
+
+  - hostname: ws.stellarfronts.com
+    service: http://localhost:8787
+    originRequest:
+      disableChunkedEncoding: false
+
+  - service: http_status:404
+```
+
+### DNS Records (Cloudflare)
+
+Create CNAME records pointing to your Cloudflare Tunnel:
+
+```
+api.stellarfronts.com    CNAME    <TUNNEL_ID>.cfargotunnel.com    (Proxied)
+ws.stellarfronts.com     CNAME    <TUNNEL_ID>.cfargotunnel.com    (Proxied)
+```
+
+### Running on Raspberry Pi
+
+#### Option 1: Manual with npm (for testing)
+
+```bash
+cd ~/stellar-fronts
+export COOKIE_DOMAIN=.stellarfronts.com
+export COOKIE_SECURE=true
+export ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
+export WS_ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
+
+# Run both servers
+npm run server:dev &  # or: tsx server/index.ts
+npm run auth:dev      # or: tsx server/auth-server.ts
+```
+
+#### Option 2: systemd service (recommended for 24/7)
+
+Create `/etc/systemd/system/stellar-fronts-game.service`:
+
+```ini
+[Unit]
+Description=StellarFronts Game Server
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/stellar-fronts
+Environment="COOKIE_DOMAIN=.stellarfronts.com"
+Environment="COOKIE_SECURE=true"
+Environment="ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com"
+Environment="WS_ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com"
+ExecStart=/usr/bin/npm run server:dev
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Create `/etc/systemd/system/stellar-fronts-auth.service`:
+
+```ini
+[Unit]
+Description=StellarFronts Auth Server
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/stellar-fronts
+Environment="COOKIE_DOMAIN=.stellarfronts.com"
+Environment="COOKIE_SECURE=true"
+Environment="ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com"
+ExecStart=/usr/bin/npm run auth:dev
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable stellar-fronts-game stellar-fronts-auth stellar-fronts-tunnel
+sudo systemctl start stellar-fronts-game stellar-fronts-auth stellar-fronts-tunnel
+```
+
+### Verification Commands
+
+#### Test Local Auth API
+
+```bash
+# Health check
+curl http://localhost:8788/health
+
+# Login
+curl -X POST http://localhost:8788/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"observer","password":"observer"}'
+
+# Get session
+curl -b "sf_session=TOKEN" http://localhost:8788/api/me
+```
+
+#### Test Production Auth API (via Cloudflare)
+
+```bash
+# Health check
+curl https://api.stellarfronts.com/health
+
+# Login (will return Set-Cookie header)
+curl -v -c cookies.txt \
+  -X POST https://api.stellarfronts.com/api/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"observer","password":"observer"}'
+
+# Get session (uses stored cookie)
+curl -v -b cookies.txt https://api.stellarfronts.com/api/me
+```
+
+#### Test WebSocket Locally
+
+```bash
+node -e "
+const WebSocket = require('ws');
+const ws = new WebSocket('ws://localhost:8787', {
+  headers: { Cookie: 'sf_session=TOKEN_FROM_LOGIN' }
+});
+ws.on('open', () => console.log('Connected'));
+ws.on('message', (m) => console.log('Received:', m.substring(0, 200)));
+ws.on('error', (e) => console.error('Error:', e.message));
+setTimeout(() => ws.close(), 5000);
+"
+```
+
+#### Test WebSocket Production (via Cloudflare)
+
+```bash
+node -e "
+const WebSocket = require('ws');
+const fetch = require('node-fetch');
+
+(async () => {
+  // 1. Login to get session cookie
+  const login = await fetch('https://api.stellarfronts.com/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'observer', password: 'observer' })
+  });
+  const setCookie = login.headers.get('set-cookie');
+  const sessionCookie = setCookie.split(';')[0];
+
+  // 2. Connect to WebSocket with cookie
+  const ws = new WebSocket('wss://ws.stellarfronts.com', {
+    headers: {
+      Cookie: sessionCookie,
+      Origin: 'https://stellarfronts.com'
+    }
+  });
+
+  ws.on('open', () => console.log('WebSocket connected'));
+  ws.on('message', (m) => console.log('Received:', m.toString().substring(0, 200)));
+  ws.on('error', (e) => console.error('Error:', e.message));
+  ws.on('close', (code) => console.log('Closed:', code));
+
+  setTimeout(() => ws.close(), 8000);
+})().catch(console.error);
+"
+```
+
+### CORS & Security Notes
+
+- **Auth server**: Only allows requests from `ALLOWED_ORIGINS`. Set to your frontend domains in production.
+- **WebSocket server**: Only allows connections from `WS_ALLOWED_ORIGINS`. Rejects requests with disallowed `Origin` header.
+- **Session cookies**: In production, set `COOKIE_DOMAIN=.stellarfronts.com` so the cookie is shared between `api.stellarfronts.com` and the frontend at `stellarfronts.com`.
+- **HTTPS**: Both APIs must use HTTPS in production. Cloudflare Tunnel handles TLS termination.
+
+### Troubleshooting
+
+**Issue: "CORS error" when login button clicked**
+- Ensure `ALLOWED_ORIGINS` includes your frontend domain.
+- Check browser console for exact origin being rejected.
+
+**Issue: WebSocket connection fails in production**
+- Verify `WS_ALLOWED_ORIGINS` includes your frontend domain.
+- Ensure `COOKIE_SECURE=true` so HttpOnly cookies are sent over HTTPS.
+- Check cookie has `Domain=.stellarfronts.com` so it's sent to `ws.stellarfronts.com`.
+
+**Issue: Cookie not shared between subdomains**
+- Verify `COOKIE_DOMAIN` is set to `.stellarfronts.com` (with leading dot).
+- Verify `COOKIE_SECURE=true` for HTTPS.
+- Check browser DevTools > Application > Cookies: domain should show `.stellarfronts.com`.
+
+### Local Development (No Env Vars Needed)
+
+```bash
+npm run dev:all
+# Frontend: http://localhost:5173
+# Auth: http://localhost:8788
+# Game: ws://localhost:8787
+```
+
+CORS and cookies work automatically for localhost + 127.0.0.1.

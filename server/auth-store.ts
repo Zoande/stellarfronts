@@ -265,12 +265,30 @@ export function getPerspectiveFromAccount(account: AuthAccount): GalaxyPerspecti
   return { mode: 'observer' };
 }
 
+function buildCookieAttributes(): string {
+  let attrs = 'Path=/; HttpOnly; SameSite=Lax';
+  
+  // Add Domain for cross-subdomain sharing (production)
+  if (process.env.COOKIE_DOMAIN) {
+    attrs += `; Domain=${process.env.COOKIE_DOMAIN}`;
+  }
+  
+  // Add Secure flag for HTTPS (production)
+  if (process.env.COOKIE_SECURE === 'true') {
+    attrs += '; Secure';
+  }
+  
+  return attrs;
+}
+
 export function serializeSessionCookie(token: string): string {
-  return `sf_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}`;
+  const attrs = buildCookieAttributes();
+  return `sf_session=${encodeURIComponent(token)}; ${attrs}; Max-Age=${SESSION_TTL_MS / 1000}`;
 }
 
 export function clearSessionCookie(): string {
-  return 'sf_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0';
+  const attrs = buildCookieAttributes();
+  return `sf_session=; ${attrs}; Max-Age=0`;
 }
 
 export function parseSessionTokenFromCookie(header: string | undefined): string | null {

@@ -2685,8 +2685,39 @@ state = await loadState();
 advanceState(Date.now());
 await saveState(state);
 
+// Parse comma-separated allowed WebSocket origins from environment
+// Default: localhost dev environments
+const DEFAULT_WS_ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
+
+function parseWsAllowedOrigins(): Set<string> {
+  const envOrigins = process.env.WS_ALLOWED_ORIGINS;
+  if (envOrigins) {
+    return new Set(envOrigins.split(',').map((o) => o.trim()).filter(Boolean));
+  }
+  return new Set(DEFAULT_WS_ALLOWED_ORIGINS);
+}
+
+const wsAllowedOrigins = parseWsAllowedOrigins();
+
+function isWebSocketOriginAllowed(origin: string | undefined): boolean {
+  // Allow requests without Origin header (for CLI/server-side tests)
+  if (!origin) return true;
+  return wsAllowedOrigins.has(origin);
+}
+
 const wss = new WebSocketServer({ port: PORT });
 wss.on("connection", (socket, request) => {
+  // Validate WebSocket origin
+  const origin = request.headers.origin;
+  if (!isWebSocketOriginAllowed(origin)) {
+    console.warn(`[GameServer] Rejected WebSocket connection from disallowed origin: ${origin}`);
+    socket.close(1008, 'Origin not allowed');
+    return;
+  }
+
   const token = parseSessionTokenFromCookie(request.headers.cookie);
   const account = token ? authStore.getAccountFromSessionToken(token) : null;
   if (!account) {

@@ -3,7 +3,28 @@ import { authStore, clearSessionCookie, isAuthError, parseSessionTokenFromCookie
 import type { Credentials } from '../src/auth/types';
 
 const PORT = Number(process.env.AUTH_SERVER_PORT ?? 8788);
-const ALLOWED_ORIGIN_PATTERN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+// Parse comma-separated allowed origins from environment
+// Default: localhost dev environments
+const DEFAULT_ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+];
+
+function parseAllowedOrigins(): Set<string> {
+  const envOrigins = process.env.ALLOWED_ORIGINS;
+  if (envOrigins) {
+    return new Set(envOrigins.split(',').map((o) => o.trim()).filter(Boolean));
+  }
+  return new Set(DEFAULT_ALLOWED_ORIGINS);
+}
+
+const allowedOrigins = parseAllowedOrigins();
+
+function isOriginAllowed(origin: string | undefined): boolean {
+  if (!origin) return false;
+  return allowedOrigins.has(origin);
+}
 
 function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -34,7 +55,7 @@ function writeJson(response: ServerResponse, statusCode: number, payload: unknow
 
 function applyCors(request: IncomingMessage, response: ServerResponse): void {
   const origin = request.headers.origin;
-  if (!origin || !ALLOWED_ORIGIN_PATTERN.test(origin)) {
+  if (!origin || !isOriginAllowed(origin)) {
     return;
   }
 

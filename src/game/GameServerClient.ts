@@ -15,6 +15,14 @@ type PendingRequest<T> = {
   reject: (error: Error) => void;
 };
 
+function getWebSocketUrl(): string {
+  // Support VITE_WS_URL env var for production (set at build time by Vite)
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_WS_URL) {
+    return import.meta.env.VITE_WS_URL;
+  }
+  return 'ws://localhost:8787';
+}
+
 export class GameServerClient {
   private socket: WebSocket | null = null;
   private latestSnapshot: GameSnapshot | null = null;
@@ -24,7 +32,7 @@ export class GameServerClient {
   private systemDetailsRequests = new Map<number, PendingRequest<SystemDetailsEvent>>();
   private planetDetailsRequests = new Map<string, PendingRequest<PlanetDetailsEvent>>();
 
-  constructor(private readonly url = "ws://localhost:8787") {}
+  constructor(private readonly url = getWebSocketUrl()) {}
 
   async connect(): Promise<GameSnapshot> {
     if (this.latestSnapshot) return this.latestSnapshot;
