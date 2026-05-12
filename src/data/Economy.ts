@@ -254,20 +254,21 @@ export interface PlanetEconomySeed {
 
 export const PEOPLE_PER_MONTHLY_UNIT = 1_000_000;
 export const STARTING_HABITED_POPULATION = 10_000_000_000;
-const BASE_POPULATION_GROWTH_RATE_PER_QUARTER = 0.008;
+const BASE_POPULATION_GROWTH_RATE_PER_QUARTER = 0.01;
+const POP_FOOD_UPKEEP_PER_UNIT = 1.1;
 
 export const DISTRICT_MINERAL_COSTS: Record<DistrictKind, number> = {
-  city: 800,
-  generator: 650,
-  mining: 650,
-  agriculture: 650,
+  city: 900,
+  generator: 750,
+  mining: 750,
+  agriculture: 750,
 };
 
 export const DISTRICT_BUILD_DAYS: Record<DistrictKind, number> = {
-  city: 180,
-  generator: 120,
-  mining: 120,
-  agriculture: 120,
+  city: 90,
+  generator: 90,
+  mining: 90,
+  agriculture: 90,
 };
 
 export const RESOURCE_KINDS: ResourceKind[] = ["food", "minerals", "energy", "goods", "alloys", "research"];
@@ -348,30 +349,30 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     class: "middle",
     description: "Turns energy and goods into stockpiled research.",
     output: { research: 3 },
-    upkeep: { energy: 2, goods: 1 },
+    upkeep: { energy: 2.5, goods: 1.2 },
   },
   artisan: {
     kind: "artisan",
     label: "Artisans",
     class: "middle",
     description: "Refines minerals into civilian goods.",
-    output: { goods: 3 },
-    upkeep: { minerals: 4 },
+    output: { goods: 2.5 },
+    upkeep: { minerals: 4.5, energy: 0.5 },
   },
   metallurgist: {
     kind: "metallurgist",
     label: "Metallurgists",
     class: "middle",
     description: "Refines minerals into military and industrial alloys.",
-    output: { alloys: 2 },
-    upkeep: { minerals: 5 },
+    output: { alloys: 1.6 },
+    upkeep: { minerals: 5.5, energy: 0.6 },
   },
   entertainer: {
     kind: "entertainer",
     label: "Entertainers",
     class: "middle",
     description: "Provides culture, recreation, and morale services.",
-    upkeep: { goods: 0.5 },
+    upkeep: { goods: 0.6 },
     amenities: 5,
   },
   enforcer: {
@@ -379,37 +380,37 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Enforcers",
     class: "middle",
     description: "Maintains public order and suppresses organized crime.",
-    upkeep: { energy: 0.5, goods: 0.2 },
-    crimeReduction: 0.02,
+    upkeep: { energy: 0.6, goods: 0.25 },
+    crimeReduction: 0.025,
   },
   farmer: {
     kind: "farmer",
     label: "Farmers",
     class: "lower",
     description: "Produces food from agricultural land and hydroponic infrastructure.",
-    output: { food: 6 },
+    output: { food: 4.5 },
   },
   miner: {
     kind: "miner",
     label: "Miners",
     class: "lower",
     description: "Extracts minerals from planetary deposits.",
-    output: { minerals: 5 },
+    output: { minerals: 4.5 },
   },
   technician: {
     kind: "technician",
     label: "Technicians",
     class: "lower",
     description: "Operates power grids, reactors, and energy collection systems.",
-    output: { energy: 5 },
+    output: { energy: 3.6 },
   },
   clerk: {
     kind: "clerk",
     label: "Clerks",
     class: "lower",
     description: "Handles services, commerce, and local administration.",
-    output: { energy: 1 },
-    amenities: 2,
+    output: { energy: 0.6 },
+    amenities: 1.5,
   },
   unemployed: {
     kind: "unemployed",
@@ -457,18 +458,18 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Housing Complex",
     initials: "HC",
     description: "Dense residential towers and life-support extensions that expand planetary housing.",
-    mineralCost: 450,
-    buildDays: 90,
+    mineralCost: 350,
+    buildDays: 18,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
-    housing: 1_000_000_000,
+    housing: 1_200_000_000,
   },
   administrativeComplex: {
     kind: "administrativeComplex",
     label: "Administrative Complex",
     initials: "AD",
     description: "Offices, courts, and planning bureaus that create administrator jobs.",
-    mineralCost: 700,
-    buildDays: 120,
+    mineralCost: 600,
+    buildDays: 60,
     compatibility: [{ area: "city" }],
     jobs: [{ job: "administrator", amount: 300_000_000 }],
   },
@@ -477,8 +478,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Research Labs",
     initials: "RL",
     description: "Laboratory campuses that create researcher jobs.",
-    mineralCost: 850,
-    buildDays: 150,
+    mineralCost: 800,
+    buildDays: 90,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["researchCampus"] }],
     jobs: [{ job: "researcher", amount: 500_000_000 }],
   },
@@ -487,8 +488,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Civilian Fabricators",
     initials: "CF",
     description: "Factory halls that create artisan jobs for civilian goods production.",
-    mineralCost: 800,
-    buildDays: 135,
+    mineralCost: 700,
+    buildDays: 60,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["mixedIndustry", "civilianIndustry"] }],
     jobs: [{ job: "artisan", amount: 500_000_000 }],
   },
@@ -497,8 +498,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Alloy Foundries",
     initials: "AF",
     description: "Heavy furnace and forge facilities that create metallurgist jobs.",
-    mineralCost: 900,
-    buildDays: 150,
+    mineralCost: 850,
+    buildDays: 90,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["mixedIndustry", "heavyIndustry"] }],
     jobs: [{ job: "metallurgist", amount: 500_000_000 }],
   },
@@ -507,8 +508,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Commercial Forum",
     initials: "CM",
     description: "Market districts and service hubs that create clerk jobs.",
-    mineralCost: 650,
-    buildDays: 105,
+    mineralCost: 400,
+    buildDays: 18,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     jobs: [{ job: "clerk", amount: 500_000_000 }],
   },
@@ -517,8 +518,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Food Processing Plant",
     initials: "FP",
     description: "Agricultural logistics and preservation plants that expand farmer jobs per agriculture district.",
-    mineralCost: 550,
-    buildDays: 90,
+    mineralCost: 350,
+    buildDays: 18,
     compatibility: [{ area: "agriculture" }],
     jobs: [{ job: "farmer", amount: 250_000_000, perDistrict: "agriculture" }],
   },
@@ -527,8 +528,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Agro-Industrial Kitchens",
     initials: "AK",
     description: "Food industry complexes that convert some farmer demand into artisan jobs.",
-    mineralCost: 750,
-    buildDays: 135,
+    mineralCost: 550,
+    buildDays: 60,
     compatibility: [{ area: "agriculture" }],
     jobs: [
       { job: "farmer", amount: -250_000_000, perDistrict: "agriculture" },
@@ -540,8 +541,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Mineral Purification Plant",
     initials: "MP",
     description: "Ore sorting and purification works that expand miner jobs per mining district.",
-    mineralCost: 550,
-    buildDays: 90,
+    mineralCost: 350,
+    buildDays: 18,
     compatibility: [{ area: "mining" }],
     jobs: [{ job: "miner", amount: 250_000_000, perDistrict: "mining" }],
   },
@@ -550,8 +551,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Ore Smelter",
     initials: "OS",
     description: "Industrial smelters that convert some miner demand into metallurgist jobs.",
-    mineralCost: 800,
-    buildDays: 135,
+    mineralCost: 650,
+    buildDays: 60,
     compatibility: [{ area: "mining" }],
     jobs: [
       { job: "miner", amount: -250_000_000, perDistrict: "mining" },
@@ -563,8 +564,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Energy Grid",
     initials: "EG",
     description: "Planetary power routing that expands technician jobs per generator district.",
-    mineralCost: 550,
-    buildDays: 90,
+    mineralCost: 350,
+    buildDays: 18,
     compatibility: [{ area: "generator" }],
     jobs: [{ job: "technician", amount: 250_000_000, perDistrict: "generator" }],
   },
@@ -573,8 +574,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Capacitor Workshops",
     initials: "CW",
     description: "Power component workshops that convert some technician demand into artisan jobs.",
-    mineralCost: 750,
-    buildDays: 135,
+    mineralCost: 550,
+    buildDays: 60,
     compatibility: [{ area: "generator" }],
     jobs: [
       { job: "technician", amount: -250_000_000, perDistrict: "generator" },
@@ -586,8 +587,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Entertainment Forum",
     initials: "EF",
     description: "Theaters, parks, and media venues that create entertainer jobs for amenities.",
-    mineralCost: 700,
-    buildDays: 120,
+    mineralCost: 550,
+    buildDays: 60,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     jobs: [{ job: "entertainer", amount: 500_000_000 }],
   },
@@ -596,8 +597,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Security Office",
     initials: "SO",
     description: "Precincts and public safety offices that create enforcer jobs to reduce crime.",
-    mineralCost: 700,
-    buildDays: 120,
+    mineralCost: 550,
+    buildDays: 60,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     jobs: [{ job: "enforcer", amount: 500_000_000 }],
   },
@@ -626,11 +627,11 @@ export const URBAN_SUB_DISTRICT_KINDS: UrbanSubDistrictKind[] = [
 ];
 
 export const STARTING_RESOURCE_STOCKPILES: ResourceCounts = {
-  food: 100_000,
-  minerals: 100_000,
-  energy: 100_000,
-  goods: 50_000,
-  alloys: 20_000,
+  food: 6_000,
+  minerals: 6_000,
+  energy: 6_000,
+  goods: 2_500,
+  alloys: 1_200,
   research: 0,
 };
 
@@ -1110,7 +1111,7 @@ function applyGoodsUpkeep(
   upkeepMultiplier: number,
 ): void {
   const units = population / PEOPLE_PER_MONTHLY_UNIT;
-  const upkeepPerUnit = jobClass === "upper" ? 0.4 : jobClass === "middle" ? 0.2 : 0.05;
+  const upkeepPerUnit = jobClass === "upper" ? 0.45 : jobClass === "middle" ? 0.25 : 0.08;
   addResource(upkeep, "goods", applyModifiers(units * upkeepPerUnit, modifiers, `goodsUpkeep:${jobClass}`) * upkeepMultiplier);
 }
 
@@ -1201,7 +1202,7 @@ export function calculatePlanetEconomy(state: PlanetState, districtLimits?: Dist
   const activeModifiers = getActiveModifiers(state);
   const capacity = emptyJobCapacity();
   const built = state.builtDistricts;
-  let housing = built.city * 1_500_000_000;
+  let housing = built.city * 1_600_000_000;
 
   addJobCapacity(capacity, "farmer", built.agriculture * 1_000_000_000, activeModifiers);
   addJobCapacity(capacity, "miner", built.mining * 1_000_000_000, activeModifiers);
@@ -1211,7 +1212,7 @@ export function calculatePlanetEconomy(state: PlanetState, districtLimits?: Dist
   for (const subDistrict of state.urbanSubDistricts) {
     switch (subDistrict.kind) {
       case "residential":
-        housing += built.city * 1_000_000_000;
+        housing += built.city * 1_100_000_000;
         addJobCapacity(capacity, "clerk", built.city * 100_000_000, activeModifiers);
         break;
       case "researchCampus":
@@ -1381,7 +1382,9 @@ export function calculatePlanetEconomy(state: PlanetState, districtLimits?: Dist
   for (const species of speciesPopulations) {
     const habitability = getEffectiveSpeciesHabitability(state, species.speciesId);
     addResource(upkeep, "food", applyModifiers(
-      (species.population / PEOPLE_PER_MONTHLY_UNIT) * getHabitabilityUpkeepMultiplier(habitability),
+      (species.population / PEOPLE_PER_MONTHLY_UNIT)
+        * POP_FOOD_UPKEEP_PER_UNIT
+        * getHabitabilityUpkeepMultiplier(habitability),
       activeModifiers,
       "popUpkeep:food",
     ));
@@ -1422,11 +1425,11 @@ export function calculatePlanetCapacity(state: PlanetState, districtLimits?: Dis
   const limits = districtLimits ?? state.builtDistricts;
   const sizeProxy = Math.max(1, limits.city, state.builtDistricts.city);
   const resourcePotential = Math.max(0, limits.generator + limits.mining + limits.agriculture);
-  const baseCapacity = sizeProxy * 1_600_000_000;
-  const resourceCapacity = resourcePotential * 250_000_000;
-  const urbanizedCapacity = state.builtDistricts.city * 400_000_000;
+  const baseCapacity = sizeProxy * 1_800_000_000;
+  const resourceCapacity = resourcePotential * 300_000_000;
+  const urbanizedCapacity = state.builtDistricts.city * 450_000_000;
   const modifiedCapacity = applyModifiers(baseCapacity + resourceCapacity + urbanizedCapacity, getActiveModifiers(state), "planetCapacity");
-  return Math.max(2_000_000_000, Math.floor(modifiedCapacity));
+  return Math.max(3_000_000_000, Math.floor(modifiedCapacity));
 }
 
 export function calculatePopulationGrowth(
