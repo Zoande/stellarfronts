@@ -163,41 +163,6 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
     </div>
   );
 }
-          <input
-            id="signup-username"
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="Choose a username"
-            className="form-input"
-          />
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="signup-password">Password</label>
-          <input
-            id="signup-password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Min. 6 characters"
-            className="form-input"
-          />
-        </div>
-
-        <div className="form-group">
-          <label htmlFor="confirm-password">Confirm Password</label>
-          <input
-            id="confirm-password"
-            type="password"
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            placeholder="Confirm your password"
-            className="form-input"
-          />
-        </div>
-
-        {error && <div className="form-error">{error}</div>}
 
         <button type="submit" className="btn btn-primary">
           Create Account

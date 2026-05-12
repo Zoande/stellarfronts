@@ -24,18 +24,23 @@ export class GameplayActions {
     if (!player) return false;
     const fleet = player.fleets.find(f => f.id === fleetId);
     if (!fleet) return false;
-    // Example: cost and resource check
-    const cost = 10; // TODO: dynamic cost by kind
-    if ((player.resources['alloys'] ?? 0) < cost) return false;
-    player.resources['alloys'] -= cost;
+    // Dynamic cost and stats by kind
+    const shipTypes: Record<string, { cost: number; hp: number; attack: number; defense: number; speed: number }> = {
+      corvette: { cost: 10, hp: 10, attack: 2, defense: 1, speed: 1 },
+      destroyer: { cost: 18, hp: 18, attack: 4, defense: 2, speed: 1 },
+      cruiser: { cost: 30, hp: 30, attack: 7, defense: 4, speed: 0.8 },
+    };
+    const type = shipTypes[kind] ?? shipTypes['corvette'];
+    if ((player.resources['alloys'] ?? 0) < type.cost) return false;
+    player.resources['alloys'] -= type.cost;
     const newShip: ShipState = {
-      id: `ship_${Date.now()}`,
+      id: `ship_${Date.now()}_${Math.floor(Math.random()*10000)}`,
       kind,
-      hp: 10,
-      maxHp: 10,
-      attack: 2,
-      defense: 1,
-      speed: 1,
+      hp: type.hp,
+      maxHp: type.hp,
+      attack: type.attack,
+      defense: type.defense,
+      speed: type.speed,
       status: 'active',
     };
     fleet.ships.push(newShip);
@@ -49,6 +54,9 @@ export class GameplayActions {
     if (!star) return false;
     star.ownerId = playerId;
     if (!player.ownedStars.includes(starId)) player.ownedStars.push(starId);
+    // Bonus: gain resources for capturing
+    player.resources['minerals'] = (player.resources['minerals'] ?? 0) + 5;
+    player.score += 2;
     return true;
   }
 
@@ -59,7 +67,7 @@ export class GameplayActions {
       fleetsAtStar.push(...player.fleets.filter(f => f.locationStarId === starId && f.status !== 'destroyed'));
     }
     if (fleetsAtStar.length < 2) return;
-    // Simple combat: strongest fleet wins
+    // Tactical combat: strongest fleet wins, others take damage
     let winner: FleetState | null = null;
     let maxPower = -1;
     for (const fleet of fleetsAtStar) {
@@ -70,7 +78,30 @@ export class GameplayActions {
       }
     }
     for (const fleet of fleetsAtStar) {
-      if (fleet !== winner) fleet.status = 'destroyed';
+      if (fleet !== winner) {
+        for (const ship of fleet.ships) {
+          ship.hp = Math.max(0, ship.hp - 5);
+          if (ship.hp === 0) ship.status = 'destroyed';
+        }
+        fleet.status = fleet.ships.every(s => s.status === 'destroyed') ? 'destroyed' : 'idle';
+      }
     }
+  }
+  upgradeStarbase(playerId: string, starId: number) {
+    const player = this.state.players.find(p => p.id === playerId);
+    if (!player) return false;
+    if ((player.resources['alloys'] ?? 0) < 15) return false;
+    player.resources['alloys'] -= 15;
+    player.score += 7;
+    return true;
+  }
+
+  researchTech(playerId: string) {
+    const player = this.state.players.find(p => p.id === playerId);
+    if (!player) return false;
+    if ((player.resources['research'] ?? 0) < 20) return false;
+    player.resources['research'] -= 20;
+    player.score += 10;
+    return true;
   }
 }
