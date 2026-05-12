@@ -10,18 +10,35 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isFormValid, setIsFormValid] = useState(false);
+
+  const handleInputChange = () => {
+    setIsFormValid(username.trim().length > 0 && password.trim().length > 0);
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    
     if (!username.trim() || !password.trim()) {
       setError('Please enter both username and password');
       return;
     }
+
+    if (password.length < 1) {
+      setError('Invalid password');
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+
     try {
-      setError('');
       await onLoginSubmit(username, password);
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Login failed');
+      const errorMessage = submitError instanceof Error ? submitError.message : 'Login failed';
+      setError(errorMessage);
+      setIsLoading(false);
     }
   };
 
@@ -34,33 +51,49 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
 
       <form onSubmit={handleLogin} className="auth-form">
         <div className="form-group">
-          <label htmlFor="username">Username</label>
+          <label htmlFor="username">Commander ID</label>
           <input
             id="username"
             type="text"
             value={username}
-            onChange={(e) => setUsername(e.target.value)}
+            onChange={(e) => {
+              setUsername(e.target.value);
+              handleInputChange();
+            }}
             placeholder="Enter your username"
             className="form-input"
+            disabled={isLoading}
+            autoComplete="username"
+            autoCapitalize="off"
+            autoCorrect="off"
           />
         </div>
 
         <div className="form-group">
-          <label htmlFor="password">Password</label>
+          <label htmlFor="password">Access Code</label>
           <input
             id="password"
             type="password"
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Enter your password"
+            onChange={(e) => {
+              setPassword(e.target.value);
+              handleInputChange();
+            }}
+            placeholder="Enter your access code"
             className="form-input"
+            disabled={isLoading}
+            autoComplete="current-password"
           />
         </div>
 
-        {error && <div className="form-error">{error}</div>}
+        {error && <div className="form-error">⚠ {error}</div>}
 
-        <button type="submit" className="btn btn-primary">
-          Log In
+        <button 
+          type="submit" 
+          className="btn btn-primary"
+          disabled={isLoading || !isFormValid}
+        >
+          {isLoading ? 'Initializing Command Link...' : 'Access Station'}
         </button>
       </form>
 
@@ -74,6 +107,7 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
           className="btn btn-oauth btn-google"
           aria-label="Sign in with Google"
           disabled
+          title="OAuth coming soon"
         >
           <svg width="18" height="18" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="oauth-svg">
             <path fill="#EA4335" d="M24 12.24c3.54 0 6.36 1.22 8.26 2.22l6.02-5.86C35.6 5.02 30.08 3.2 24 3.2 14.7 3.2 6.99 8.86 3.5 16.9l6.98 5.42C12.9 15.6 17.95 12.24 24 12.24z"/>
@@ -89,6 +123,7 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
           className="btn btn-oauth btn-microsoft"
           aria-label="Sign in with Microsoft"
           disabled
+          title="OAuth coming soon"
         >
           <svg width="18" height="18" viewBox="0 0 24 24" className="oauth-svg" xmlns="http://www.w3.org/2000/svg">
             <rect x="1" y="1" width="10" height="10" fill="#F1511B" />
@@ -98,6 +133,24 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
           </svg>
           <span className="oauth-label">Microsoft</span>
         </button>
+      </div>
+
+      <div className="auth-footer">
+        <p>
+          New to StellarFronts?{' '}
+          <button
+            type="button"
+            className="link-button"
+            onClick={onSignupClick}
+            disabled={isLoading}
+          >
+            Create Account
+          </button>
+        </p>
+      </div>
+    </div>
+  );
+}
       </div>
 
       <div className="auth-footer">
