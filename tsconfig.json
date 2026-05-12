@@ -10,13 +10,14 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
+    "ignoreDeprecations": "6.0",
     "types": ["vite/client", "node"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["src/*"]
-   },
-   "jsx": "react-jsx"
+    },
+    "jsx": "react-jsx"
   },
   "include": ["src"]
 }

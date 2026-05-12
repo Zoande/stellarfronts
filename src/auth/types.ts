@@ -23,11 +23,3 @@ export interface AuthSessionResponse {
 export interface AuthMeResponse {
   account: AuthAccount | null;
 }
-
-export function getPerspectiveForAccount(account: AuthAccount): GalaxyPerspective {
-  if (account.accountType === 'seeded-faction' && account.factionId !== null) {
-    return { mode: 'faction', factionId: account.factionId };
-  }
-
-  return { mode: 'observer' };
-}

@@ -148,23 +148,6 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
           </button>
         </p>
       </div>
-    </div>
-  );
-}
-      </div>
-
-      <div className="auth-footer">
-        <p>
-          Don't have an account?{' '}
-          <button
-            type="button"
-            onClick={onSignupClick}
-            className="link-button"
-          >
-            Create one
-          </button>
-        </p>
-      </div>
-    </div>
+  </div>
   );
 }

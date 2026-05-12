@@ -23,8 +23,12 @@ export class GameServerClient {
   private planetDetailsHandlers = new Set<PlanetDetailsHandler>();
   private systemDetailsRequests = new Map<number, PendingRequest<SystemDetailsEvent>>();
   private planetDetailsRequests = new Map<string, PendingRequest<PlanetDetailsEvent>>();
+  private readonly url: string;
 
-  constructor(private readonly url = "ws://localhost:8787") {}
+  constructor() {
+    const gameServerUrl = import.meta.env.VITE_GAME_SERVER_URL ?? 'ws://localhost:8787';
+    this.url = gameServerUrl;
+  }
 
   async connect(): Promise<GameSnapshot> {
     if (this.latestSnapshot) return this.latestSnapshot;

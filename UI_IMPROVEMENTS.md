@@ -1,6 +1,7 @@
 # StellarFronts UI & Graphics Improvements Guide
 
 ## 🎮 Overview
+
 This document summarizes all the UI and graphics improvements made to StellarFronts to create a more immersive space game experience.
 
 ---
@@ -8,6 +9,7 @@ This document summarizes all the UI and graphics improvements made to StellarFro
 ## ✨ Completed Improvements
 
 ### 1. **Authentication Styling (Auth.css)**
+
 Completely revamped the authentication screens with:
 
 - **Advanced Animations**
@@ -40,6 +42,7 @@ Completely revamped the authentication screens with:
   - Support for dark mode enhancements
 
 ### 2. **LoginPage Component Improvements**
+
 Enhanced with better user experience:
 
 - **Loading States**
@@ -65,6 +68,7 @@ Enhanced with better user experience:
   - Auto-correction control
 
 ### 3. **SignupPage Component Improvements**
+
 Enhanced with better security and UX:
 
 - **Password Strength Indicator**
@@ -89,9 +93,11 @@ Enhanced with better security and UX:
   - "Return to Login Station" instead of "Back to Login"
 
 ### 4. **New SciFiPanel Component Library**
+
 Created a reusable component library for space-themed UI:
 
 **Components Created:**
+
 - **SciFiPanel**: Container component with variants
   - Variants: primary, secondary, alert
   - Built-in glowing effects
@@ -120,6 +126,7 @@ Created a reusable component library for space-themed UI:
   - Mobile responsive
 
 ### 5. **Game UI Enhancements (Game.css)**
+
 Improved the in-game interface:
 
 - **Better Animations**
@@ -151,34 +158,31 @@ Improved the in-game interface:
 ## 🚀 How to Use the New Components
 
 ### SciFiPanel Example
+
 ```tsx
-import { SciFiPanel } from './components/SciFiPanel';
+import { SciFiPanel } from "./components/SciFiPanel";
 
 <SciFiPanel title="Fleet Status" variant="primary" glow>
   <p>Your fleet is operational</p>
-</SciFiPanel>
+</SciFiPanel>;
 ```
 
 ### SciFiButton Example
+
 ```tsx
-import { SciFiButton } from './components/SciFiPanel';
+import { SciFiButton } from "./components/SciFiPanel";
 
 <SciFiButton variant="primary" size="medium" pulse>
   Launch Attack
-</SciFiButton>
+</SciFiButton>;
 ```
 
 ### SciFiBar Example
-```tsx
-import { SciFiBar } from './components/SciFiPanel';
 
-<SciFiBar 
-  label="Shield" 
-  value={75} 
-  max={100}
-  variant="shield"
-  showValue
-/>
+```tsx
+import { SciFiBar } from "./components/SciFiPanel";
+
+<SciFiBar label="Shield" value={75} max={100} variant="shield" showValue />;
 ```
 
 ---
@@ -187,34 +191,37 @@ import { SciFiBar } from './components/SciFiPanel';
 
 The application uses a cohesive sci-fi color scheme:
 
-| Name | Color | Usage |
-|------|-------|-------|
-| Primary | `#70b8ff` | Main UI elements |
-| Primary Dark | `#4a8fd4` | Button states |
-| Accent | `#62dce4` | Highlights, accents |
-| Danger | `#ff6b6b` | Errors, warnings |
-| Success | `#51cf66` | Positive feedback |
-| Warning | `#ffd43b` | Warnings |
-| Text | `#d6dde7` | Main text |
-| Text Muted | `#8f9cae` | Secondary text |
-| Background Dark | `rgba(10, 14, 20, 0.8)` | Dark backgrounds |
-| Background Alt | `rgba(16, 22, 30, 0.8)` | Alternative backgrounds |
+| Name            | Color                   | Usage                   |
+| --------------- | ----------------------- | ----------------------- |
+| Primary         | `#70b8ff`               | Main UI elements        |
+| Primary Dark    | `#4a8fd4`               | Button states           |
+| Accent          | `#62dce4`               | Highlights, accents     |
+| Danger          | `#ff6b6b`               | Errors, warnings        |
+| Success         | `#51cf66`               | Positive feedback       |
+| Warning         | `#ffd43b`               | Warnings                |
+| Text            | `#d6dde7`               | Main text               |
+| Text Muted      | `#8f9cae`               | Secondary text          |
+| Background Dark | `rgba(10, 14, 20, 0.8)` | Dark backgrounds        |
+| Background Alt  | `rgba(16, 22, 30, 0.8)` | Alternative backgrounds |
 
 ---
 
 ## 🔧 Technical Details
 
 ### Files Modified
+
 1. **src/styles/Auth.css** - Complete enhancement
 2. **src/styles/Game.css** - Visual improvements
 3. **src/pages/LoginPage.tsx** - UX improvements
 4. **src/pages/SignupPage.tsx** - UX improvements
 
 ### Files Created
+
 1. **src/components/SciFiPanel.tsx** - New component library
 2. **src/styles/SciFiPanel.css** - Styling for new components
 
 ### CSS Animations Added
+
 - `parallaxShift` - Background parallax effect
 - `titleGlow` - Title glowing effect
 - `panelEnter` - Panel entrance animation
@@ -230,12 +237,14 @@ The application uses a cohesive sci-fi color scheme:
 ## 🔐 OAuth Implementation Notes
 
 OAuth buttons are currently disabled but ready for future implementation:
+
 - Google OAuth button present with proper SVG
 - Microsoft OAuth button present with proper SVG
 - Buttons show "OAuth coming soon" tooltip
 - Backend has `/api/oauth/{provider}` endpoints ready
 
 To enable OAuth later:
+
 1. Implement OAuth endpoints in the auth server
 2. Handle the OAuth flow in the frontend
 3. Remove `disabled` attribute from oauth buttons
@@ -246,11 +255,13 @@ To enable OAuth later:
 ## 📱 Responsive Design
 
 All improvements are fully responsive:
+
 - Mobile: 360px and up
 - Tablet: 768px and up
 - Desktop: 1024px and up
 
 Media queries handle:
+
 - Form input sizing
 - Button sizing
 - Panel width adjustments
@@ -262,6 +273,7 @@ Media queries handle:
 ## ♿ Accessibility
 
 Implemented accessibility features:
+
 - Proper ARIA labels on all buttons
 - Color contrast ratios meet WCAG standards
 - Support for `prefers-reduced-motion`
@@ -305,12 +317,14 @@ To further enhance the game:
 ## 📊 Browser Support
 
 All improvements tested and working on:
+
 - Chrome/Chromium 90+
 - Firefox 88+
 - Safari 14+
 - Edge 90+
 
 CSS features used:
+
 - CSS Grid and Flexbox
 - CSS Gradients
 - CSS Animations and Transitions
@@ -322,14 +336,17 @@ CSS features used:
 ## 🐛 Troubleshooting
 
 ### Images not loading
+
 - Check that texture files exist in `/public/textures/`
 - Verify paths are relative and correct
 
 ### Animations too slow/fast
+
 - Adjust animation duration in CSS
 - Check `prefers-reduced-motion` setting
 
 ### Colors look different
+
 - Ensure browser has color management enabled
 - Check monitor calibration
 - Verify CSS variables are loading
@@ -347,16 +364,19 @@ CSS features used:
 ## 🚀 Running the Application
 
 ### Development
+
 ```bash
 npm run dev:all
 ```
 
 This starts:
+
 - Game server (port 8787)
 - Auth server (port 8788)
 - Vite dev server (port 5173)
 
 ### Production Build
+
 ```bash
 npm run build
 ```
