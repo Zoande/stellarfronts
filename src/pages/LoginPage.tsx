@@ -4,9 +4,10 @@ import '../styles/Auth.css';
 interface LoginPageProps {
   onLoginSubmit: (username: string, password: string) => Promise<void>;
   onSignupClick: () => void;
+  onGuestMode?: () => void;
 }
 
-export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPageProps) {
+export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }: LoginPageProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -95,6 +96,18 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
         >
           {isLoading ? 'Initializing Command Link...' : 'Access Station'}
         </button>
+
+        {onGuestMode && (
+          <button 
+            type="button" 
+            className="btn btn-secondary"
+            onClick={onGuestMode}
+            disabled={isLoading}
+            style={{ marginLeft: '12px' }}
+          >
+            Play as Guest
+          </button>
+        )}
       </form>
 
       <div className="divider">

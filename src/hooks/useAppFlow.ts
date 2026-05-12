@@ -120,19 +120,9 @@ export function useAppFlow(): UseAppFlowResult {
   useEffect(() => {
     let cancelled = false;
 
-    void getCurrentSession()
-      .then((account) => {
-        if (cancelled || !account) return;
-        setAuth({
-          isLoggedIn: true,
-          account,
-          mode: 'home',
-        });
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        if (!cancelled) setAuthSessionReady(true);
-      });
+    // Session check disabled for playtesting
+    // Re-enable when auth server is stable
+    if (!cancelled) setAuthSessionReady(true);
 
     return () => {
       cancelled = true;
@@ -243,6 +233,23 @@ export function useAppFlow(): UseAppFlowResult {
     });
   };
 
+  const handleGuestMode = () => {
+    const guestAccount: AuthAccount = {
+      id: 'guest-' + Date.now(),
+      username: 'Guest Commander',
+      accountType: 'observer',
+      factionId: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    startHomeTransition('Guest Commander', 'login', 'Guest session initialized');
+    setAuth({
+      isLoggedIn: true,
+      account: guestAccount,
+      mode: 'home',
+    });
+  };
+
   const handleLogout = async () => {
     try {
       await logoutRequest();
@@ -328,6 +335,7 @@ export function useAppFlow(): UseAppFlowResult {
     handleAuthBackgroundReady,
     handleAuthStartupLoadingHidden,
     handleLoginSubmit,
+    handleGuestMode,
     handleSignupClick,
     handleBackToLogin,
     handleSignupSubmit,

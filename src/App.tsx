@@ -118,6 +118,7 @@ function App() {
             <LoginPage
               onLoginSubmit={handleLoginSubmit}
               onSignupClick={handleSignupClick}
+              onGuestMode={handleGuestMode}
             />
           ))}
       </div>
