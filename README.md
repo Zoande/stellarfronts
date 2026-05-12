@@ -1,7 +1,6 @@
 # StellarFronts Prototype
 
 ## Gameplay Documentation
-
 See [src/game/README_GAMEPLAY.md](src/game/README_GAMEPLAY.md) for a full gameplay guide, rules, and how to play.
 
 StellarFronts is a browser-based space strategy prototype with a Vite/React client, a websocket game server, and a separate HTTP auth server. The current build is authenticated end to end: login and signup happen against the auth service, and the game server derives the player perspective from the authenticated account instead of trusting the browser.
@@ -34,12 +33,11 @@ Available scripts:
 
 ## Core Gameplay Loop
 
-# What is Stellarfronts?
 
+# What is Stellarfronts?
 Stellarfronts is a turn-based strategy game set in a procedurally generated galaxy. Players command fleets, capture stars, build starbases, and compete for galactic dominance.
 
 ## How to Play
-
 - **Goal:** Achieve the victory condition (e.g., control all stars or complete all objectives).
 - **Turns:** Each player takes actions in turns. On your turn, you can move fleets, build ships, and manage resources.
 - **Movement:** Fleets travel between stars via hyperlanes. Moving takes several turns depending on distance.
@@ -49,24 +47,20 @@ Stellarfronts is a turn-based strategy game set in a procedurally generated gala
 - **Win/Lose:** The game ends in victory if you meet the victory condition, or defeat if all your fleets are destroyed or the max turn limit is reached.
 
 ## Victory Conditions
-
 - Control every star in the galaxy.
 - Complete all listed objectives.
 
 ## Defeat Conditions
-
 - All your fleets are destroyed.
 - The maximum number of turns is reached.
 
 ## Tips
-
 - Expand early to secure resources.
 - Protect your fleets and starbases.
 - Plan your moves ahead—travel takes time!
 - Watch your objectives for alternate win paths.
 
 ---
-
 For more details, see `/src/game/README_GAMEPLAY.md`, `/src/game/core.ts`, and `/src/types/game.ts`.
 
 The game is currently a logistics and expansion prototype rather than a full war game. The main loop is:

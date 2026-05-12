@@ -113,11 +113,11 @@ export class GameServerClient {
       });
 
       socket.addEventListener("error", () => {
-        if (!resolved) reject(new Error("Could not connect to game server at ws://localhost:8787"));
+        if (!resolved) reject(new Error(`Could not connect to game server at ${this.url} - make sure the game server is running with 'npm run dev:all'`));
       });
 
       socket.addEventListener("close", () => {
-        if (!resolved) reject(new Error("Game server connection closed before snapshot arrived"));
+        if (!resolved) reject(new Error(`Game server connection closed at ${this.url} - server may have crashed`));
       });
     });
   }

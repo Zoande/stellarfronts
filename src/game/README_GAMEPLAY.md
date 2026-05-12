@@ -1,13 +1,11 @@
 // src/game/README_GAMEPLAY.md
-
 # Stellarfronts Gameplay Guide
 
 ## What is Stellarfronts?
-
 Stellarfronts is a turn-based strategy game set in a procedurally generated galaxy. Players command fleets, capture stars, build starbases, and compete for galactic dominance.
 
-## How to Play
 
+## How to Play
 - **Goal:** Achieve the victory condition (e.g., control all stars or complete all objectives).
 - **Turns:** Each player takes actions in turns. On your turn, you can move fleets, build ships, upgrade starbases, research tech, and manage resources.
 - **Movement:** Fleets travel between stars via hyperlanes. Movement is smooth and partially progresses each turn.
@@ -21,17 +19,15 @@ Stellarfronts is a turn-based strategy game set in a procedurally generated gala
 - **Win/Lose:** The game ends in victory if you meet the victory condition, or defeat if all your fleets are destroyed or the max turn limit is reached.
 
 ## Victory Conditions
-
 - Control every star in the galaxy.
 - Complete all listed objectives.
 
 ## Defeat Conditions
-
 - All your fleets are destroyed.
 - The maximum number of turns is reached.
 
-## Tips
 
+## Tips
 - Expand early to secure resources.
 - Protect your fleets and starbases.
 - Upgrade your starbases and research tech for long-term advantage.
@@ -41,5 +37,4 @@ Stellarfronts is a turn-based strategy game set in a procedurally generated gala
 - Watch your objectives for alternate win paths.
 
 ---
-
 For more details, see the code in `/src/game/core.ts` and `/src/types/game.ts`.
