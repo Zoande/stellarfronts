@@ -1,0 +1,369 @@
+/* Sci-Fi Panel Components - Space-themed UI Library */
+
+:root {
+  --scifi-primary: #70b8ff;
+  --scifi-primary-dark: #4a8fd4;
+  --scifi-accent: #62dce4;
+  --scifi-danger: #ff6b6b;
+  --scifi-success: #51cf66;
+  --scifi-warning: #ffd43b;
+  --scifi-text: #d6dde7;
+  --scifi-text-muted: #8f9cae;
+  --scifi-border: rgba(112, 184, 255, 0.3);
+  --scifi-bg-dark: rgba(10, 14, 20, 0.8);
+  --scifi-bg-alt: rgba(16, 22, 30, 0.8);
+}
+
+/* Sci-Fi Panel */
+.scifi-panel {
+  position: relative;
+  border: 1px solid var(--scifi-border);
+  border-radius: 4px;
+  background: linear-gradient(
+    135deg,
+    rgba(16, 22, 30, 0.7) 0%,
+    rgba(10, 14, 20, 0.8) 100%
+  );
+  overflow: hidden;
+}
+
+.scifi-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(112, 184, 255, 0.5),
+    transparent
+  );
+}
+
+.scifi-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  background: radial-gradient(
+    circle at top right,
+    rgba(98, 220, 228, 0.05),
+    transparent
+  );
+  pointer-events: none;
+}
+
+.scifi-panel--primary {
+  border-color: rgba(112, 184, 255, 0.4);
+  box-shadow: 0 0 20px rgba(112, 184, 255, 0.1);
+}
+
+.scifi-panel--secondary {
+  border-color: rgba(98, 220, 228, 0.3);
+  box-shadow: 0 0 15px rgba(98, 220, 228, 0.08);
+}
+
+.scifi-panel--alert {
+  border-color: rgba(255, 107, 107, 0.4);
+  box-shadow: 0 0 20px rgba(255, 107, 107, 0.1);
+}
+
+.scifi-panel--glow {
+  box-shadow:
+    0 0 20px rgba(112, 184, 255, 0.15),
+    inset 0 0 20px rgba(112, 184, 255, 0.03);
+  animation: scifiGlow 3s ease-in-out infinite;
+}
+
+@keyframes scifiGlow {
+  0%, 100% {
+    box-shadow:
+      0 0 20px rgba(112, 184, 255, 0.15),
+      inset 0 0 20px rgba(112, 184, 255, 0.03);
+  }
+  50% {
+    box-shadow:
+      0 0 30px rgba(112, 184, 255, 0.25),
+      inset 0 0 30px rgba(112, 184, 255, 0.06);
+  }
+}
+
+.scifi-panel__header {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(112, 184, 255, 0.2);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--scifi-accent);
+  font-weight: 600;
+  background: rgba(112, 184, 255, 0.05);
+}
+
+.scifi-panel__content {
+  padding: 16px 14px;
+  position: relative;
+  z-index: 1;
+}
+
+/* Sci-Fi Button */
+.scifi-button {
+  position: relative;
+  padding: 10px 16px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  background: linear-gradient(135deg, rgba(112, 184, 255, 0.1), rgba(98, 220, 228, 0.05));
+  color: var(--scifi-primary);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  overflow: hidden;
+}
+
+.scifi-button::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.scifi-button:hover::before {
+  width: 300px;
+  height: 300px;
+}
+
+.scifi-button:hover {
+  box-shadow: 0 0 20px rgba(112, 184, 255, 0.3);
+  transform: translateY(-1px);
+  border-color: var(--scifi-accent);
+}
+
+.scifi-button:active {
+  transform: translateY(0);
+}
+
+.scifi-button--primary {
+  border-color: var(--scifi-primary);
+  color: var(--scifi-primary);
+}
+
+.scifi-button--secondary {
+  border-color: var(--scifi-accent);
+  color: var(--scifi-accent);
+}
+
+.scifi-button--danger {
+  border-color: var(--scifi-danger);
+  color: var(--scifi-danger);
+}
+
+.scifi-button--danger:hover {
+  box-shadow: 0 0 20px rgba(255, 107, 107, 0.3);
+}
+
+.scifi-button--success {
+  border-color: var(--scifi-success);
+  color: var(--scifi-success);
+}
+
+.scifi-button--success:hover {
+  box-shadow: 0 0 20px rgba(81, 207, 102, 0.3);
+}
+
+.scifi-button--small {
+  padding: 6px 10px;
+  font-size: 11px;
+}
+
+.scifi-button--large {
+  padding: 14px 22px;
+  font-size: 13px;
+}
+
+.scifi-button--pulse {
+  animation: scifiPulse 2s ease-in-out infinite;
+}
+
+@keyframes scifiPulse {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(112, 184, 255, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(112, 184, 255, 0.5);
+  }
+}
+
+.scifi-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Sci-Fi Bar */
+.scifi-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scifi-bar__label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--scifi-text-muted);
+  min-width: 60px;
+}
+
+.scifi-bar__container {
+  flex: 1;
+  height: 8px;
+  border: 1px solid rgba(112, 184, 255, 0.3);
+  border-radius: 2px;
+  background: rgba(10, 14, 20, 0.6);
+  overflow: hidden;
+  position: relative;
+}
+
+.scifi-bar__container::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+  pointer-events: none;
+}
+
+.scifi-bar__fill {
+  height: 100%;
+  transition: width 0.3s ease;
+  background: linear-gradient(90deg, var(--scifi-primary), var(--scifi-accent));
+  box-shadow: 0 0 8px rgba(112, 184, 255, 0.5);
+}
+
+.scifi-bar__fill--health {
+  background: linear-gradient(90deg, #ff6b6b, #ff8787);
+  box-shadow: 0 0 8px rgba(255, 107, 107, 0.5);
+}
+
+.scifi-bar__fill--energy {
+  background: linear-gradient(90deg, #ffd43b, #ffe066);
+  box-shadow: 0 0 8px rgba(255, 212, 59, 0.5);
+}
+
+.scifi-bar__fill--shield {
+  background: linear-gradient(90deg, #70b8ff, #62dce4);
+  box-shadow: 0 0 8px rgba(112, 184, 255, 0.5);
+}
+
+.scifi-bar__value {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--scifi-text-muted);
+  min-width: 40px;
+  text-align: right;
+}
+
+/* Sci-Fi Badge */
+.scifi-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 2px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  background: rgba(112, 184, 255, 0.15);
+  color: var(--scifi-primary);
+  border: 1px solid rgba(112, 184, 255, 0.3);
+}
+
+.scifi-badge--primary {
+  background: rgba(112, 184, 255, 0.15);
+  color: var(--scifi-primary);
+  border-color: rgba(112, 184, 255, 0.3);
+}
+
+.scifi-badge--success {
+  background: rgba(81, 207, 102, 0.15);
+  color: var(--scifi-success);
+  border-color: rgba(81, 207, 102, 0.3);
+}
+
+.scifi-badge--warning {
+  background: rgba(255, 212, 59, 0.15);
+  color: var(--scifi-warning);
+  border-color: rgba(255, 212, 59, 0.3);
+}
+
+.scifi-badge--danger {
+  background: rgba(255, 107, 107, 0.15);
+  color: var(--scifi-danger);
+  border-color: rgba(255, 107, 107, 0.3);
+}
+
+.scifi-badge--pulse {
+  animation: scifiBadgePulse 1.5s ease-in-out infinite;
+}
+
+@keyframes scifiBadgePulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+/* Sci-Fi Grid */
+.scifi-grid {
+  display: grid;
+  gap: var(--grid-gap, 16px);
+}
+
+.scifi-grid--2col {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.scifi-grid--3col {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.scifi-grid--4col {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.scifi-grid--smallgap {
+  --grid-gap: 8px;
+}
+
+.scifi-grid--mediumgap {
+  --grid-gap: 16px;
+}
+
+.scifi-grid--largegap {
+  --grid-gap: 24px;
+}
+
+@media (max-width: 768px) {
+  .scifi-grid--2col {
+    grid-template-columns: 1fr;
+  }
+
+  .scifi-grid--3col {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .scifi-grid--4col {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
