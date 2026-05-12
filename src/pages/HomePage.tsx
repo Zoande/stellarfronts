@@ -1,12 +1,13 @@
-import { useMemo, useState, type CSSProperties } from 'react';
-import { buildFactions, colorToCss, type GalaxyPerspective } from '@/data/Factions';
+import { useMemo } from 'react';
+import { buildFactions } from '@/data/Factions';
 import { GALAXY_MAP } from '@/data/GalaxyMap';
 import { generateStarMap } from '@/data/StarMap';
+import type { AuthAccount } from '@/auth/types';
 import '../styles/Home.css';
 
 interface HomePageProps {
-  username: string;
-  onContinuePlaying: (perspective: GalaxyPerspective) => void;
+  account: AuthAccount;
+  onContinuePlaying: () => void;
 }
 
 interface ProgressStat {
@@ -71,10 +72,7 @@ function MedalIcon({ variant }: { variant: ProgressStat['variant'] }) {
   );
 }
 
-export default function HomePage({ username, onContinuePlaying }: HomePageProps) {
-  const [showPerspectiveOverlay, setShowPerspectiveOverlay] = useState(false);
-  const [pendingPerspective, setPendingPerspective] = useState<GalaxyPerspective>({ mode: 'observer' });
-
+export default function HomePage({ account, onContinuePlaying }: HomePageProps) {
   const factions = useMemo(() => {
     const cfg = GALAXY_MAP;
     const initialStars = generateStarMap(
@@ -88,19 +86,15 @@ export default function HomePage({ username, onContinuePlaying }: HomePageProps)
     return buildFactions(initialStars, cfg).slice(0, 8);
   }, []);
 
-  const commanderName = username.trim() || 'Commander';
+  const commanderName = account.username.trim() || 'Commander';
   const commanderInitial = commanderName.charAt(0).toUpperCase();
-  const primaryFaction = factions[0];
-
-  const openContinueOverlay = () => {
-    setPendingPerspective({ mode: 'observer' });
-    setShowPerspectiveOverlay(true);
-  };
-
-  const launchSelectedPerspective = () => {
-    onContinuePlaying(pendingPerspective);
-    setShowPerspectiveOverlay(false);
-  };
+  const primaryFaction = account.accountType === 'seeded-faction' && account.factionId !== null
+    ? factions.find((faction) => faction.id === account.factionId) ?? factions[0]
+    : null;
+  const commanderRole = account.accountType === 'seeded-faction' ? primaryFaction?.name ?? 'Faction Commander' : 'Observer';
+  const commanderNote = account.accountType === 'seeded-faction'
+    ? `${primaryFaction?.name ?? 'Faction'} account is synced.`
+    : 'Observer account is synced.';
 
   return (
     <div className="home-page">
@@ -152,7 +146,7 @@ export default function HomePage({ username, onContinuePlaying }: HomePageProps)
                 <CommanderSigil initial={commanderInitial} />
                 <div>
                   <div className="home-avatar-name">{commanderName}</div>
-                  <div className="home-avatar-role">Sector Commander</div>
+                  <div className="home-avatar-role">{commanderRole}</div>
                 </div>
                 <div className="home-avatar-progress">
                   <span>Lvl. 35</span>
@@ -184,9 +178,9 @@ export default function HomePage({ username, onContinuePlaying }: HomePageProps)
               </div>
               <h2 className="home-action-title">Ready For A New Operation?</h2>
               <p className="home-action-subtitle">
-                {primaryFaction ? `${primaryFaction.name} telemetry is synced.` : 'Galaxy telemetry is synced.'}
+                {commanderNote}
               </p>
-              <button type="button" className="home-launch-btn" onClick={openContinueOverlay}>
+              <button type="button" className="home-launch-btn" onClick={onContinuePlaying}>
                 Continue Playing
               </button>
             </div>
@@ -204,7 +198,7 @@ export default function HomePage({ username, onContinuePlaying }: HomePageProps)
               </div>
               <div className="home-server-copy">
                 <div className="home-server-name">EU-Cygnus Prime</div>
-                <div className="home-server-meta">Online - 124 commanders active</div>
+                <div className="home-server-meta">{account.accountType === 'seeded-faction' ? 'Faction-bound account online' : 'Observer account online'}</div>
                 <div className="home-route-strip" aria-hidden="true">
                   <span />
                   <span />
@@ -212,7 +206,7 @@ export default function HomePage({ username, onContinuePlaying }: HomePageProps)
                   <span />
                 </div>
               </div>
-              <button type="button" className="home-secondary-btn" onClick={openContinueOverlay}>
+              <button type="button" className="home-secondary-btn" onClick={onContinuePlaying}>
                 Continue
               </button>
             </div>
@@ -250,44 +244,6 @@ export default function HomePage({ username, onContinuePlaying }: HomePageProps)
           </section>
         </main>
       </div>
-
-      {showPerspectiveOverlay && (
-        <div className="home-overlay-backdrop">
-          <div className="home-overlay">
-            <h3>Select Perspective</h3>
-            <p>Choose observer or a faction color before entering the game.</p>
-            <div className="home-perspective-grid">
-              <button
-                type="button"
-                className={`home-perspective-btn ${pendingPerspective.mode === 'observer' ? 'is-selected' : ''}`}
-                onClick={() => setPendingPerspective({ mode: 'observer' })}
-              >
-                Observer
-              </button>
-              {factions.map((faction) => (
-                <button
-                  key={faction.id}
-                  type="button"
-                  className={`home-perspective-btn ${pendingPerspective.mode === 'faction' && pendingPerspective.factionId === faction.id ? 'is-selected' : ''}`}
-                  style={{ '--faction-color': colorToCss(faction.color) } as CSSProperties}
-                  onClick={() => setPendingPerspective({ mode: 'faction', factionId: faction.id })}
-                >
-                  <span className="home-perspective-swatch" />
-                  {faction.name}
-                </button>
-              ))}
-            </div>
-            <div className="home-overlay-actions">
-              <button type="button" className="home-secondary-btn" onClick={() => setShowPerspectiveOverlay(false)}>
-                Cancel
-              </button>
-              <button type="button" className="home-launch-btn" onClick={launchSelectedPerspective}>
-                Enter Game
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
