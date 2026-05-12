@@ -21,6 +21,7 @@ function App() {
     handleAuthBackgroundReady,
     handleAuthStartupLoadingHidden,
     handleLoginSubmit,
+    handleGuestMode,
     handleSignupClick,
     handleBackToLogin,
     handleSignupSubmit,

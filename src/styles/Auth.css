@@ -241,23 +241,84 @@ html {
 }
 
 /* Form styles */
-.auth-form {
+
+.auth-panel {
+  background: var(--stellar-bg-dark);
+  border-radius: 18px;
+  box-shadow: 0 0 32px 0 var(--stellar-glow), 0 2px 16px 0 #000b;
+  padding: 36px 32px 28px 32px;
+  width: 340px;
+  max-width: 94vw;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  margin-bottom: 24px;
-  animation: formEnter 0.7s ease-out 0.15s both;
+  align-items: center;
+  z-index: 2;
+  position: relative;
+  border: 1.5px solid var(--stellar-border-strong);
+  margin: 0 auto;
+  margin-top: 32px;
+  animation: authPanelAppear 0.7s cubic-bezier(0.7, 0.2, 0.2, 1);
 }
 
-@keyframes formEnter {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
+.game-login-panel {
+  background: linear-gradient(120deg, rgba(30,40,60,0.98) 80%, rgba(60,80,120,0.12) 100%);
+  border: 2px solid var(--stellar-primary-dark);
+  box-shadow: 0 0 48px 0 var(--stellar-glow), 0 2px 24px 0 #000b;
+  animation: gameLoginPanelAppear 1.1s cubic-bezier(0.7, 0.2, 0.2, 1);
 }
 
+@keyframes gameLoginPanelAppear {
+  0% { opacity: 0; transform: translateY(32px) scale(0.98); }
+  100% { opacity: 1; transform: none; }
+}
+
+.stars-bg {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(2px 2px at 20% 30%, #fff, rgba(0, 0, 0, 0)),
+    radial-gradient(2px 2px at 60% 70%, #fff, rgba(0, 0, 0, 0)),
+    radial-gradient(1px 1px at 50% 50%, #fff, rgba(0, 0, 0, 0)),
+    radial-gradient(1px 1px at 80% 10%, #fff, rgba(0, 0, 0, 0)),
+    radial-gradient(2px 2px at 90% 60%, #fff, rgba(0, 0, 0, 0)),
+    radial-gradient(1px 1px at 30% 80%, #fff, rgba(0, 0, 0, 0)),
+    radial-gradient(1px 1px at 10% 90%, #fff, rgba(0, 0, 0, 0));
+  background-size: 200% 200%;
+  background-position: 0% 0%;
+  opacity: 0.25;
+  animation: twinkling 20s infinite, parallaxShift 60s linear infinite;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.login-flavor {
+  width: 100%;
+  margin-bottom: 18px;
+  margin-top: -8px;
+  font-family: 'Share Tech Mono', 'Fira Mono', 'Consolas', monospace;
+  color: var(--stellar-accent);
+  font-size: 1.01em;
+  text-shadow: 0 0 4px #1a2a3a;
+  letter-spacing: 0.01em;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+}
+
+.login-terminal-line {
+  padding-left: 2px;
+  border-left: 2px solid var(--stellar-primary);
+  margin-bottom: 2px;
+  font-size: 0.98em;
+  opacity: 0.92;
+  animation: loginTerminalBlink 2.2s infinite steps(1);
+}
+
+@keyframes loginTerminalBlink {
+  0%, 100% { border-color: var(--stellar-primary); }
+  50% { border-color: var(--stellar-accent); }
+}
 .form-group {
   display: flex;
   flex-direction: column;

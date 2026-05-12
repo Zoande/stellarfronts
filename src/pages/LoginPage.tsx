@@ -1,4 +1,5 @@
-import { useState } from 'react';
+
+import { useMemo, useState } from 'react';
 import '../styles/Auth.css';
 
 interface LoginPageProps {
@@ -12,22 +13,23 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isFormValid, setIsFormValid] = useState(false);
 
-  const handleInputChange = () => {
-    setIsFormValid(username.trim().length > 0 && password.trim().length > 0);
-  };
+  const isFormValid = useMemo(() => {
+    return username.trim().length > 0 && password.trim().length > 0;
+  }, [username, password]);
+
+  const [showGuestHint, setShowGuestHint] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!username.trim() || !password.trim()) {
-      setError('Please enter both username and password');
+      setError('Enter your Commander ID and Access Code.');
       return;
     }
 
     if (password.length < 1) {
-      setError('Invalid password');
+      setError('Invalid Access Code.');
       return;
     }
 
@@ -41,6 +43,11 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
       setError(errorMessage);
       setIsLoading(false);
     }
+  };
+
+  const handleGuest = () => {
+    setShowGuestHint(true);
+    onGuestMode?.();
   };
 
   return (
@@ -57,10 +64,7 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
             id="username"
             type="text"
             value={username}
-            onChange={(e) => {
-              setUsername(e.target.value);
-              handleInputChange();
-            }}
+            onChange={(e) => setUsername(e.target.value)}
             placeholder="Enter your username"
             className="form-input"
             disabled={isLoading}
@@ -76,10 +80,7 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
             id="password"
             type="password"
             value={password}
-            onChange={(e) => {
-              setPassword(e.target.value);
-              handleInputChange();
-            }}
+            onChange={(e) => setPassword(e.target.value)}
             placeholder="Enter your access code"
             className="form-input"
             disabled={isLoading}
@@ -89,78 +90,51 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
 
         {error && <div className="form-error">⚠ {error}</div>}
 
-        <button 
-          type="submit" 
-          className="btn btn-primary"
-          disabled={isLoading || !isFormValid}
-        >
+        <button type="submit" className="btn btn-primary" disabled={isLoading || !isFormValid}>
           {isLoading ? 'Initializing Command Link...' : 'Access Station'}
         </button>
 
+        <button
+          type="button"
+          className="btn btn-secondary"
+          onClick={onSignupClick}
+          disabled={isLoading}
+          style={{ marginLeft: '12px' }}
+        >
+          New Commander? Enlist
+        </button>
+
         {onGuestMode && (
-          <button 
-            type="button" 
+          <button
+            type="button"
             className="btn btn-secondary"
-            onClick={onGuestMode}
+            onClick={handleGuest}
             disabled={isLoading}
             style={{ marginLeft: '12px' }}
           >
             Play as Guest
           </button>
         )}
+
+        {showGuestHint && <div className="auth-hint">You are entering as a guest. Progress will not be saved.</div>}
       </form>
 
       <div className="divider">
         <span>or</span>
       </div>
 
-      <div className="oauth-buttons">
+      <div className="oauth-buttons" style={{ gridTemplateColumns: '1fr', width: '100%' }}>
         <button
           type="button"
           className="btn btn-oauth btn-google"
           aria-label="Sign in with Google"
           disabled
-          title="OAuth coming soon"
+          style={{ width: '100%' }}
         >
-          <svg width="18" height="18" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" className="oauth-svg">
-            <path fill="#EA4335" d="M24 12.24c3.54 0 6.36 1.22 8.26 2.22l6.02-5.86C35.6 5.02 30.08 3.2 24 3.2 14.7 3.2 6.99 8.86 3.5 16.9l6.98 5.42C12.9 15.6 17.95 12.24 24 12.24z"/>
-            <path fill="#34A853" d="M46.5 24c0-1.6-.15-2.8-.46-4.02H24v8.02h12.98c-.57 3.08-2.3 5.5-4.9 7.22l7.45 5.78C43.86 37.36 46.5 31.12 46.5 24z"/>
-            <path fill="#4A90E2" d="M10.48 29.32A14.9 14.9 0 0 1 9.6 24c0-1.6.27-3.14.76-4.56L3.5 13.99A23.97 23.97 0 0 0 .5 24c0 3.84.92 7.48 2.98 10.7l7  -5.38z"/>
-            <path fill="#FBBC05" d="M24 44.8c6.08 0 11.6-1.82 15.78-4.94l-7.45-5.78C30.36 34.96 27.66 36 24 36c-6.05 0-11.1-3.36-13.52-8.42l-6.98 5.42C6.99 39.94 14.7 44.8 24 44.8z"/>
-          </svg>
-          <span className="oauth-label">Google</span>
-        </button>
-
-        <button
-          type="button"
-          className="btn btn-oauth btn-microsoft"
-          aria-label="Sign in with Microsoft"
-          disabled
-          title="OAuth coming soon"
-        >
-          <svg width="18" height="18" viewBox="0 0 24 24" className="oauth-svg" xmlns="http://www.w3.org/2000/svg">
-            <rect x="1" y="1" width="10" height="10" fill="#F1511B" />
-            <rect x="13" y="1" width="10" height="10" fill="#FFB900" />
-            <rect x="1" y="13" width="10" height="10" fill="#7BD03B" />
-            <rect x="13" y="13" width="10" height="10" fill="#00A4EF" />
-          </svg>
-          <span className="oauth-label">Microsoft</span>
+          Sign in with Google
         </button>
       </div>
-
-      <div className="auth-footer">
-        <p>
-          New to StellarFronts?{' '}
-          <button
-            type="button"
-            className="link-button"
-            onClick={onSignupClick}
-            disabled={isLoading}
-          >
-            Create Account
-          </button>
-        </p>
-      </div>
-  </div>
+    </div>
   );
 }
+
