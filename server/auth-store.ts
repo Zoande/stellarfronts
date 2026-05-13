@@ -96,6 +96,7 @@ export class AuthStore {
   private readonly db: DatabaseInstance;
 
   constructor(dbPath = path.join(process.cwd(), 'server', 'state', 'auth.sqlite')) {
+    mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
@@ -131,7 +132,6 @@ export class AuthStore {
   }
 
   private seedAccounts(): void {
-    mkdirSync(path.dirname(this.db.name), { recursive: true });
     const insertAccount = this.db.prepare(`
       INSERT OR IGNORE INTO accounts (username, password_salt, password_hash, account_type, faction_id, created_at, updated_at)
       VALUES (@username, @password_salt, @password_hash, @account_type, @faction_id, @created_at, @updated_at)
