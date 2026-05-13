@@ -90,31 +90,31 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
 
         {error && <div className="form-error">⚠ {error}</div>}
 
-        <button type="submit" className="btn btn-primary" disabled={isLoading || !isFormValid}>
-          {isLoading ? 'Initializing Command Link...' : 'Access Station'}
-        </button>
+        <div className="auth-actions">
+          <button type="submit" className="btn btn-primary" disabled={isLoading || !isFormValid}>
+            {isLoading ? 'Initializing Command Link...' : 'Access Station'}
+          </button>
 
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={onSignupClick}
-          disabled={isLoading}
-          style={{ marginLeft: '12px' }}
-        >
-          New Commander? Enlist
-        </button>
-
-        {onGuestMode && (
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={handleGuest}
+            onClick={onSignupClick}
             disabled={isLoading}
-            style={{ marginLeft: '12px' }}
           >
-            Play as Guest
+            New Commander? Enlist
           </button>
-        )}
+
+          {onGuestMode && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-ghost"
+              onClick={handleGuest}
+              disabled={isLoading}
+            >
+              Play as Guest
+            </button>
+          )}
+        </div>
 
         {showGuestHint && <div className="auth-hint">You are entering as a guest. Progress will not be saved.</div>}
       </form>

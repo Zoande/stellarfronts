@@ -1,19 +1,19 @@
 /* Auth Pages - StellarFronts Login/Signup */
 
 :root {
-  --stellar-primary: #70b8ff;
-  --stellar-primary-dark: #4a8fd4;
-  --stellar-accent: #62dce4;
-  --stellar-danger: #ca7e8a;
-  --stellar-text: #d6dde7;
-  --stellar-text-muted: #8f9cae;
-  --stellar-border: rgba(136, 151, 171, 0.52);
-  --stellar-border-strong: rgba(168, 182, 200, 0.72);
-  --stellar-bg-dark: rgba(10, 14, 20, 0.96);
-  --stellar-bg-alt: rgba(16, 22, 30, 0.96);
-  --stellar-bg-soft: rgba(20, 27, 36, 0.9);
-  --stellar-glow: rgba(112, 184, 255, 0.15);
-  --stellar-error: #ff6b6b;
+  --stellar-primary: #7ccfff;
+  --stellar-primary-dark: #224fbc;
+  --stellar-accent: #78f0cf;
+  --stellar-danger: #ff8b7d;
+  --stellar-text: #eef6ff;
+  --stellar-text-muted: #a8b9cc;
+  --stellar-border: rgba(126, 171, 205, 0.34);
+  --stellar-border-strong: rgba(158, 220, 255, 0.48);
+  --stellar-bg-dark: rgba(6, 12, 22, 0.94);
+  --stellar-bg-alt: rgba(10, 18, 32, 0.94);
+  --stellar-bg-soft: rgba(14, 24, 40, 0.9);
+  --stellar-glow: rgba(79, 194, 255, 0.17);
+  --stellar-error: #ff6f72;
 }
 
 * {
@@ -40,7 +40,10 @@ html {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(ellipse at 50% 30%, rgba(54, 70, 92, 0.15), rgba(0, 0, 0, 0.5) 40%, rgba(0, 0, 0, 0.95));
+  background:
+    linear-gradient(180deg, rgba(2, 5, 10, 0.38), rgba(1, 2, 5, 0.9)),
+    radial-gradient(ellipse at 50% 30%, rgba(54, 70, 92, 0.18), rgba(0, 0, 0, 0.52) 40%, rgba(0, 0, 0, 0.96)),
+    url('/textures/galaxy_bg.png') center / cover;
   position: relative;
   overflow: hidden;
   animation: authContainerInit 0.8s ease-out;
@@ -176,7 +179,6 @@ html {
     transform: translateY(0) scale(1);
   }
 }
-}
 
 /* Header */
 .auth-header {
@@ -243,11 +245,16 @@ html {
 /* Form styles */
 
 .auth-panel {
-  background: var(--stellar-bg-dark);
-  border-radius: 18px;
-  box-shadow: 0 0 32px 0 var(--stellar-glow), 0 2px 16px 0 #000b;
-  padding: 36px 32px 28px 32px;
-  width: 340px;
+  background:
+    linear-gradient(180deg, rgba(10, 18, 32, 0.96), rgba(5, 10, 18, 0.98)),
+    url('/textures/galaxy_bg.png') center / cover;
+  border-radius: 20px;
+  box-shadow:
+    0 0 36px rgba(79, 194, 255, 0.16),
+    0 18px 60px rgba(0, 0, 0, 0.72),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  padding: 38px 34px 30px;
+  width: min(460px, calc(100vw - 32px));
   max-width: 94vw;
   display: flex;
   flex-direction: column;
@@ -258,6 +265,19 @@ html {
   margin: 0 auto;
   margin-top: 32px;
   animation: authPanelAppear 0.7s cubic-bezier(0.7, 0.2, 0.2, 1);
+  backdrop-filter: blur(10px);
+}
+
+.auth-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+  background:
+    linear-gradient(135deg, rgba(124, 207, 255, 0.08), transparent 38%),
+    repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 10px);
+  opacity: 0.8;
+  pointer-events: none;
 }
 
 .game-login-panel {
@@ -318,6 +338,38 @@ html {
 @keyframes loginTerminalBlink {
   0%, 100% { border-color: var(--stellar-primary); }
   50% { border-color: var(--stellar-accent); }
+}
+
+.auth-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  position: relative;
+  z-index: 1;
+}
+
+.auth-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.auth-actions .btn {
+  width: 100%;
+  margin-left: 0;
+}
+
+.auth-hint {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(120, 240, 207, 0.22);
+  background: rgba(11, 20, 32, 0.66);
+  color: var(--stellar-accent);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .form-group {
   display: flex;
@@ -424,16 +476,15 @@ html {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--stellar-primary) 0%, var(--stellar-primary-dark) 100%);
-  color: #fff;
-  border: 1px solid var(--stellar-primary);
-  width: 100%;
-  box-shadow: 0 4px 15px rgba(112, 184, 255, 0.2);
+  background: linear-gradient(135deg, #64dbff 0%, #2c71df 58%, #2047ac 100%);
+  color: #f4fbff;
+  border: 1px solid rgba(126, 228, 255, 0.62);
+  box-shadow: 0 4px 18px rgba(79, 194, 255, 0.24);
   animation: buttonEnter 0.6s ease-out 0.3s both;
 }
 
 .btn-primary:hover {
-  box-shadow: 0 8px 25px rgba(112, 184, 255, 0.4), 0 0 20px rgba(98, 220, 228, 0.2);
+  box-shadow: 0 10px 28px rgba(79, 194, 255, 0.36), 0 0 20px rgba(120, 240, 207, 0.18);
   transform: translateY(-2px);
 }
 
@@ -469,17 +520,36 @@ html {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(112, 184, 255, 0.3);
+  background: rgba(12, 20, 32, 0.7);
+  border: 1px solid rgba(124, 207, 255, 0.22);
   color: var(--stellar-text);
   padding: 10px 12px;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .btn-oauth:hover {
-  background: rgba(112, 184, 255, 0.1);
+  background: rgba(124, 207, 255, 0.12);
   border-color: var(--stellar-primary);
-  box-shadow: 0 0 12px rgba(112, 184, 255, 0.2);
+  box-shadow: 0 0 12px rgba(79, 194, 255, 0.18);
+}
+
+.btn-secondary {
+  background: linear-gradient(180deg, rgba(16, 25, 38, 0.96), rgba(10, 16, 26, 0.98));
+  color: var(--stellar-text);
+  border: 1px solid rgba(126, 171, 205, 0.38);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+}
+
+.btn-secondary:hover {
+  border-color: rgba(120, 240, 207, 0.68);
+  box-shadow: 0 8px 22px rgba(79, 194, 255, 0.16);
+  transform: translateY(-2px);
+}
+
+.btn-ghost {
+  background: linear-gradient(180deg, rgba(18, 36, 38, 0.82), rgba(8, 14, 20, 0.9));
+  border-color: rgba(120, 240, 207, 0.42);
+  color: var(--stellar-accent);
 }
 
 .btn-oauth:disabled {

@@ -140,7 +140,7 @@ interface GameState {
 
 interface ClientSession {
   socket: WebSocket;
-  account: AuthAccount;
+  account: AuthAccount | null;
   perspective: GalaxyPerspective;
   openPlanetId?: string | null;
 }
@@ -2689,20 +2689,21 @@ const wss = new WebSocketServer({ port: PORT });
 wss.on("connection", (socket, request) => {
   const token = parseSessionTokenFromCookie(request.headers.cookie);
   const account = token ? authStore.getAccountFromSessionToken(token) : null;
-  if (!account) {
-    sendEvent(socket, { type: "serverInfo", message: "Authentication required." });
-    socket.close();
-    return;
-  }
+  const perspective = account ? getPerspectiveFromAccount(account) : { mode: "observer" as const };
 
   const session: ClientSession = {
     socket,
     account,
-    perspective: getPerspectiveFromAccount(account),
+    perspective,
     openPlanetId: null,
   };
   clients.add(session);
-  sendEvent(socket, { type: "serverInfo", message: "Connected to StellarFronts game server." });
+  sendEvent(socket, {
+    type: "serverInfo",
+    message: account
+      ? "Connected to StellarFronts game server."
+      : "Connected as guest observer. Login is optional for playtesting.",
+  });
 
   socket.on("message", (data) => {
     try {
