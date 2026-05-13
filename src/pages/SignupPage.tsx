@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { AuthShell } from '../components/AuthShell';
 import '../styles/Auth.css';
 
 interface SignupPageProps {
@@ -68,10 +69,21 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
     password === confirmPassword;
 
   return (
-    <div className="auth-panel">
+    <AuthShell
+      eyebrow="NEW COMMANDER"
+      title="StellarFronts"
+      subtitle="Build your command profile and step into a tactically rich frontier with the same cinematic presentation as the login screen."
+      copy="Account creation uses the same glass-and-nebula treatment, with textures scaled to cover and controls spaced like a modern game launcher instead of a plain form."
+      highlights={[
+        'Seamless account creation and seeded factions',
+        'Same visual system as the login launcher',
+        'Observer mode remains available for testing',
+      ]}
+    >
       <div className="auth-header">
-        <h1 className="stellar-title">StellarFronts</h1>
-        <p className="auth-subtitle">Join the Frontier</p>
+        <p className="auth-panel-kicker">Recruitment Terminal</p>
+        <h2 className="stellar-title">Create Account</h2>
+        <p className="auth-subtitle">Secure access to the frontier</p>
       </div>
 
       <form onSubmit={handleSignup} className="auth-form">
@@ -96,10 +108,10 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
           <label htmlFor="signup-password">
             Access Code 
             {password && (
-              <span style={{ 
-                marginLeft: '8px', 
-                fontSize: '11px', 
-                color: passwordStrength === 'good' ? 'var(--stellar-accent)' : 
+              <span style={{
+                marginLeft: '8px',
+                fontSize: '11px',
+                color: passwordStrength === 'good' ? 'var(--stellar-accent)' :
                        passwordStrength === 'fair' ? '#f0ad4e' : 'var(--stellar-danger)'
               }}>
                 ({passwordStrength})
@@ -135,8 +147,8 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
 
         {error && <div className="form-error">⚠ {error}</div>}
 
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           className="btn btn-primary"
           disabled={isLoading || !isFormValid}
         >
@@ -160,6 +172,6 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
           </button>
         </p>
       </div>
-    </div>
+    </AuthShell>
   );
 }

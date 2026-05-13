@@ -3,6 +3,8 @@ import { buildFactions } from '@/data/Factions';
 import { GALAXY_MAP } from '@/data/GalaxyMap';
 import { generateStarMap } from '@/data/StarMap';
 import type { AuthAccount } from '@/auth/types';
+import lobbyBackdrop from '../../backgroudn lobby.png';
+import stellarLogo from '../../logosteller.png';
 import '../styles/Home.css';
 
 interface HomePageProps {
@@ -97,7 +99,15 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
     : 'Observer account is synced.';
 
   return (
-    <div className="home-page">
+    <div
+      className="home-page"
+      style={{
+        backgroundImage: `linear-gradient(180deg, rgba(2, 7, 18, 0.18), rgba(1, 3, 9, 0.82)), url(${lobbyBackdrop})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center center',
+        backgroundRepeat: 'no-repeat',
+      }}
+    >
       <div className="home-space-decor" aria-hidden="true">
         <span className="home-star-dust dust-left" />
         <span className="home-star-dust dust-right" />
@@ -108,6 +118,30 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
         <span className="home-deep-star star-left" />
         <span className="home-deep-star star-right" />
       </div>
+
+      <div
+        className="home-brand-strip"
+        style={{
+          position: 'relative',
+          zIndex: 2,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'flex-start',
+          padding: '6px 2px 10px',
+        }}
+      >
+        <img
+          src={stellarLogo}
+          alt="StellarFronts"
+          style={{
+            width: 'min(300px, 42vw)',
+            height: 'auto',
+            objectFit: 'contain',
+            filter: 'drop-shadow(0 0 18px rgba(124, 207, 255, 0.28))',
+          }}
+        />
+      </div>
+
       <div className="home-shell">
         <header className="home-top-nav" aria-label="Main navigation">
           {navigationItems.map((item) => (

@@ -1,5 +1,6 @@
 
 import { useMemo, useState } from 'react';
+import { AuthShell } from '../components/AuthShell';
 import '../styles/Auth.css';
 
 interface LoginPageProps {
@@ -51,10 +52,21 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
   };
 
   return (
-    <div className="auth-panel">
+    <AuthShell
+      eyebrow="WELCOME BACK, COMMANDER"
+      title="StellarFronts"
+      subtitle="A full-screen frontier command deck for expeditions, fleets, and faction play."
+      copy="Step back into the galaxy with the same cinematic scale as the reference screens, with artwork scaled to cover instead of stretching and a cockpit-style login panel on the right."
+      highlights={[
+        'High-resolution background art and textures',
+        'Glass-panel login with clear action spacing',
+        'Observer play and seeded factions supported',
+      ]}
+    >
       <div className="auth-header">
-        <h1 className="stellar-title">StellarFronts</h1>
-        <p className="auth-subtitle">Command Your Destiny</p>
+        <p className="auth-panel-kicker">Command Terminal</p>
+        <h2 className="stellar-title">Access the Frontier</h2>
+        <p className="auth-subtitle">Secure link to your command profile</p>
       </div>
 
       <form onSubmit={handleLogin} className="auth-form">
@@ -134,7 +146,7 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
           Sign in with Google
         </button>
       </div>
-    </div>
+    </AuthShell>
   );
 }
 
