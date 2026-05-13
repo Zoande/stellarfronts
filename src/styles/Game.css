@@ -9,6 +9,18 @@
   font-family: 'Orbitron', 'Rajdhani', 'Trebuchet MS', sans-serif;
 }
 
+.game-container::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(61, 130, 214, 0.06), transparent 34%),
+    linear-gradient(180deg, rgba(1, 5, 12, 0.08), rgba(1, 5, 12, 0.26)),
+    linear-gradient(90deg, rgba(1, 5, 12, 0.26), transparent 16%, transparent 84%, rgba(1, 5, 12, 0.26));
+}
+
 #renderCanvas {
   width: 100%;
   height: 100%;
@@ -18,23 +30,69 @@
   filter: saturate(1.05) brightness(1.02);
 }
 
+.game-brand-rail {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 42;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid rgba(88, 151, 219, 0.22);
+  background: rgba(4, 12, 22, 0.72);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24);
+}
+
+.game-brand-mark {
+  width: 178px;
+  height: auto;
+  display: block;
+  filter: drop-shadow(0 0 12px rgba(102, 180, 255, 0.18));
+}
+
+.game-brand-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.game-brand-copy span,
+.game-username__label {
+  color: rgba(197, 219, 243, 0.62);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.game-brand-copy strong {
+  color: #eff7ff;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
 .game-username {
   position: absolute;
-  top: 12px;
+  top: 18px;
   right: 16px;
-  font-family: 'Orbitron', 'Rajdhani', 'Trebuchet MS', sans-serif;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: #8f9cae;
-  text-transform: uppercase;
-  padding: 8px 14px;
-  border: 1px solid rgba(112, 184, 255, 0.4);
-  border-radius: 3px;
-  background: rgba(10, 14, 20, 0.85);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 14px;
+  border: 1px solid rgba(88, 151, 219, 0.22);
+  background: rgba(4, 12, 22, 0.72);
   z-index: 40;
   pointer-events: none;
-  animation: fadeInDown 0.5s ease-out;
-  box-shadow: 0 0 10px rgba(112, 184, 255, 0.1);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24);
+}
+
+.game-username strong {
+  color: #eff7ff;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 @keyframes fadeInDown {
@@ -50,23 +108,18 @@
 
 .game-logout-rail {
   position: absolute;
-  top: 56px;
+  top: 80px;
   right: 16px;
   z-index: 45;
   animation: fadeInDown 0.6s ease-out 0.1s both;
 }
 
 .game-logout-btn {
-  min-height: 34px;
+  min-height: 38px;
   padding: 0 16px;
-  border-radius: 20px;
-  border: 1px solid rgba(112, 184, 255, 0.5);
-  background: linear-gradient(
-    180deg,
-    rgba(20, 32, 46, 0.95),
-    rgba(10, 16, 22, 0.98)
-  );
-  color: #d6dde7;
+  border: 1px solid rgba(88, 151, 219, 0.26);
+  background: rgba(4, 12, 22, 0.82);
+  color: #dfeeff;
   font-family: 'Orbitron', 'Rajdhani', 'Trebuchet MS', sans-serif;
   font-size: 11px;
   letter-spacing: 0.1em;
@@ -74,9 +127,8 @@
   font-weight: 600;
   cursor: pointer;
   box-shadow:
-    0 8px 20px rgba(0, 0, 0, 0.4),
-    0 0 15px rgba(112, 184, 255, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    0 12px 24px rgba(0, 0, 0, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
   overflow: hidden;
@@ -99,11 +151,7 @@
 
 .game-logout-btn:hover {
   transform: translateY(-2px);
-  border-color: rgba(98, 220, 228, 0.8);
-  box-shadow:
-    0 12px 30px rgba(0, 0, 0, 0.5),
-    0 0 25px rgba(112, 184, 255, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  border-color: rgba(116, 191, 255, 0.48);
 }
 
 .game-logout-btn:active {
@@ -342,6 +390,39 @@
     0 0 20px rgba(255, 107, 107, 0.15);
   animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
   letter-spacing: 0.02em;
+}
+
+@media (max-width: 900px) {
+  .game-brand-copy {
+    display: none;
+  }
+
+  .game-brand-mark {
+    width: 146px;
+  }
+}
+
+@media (max-width: 640px) {
+  .game-brand-rail {
+    top: 10px;
+    left: 10px;
+    padding: 8px 10px;
+  }
+
+  .game-brand-mark {
+    width: 132px;
+  }
+
+  .game-username {
+    top: 10px;
+    right: 10px;
+    padding: 8px 10px;
+  }
+
+  .game-logout-rail {
+    top: 64px;
+    right: 10px;
+  }
 }
 
 @keyframes slideUp {

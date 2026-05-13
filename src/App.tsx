@@ -5,7 +5,6 @@ import SignupPage from './pages/SignupPage';
 import GamePage from './pages/GamePage';
 import HomePage from './pages/HomePage';
 import { LoadingScreen } from './components/LoadingScreen';
-import BackgroundScene from './components/BackgroundScene';
 import { useAppFlow } from './hooks/useAppFlow';
 
 function App() {
@@ -17,8 +16,6 @@ function App() {
     showAuthStartupLoading,
     auth,
     homeTransition,
-    handleAuthBackgroundProgress,
-    handleAuthBackgroundReady,
     handleAuthStartupLoadingHidden,
     handleLoginSubmit,
     handleGuestMode,
@@ -43,7 +40,7 @@ function App() {
   }
 
   if (homeTransition.isActive) {
-    const shouldRenderHomeBehindLoader = homeTransition.progress >= 82;
+    const shouldRenderHomeBehindLoader = homeTransition.progress >= 68;
 
     return (
       <Router>
@@ -61,14 +58,15 @@ function App() {
           />
         )}
         <LoadingScreen
-          theme="auth"
-          subtitle="Command Link"
+          theme="game"
+          subtitle="Transit Corridor"
           title={homeTransitionTitle}
           progress={homeTransition.progress}
           detail={homeTransition.detail}
           isVisible={homeTransition.isVisible}
           onHidden={handleHomeTransitionHidden}
           zIndex={240}
+          exitDurationMs={760}
         />
         <Analytics />
       </Router>
@@ -90,21 +88,17 @@ function App() {
   return (
     <Router>
       <div className="auth-container">
-        <BackgroundScene
-          onLoadProgress={handleAuthBackgroundProgress}
-          onReady={handleAuthBackgroundReady}
-        />
-
         {showAuthStartupLoading && (
           <LoadingScreen
             theme="auth"
-            subtitle="Login Station"
-            title="StellarFronts Login"
+            subtitle="Docking Relay"
+            title="Aligning Command Uplink"
             progress={authLoadingProgress}
             detail={authLoadingDetail}
             isVisible={!(authBackgroundReady && authSessionReady)}
             onHidden={handleAuthStartupLoadingHidden}
             zIndex={220}
+            exitDurationMs={760}
           />
         )}
 

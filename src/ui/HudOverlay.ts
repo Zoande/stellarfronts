@@ -1,20 +1,20 @@
-import type { GameClock } from "../game/GameProtocol";
-import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
-import type { FactionEconomyState } from "../data/Economy";
-import { createFlagDesign } from "../flags/flagGenerator";
-import { renderFlagSvg } from "../flags/renderFlagSvg";
+import type { GameClock } from '../game/GameProtocol';
+import { RESOURCE_KINDS, RESOURCE_LABELS } from '../data/Economy';
+import type { FactionEconomyState } from '../data/Economy';
+import { createFlagDesign } from '../flags/flagGenerator';
+import { renderFlagSvg } from '../flags/renderFlagSvg';
 
-export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
+export type HudToggleKey = 'hyperlanes' | 'bloom' | 'centerCloud' | 'stars' | 'ownership';
 export type HudSidebarItemKey =
-  | "government"
-  | "society"
-  | "technology"
-  | "leaders"
-  | "planets"
-  | "fleets"
-  | "diplomacy"
-  | "espionage"
-  | "market";
+  | 'government'
+  | 'society'
+  | 'technology'
+  | 'leaders'
+  | 'planets'
+  | 'fleets'
+  | 'diplomacy'
+  | 'espionage'
+  | 'market';
 
 export type HudVisualToggles = Record<HudToggleKey, boolean>;
 
@@ -39,538 +39,212 @@ export interface HudCallbacks {
   onSidebarItem?: (key: HudSidebarItemKey) => void;
 }
 
-const STYLE_ID = "space-rts-hud-style";
+const STYLE_ID = 'space-rts-hud-style';
 const GAME_DAYS_PER_YEAR = 360;
 
 const RESOURCE_ICON_LABELS: Record<string, string> = {
-  food: "FD",
-  minerals: "MN",
-  energy: "EN",
-  goods: "GD",
-  alloys: "AL",
-  research: "RS",
+  food: 'FD',
+  minerals: 'MN',
+  energy: 'EN',
+  goods: 'GD',
+  alloys: 'AL',
+  research: 'RS',
 };
 
 const SIDEBAR_ITEMS: Array<{ key: HudSidebarItemKey; label: string; icon: string }> = [
-  { key: "government", label: "Government", icon: "GV" },
-  { key: "society", label: "Society", icon: "SC" },
-  { key: "technology", label: "Technology", icon: "TC" },
-  { key: "leaders", label: "Leaders", icon: "LD" },
-  { key: "planets", label: "Planets", icon: "PL" },
-  { key: "fleets", label: "Fleets", icon: "FL" },
-  { key: "diplomacy", label: "Diplomacy", icon: "DP" },
-  { key: "espionage", label: "Espionage", icon: "ES" },
-  { key: "market", label: "Market", icon: "MK" },
+  { key: 'government', label: 'Government', icon: 'GV' },
+  { key: 'society', label: 'Society', icon: 'SC' },
+  { key: 'technology', label: 'Technology', icon: 'TC' },
+  { key: 'leaders', label: 'Leaders', icon: 'LD' },
+  { key: 'planets', label: 'Planets', icon: 'PL' },
+  { key: 'fleets', label: 'Fleets', icon: 'FL' },
+  { key: 'diplomacy', label: 'Diplomacy', icon: 'DP' },
+  { key: 'espionage', label: 'Espionage', icon: 'ES' },
+  { key: 'market', label: 'Market', icon: 'MK' },
 ] as const;
 
 const HUD_STYLE = `
 #spaceHudRoot {
-  --hud-ink: #d6dde7;
-  --hud-muted: #8f9cae;
-  --hud-line: rgba(136, 151, 171, 0.52);
-  --hud-line-strong: rgba(168, 182, 200, 0.72);
-  --hud-danger-line: rgba(202, 126, 138, 0.74);
-  --hud-panel: rgba(10, 14, 20, 0.96);
-  --hud-panel-alt: rgba(16, 22, 30, 0.96);
-  --hud-panel-soft: rgba(20, 27, 36, 0.9);
+  --hud-ink: #edf6ff;
+  --hud-muted: rgba(197, 219, 243, 0.66);
+  --hud-line: rgba(96, 161, 234, 0.2);
+  --hud-line-strong: rgba(118, 191, 255, 0.42);
+  --hud-panel: rgba(4, 12, 22, 0.76);
+  --hud-panel-strong: rgba(4, 12, 22, 0.9);
+  --hud-panel-soft: rgba(6, 17, 31, 0.68);
+  --hud-blue: #6fcfff;
+  --hud-blue-strong: #3398ff;
   position: fixed;
   inset: 0;
   z-index: 50;
   pointer-events: none;
+  color: var(--hud-ink);
   font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
-  color: var(--hud-ink);
 }
 
-#spaceHudBottom {
-  position: absolute;
-  left: 50%;
-  bottom: 0;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  pointer-events: auto;
-}
-
-#spaceHudBottom::before,
-#spaceHudBottom::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  width: 18px;
-  height: 18px;
-  border-bottom: 2px solid var(--hud-line-strong);
-}
-
-#spaceHudBottom::before {
-  left: -6px;
-  border-left: 2px solid var(--hud-line-strong);
-  border-bottom-left-radius: 4px;
-}
-
-#spaceHudBottom::after {
-  right: -6px;
-  border-right: 2px solid var(--hud-line-strong);
-  border-bottom-right-radius: 4px;
-}
-
-#spaceHudConnected {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  max-width: 44vw;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  padding: 0 10px 10px 0;
-  margin-right: 4px;
-  border-right: 1px solid var(--hud-line);
-}
-
-#spaceHudConnected::-webkit-scrollbar {
-  height: 6px;
-}
-
-#spaceHudConnected::-webkit-scrollbar-thumb {
-  background: rgba(136, 151, 171, 0.55);
-  border-radius: 999px;
-}
-
-.spaceHudConnectedBtn {
-  border: 1px solid var(--hud-line);
-  background: linear-gradient(180deg, rgba(26, 34, 44, 0.96) 0%, rgba(14, 20, 28, 0.96) 100%);
-  color: #c4d1e2;
-  border-radius: 5px 5px 0 0;
-  padding: 8px 12px;
-  min-height: 40px;
-  font-size: 11px;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  line-height: 1;
-  cursor: pointer;
-  max-width: 150px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
-}
-
-.spaceHudConnectedBtn:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(34, 44, 58, 0.98) 0%, rgba(20, 28, 37, 0.98) 100%);
-  border-color: var(--hud-line-strong);
-  transform: translateY(-1px);
-}
-
-.spaceHudConnectedBtn:disabled {
-  cursor: default;
-  opacity: 0.52;
-}
-
-#spaceHudTitle {
-  position: relative;
-  pointer-events: none;
-  min-height: 52px;
-  min-width: 320px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 26px;
-  border-radius: 6px 6px 0 0;
-  border: 1px solid var(--hud-line-strong);
-  border-bottom: none;
-  background: linear-gradient(180deg, var(--hud-panel-alt) 0%, var(--hud-panel) 100%);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  font-size: 12px;
-  font-weight: 700;
-  text-align: center;
-  color: var(--hud-ink);
-}
-
-#spaceHudTitle::before {
-  content: "";
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  top: 10px;
-  border-top: 1px solid rgba(184, 197, 215, 0.36);
-}
-
-#spaceHudTitle::after {
-  content: "";
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 8px;
-  border-bottom: 1px solid rgba(84, 96, 111, 0.44);
-}
-
-#spaceHudExitBtn {
-  pointer-events: auto;
-  min-height: 52px;
-  min-width: 52px;
-  border-radius: 6px 6px 0 0;
-  border: 1px solid var(--hud-danger-line);
-  border-bottom: none;
-  background: linear-gradient(180deg, rgba(60, 30, 38, 0.96) 0%, rgba(28, 16, 20, 0.96) 100%);
-  color: #e6c5cb;
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
-  font-weight: 600;
-  transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-#spaceHudExitBtn:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(72, 36, 45, 0.98) 0%, rgba(37, 20, 26, 0.98) 100%);
-  border-color: rgba(222, 150, 160, 0.88);
-  transform: translateY(-1px);
-}
-
-#spaceHudExitBtn:disabled {
-  cursor: default;
-  border-color: rgba(116, 94, 98, 0.46);
-  background: linear-gradient(180deg, rgba(43, 37, 39, 0.88) 0%, rgba(31, 26, 28, 0.86) 100%);
-  color: rgba(155, 142, 146, 0.7);
-  opacity: 0.88;
-}
-
-#spaceHudToggles {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  width: 168px;
-  padding: 10px 10px 12px;
-  border-radius: 8px 0 0 0;
-  border-top: 1px solid var(--hud-line);
-  border-left: 1px solid var(--hud-line);
-  background: linear-gradient(180deg, rgba(18, 24, 33, 0.96) 0%, rgba(10, 14, 20, 0.98) 100%);
-  pointer-events: auto;
-}
-
-#spaceHudToggles::before {
-  content: "Visual Filters";
-  display: block;
-  margin-bottom: 4px;
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--hud-muted);
-}
-
-#spaceHudSidebar {
-  position: absolute;
-  left: 0;
-  top: 92px;
-  bottom: 86px;
-  width: 54px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 7px;
-  padding: 8px 5px;
-  pointer-events: auto;
-}
-
-#spaceHudSidebar::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 7px;
-  border-right: 1px solid rgba(94, 173, 142, 0.44);
-  background:
-    linear-gradient(180deg, rgba(5, 28, 25, 0), rgba(6, 45, 39, 0.86) 16%, rgba(6, 45, 39, 0.86) 84%, rgba(5, 28, 25, 0)),
-    radial-gradient(circle at 100% 50%, rgba(108, 255, 218, 0.18), transparent 4rem);
-}
-
-.spaceHudSidebarBtn {
-  position: relative;
-  width: 42px;
-  height: 42px;
-  display: grid;
-  place-items: center;
-  margin-left: 3px;
-  border: 1px solid rgba(94, 173, 142, 0.44);
-  border-left-color: rgba(94, 173, 142, 0.72);
-  background:
-    linear-gradient(135deg, rgba(9, 46, 39, 0.92), rgba(3, 14, 16, 0.96)),
-    radial-gradient(circle at 35% 20%, rgba(127, 255, 220, 0.16), transparent 2.6rem);
-  color: #dffff5;
-  font: inherit;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  cursor: pointer;
-  clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 0 100%);
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
-  transition: transform 0.14s ease, border-color 0.14s ease, background-color 0.14s ease;
-}
-
-.spaceHudSidebarBtn::before {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 5px;
-  right: 5px;
-  height: 2px;
-  background: rgba(127, 255, 220, 0.26);
-}
-
-.spaceHudSidebarBtn::after {
-  content: attr(aria-label);
-  position: absolute;
-  left: 48px;
-  top: 50%;
-  transform: translateY(-50%) translateX(-4px);
-  min-width: 116px;
-  padding: 7px 10px;
-  border: 1px solid rgba(94, 173, 142, 0.52);
-  background: linear-gradient(90deg, rgba(5, 28, 25, 0.96), rgba(6, 18, 20, 0.96));
-  color: #dffff5;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  opacity: 0;
-  pointer-events: none;
-  white-space: nowrap;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34);
-  transition: opacity 0.12s ease, transform 0.12s ease;
-}
-
-.spaceHudSidebarBtn:hover {
-  transform: translateX(3px);
-  border-color: rgba(127, 255, 220, 0.82);
-  background:
-    linear-gradient(135deg, rgba(14, 66, 56, 0.98), rgba(4, 19, 21, 0.98)),
-    radial-gradient(circle at 35% 20%, rgba(127, 255, 220, 0.2), transparent 2.6rem);
-}
-
-.spaceHudSidebarBtn:hover::after {
-  opacity: 1;
-  transform: translateY(-50%) translateX(0);
-}
-
-.spaceHudSidebarBtn span {
-  position: relative;
-  z-index: 1;
-}
-
-#spaceHudClock {
-  position: absolute;
-  top: 0;
-  right: 0;
-  transform: scale(1.3);
-  transform-origin: top right;
-  min-width: 252px;
-  min-height: 39px;
-  border-left: 1px solid rgba(94, 173, 142, 0.72);
-  border-bottom: 1px solid rgba(94, 173, 142, 0.48);
-  background:
-    linear-gradient(180deg, rgba(9, 34, 25, 0.96), rgba(4, 13, 12, 0.98)),
-    radial-gradient(circle at 12% 0%, rgba(246, 170, 77, 0.16), transparent 9rem);
-  padding: 4px 12px 7px 42px;
-  pointer-events: none;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), inset 0 -1px 0 rgba(117, 255, 208, 0.08);
-}
-
-#spaceHudClock::before {
-  content: "II";
-  position: absolute;
-  left: 12px;
-  top: 7px;
-  width: 22px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(235, 142, 61, 0.84);
-  color: #f2a34c;
-  background: rgba(77, 39, 14, 0.62);
-  font-size: 11px;
-  font-weight: 900;
-}
-
-.spaceHudClockGrid {
-  display: grid;
-  grid-template-columns: 82px minmax(0, 1fr);
-  grid-template-rows: auto auto 5px;
-  align-items: end;
-  gap: 0 10px;
+#spaceHudRoot * {
+  box-sizing: border-box;
 }
 
 #spaceHudResources {
   position: absolute;
-  top: 0;
-  left: 0;
-  transform: scale(1.3);
-  transform-origin: top left;
+  left: 18px;
+  top: 82px;
   display: flex;
   align-items: stretch;
-  gap: 0;
-  max-width: calc(100vw - 250px);
-  min-height: 34px;
-  padding-left: 64px;
-  border-right: 1px solid rgba(94, 173, 142, 0.72);
-  border-bottom: 1px solid rgba(94, 173, 142, 0.48);
-  background:
-    linear-gradient(180deg, rgba(8, 33, 24, 0.96), rgba(4, 13, 12, 0.98)),
-    radial-gradient(circle at 30% 0%, rgba(90, 255, 195, 0.12), transparent 18rem);
+  min-height: 58px;
+  max-width: min(56vw, 980px);
+  background: var(--hud-panel-strong);
+  border: 1px solid var(--hud-line);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.24);
+  overflow: hidden;
   pointer-events: none;
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 -1px 0 rgba(117, 255, 208, 0.08);
 }
 
 .spaceHudFactionFlag {
-  position: absolute;
-  left: 6px;
-  top: -5px;
-  width: 50px;
-  height: 50px;
+  width: 64px;
   display: grid;
   place-items: center;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.58));
-  z-index: 2;
+  border-right: 1px solid var(--hud-line);
+  background: linear-gradient(180deg, rgba(17, 60, 116, 0.42), rgba(4, 12, 22, 0.92));
 }
 
 .spaceHudFactionFlag svg {
-  width: 50px;
-  height: 50px;
+  width: 44px;
+  height: 44px;
   display: block;
-  overflow: visible;
 }
 
 .spaceHudResourceItem {
-  min-width: 112px;
+  min-width: 124px;
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
-  gap: 6px;
-  border-right: 1px solid rgba(94, 173, 142, 0.35);
-  background: linear-gradient(90deg, rgba(16, 58, 43, 0.26), rgba(4, 12, 12, 0.12));
-  padding: 3px 8px 3px 7px;
+  padding: 9px 12px;
+  border-right: 1px solid var(--hud-line);
+  background: linear-gradient(180deg, rgba(8, 21, 38, 0.9), rgba(4, 12, 22, 0.96));
 }
 
 .spaceHudResourceIcon {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
-  border: 1px solid rgba(152, 255, 219, 0.48);
-  background: rgba(11, 44, 38, 0.88);
-  color: #eafff7;
+  border: 1px solid rgba(122, 194, 255, 0.34);
+  background: rgba(11, 37, 67, 0.82);
+  color: #eff8ff;
   font-size: 8px;
   font-weight: 900;
+  letter-spacing: 0.08em;
 }
 
-.spaceHudResourceIcon.food { color: #91ff75; background: rgba(37, 83, 28, 0.72); }
-.spaceHudResourceIcon.minerals { color: #f49a75; background: rgba(83, 38, 28, 0.72); }
-.spaceHudResourceIcon.energy { color: #f2e85b; background: rgba(78, 75, 18, 0.72); }
-.spaceHudResourceIcon.goods { color: #b9d2ff; background: rgba(36, 53, 84, 0.72); }
-.spaceHudResourceIcon.alloys { color: #c9d0d3; background: rgba(67, 72, 74, 0.72); }
-.spaceHudResourceIcon.research { color: #8ee8ff; background: rgba(24, 68, 78, 0.72); }
+.spaceHudResourceIcon.food { color: #92ffbc; }
+.spaceHudResourceIcon.minerals { color: #ffb897; }
+.spaceHudResourceIcon.energy { color: #ffe980; }
+.spaceHudResourceIcon.goods { color: #bfd8ff; }
+.spaceHudResourceIcon.alloys { color: #dde6f0; }
+.spaceHudResourceIcon.research { color: #8fdcff; }
 
 .spaceHudResourceText {
-  min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 6px;
+  gap: 2px;
 }
 
-.spaceHudResourceLabel {
-  grid-column: 1 / span 2;
-  color: rgba(175, 208, 197, 0.72);
-  font-size: 7px;
-  letter-spacing: 0.12em;
+.spaceHudResourceLabel,
+.spaceHudMiniLabel,
+.spaceHudPanelTitle,
+.spaceHudTag {
+  font-size: 10px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  white-space: nowrap;
 }
 
-.spaceHudResourceValue {
-  color: #edf4ff;
-  font-size: 11px;
-  font-weight: 800;
-  white-space: nowrap;
+.spaceHudResourceLabel,
+.spaceHudMiniLabel,
+.spaceHudTag {
+  color: var(--hud-muted);
+}
+
+.spaceHudResourceValue,
+.spaceHudMiniValue {
+  color: var(--hud-ink);
+  font-size: 15px;
+  font-weight: 700;
 }
 
 .spaceHudResourceDelta {
-  font-size: 9px;
-  color: rgba(112, 235, 172, 0.92);
-  white-space: nowrap;
+  color: #79cfff;
+  font-size: 10px;
 }
 
 .spaceHudResourceDelta.negative {
-  color: rgba(255, 129, 111, 0.95);
+  color: #ff9198;
 }
 
-.spaceHudClockLabel {
-  display: block;
-  grid-column: 2;
-  grid-row: 1;
-  color: rgba(175, 208, 197, 0.72);
-  font-size: 7px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  text-align: right;
+#spaceHudClock {
+  position: absolute;
+  right: 18px;
+  top: 82px;
+  min-width: 284px;
+  padding: 12px 14px;
+  border: 1px solid var(--hud-line);
+  background: var(--hud-panel-strong);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.24);
 }
 
-.spaceHudClockValue {
-  display: block;
-  grid-column: 2;
-  grid-row: 2;
-  color: #edf4ff;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  text-align: right;
+.spaceHudClockGrid {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  grid-template-rows: auto auto 6px;
+  gap: 4px 12px;
+  align-items: end;
 }
 
 .spaceHudClockSpeed {
-  display: grid;
-  grid-column: 1;
   grid-row: 1 / span 2;
   align-self: center;
-  min-height: 24px;
+  display: grid;
   place-items: center;
-  padding: 0 6px;
-  border: 1px solid rgba(235, 142, 61, 0.56);
-  background: rgba(77, 39, 14, 0.34);
-  color: rgba(246, 170, 77, 0.95);
-  font-size: 8px;
-  line-height: 1.1;
-  letter-spacing: 0.12em;
+  min-height: 54px;
+  border: 1px solid rgba(118, 191, 255, 0.24);
+  background: linear-gradient(180deg, rgba(17, 60, 116, 0.4), rgba(4, 12, 22, 0.88));
+  color: var(--hud-blue);
+  font-size: 10px;
+  line-height: 1.5;
   text-transform: uppercase;
-  text-align: center;
+  letter-spacing: 0.16em;
+}
+
+.spaceHudClockLabel {
+  color: var(--hud-muted);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.spaceHudClockValue {
+  color: var(--hud-ink);
+  font-size: 14px;
+  letter-spacing: 0.12em;
 }
 
 .spaceHudClockProgress {
-  grid-column: 1 / span 2;
-  grid-row: 3;
+  grid-column: 2;
+  display: block;
   height: 6px;
-  margin-top: 7px;
-  border: 1px solid rgba(94, 173, 142, 0.36);
-  background: rgba(1, 10, 10, 0.7);
+  background: rgba(255, 255, 255, 0.06);
   overflow: hidden;
 }
 
 .spaceHudClockProgressFill {
   display: block;
-  height: 100%;
   width: 100%;
+  height: 100%;
   transform-origin: left center;
-  background:
-    linear-gradient(90deg, rgba(235, 142, 61, 0.9), rgba(247, 209, 92, 0.98)),
-    radial-gradient(circle at 100% 50%, rgba(255, 255, 255, 0.9), transparent 1.2rem);
-  box-shadow: 0 0 10px rgba(246, 170, 77, 0.36);
+  background: linear-gradient(90deg, var(--hud-blue-strong), var(--hud-blue));
   animation: spaceHudDayProgress var(--clock-day-duration, 30s) linear infinite;
   animation-delay: var(--clock-day-delay, 0s);
 }
@@ -580,136 +254,390 @@ const HUD_STYLE = `
   to { transform: scaleX(1); }
 }
 
-.spaceHudToggleBtn {
-  min-height: 30px;
-  border-radius: 4px;
+#spaceHudSidebar {
+  position: absolute;
+  left: 18px;
+  top: 154px;
+  display: grid;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.spaceHudSidebarBtn {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
   border: 1px solid var(--hud-line);
-  background: linear-gradient(180deg, rgba(29, 38, 49, 0.96) 0%, rgba(18, 25, 33, 0.96) 100%);
-  color: #c4d1e2;
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  background: var(--hud-panel-soft);
+  color: #e9f6ff;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 900;
   cursor: pointer;
-  transition: background-color 0.14s ease, border-color 0.14s ease, transform 0.14s ease;
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.spaceHudSidebarBtn:hover {
+  transform: translateX(2px);
+  border-color: var(--hud-line-strong);
+  background: rgba(8, 24, 42, 0.92);
+}
+
+.spaceHudSidebarBtn::after {
+  content: attr(aria-label);
+  position: absolute;
+  left: calc(100% + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 7px 10px;
+  border: 1px solid var(--hud-line);
+  background: rgba(4, 12, 22, 0.94);
+  color: var(--hud-ink);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+}
+
+.spaceHudSidebarBtn:hover::after {
+  opacity: 1;
+}
+
+#spaceHudOutliner,
+#spaceHudIntel,
+#spaceHudToggles {
+  position: absolute;
+  border: 1px solid var(--hud-line);
+  background: var(--hud-panel);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.24);
+  pointer-events: auto;
+}
+
+#spaceHudOutliner {
+  left: 76px;
+  top: 154px;
+  width: min(300px, 25vw);
+  max-height: calc(100vh - 250px);
+  padding: 14px;
+  overflow: auto;
+}
+
+#spaceHudIntel {
+  right: 18px;
+  top: 154px;
+  width: min(330px, 27vw);
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
+#spaceHudToggles {
+  right: 18px;
+  bottom: 96px;
+  width: min(330px, 27vw);
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+}
+
+.spaceHudPanelTitle {
+  margin-bottom: 12px;
+  color: var(--hud-blue);
+}
+
+.spaceHudOutlinerList,
+.spaceHudTagList {
+  display: grid;
+  gap: 8px;
+}
+
+.spaceHudOutlinerBtn {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(118, 191, 255, 0.14);
+  background: rgba(6, 17, 31, 0.82);
+  color: var(--hud-ink);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.16s ease, transform 0.16s ease;
+}
+
+.spaceHudOutlinerBtn:hover {
+  transform: translateX(2px);
+  border-color: rgba(118, 191, 255, 0.3);
+}
+
+.spaceHudOutlinerBtn strong {
+  font-size: 13px;
   font-weight: 600;
 }
 
-.spaceHudToggleBtn:hover {
-  background: linear-gradient(180deg, rgba(40, 50, 63, 0.98) 0%, rgba(24, 31, 40, 0.98) 100%);
-  border-color: var(--hud-line-strong);
-  transform: translateY(-1px);
+.spaceHudOutlinerBtn span {
+  color: var(--hud-muted);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.spaceHudEmpty {
+  padding: 12px;
+  border: 1px solid rgba(118, 191, 255, 0.1);
+  background: rgba(6, 17, 31, 0.66);
+  color: var(--hud-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.spaceHudSystemName {
+  margin: 0 0 6px;
+  color: var(--hud-ink);
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.spaceHudSystemMeta {
+  margin: 0 0 14px;
+  color: var(--hud-muted);
+  line-height: 1.6;
+  font-size: 13px;
+}
+
+.spaceHudStatGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.spaceHudStatCard {
+  padding: 10px;
+  border: 1px solid rgba(118, 191, 255, 0.12);
+  background: rgba(6, 17, 31, 0.76);
+}
+
+.spaceHudTagList {
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+}
+
+.spaceHudTag {
+  display: grid;
+  place-items: center;
+  min-height: 34px;
+  border: 1px solid rgba(118, 191, 255, 0.14);
+  background: rgba(6, 17, 31, 0.76);
+}
+
+.spaceHudToggleBtn {
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid rgba(118, 191, 255, 0.12);
+  background: rgba(6, 17, 31, 0.82);
+  color: var(--hud-ink);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
 }
 
 .spaceHudToggleBtn[data-enabled="true"] {
-  border-color: rgba(190, 205, 224, 0.82);
-  color: #edf4ff;
+  border-color: rgba(118, 191, 255, 0.34);
+  background: linear-gradient(90deg, rgba(15, 70, 135, 0.86), rgba(7, 28, 56, 0.92));
 }
 
 .spaceHudToggleBtn.off {
-  background: linear-gradient(180deg, rgba(31, 36, 42, 0.82) 0%, rgba(22, 26, 31, 0.82) 100%);
-  border-color: rgba(97, 108, 122, 0.52);
-  color: rgba(145, 156, 169, 0.76);
-  opacity: 0.78;
+  color: var(--hud-muted);
 }
 
-.spaceHudToggleBtn.off:hover {
-  background: linear-gradient(180deg, rgba(40, 46, 54, 0.9) 0%, rgba(27, 32, 38, 0.9) 100%);
-  border-color: rgba(112, 124, 140, 0.64);
-  opacity: 0.9;
+#spaceHudBottom {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+#spaceHudConnected {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 44vw;
+  padding: 10px 12px;
+  border: 1px solid var(--hud-line);
+  background: var(--hud-panel-strong);
+  overflow-x: auto;
+}
+
+.spaceHudConnectedBtn {
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid rgba(118, 191, 255, 0.12);
+  background: rgba(6, 17, 31, 0.82);
+  color: var(--hud-ink);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.spaceHudConnectedBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+#spaceHudTitle,
+#spaceHudExitBtn {
+  min-height: 60px;
+  border: 1px solid var(--hud-line);
+  background: var(--hud-panel-strong);
+}
+
+#spaceHudTitle {
+  min-width: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  color: var(--hud-ink);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+#spaceHudExitBtn {
+  min-width: 60px;
+  color: #ffd8dc;
+  font: inherit;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+#spaceHudExitBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#spaceHudTabs {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--hud-line);
+  background: var(--hud-panel-strong);
+  pointer-events: auto;
+}
+
+.spaceHudTab {
+  min-height: 34px;
+  padding: 0 18px;
+  border-right: 1px solid var(--hud-line);
+  display: flex;
+  align-items: center;
+  color: var(--hud-muted);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.spaceHudTab:last-child {
+  border-right: 0;
+}
+
+.spaceHudTab.is-active {
+  color: var(--hud-ink);
+  background: linear-gradient(180deg, rgba(13, 63, 123, 0.74), rgba(4, 12, 22, 0.96));
+}
+
+@media (max-width: 1200px) {
+  #spaceHudResources,
+  #spaceHudClock {
+    top: 126px;
+  }
+
+  #spaceHudSidebar,
+  #spaceHudOutliner,
+  #spaceHudIntel {
+    top: 198px;
+  }
 }
 
 @media (max-width: 980px) {
-  #spaceHudBottom {
-    width: calc(100vw - 24px);
-    max-width: 760px;
-    justify-content: center;
-    padding-bottom: 0;
-  }
-
-  #spaceHudConnected {
-    max-width: 45vw;
-  }
-
-  #spaceHudTitle {
-    min-width: 240px;
-  }
-}
-
-@media (max-width: 760px) {
-  #spaceHudBottom {
-    flex-wrap: wrap;
-    row-gap: 8px;
-    align-items: stretch;
-  }
-
-  #spaceHudConnected {
-    order: 2;
-    width: 100%;
-    max-width: none;
-    margin-right: 0;
-    padding: 8px 0 8px;
-    border-right: none;
-    border-top: 1px solid var(--hud-line);
-    justify-content: center;
-  }
-
-  #spaceHudTitle {
-    min-height: 46px;
-    min-width: 190px;
-    font-size: 11px;
-    letter-spacing: 0.12em;
-  }
-
-  #spaceHudExitBtn {
-    min-height: 46px;
-    min-width: 46px;
-  }
-
-  #spaceHudToggles {
-    right: 0;
-    bottom: 0;
-    width: 132px;
-    padding: 8px 8px 10px;
-    gap: 6px;
-  }
-
-  .spaceHudConnectedBtn {
-    font-size: 10px;
-    max-width: 136px;
-    min-height: 36px;
-  }
-
-  .spaceHudToggleBtn {
-    min-height: 29px;
-    font-size: 10px;
+  #spaceHudOutliner,
+  #spaceHudIntel,
+  #spaceHudToggles,
+  #spaceHudTabs {
+    display: none;
   }
 
   #spaceHudResources {
-    max-width: calc(100vw - 24px);
+    left: 10px;
+    top: 118px;
+    max-width: calc(100vw - 20px);
+  }
+
+  #spaceHudClock {
+    right: 10px;
+    top: 10px;
+  }
+
+  #spaceHudSidebar {
+    left: 10px;
+    top: 186px;
+  }
+
+  #spaceHudBottom {
+    left: 10px;
+    right: 10px;
+    transform: none;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  #spaceHudConnected {
+    max-width: calc(100vw - 20px);
+  }
+}
+
+@media (max-width: 640px) {
+  #spaceHudResources {
     flex-wrap: wrap;
   }
 
   .spaceHudResourceItem {
-    min-width: 94px;
+    min-width: calc(50% - 0px);
   }
 
-  #spaceHudSidebar {
-    top: 112px;
-    bottom: 132px;
-    width: 46px;
+  #spaceHudTitle {
+    min-width: 220px;
+    font-size: 10px;
   }
 
-  .spaceHudSidebarBtn {
-    width: 36px;
-    height: 36px;
-    font-size: 9px;
+  #spaceHudConnected {
+    width: 100%;
   }
 }
 `;
 
 function ensureHudStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
-  const style = document.createElement("style");
+  const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = HUD_STYLE;
   document.head.appendChild(style);
@@ -721,7 +649,7 @@ function truncateLabel(name: string, maxLength = 18): string {
 }
 
 function formatCompactNumber(value: number): string {
-  const sign = value < 0 ? "-" : "";
+  const sign = value < 0 ? '-' : '';
   const abs = Math.abs(value);
   if (abs >= 1_000_000_000) return `${sign}${(abs / 1_000_000_000).toFixed(1)}B`;
   if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M`;
@@ -730,7 +658,7 @@ function formatCompactNumber(value: number): string {
 }
 
 function formatDelta(value: number): string {
-  const sign = value >= 0 ? "+" : "";
+  const sign = value >= 0 ? '+' : '';
   return `${sign}${formatCompactNumber(value)}/mo`;
 }
 
@@ -757,6 +685,8 @@ export class HudOverlay {
   private readonly clockEl: HTMLDivElement;
   private readonly resourceEl: HTMLDivElement;
   private readonly sidebarEl: HTMLDivElement;
+  private readonly outlinerEl: HTMLDivElement;
+  private readonly intelEl: HTMLDivElement;
   private readonly factionFlagSvg: string;
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
@@ -768,49 +698,80 @@ export class HudOverlay {
     const flagDesign = createFlagDesign({ seed: `${Date.now()}-${Math.random()}` });
     this.factionFlagSvg = renderFlagSvg(flagDesign, {
       size: 34,
-      className: "spaceHudFactionFlagSvg",
-      title: "Faction flag",
-      idPrefix: "hud-faction-flag",
+      className: 'spaceHudFactionFlagSvg',
+      title: 'Faction flag',
+      idPrefix: 'hud-faction-flag',
     });
 
-    this.root = document.createElement("div");
-    this.root.id = "spaceHudRoot";
+    this.root = document.createElement('div');
+    this.root.id = 'spaceHudRoot';
 
-    const bottom = document.createElement("div");
-    bottom.id = "spaceHudBottom";
+    this.resourceEl = document.createElement('div');
+    this.resourceEl.id = 'spaceHudResources';
 
-    this.connectedContainer = document.createElement("div");
-    this.connectedContainer.id = "spaceHudConnected";
+    this.clockEl = document.createElement('div');
+    this.clockEl.id = 'spaceHudClock';
 
-    this.clockEl = document.createElement("div");
-    this.clockEl.id = "spaceHudClock";
+    this.sidebarEl = document.createElement('div');
+    this.sidebarEl.id = 'spaceHudSidebar';
 
-    this.resourceEl = document.createElement("div");
-    this.resourceEl.id = "spaceHudResources";
-
-    this.sidebarEl = document.createElement("div");
-    this.sidebarEl.id = "spaceHudSidebar";
     for (const item of SIDEBAR_ITEMS) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "spaceHudSidebarBtn";
-      button.setAttribute("aria-label", item.label);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'spaceHudSidebarBtn';
+      button.setAttribute('aria-label', item.label);
       button.title = item.label;
       button.innerHTML = `<span>${item.icon}</span>`;
-      button.addEventListener("click", () => {
+      button.addEventListener('click', () => {
         this.callbacks.onSidebarItem?.(item.key);
       });
       this.sidebarEl.appendChild(button);
     }
 
-    this.titleEl = document.createElement("div");
-    this.titleEl.id = "spaceHudTitle";
+    this.outlinerEl = document.createElement('div');
+    this.outlinerEl.id = 'spaceHudOutliner';
 
-    this.exitButton = document.createElement("button");
-    this.exitButton.id = "spaceHudExitBtn";
-    this.exitButton.type = "button";
-    this.exitButton.textContent = "X";
-    this.exitButton.addEventListener("click", () => {
+    this.intelEl = document.createElement('div');
+    this.intelEl.id = 'spaceHudIntel';
+
+    const toggles = document.createElement('div');
+    toggles.id = 'spaceHudToggles';
+
+    const createToggleButton = (key: HudToggleKey, label: string): HTMLButtonElement => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'spaceHudToggleBtn';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        const enabledNow = btn.dataset.enabled === 'true';
+        this.callbacks.onToggleVisual(key, !enabledNow);
+      });
+      toggles.appendChild(btn);
+      return btn;
+    };
+
+    this.toggleButtons = {
+      hyperlanes: createToggleButton('hyperlanes', 'Hyperlanes'),
+      bloom: createToggleButton('bloom', 'Bloom'),
+      centerCloud: createToggleButton('centerCloud', 'Center Cloud'),
+      stars: createToggleButton('stars', 'Stars'),
+      ownership: createToggleButton('ownership', 'Ownership'),
+    };
+
+    const bottom = document.createElement('div');
+    bottom.id = 'spaceHudBottom';
+
+    this.connectedContainer = document.createElement('div');
+    this.connectedContainer.id = 'spaceHudConnected';
+
+    this.titleEl = document.createElement('div');
+    this.titleEl.id = 'spaceHudTitle';
+
+    this.exitButton = document.createElement('button');
+    this.exitButton.id = 'spaceHudExitBtn';
+    this.exitButton.type = 'button';
+    this.exitButton.textContent = 'X';
+    this.exitButton.addEventListener('click', () => {
       if (this.exitButton.disabled) return;
       this.callbacks.onExitSystem();
     });
@@ -819,43 +780,29 @@ export class HudOverlay {
     bottom.appendChild(this.titleEl);
     bottom.appendChild(this.exitButton);
 
-    const toggles = document.createElement("div");
-    toggles.id = "spaceHudToggles";
+    const tabs = document.createElement('div');
+    tabs.id = 'spaceHudTabs';
+    ['Galaxy', 'Economy', 'Research', 'Factions'].forEach((label, index) => {
+      const tab = document.createElement('div');
+      tab.className = `spaceHudTab ${index === 0 ? 'is-active' : ''}`;
+      tab.textContent = label;
+      tabs.appendChild(tab);
+    });
 
-    const createToggleButton = (
-      key: HudToggleKey,
-      label: string,
-    ): HTMLButtonElement => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "spaceHudToggleBtn";
-      btn.textContent = label;
-      btn.addEventListener("click", () => {
-        const enabledNow = btn.dataset.enabled === "true";
-        this.callbacks.onToggleVisual(key, !enabledNow);
-      });
-      toggles.appendChild(btn);
-      return btn;
-    };
-
-    this.toggleButtons = {
-      hyperlanes: createToggleButton("hyperlanes", "Hyperlanes"),
-      bloom: createToggleButton("bloom", "Bloom"),
-      centerCloud: createToggleButton("centerCloud", "Center Cloud"),
-      stars: createToggleButton("stars", "Stars"),
-      ownership: createToggleButton("ownership", "Ownership"),
-    };
-
-    this.root.appendChild(bottom);
-    this.root.appendChild(this.clockEl);
     this.root.appendChild(this.resourceEl);
+    this.root.appendChild(this.clockEl);
     this.root.appendChild(this.sidebarEl);
+    this.root.appendChild(this.outlinerEl);
+    this.root.appendChild(this.intelEl);
     this.root.appendChild(toggles);
+    this.root.appendChild(bottom);
+    this.root.appendChild(tabs);
     document.body.appendChild(this.root);
   }
 
   update(state: HudState): void {
     this.titleEl.textContent = state.title;
+
     if (state.clock) {
       const date = formatGameDate(state.clock.year);
       const daysPerThirtySeconds = state.clock.speedMultiplier;
@@ -864,15 +811,16 @@ export class HudOverlay {
       const delay = -dayProgress * dayDuration;
       this.clockEl.innerHTML = `
         <div class="spaceHudClockGrid" style="--clock-day-duration: ${dayDuration}s; --clock-day-delay: ${delay}s;">
-          <span class="spaceHudClockSpeed">${daysPerThirtySeconds} ${daysPerThirtySeconds === 1 ? "day" : "days"}<br>/ 30 sec</span>
+          <span class="spaceHudClockSpeed">${daysPerThirtySeconds} ${daysPerThirtySeconds === 1 ? 'day' : 'days'}<br>/ 30 sec</span>
           <span class="spaceHudClockLabel">Galactic Standard</span>
-          <span class="spaceHudClockValue">${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")}</span>
+          <span class="spaceHudClockValue">${date.year} / ${String(date.month).padStart(2, '0')} / ${String(date.day).padStart(2, '0')}</span>
           <span class="spaceHudClockProgress" aria-hidden="true"><span class="spaceHudClockProgressFill"></span></span>
         </div>
       `;
     } else {
-      this.clockEl.innerHTML = "";
+      this.clockEl.innerHTML = '';
     }
+
     if (state.economy) {
       const flag = `<div class="spaceHudFactionFlag">${this.factionFlagSvg}</div>`;
       const resources = RESOURCE_KINDS.map((resource) => {
@@ -884,46 +832,125 @@ export class HudOverlay {
             <span class="spaceHudResourceText">
               <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
               <span class="spaceHudResourceValue">${formatCompactNumber(stockpile)}</span>
-              <span class="spaceHudResourceDelta ${delta < 0 ? "negative" : ""}">${formatDelta(delta)}</span>
+              <span class="spaceHudResourceDelta ${delta < 0 ? 'negative' : ''}">${formatDelta(delta)}</span>
             </span>
           </div>
         `;
-      }).join("");
+      }).join('');
       this.resourceEl.innerHTML = `${flag}${resources}`;
     } else {
-      this.resourceEl.innerHTML = "";
+      this.resourceEl.innerHTML = '';
     }
+
     this.exitButton.disabled = !state.canExitSystem;
 
-    this.connectedContainer.innerHTML = "";
+    this.connectedContainer.innerHTML = '';
     if (state.connectedSystems.length === 0) {
-      const none = document.createElement("button");
-      none.type = "button";
-      none.className = "spaceHudConnectedBtn";
-      none.textContent = "No Linked Systems";
+      const none = document.createElement('button');
+      none.type = 'button';
+      none.className = 'spaceHudConnectedBtn';
+      none.textContent = 'No Linked Systems';
       none.disabled = true;
       this.connectedContainer.appendChild(none);
     } else {
-      for (const target of state.connectedSystems) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "spaceHudConnectedBtn";
+      state.connectedSystems.forEach((target) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'spaceHudConnectedBtn';
         btn.textContent = `> ${truncateLabel(target.name)}`;
         btn.title = target.name;
-        btn.addEventListener("click", () => {
+        btn.addEventListener('click', () => {
           this.callbacks.onNavigateConnectedSystem(target.id);
         });
         this.connectedContainer.appendChild(btn);
-      }
+      });
     }
 
-    const toggleOrder: HudToggleKey[] = ["hyperlanes", "bloom", "centerCloud", "stars", "ownership"];
+    this.renderOutliner(state);
+    this.renderIntel(state);
+
+    const toggleOrder: HudToggleKey[] = ['hyperlanes', 'bloom', 'centerCloud', 'stars', 'ownership'];
     for (const key of toggleOrder) {
       const enabled = state.toggles[key];
       const btn = this.toggleButtons[key];
-      btn.dataset.enabled = enabled ? "true" : "false";
-      btn.classList.toggle("off", !enabled);
+      btn.dataset.enabled = enabled ? 'true' : 'false';
+      btn.classList.toggle('off', !enabled);
     }
+  }
+
+  private renderOutliner(state: HudState): void {
+    this.outlinerEl.innerHTML = `<div class="spaceHudPanelTitle">Outliner</div>`;
+
+    const list = document.createElement('div');
+    list.className = 'spaceHudOutlinerList';
+
+    if (state.connectedSystems.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'spaceHudEmpty';
+      empty.textContent = 'No linked systems are available from this view.';
+      list.appendChild(empty);
+    } else {
+      state.connectedSystems.slice(0, 8).forEach((target, index) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'spaceHudOutlinerBtn';
+        btn.innerHTML = `
+          <strong>${truncateLabel(target.name, 22)}</strong>
+          <span>${index === 0 ? 'Primary route' : 'Connected system'}</span>
+        `;
+        btn.addEventListener('click', () => {
+          this.callbacks.onNavigateConnectedSystem(target.id);
+        });
+        list.appendChild(btn);
+      });
+    }
+
+    this.outlinerEl.appendChild(list);
+  }
+
+  private renderIntel(state: HudState): void {
+    const enabledFilters = Object.entries(state.toggles)
+      .filter(([, enabled]) => enabled)
+      .map(([key]) => key);
+
+    const energy = state.economy?.stockpiles.energy ?? 0;
+    const minerals = state.economy?.stockpiles.minerals ?? 0;
+    const research = state.economy?.stockpiles.research ?? 0;
+    const date = state.clock ? formatGameDate(state.clock.year) : null;
+
+    this.intelEl.innerHTML = `
+      <section>
+        <div class="spaceHudPanelTitle">Selected System</div>
+        <div class="spaceHudSystemName">${state.title}</div>
+        <div class="spaceHudSystemMeta">${state.canExitSystem ? 'Tactical orbit active' : 'Galaxy overview active'} • ${state.connectedSystems.length} linked systems</div>
+        <div class="spaceHudStatGrid">
+          <div class="spaceHudStatCard">
+            <div class="spaceHudMiniLabel">Energy Reserve</div>
+            <div class="spaceHudMiniValue">${formatCompactNumber(energy)}</div>
+          </div>
+          <div class="spaceHudStatCard">
+            <div class="spaceHudMiniLabel">Mineral Reserve</div>
+            <div class="spaceHudMiniValue">${formatCompactNumber(minerals)}</div>
+          </div>
+          <div class="spaceHudStatCard">
+            <div class="spaceHudMiniLabel">Research Pool</div>
+            <div class="spaceHudMiniValue">${formatCompactNumber(research)}</div>
+          </div>
+          <div class="spaceHudStatCard">
+            <div class="spaceHudMiniLabel">Date</div>
+            <div class="spaceHudMiniValue">${date ? `${date.year}.${String(date.month).padStart(2, '0')}.${String(date.day).padStart(2, '0')}` : '--'}</div>
+          </div>
+        </div>
+      </section>
+      <section>
+        <div class="spaceHudPanelTitle">Active Filters</div>
+        <div class="spaceHudTagList">
+          ${(enabledFilters.length > 0
+            ? enabledFilters.map((filter) => `<div class="spaceHudTag">${filter}</div>`).join('')
+            : '<div class="spaceHudEmpty">No visual filters are active.</div>')}
+        </div>
+      </section>
+    `;
   }
 
   dispose(): void {

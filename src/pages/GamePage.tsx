@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { GameLogoutButton } from '@/components/GameLogoutButton';
 import { LoadingScreen } from '@/components/LoadingScreen';
+import stellarLogo from '../../logosteller.png';
 import '../styles/Game.css';
 
 interface GamePageProps {
@@ -98,6 +99,13 @@ export default function GamePage({ username, onLogout }: GamePageProps) {
   return (
     <div className="game-container" ref={containerRef}>
       <canvas id="renderCanvas"></canvas>
+      <div className="game-brand-rail">
+        <img src={stellarLogo} alt="StellarFronts" className="game-brand-mark" />
+        <div className="game-brand-copy">
+          <span>Galaxy Command</span>
+          <strong>3D Strategic View</strong>
+        </div>
+      </div>
       <GameLogoutButton onLogout={onLogout} />
       {showBootLoading && (
         <LoadingScreen
@@ -136,7 +144,10 @@ export default function GamePage({ username, onLogout }: GamePageProps) {
           </div>
         </div>
       )}
-      <div className="game-username">{username}</div>
+      <div className="game-username">
+        <span className="game-username__label">Commander</span>
+        <strong>{username}</strong>
+      </div>
     </div>
   );
 }

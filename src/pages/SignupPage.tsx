@@ -13,40 +13,27 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [passwordStrength, setPasswordStrength] = useState<'weak' | 'fair' | 'good' | ''>('');
-
-  const calculatePasswordStrength = (pwd: string) => {
-    if (pwd.length < 6) return 'weak';
-    if (pwd.length < 10) return 'fair';
-    return 'good';
-  };
-
-  const handlePasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const pwd = e.target.value;
-    setPassword(pwd);
-    setPasswordStrength(calculatePasswordStrength(pwd));
-  };
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!username.trim() || !password.trim()) {
-      setError('Please fill in all fields');
+    if (!username.trim() || !password.trim() || !confirmPassword.trim()) {
+      setError('Fill in every field before creating your account.');
       return;
     }
 
     if (password !== confirmPassword) {
-      setError('Passwords do not match');
+      setError('Passwords do not match.');
       return;
     }
 
     if (password.length < 6) {
-      setError('Password must be at least 6 characters');
+      setError('Password must be at least 6 characters.');
       return;
     }
 
     if (username.trim().length < 3) {
-      setError('Username must be at least 3 characters');
+      setError('Username must be at least 3 characters.');
       return;
     }
 
@@ -62,39 +49,32 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
     }
   };
 
-  const isFormValid = 
-    username.trim().length >= 3 && 
-    password.length >= 6 && 
-    confirmPassword.length > 0 && 
-    password === confirmPassword;
-
   return (
     <AuthShell
       eyebrow="NEW COMMANDER"
       title="StellarFronts"
-      subtitle="Build your command profile and step into a tactically rich frontier with the same cinematic presentation as the login screen."
-      copy="Account creation uses the same glass-and-nebula treatment, with textures scaled to cover and controls spaced like a modern game launcher instead of a plain form."
+      subtitle="Create your commander profile from the same launcher-style surface used for login."
+      copy="The signup view shares the same silhouette as the reference login screen so the auth flow feels like one premium game launcher rather than two different forms."
       highlights={[
-        'Seamless account creation and seeded factions',
-        'Same visual system as the login launcher',
-        'Observer mode remains available for testing',
+        'Shared launcher treatment with the login screen',
+        'Fast account creation for playtesting and seeded factions',
+        'Direct handoff into the rebuilt lobby once registered',
       ]}
     >
       <div className="auth-header">
         <p className="auth-panel-kicker">Recruitment Terminal</p>
-        <h2 className="stellar-title">Create Account</h2>
-        <p className="auth-subtitle">Secure access to the frontier</p>
+        <h2 className="stellar-title">Create Command Profile</h2>
       </div>
 
       <form onSubmit={handleSignup} className="auth-form">
         <div className="form-group">
-          <label htmlFor="signup-username">Commander ID</label>
+          <label htmlFor="signup-username">Username</label>
           <input
             id="signup-username"
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="Choose your commander ID"
+            placeholder="Choose your commander username"
             className="form-input"
             disabled={isLoading}
             autoComplete="username"
@@ -105,25 +85,13 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
         </div>
 
         <div className="form-group">
-          <label htmlFor="signup-password">
-            Access Code 
-            {password && (
-              <span style={{
-                marginLeft: '8px',
-                fontSize: '11px',
-                color: passwordStrength === 'good' ? 'var(--stellar-accent)' :
-                       passwordStrength === 'fair' ? '#f0ad4e' : 'var(--stellar-danger)'
-              }}>
-                ({passwordStrength})
-              </span>
-            )}
-          </label>
+          <label htmlFor="signup-password">Password</label>
           <input
             id="signup-password"
             type="password"
             value={password}
-            onChange={handlePasswordChange}
-            placeholder="Create a secure access code"
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Create a secure password"
             className="form-input"
             disabled={isLoading}
             autoComplete="new-password"
@@ -132,43 +100,40 @@ export default function SignupPage({ onSignupSubmit, onBackToLogin }: SignupPage
         </div>
 
         <div className="form-group">
-          <label htmlFor="signup-confirm-password">Confirm Access Code</label>
+          <label htmlFor="signup-confirm-password">Confirm Password</label>
           <input
             id="signup-confirm-password"
             type="password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            placeholder="Confirm your access code"
+            placeholder="Confirm your password"
             className="form-input"
             disabled={isLoading}
             autoComplete="new-password"
           />
         </div>
 
-        {error && <div className="form-error">⚠ {error}</div>}
+        {error && <div className="form-error">{error}</div>}
 
         <button
           type="submit"
           className="btn btn-primary"
-          disabled={isLoading || !isFormValid}
+          disabled={isLoading}
         >
-          {isLoading ? 'Registering Command...' : 'Create Account'}
+          {isLoading ? 'Creating command profile...' : 'Create Account'}
         </button>
       </form>
 
-      <div className="divider">
-        <span>already have access?</span>
-      </div>
-
       <div className="auth-footer">
         <p>
+          Already enlisted?{' '}
           <button
             type="button"
             className="link-button"
             onClick={onBackToLogin}
             disabled={isLoading}
           >
-            Return to Login Station
+            Return to Login
           </button>
         </p>
       </div>

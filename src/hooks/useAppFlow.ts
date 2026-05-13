@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
-import { getCurrentSession, login as loginRequest, logout as logoutRequest, signup as signupRequest } from '@/auth/client';
+import { useEffect, useState } from 'react';
+import { login as loginRequest, logout as logoutRequest, signup as signupRequest } from '@/auth/client';
 import type { AuthAccount } from '@/auth/types';
 import { preloadAuthAssets } from '@/utils/preloadAuthAssets';
+import lobbyBackdrop from '../../backgroudn lobby.png';
+import stellarLogo from '../../logosteller.png';
 
 export interface AuthState {
   isLoggedIn: boolean;
@@ -26,10 +28,9 @@ export interface UseAppFlowResult {
   showAuthStartupLoading: boolean;
   auth: AuthState;
   homeTransition: HomeTransitionState;
-  handleAuthBackgroundProgress: (progress: number, detail: string) => void;
-  handleAuthBackgroundReady: () => void;
   handleAuthStartupLoadingHidden: () => void;
   handleLoginSubmit: (username: string, password: string) => Promise<void>;
+  handleGuestMode: () => void;
   handleSignupClick: () => void;
   handleBackToLogin: () => void;
   handleSignupSubmit: (username: string, password: string) => Promise<void>;
@@ -40,12 +41,8 @@ export interface UseAppFlowResult {
 }
 
 const homeVisualAssets = [
-  '/textures/galaxy_bg.png',
-  '/textures/planets/Methane/Methane_03-1024x512.png',
-  '/textures/planets/Snowy/Snowy_02-1024x512.png',
-  '/textures/planets/Gaseous/Gaseous_08-1024x512.png',
-  '/textures/planets/Arid/Arid_04-1024x512.png',
-  '/textures/planets/Tundra/Tundra_04-1024x512.png',
+  lobbyBackdrop,
+  stellarLogo,
   '/textures/planets/Methane/Methane_04-1024x512.png',
   '/textures/planets/Martian/Martian_03-1024x512.png',
   '/textures/planets/Gaseous/Gaseous_12-1024x512.png',
@@ -66,22 +63,16 @@ function preloadHomeVisualAssets(): Promise<void> {
 }
 
 function getAuthLoadingDetail(detail: string): string {
-  if (detail.includes('starbase')) return 'Assembling orbital backdrop';
-  if (detail.includes('fighter')) return 'Warming hangar lighting';
-  if (detail.includes('planet')) return 'Decoding planetary textures';
-  if (detail.includes('star glow') || detail.includes('surface')) return 'Decoding stellar textures';
-  if (detail.includes('cameras') || detail.includes('lighting')) return 'Calibrating cameras and lighting';
-  if (detail.includes('background scene')) return 'Creating login backdrop';
-  if (detail.includes('ready')) return 'Login station is ready';
-  if (detail.includes('auth assets')) return 'Preparing login assets';
+  if (detail.includes('launcher artwork')) return 'Synchronizing relay holos';
+  if (detail.includes('command center')) return 'Charting command deck approach';
+  if (detail.includes('galaxy map')) return 'Warming star chart telemetry';
+  if (detail.includes('ready')) return 'Docking relay is standing by';
   return detail;
 }
 
 export function useAppFlow(): UseAppFlowResult {
   const [authLoadingProgress, setAuthLoadingProgress] = useState(0);
-  const [authAssetProgress, setAuthAssetProgress] = useState(0);
-  const [authSceneProgress, setAuthSceneProgress] = useState(0);
-  const [authLoadingDetail, setAuthLoadingDetail] = useState('Preparing login assets');
+  const [authLoadingDetail, setAuthLoadingDetail] = useState('Acquiring docking relay');
   const [authBackgroundReady, setAuthBackgroundReady] = useState(false);
   const [authSessionReady, setAuthSessionReady] = useState(false);
   const [showAuthStartupLoading, setShowAuthStartupLoading] = useState(true);
@@ -96,7 +87,7 @@ export function useAppFlow(): UseAppFlowResult {
     username: '',
     source: 'login',
     progress: 0,
-    detail: 'Confirming command credentials',
+    detail: 'Confirming command cipher',
   });
 
   useEffect(() => {
@@ -104,12 +95,13 @@ export function useAppFlow(): UseAppFlowResult {
 
     void preloadAuthAssets((state) => {
       if (cancelled) return;
-      setAuthAssetProgress(state.progress);
+      setAuthLoadingProgress(state.progress * 100);
       setAuthLoadingDetail(getAuthLoadingDetail(state.detail));
     }).then(() => {
       if (cancelled) return;
-      setAuthAssetProgress(1);
-      setAuthLoadingDetail('Login assets are ready');
+      setAuthLoadingProgress(100);
+      setAuthLoadingDetail('Docking relay is standing by');
+      setAuthBackgroundReady(true);
     });
 
     return () => {
@@ -120,8 +112,6 @@ export function useAppFlow(): UseAppFlowResult {
   useEffect(() => {
     let cancelled = false;
 
-    // Session check disabled for playtesting
-    // Re-enable when auth server is stable
     if (!cancelled) setAuthSessionReady(true);
 
     return () => {
@@ -130,23 +120,15 @@ export function useAppFlow(): UseAppFlowResult {
   }, []);
 
   useEffect(() => {
-    if (authBackgroundReady) {
-      setAuthLoadingProgress(100);
-      return;
-    }
-
-    const weightedProgress = (authAssetProgress * 0.35 + authSceneProgress * 0.65) * 100;
-    setAuthLoadingProgress(Math.min(98, weightedProgress));
-  }, [authAssetProgress, authBackgroundReady, authSceneProgress]);
-
-  useEffect(() => {
     if (!homeTransition.isActive) return;
     let cancelled = false;
 
     const transitionSteps = [
-      { delay: 120, progress: 24, detail: 'Confirming command credentials' },
-      { delay: 420, progress: 52, detail: 'Syncing commander profile' },
-      { delay: 760, progress: 82, detail: 'Loading home command visuals' },
+      { delay: 120, progress: 16, detail: 'Verifying command cipher' },
+      { delay: 360, progress: 34, detail: 'Routing through the Cygnus relay' },
+      { delay: 640, progress: 58, detail: 'Syncing fleet manifests' },
+      { delay: 980, progress: 78, detail: 'Charging command deck holowalls' },
+      { delay: 1320, progress: 92, detail: 'Matching tactical channels' },
     ];
 
     const timers = transitionSteps.map((step) => window.setTimeout(() => {
@@ -164,7 +146,7 @@ export function useAppFlow(): UseAppFlowResult {
 
         setHomeTransition((prev) => ({
           ...prev,
-          detail: 'Opening command center',
+          detail: 'Unsealing the command deck',
           progress: 100,
         }));
 
@@ -176,7 +158,7 @@ export function useAppFlow(): UseAppFlowResult {
           }));
         }, 500);
       });
-    }, 960));
+    }, 1520));
 
     return () => {
       cancelled = true;
@@ -187,7 +169,7 @@ export function useAppFlow(): UseAppFlowResult {
   const startHomeTransition = (
     username: string,
     source: HomeTransitionState['source'],
-    initialDetail = 'Confirming command credentials',
+    initialDetail = 'Confirming command cipher',
   ) => {
     setHomeTransition({
       isActive: true,
@@ -201,10 +183,29 @@ export function useAppFlow(): UseAppFlowResult {
 
   const handleLoginSubmit = async (username: string, password: string) => {
     const account = await loginRequest({ username, password });
-    startHomeTransition(account.username, 'login', 'Login accepted');
+    startHomeTransition(account.username, 'login', 'Command clearance accepted');
     setAuth({
       isLoggedIn: true,
       account,
+      mode: 'home',
+    });
+  };
+
+  const handleGuestMode = () => {
+    const now = Date.now();
+    const guestAccount: AuthAccount = {
+      id: now,
+      username: 'Guest Commander',
+      accountType: 'observer',
+      factionId: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    startHomeTransition(guestAccount.username, 'login', 'Observer passport initialized');
+    setAuth({
+      isLoggedIn: true,
+      account: guestAccount,
       mode: 'home',
     });
   };
@@ -225,27 +226,10 @@ export function useAppFlow(): UseAppFlowResult {
 
   const handleSignupSubmit = async (username: string, password: string) => {
     const account = await signupRequest({ username, password });
-    startHomeTransition(account.username, 'signup', 'Account created');
+    startHomeTransition(account.username, 'signup', 'Command registry approved');
     setAuth({
       isLoggedIn: true,
       account,
-      mode: 'home',
-    });
-  };
-
-  const handleGuestMode = () => {
-    const guestAccount: AuthAccount = {
-      id: 'guest-' + Date.now(),
-      username: 'Guest Commander',
-      accountType: 'observer',
-      factionId: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    startHomeTransition('Guest Commander', 'login', 'Guest session initialized');
-    setAuth({
-      isLoggedIn: true,
-      account: guestAccount,
       mode: 'home',
     });
   };
@@ -272,7 +256,7 @@ export function useAppFlow(): UseAppFlowResult {
       username: '',
       source: 'login',
       progress: 0,
-      detail: 'Confirming command credentials',
+      detail: 'Confirming command cipher',
     });
   };
 
@@ -286,21 +270,9 @@ export function useAppFlow(): UseAppFlowResult {
     }));
   };
 
-  const handleAuthBackgroundProgress = useCallback((progress: number, detail: string) => {
-    setAuthSceneProgress(progress);
-    setAuthLoadingDetail(getAuthLoadingDetail(detail));
-  }, []);
-
-  const handleAuthBackgroundReady = useCallback(() => {
-    setAuthBackgroundReady(true);
-    setAuthSceneProgress(1);
-    setAuthLoadingProgress(100);
-    setAuthLoadingDetail('Login station is ready');
-  }, []);
-
-  const handleAuthStartupLoadingHidden = useCallback(() => {
+  const handleAuthStartupLoadingHidden = () => {
     setShowAuthStartupLoading(false);
-  }, []);
+  };
 
   const handleHomeTransitionHidden = () => {
     if (typeof window !== 'undefined') {
@@ -320,8 +292,8 @@ export function useAppFlow(): UseAppFlowResult {
   };
 
   const homeTransitionTitle = homeTransition.source === 'signup'
-    ? 'Creating command profile'
-    : 'Opening command center';
+    ? 'Forging command registry'
+    : 'Opening command deck';
 
   return {
     authLoadingProgress,
@@ -331,8 +303,6 @@ export function useAppFlow(): UseAppFlowResult {
     showAuthStartupLoading,
     auth,
     homeTransition,
-    handleAuthBackgroundProgress,
-    handleAuthBackgroundReady,
     handleAuthStartupLoadingHidden,
     handleLoginSubmit,
     handleGuestMode,

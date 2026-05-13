@@ -1,3 +1,7 @@
+import loginBackdrop from '../../background login.png';
+import lobbyBackdrop from '../../backgroudn lobby.png';
+import stellarLogo from '../../logosteller.png';
+
 type AuthPreloadProgress = {
   progress: number;
   detail: string;
@@ -24,16 +28,6 @@ function loadImage(src: string): Promise<void> {
   });
 }
 
-async function fetchAsset(src: string): Promise<void> {
-  try {
-    const response = await fetch(src, { cache: 'force-cache' });
-    if (!response.ok) return;
-    await response.arrayBuffer();
-  } catch {
-    // Warm what we can and keep the app moving.
-  }
-}
-
 type PreloadStep = {
   detail: string;
   load: () => Promise<void>;
@@ -41,52 +35,33 @@ type PreloadStep = {
 
 const preloadSteps: PreloadStep[] = [
   {
-    detail: 'Decoding star glow and surface textures',
+    detail: 'Loading StellarFronts launcher artwork',
     load: () => Promise.all([
+      loadImage(loginBackdrop),
+      loadImage(stellarLogo),
+    ]).then(() => undefined),
+  },
+  {
+    detail: 'Loading command center background',
+    load: () => Promise.all([
+      loadImage(lobbyBackdrop),
+      loadImage('/textures/planets/Methane/Methane_04-1024x512.png'),
+      loadImage('/textures/planets/Martian/Martian_03-1024x512.png'),
+    ]).then(() => undefined),
+  },
+  {
+    detail: 'Warming galaxy map textures',
+    load: () => Promise.all([
+      loadImage('/textures/galaxy_bg.png'),
       loadImage('/textures/star.glow.png'),
-      loadImage('/textures/star_surface.png'),
-    ]).then(() => undefined),
-  },
-  {
-    detail: 'Loading planet textures: gas giant, rocky, and ice',
-    load: () => Promise.all([
       loadImage('/textures/gas_giant.png'),
-      loadImage('/textures/rocky_planet.png'),
-      loadImage('/textures/ice_planet.png'),
-      loadImage('/textures/planets/Arid/Arid_01-1024x512.png'),
-    ]).then(() => undefined),
-  },
-  {
-    detail: 'Fetching the starbase GLB',
-    load: () => fetchAsset('/starbase/star_trek_-_starbase_375.glb'),
-  },
-  {
-    detail: 'Fetching the fighter OBJ and material file',
-    load: () => Promise.all([
-      fetchAsset('/ships/fighter_01/Fighter_01.obj'),
-      fetchAsset('/ships/fighter_01/Fighter_01.mtl'),
-    ]).then(() => undefined),
-  },
-  {
-    detail: 'Warming fighter textures',
-    load: () => Promise.all([
-      loadImage('/ships/fighter_01/textures/Fighter_01_Body_BaseColor.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Body_Normal.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Front_BaseColor.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Front_Emissive.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Front_Normal.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Rear_BaseColor.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Rear_Emissive.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Rear_Normal.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Windows_BaseColor.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Windows_Normal.png'),
     ]).then(() => undefined),
   },
 ];
 
 async function runPreload(): Promise<void> {
   const total = preloadSteps.length;
-  emitProgress({ progress: 0, detail: 'Preparing auth assets' });
+  emitProgress({ progress: 0, detail: 'Preparing login station' });
 
   for (let index = 0; index < preloadSteps.length; index += 1) {
     const step = preloadSteps[index];
@@ -103,7 +78,7 @@ async function runPreload(): Promise<void> {
 
   emitProgress({
     progress: 1,
-    detail: 'Auth background assets are ready',
+    detail: 'Command launcher is ready',
   });
 }
 

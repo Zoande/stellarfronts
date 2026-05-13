@@ -1,5 +1,4 @@
-
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { AuthShell } from '../components/AuthShell';
 import '../styles/Auth.css';
 
@@ -14,23 +13,14 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-
-  const isFormValid = useMemo(() => {
-    return username.trim().length > 0 && password.trim().length > 0;
-  }, [username, password]);
-
+  const [showPassword, setShowPassword] = useState(false);
   const [showGuestHint, setShowGuestHint] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!username.trim() || !password.trim()) {
-      setError('Enter your Commander ID and Access Code.');
-      return;
-    }
-
-    if (password.length < 1) {
-      setError('Invalid Access Code.');
+      setError('Enter your email or username and your password.');
       return;
     }
 
@@ -53,31 +43,30 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
 
   return (
     <AuthShell
-      eyebrow="WELCOME BACK, COMMANDER"
+      eyebrow="Kepler Veil Relay"
       title="StellarFronts"
-      subtitle="A full-screen frontier command deck for expeditions, fleets, and faction play."
-      copy="Step back into the galaxy with the same cinematic scale as the reference screens, with artwork scaled to cover instead of stretching and a cockpit-style login panel on the right."
+      subtitle="Dock with relay seven and rejoin the frontier lanes before the next jump window closes."
+      copy="Rift beacons are flaring beyond Cygnus Prime, escorts are stacking in the dark, and command is clearing every verified pilot back to the deck."
       highlights={[
-        'High-resolution background art and textures',
-        'Glass-panel login with clear action spacing',
-        'Observer play and seeded factions supported',
+        'Convoy traffic is moving through the breach',
+        'Observer clearance is available for temporary entry',
+        'Faction channels unlock after identity sync',
       ]}
     >
       <div className="auth-header">
-        <p className="auth-panel-kicker">Command Terminal</p>
-        <h2 className="stellar-title">Access the Frontier</h2>
-        <p className="auth-subtitle">Secure link to your command profile</p>
+        <p className="auth-panel-kicker">Bridge Access</p>
+        <h2 className="stellar-title">Return to Command</h2>
       </div>
 
       <form onSubmit={handleLogin} className="auth-form">
         <div className="form-group">
-          <label htmlFor="username">Commander ID</label>
+          <label htmlFor="username">Email or Username</label>
           <input
             id="username"
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            placeholder="Enter your username"
+            placeholder="Enter your email or username"
             className="form-input"
             disabled={isLoading}
             autoComplete="username"
@@ -87,66 +76,80 @@ export default function LoginPage({ onLoginSubmit, onSignupClick, onGuestMode }:
         </div>
 
         <div className="form-group">
-          <label htmlFor="password">Access Code</label>
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Enter your access code"
-            className="form-input"
-            disabled={isLoading}
-            autoComplete="current-password"
-          />
+          <div className="form-label-row">
+            <label htmlFor="password">Password</label>
+            <button
+              type="button"
+              className="auth-inline-link"
+              onClick={() => setError('Password recovery is not connected yet.')}
+              disabled={isLoading}
+            >
+              Forgot Password?
+            </button>
+          </div>
+          <div className="form-input-wrap">
+            <input
+              id="password"
+              type={showPassword ? 'text' : 'password'}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter your password"
+              className="form-input"
+              disabled={isLoading}
+              autoComplete="current-password"
+            />
+            <button
+              type="button"
+              className="form-aux-button"
+              onClick={() => setShowPassword((prev) => !prev)}
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+            >
+              {showPassword ? 'Hide' : 'Show'}
+            </button>
+          </div>
         </div>
 
-        {error && <div className="form-error">⚠ {error}</div>}
+        {error && <div className="form-error">{error}</div>}
 
-        <div className="auth-actions">
-          <button type="submit" className="btn btn-primary" disabled={isLoading || !isFormValid}>
-            {isLoading ? 'Initializing Command Link...' : 'Access Station'}
-          </button>
+        <button type="submit" className="btn btn-primary" disabled={isLoading}>
+          {isLoading ? 'Linking command uplink...' : 'Enter Command Deck'}
+        </button>
 
+        <div className="auth-divider">
+          <span>or</span>
+        </div>
+
+        {onGuestMode && (
           <button
             type="button"
             className="btn btn-secondary"
+            onClick={handleGuest}
+            disabled={isLoading}
+          >
+            Continue as Observer
+          </button>
+        )}
+
+        {showGuestHint && (
+          <div className="auth-hint">
+            Observer passports grant temporary deck access, but fleet orders and long-term progress are not retained.
+          </div>
+        )}
+      </form>
+
+      <div className="auth-footer">
+        <p>
+          Need a command registry?{' '}
+          <button
+            type="button"
+            className="link-button"
             onClick={onSignupClick}
             disabled={isLoading}
           >
-            New Commander? Enlist
+            Create Command ID
           </button>
-
-          {onGuestMode && (
-            <button
-              type="button"
-              className="btn btn-secondary btn-ghost"
-              onClick={handleGuest}
-              disabled={isLoading}
-            >
-              Play as Guest
-            </button>
-          )}
-        </div>
-
-        {showGuestHint && <div className="auth-hint">You are entering as a guest. Progress will not be saved.</div>}
-      </form>
-
-      <div className="divider">
-        <span>or</span>
-      </div>
-
-      <div className="oauth-buttons" style={{ gridTemplateColumns: '1fr', width: '100%' }}>
-        <button
-          type="button"
-          className="btn btn-oauth btn-google"
-          aria-label="Sign in with Google"
-          disabled
-          style={{ width: '100%' }}
-        >
-          Sign in with Google
-        </button>
+        </p>
       </div>
     </AuthShell>
   );
 }
-
