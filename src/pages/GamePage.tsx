@@ -97,7 +97,13 @@ export default function GamePage({ username, onLogout }: GamePageProps) {
   }, []);
 
   return (
-    <div className="game-container" ref={containerRef}>
+    <div
+      className="game-container"
+      ref={containerRef}
+      style={{
+        backgroundImage: 'linear-gradient(180deg, rgba(1, 5, 12, 0.52), rgba(1, 5, 12, 0.74)), url(/ui/game-map-fallback.png)',
+      }}
+    >
       <canvas id="renderCanvas"></canvas>
       <div className="game-brand-rail">
         <img src={stellarLogo} alt="StellarFronts" className="game-brand-mark" />

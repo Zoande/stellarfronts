@@ -70,7 +70,7 @@ const modeCards = [
     secondaryAction: 'Inspect Alerts',
     brief: 'Observer access is active. You can launch straight into the galaxy map and inspect every active system before issuing orders.',
     sector: 'Kepler Veil',
-    fleetStatus: '3 wings on standby',
+    fleetStatus: '3 wings ready',
     threat: 'Elevated',
     icon: 'play',
     newsId: 'riftwatch',
@@ -239,55 +239,14 @@ const newsFeed = [
   },
 ];
 
-function ModeIcon({ icon }: { icon: ModeId }) {
-  return (
-    <svg viewBox="0 0 48 48" aria-hidden="true">
-      {icon === 'play' && (
-        <>
-          <circle cx="24" cy="24" r="12" />
-          <path d="M24 7v8M24 33v8M7 24h8M33 24h8" />
-          <path d="M16 24h16M24 16v16" />
-        </>
-      )}
-      {icon === 'campaign' && (
-        <>
-          <path d="M16 10v28" />
-          <path d="M18 12h14l-4 6 4 6H18z" />
-          <path d="M16 35h16" />
-        </>
-      )}
-      {icon === 'multiplayer' && (
-        <>
-          <path d="M14 16l20 16" />
-          <path d="M34 16L14 32" />
-          <path d="M12 14l4 2-2 4" />
-          <path d="M36 14l-4 2 2 4" />
-          <path d="M12 34l4-2-2-4" />
-          <path d="M36 34l-4-2 2-4" />
-        </>
-      )}
-      {icon === 'events' && (
-        <>
-          <path d="M24 8l4 10 10 4-10 4-4 10-4-10-10-4 10-4z" />
-          <circle cx="24" cy="24" r="3.5" />
-        </>
-      )}
-      {icon === 'faction' && (
-        <>
-          <path d="M24 9l11 4v9c0 7-4.4 12.2-11 16-6.6-3.8-11-9-11-16v-9z" />
-          <path d="M24 16v15M18 23h12" />
-        </>
-      )}
-      {icon === 'map' && (
-        <>
-          <path d="M12 15l10-4 8 3 6-2v21l-8 3-8-3-8 3z" />
-          <path d="M22 11v22M30 14v22" />
-          <circle cx="30" cy="22" r="2.5" />
-        </>
-      )}
-    </svg>
-  );
-}
+const modeIcons: Record<ModeId, string> = {
+  play: '/ui/menu-icons/play.png',
+  campaign: '/ui/menu-icons/campaign.png',
+  multiplayer: '/ui/menu-icons/multiplayer.png',
+  events: '/ui/menu-icons/events.png',
+  faction: '/ui/menu-icons/faction.png',
+  map: '/ui/menu-icons/map.png',
+};
 
 export default function HomePage({ account, onContinuePlaying }: HomePageProps) {
   const factions = useMemo(() => {
@@ -317,6 +276,10 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
   const activeMode = modeCards.find((card) => card.id === activeModeId) ?? modeCards[0];
   const selectedNews = newsFeed.find((item) => item.id === selectedNewsId) ?? newsFeed[0];
   const selectedNewsIndex = Math.max(0, newsFeed.findIndex((item) => item.id === selectedNews.id));
+  const newsPreviewItems = [
+    selectedNews,
+    newsFeed[(selectedNewsIndex + 1) % newsFeed.length],
+  ];
 
   const handleNavSelect = (navId: NavId) => {
     const linkedModeId = navToModeMap[navId];
@@ -382,6 +345,9 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
             <div className="home-resource-row">
               {resourceStats.map((stat) => (
                 <div key={stat.label} className="home-resource-pill">
+                  <span className="home-resource-pill__glyph" aria-hidden="true">
+                    {stat.label.slice(0, 2)}
+                  </span>
                   <span>{stat.label}</span>
                   <strong>{stat.value}</strong>
                 </div>
@@ -393,6 +359,7 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
               <div className="home-commander-pill__body">
                 <span className="home-commander-pill__label">Commander</span>
                 <strong>{commanderName}</strong>
+                <small>{commanderRole}</small>
               </div>
               <span className="home-commander-pill__level">27</span>
             </div>
@@ -401,11 +368,6 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
 
         <main className="home-layout">
           <aside className="home-left-rail home-frame">
-            <div className="home-rail-header">
-              <span>Launch Grid</span>
-              <strong>{activeNav.status}</strong>
-            </div>
-
             {modeCards.map((card) => (
               <button
                 key={card.id}
@@ -414,10 +376,9 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
                 onClick={() => handleModeSelect(card)}
               >
                 <span className="home-mode-card__icon" aria-hidden="true">
-                  <ModeIcon icon={card.icon} />
+                  <img src={modeIcons[card.icon]} alt="" />
                 </span>
                 <span className="home-mode-card__body">
-                  <em>{card.kicker}</em>
                   <strong>{card.title}</strong>
                   <small>{card.subtitle}</small>
                 </span>
@@ -431,84 +392,71 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
               <div className="home-hero-panel__shade" />
               <div className="home-hero-panel__scanline" />
 
-              <div className="home-hero-panel__content">
-                <div className="home-hero-panel__tags">
-                  <span className="home-hero-panel__tag">{activeNav.status}</span>
-                  <span className="home-hero-panel__tag">{activeMode.kicker}</span>
-                </div>
-                <div className="home-hero-panel__kicker">Featured Operation</div>
-                <h1>{activeMode.headline}</h1>
-                <p>{activeMode.description}</p>
+              <div className="home-hero-panel__hud">
+                <span>{activeNav.status}</span>
+                <strong>{activeMode.kicker}</strong>
+              </div>
 
-                <div className="home-hero-panel__actions">
-                  <button type="button" className="home-primary-btn" onClick={handlePrimaryAction}>
-                    {activeMode.primaryAction}
-                  </button>
-                  <button type="button" className="home-secondary-btn" onClick={handleSecondaryAction}>
-                    {activeMode.secondaryAction}
-                  </button>
+              <div className="home-featured-banner">
+                <div className="home-featured-banner__copy">
+                  <span className="home-featured-banner__eyebrow">Featured</span>
+                  <h1>{activeMode.headline}</h1>
+                  <p>{activeMode.description}</p>
+                  <div className="home-featured-banner__actions">
+                    <button type="button" className="home-primary-btn" onClick={handlePrimaryAction}>
+                      {activeMode.primaryAction}
+                    </button>
+                  </div>
+                  <div className="home-featured-banner__stats">
+                    <div>
+                      <span>Sector</span>
+                      <strong>{activeMode.sector}</strong>
+                    </div>
+                    <div>
+                      <span>Fleet</span>
+                      <strong>{activeMode.fleetStatus}</strong>
+                    </div>
+                    <div>
+                      <span>Threat</span>
+                      <strong>{activeMode.threat}</strong>
+                    </div>
+                  </div>
+                </div>
+                <div className="home-featured-banner__media">
+                  <img src={selectedNews.image} alt="" />
                 </div>
               </div>
 
-              <div className="home-feature-card">
-                <span className="home-feature-card__eyebrow">Commander Status</span>
-                <h2>{commanderName}</h2>
-                <p>{commanderRole}</p>
-                <div className="home-feature-card__stats">
-                  <div>
-                    <span>Sector</span>
-                    <strong>{activeMode.sector}</strong>
-                  </div>
-                  <div>
-                    <span>Fleet Status</span>
-                    <strong>{activeMode.fleetStatus}</strong>
-                  </div>
-                  <div>
-                    <span>Threat</span>
-                    <strong>{activeMode.threat}</strong>
-                  </div>
+              <div className="home-hero-panel__pager">
+                <button
+                  type="button"
+                  className="home-hero-panel__arrow"
+                  onClick={() => handleNewsStep('prev')}
+                  aria-label="Previous feature"
+                >
+                  {'<'}
+                </button>
+                <div className="home-hero-panel__dots" aria-label="Featured pages">
+                  {newsFeed.map((item, index) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`home-news-dot ${index === selectedNewsIndex ? 'is-active' : ''}`}
+                      onClick={() => setSelectedNewsId(item.id)}
+                      aria-label={`Open featured page ${index + 1}`}
+                    />
+                  ))}
                 </div>
+                <button
+                  type="button"
+                  className="home-hero-panel__arrow"
+                  onClick={() => handleNewsStep('next')}
+                  aria-label="Next feature"
+                >
+                  {'>'}
+                </button>
               </div>
             </article>
-
-            <div className="home-center-grid">
-              <section className="home-surface-card home-frame">
-                <div className="home-surface-card__header">
-                  <span>Command Brief</span>
-                  <strong>Last sync 18 min ago</strong>
-                </div>
-                <p>
-                  {primaryFaction
-                    ? `${primaryFaction.name} holds priority lanes across ${activeMode.sector}. ${activeMode.brief}`
-                    : activeMode.brief}
-                </p>
-              </section>
-
-              <section className="home-surface-card home-surface-card--signal home-frame">
-                <div className="home-surface-card__header">
-                  <span>{selectedNews.channel}</span>
-                  <button type="button" className="home-inline-action" onClick={handleSecondaryAction}>
-                    Cycle Bulletin
-                  </button>
-                </div>
-                <h3>{selectedNews.title}</h3>
-                <p>{selectedNews.detail}</p>
-                <div className="home-status-grid">
-                  <div>
-                    <span>Priority</span>
-                    <strong>{selectedNews.priority}</strong>
-                  </div>
-                  <div>
-                    <span>Signal Age</span>
-                    <strong>{selectedNews.age}</strong>
-                  </div>
-                  <div>
-                    <span>Account</span>
-                    <strong>{account.accountType === 'seeded-faction' ? 'Faction-bound' : 'Observer'}</strong>
-                  </div>
-                </div>
-              </section>
-            </div>
           </section>
 
           <aside className="home-right-rail">
@@ -532,57 +480,35 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
                   </article>
                 ))}
               </div>
+
+              <button type="button" className="home-inline-action home-inline-action--full" onClick={handleSecondaryAction}>
+                View All
+              </button>
             </section>
 
             <section className="home-side-card home-frame">
               <div className="home-side-card__header">
                 <span>News Feed</span>
-                <div className="home-news-pager-meta">
-                  <strong>{selectedNewsIndex + 1} / {newsFeed.length}</strong>
-                </div>
+                <button type="button" className="home-inline-action" onClick={handleSecondaryAction}>
+                  View All
+                </button>
               </div>
 
-              <article className="home-news-feature">
-                <img src={selectedNews.image} alt="" className="home-news-feature__image" />
-                <div className="home-news-feature__body">
-                  <div className="home-news-feature__channel">
-                    <span>{selectedNews.channel}</span>
-                    <strong>{selectedNews.priority}</strong>
-                  </div>
-                  <h3>{selectedNews.title}</h3>
-                  <p>{selectedNews.text}</p>
-                  <div className="home-news-feature__detail">{selectedNews.detail}</div>
-                  <div className="home-news-feature__footer">
-                    <span>{selectedNews.age}</span>
-                    <div className="home-news-pager">
-                      <button
-                        type="button"
-                        className="home-side-action"
-                        onClick={() => handleNewsStep('prev')}
-                      >
-                        Prev
-                      </button>
-                      <button
-                        type="button"
-                        className="home-side-action"
-                        onClick={() => handleNewsStep('next')}
-                      >
-                        Next
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </article>
-
-              <div className="home-news-dots" aria-label="News pages">
-                {newsFeed.map((item, index) => (
+              <div className="home-news-list">
+                {newsPreviewItems.map((item) => (
                   <button
                     key={item.id}
                     type="button"
-                    className={`home-news-dot ${index === selectedNewsIndex ? 'is-active' : ''}`}
+                    className={`home-news-item ${item.id === selectedNews.id ? 'is-active' : ''}`}
                     onClick={() => setSelectedNewsId(item.id)}
-                    aria-label={`Open news page ${index + 1}`}
-                  />
+                  >
+                    <img src={item.image} alt="" className="home-news-item__image" />
+                    <div className="home-news-item__body">
+                      <h3>{item.title}</h3>
+                      <p>{item.text}</p>
+                      <span>{item.age}</span>
+                    </div>
+                  </button>
                 ))}
               </div>
             </section>
@@ -591,7 +517,10 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
 
         <footer className="home-bottom-bar home-frame">
           <div className="home-bottom-bar__label">Global Chat</div>
-          <div className="home-bottom-bar__input">Press Enter to open fleet comms...</div>
+          <div className="home-bottom-bar__input">Press Enter to chat...</div>
+          <button type="button" className="home-bottom-bar__send" onClick={handleSecondaryAction} aria-label="Cycle bulletin">
+            {'>'}
+          </button>
         </footer>
       </div>
     </div>

@@ -5,6 +5,8 @@
   height: 100vh;
   overflow: hidden;
   background: #000;
+  background-size: cover;
+  background-position: center;
   position: relative;
   font-family: 'Orbitron', 'Rajdhani', 'Trebuchet MS', sans-serif;
 }
@@ -28,6 +30,9 @@
   outline: none;
   touch-action: none;
   filter: saturate(1.05) brightness(1.02);
+  position: relative;
+  z-index: 1;
+  background: transparent;
 }
 
 .game-brand-rail {

@@ -17,13 +17,23 @@ export class SceneManager {
   async initEngine(canvas: HTMLCanvasElement): Promise<AbstractEngine> {
     let engine: AbstractEngine;
     try {
-      const webgpu = new WebGPUEngine(canvas, { antialias: true });
-      await webgpu.initAsync();
-      engine = webgpu;
-      console.log("✓ WebGPU engine");
+      if (import.meta.env.VITE_ENABLE_WEBGPU === "true") {
+        const webgpu = new WebGPUEngine(canvas, { antialias: true });
+        await webgpu.initAsync();
+        engine = webgpu;
+        console.log("✓ WebGPU engine");
+      } else {
+        throw new Error("WebGPU disabled for stable galaxy rendering");
+      }
     } catch {
-      engine = new Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true });
-      console.log("✓ WebGL2 engine (fallback)");
+      engine = new Engine(canvas, true, {
+        preserveDrawingBuffer: true,
+        stencil: true,
+        alpha: true,
+        premultipliedAlpha: false,
+        antialias: true,
+      });
+      console.log("✓ WebGL2 engine");
     }
     this.engine = engine;
 

@@ -925,7 +925,7 @@ export class GalaxyScene implements IGameScene {
     this.onEnterSystem = onEnterSystem;
     this.options = options ?? {};
     this.scene = new Scene(engine);
-    this.scene.clearColor = new Color4(0, 0, 0, 1);
+    this.scene.clearColor = new Color4(0, 0, 0, 0);
   }
 
   async setup(): Promise<void> {
