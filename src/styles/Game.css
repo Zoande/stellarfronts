@@ -48,6 +48,7 @@
   background: rgba(4, 12, 22, 0.72);
   backdrop-filter: blur(12px);
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24);
+  max-width: min(420px, calc(100vw - 220px));
 }
 
 .game-brand-mark {
@@ -91,6 +92,7 @@
   z-index: 40;
   pointer-events: none;
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24);
+  max-width: min(240px, calc(100vw - 32px));
 }
 
 .game-username strong {
@@ -98,6 +100,9 @@
   font-size: 14px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @keyframes fadeInDown {
@@ -405,6 +410,10 @@
   .game-brand-mark {
     width: 146px;
   }
+
+  .game-brand-rail {
+    max-width: calc(100vw - 170px);
+  }
 }
 
 @media (max-width: 640px) {
@@ -422,11 +431,38 @@
     top: 10px;
     right: 10px;
     padding: 8px 10px;
+    max-width: min(160px, calc(100vw - 20px));
   }
 
   .game-logout-rail {
     top: 64px;
     right: 10px;
+  }
+}
+
+@media (max-width: 520px) {
+  .game-brand-rail {
+    max-width: calc(100vw - 20px);
+    padding-right: 12px;
+  }
+
+  .game-brand-mark {
+    width: 118px;
+  }
+
+  .game-username {
+    top: 58px;
+    max-width: calc(100vw - 20px);
+  }
+
+  .game-logout-rail {
+    top: 106px;
+  }
+
+  .game-logout-btn {
+    min-height: 34px;
+    padding: 0 12px;
+    font-size: 10px;
   }
 }
 
