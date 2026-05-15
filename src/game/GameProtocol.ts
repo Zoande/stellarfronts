@@ -34,6 +34,7 @@ export type ShipTransitPhase =
 export interface GameClock {
   year: number;
   speedMultiplier: number;
+  syncedAtMs: number;
 }
 
 export type ServerUpdateField =

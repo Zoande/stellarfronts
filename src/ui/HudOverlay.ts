@@ -1,6 +1,11 @@
 import type { GameClock } from "../game/GameProtocol";
 import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
 import type { FactionEconomyState } from "../data/Economy";
+import {
+  GAME_HOURS_PER_MONTH,
+  gameYearToDateTime,
+  estimateClockYear,
+} from "../game/GameTime";
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
 
@@ -40,8 +45,6 @@ export interface HudCallbacks {
 }
 
 const STYLE_ID = "space-rts-hud-style";
-const GAME_DAYS_PER_YEAR = 360;
-
 const RESOURCE_ICON_LABELS: Record<string, string> = {
   food: "FD",
   minerals: "MN",
@@ -399,7 +402,7 @@ const HUD_STYLE = `
 .spaceHudClockGrid {
   display: grid;
   grid-template-columns: 82px minmax(0, 1fr);
-  grid-template-rows: auto auto 5px;
+  grid-template-rows: auto auto;
   align-items: end;
   gap: 0 10px;
 }
@@ -534,6 +537,18 @@ const HUD_STYLE = `
   text-align: right;
 }
 
+.spaceHudClockTime {
+  display: block;
+  grid-column: 2;
+  grid-row: 2;
+  margin-top: 13px;
+  color: rgba(246, 170, 77, 0.95);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-align: right;
+}
+
 .spaceHudClockSpeed {
   display: grid;
   grid-column: 1;
@@ -550,34 +565,6 @@ const HUD_STYLE = `
   letter-spacing: 0.12em;
   text-transform: uppercase;
   text-align: center;
-}
-
-.spaceHudClockProgress {
-  grid-column: 1 / span 2;
-  grid-row: 3;
-  height: 6px;
-  margin-top: 7px;
-  border: 1px solid rgba(94, 173, 142, 0.36);
-  background: rgba(1, 10, 10, 0.7);
-  overflow: hidden;
-}
-
-.spaceHudClockProgressFill {
-  display: block;
-  height: 100%;
-  width: 100%;
-  transform-origin: left center;
-  background:
-    linear-gradient(90deg, rgba(235, 142, 61, 0.9), rgba(247, 209, 92, 0.98)),
-    radial-gradient(circle at 100% 50%, rgba(255, 255, 255, 0.9), transparent 1.2rem);
-  box-shadow: 0 0 10px rgba(246, 170, 77, 0.36);
-  animation: spaceHudDayProgress var(--clock-day-duration, 30s) linear infinite;
-  animation-delay: var(--clock-day-delay, 0s);
-}
-
-@keyframes spaceHudDayProgress {
-  from { transform: scaleX(0); }
-  to { transform: scaleX(1); }
 }
 
 .spaceHudToggleBtn {
@@ -731,23 +718,7 @@ function formatCompactNumber(value: number): string {
 
 function formatDelta(value: number): string {
   const sign = value >= 0 ? "+" : "";
-  return `${sign}${formatCompactNumber(value)}/mo`;
-}
-
-function formatGameDate(yearValue: number): { year: number; month: number; day: number } {
-  const year = Math.floor(yearValue);
-  const dayOfYear = Math.max(0, Math.min(GAME_DAYS_PER_YEAR - 1, Math.floor((yearValue - year) * GAME_DAYS_PER_YEAR)));
-  return {
-    year,
-    month: Math.floor(dayOfYear / 30) + 1,
-    day: (dayOfYear % 30) + 1,
-  };
-}
-
-function getDayProgress(yearValue: number): number {
-  const year = Math.floor(yearValue);
-  const exactDayOfYear = Math.max(0, Math.min(GAME_DAYS_PER_YEAR, (yearValue - year) * GAME_DAYS_PER_YEAR));
-  return exactDayOfYear - Math.floor(exactDayOfYear);
+  return `${sign}${formatCompactNumber(value)}/hr`;
 }
 
 export class HudOverlay {
@@ -761,6 +732,8 @@ export class HudOverlay {
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
   private readonly toggleButtons: Record<HudToggleKey, HTMLButtonElement>;
+  private currentClock: GameClock | null = null;
+  private clockFrame: number | null = null;
 
   constructor(callbacks: HudCallbacks) {
     this.callbacks = callbacks;
@@ -857,27 +830,27 @@ export class HudOverlay {
   update(state: HudState): void {
     this.titleEl.textContent = state.title;
     if (state.clock) {
-      const date = formatGameDate(state.clock.year);
-      const daysPerThirtySeconds = state.clock.speedMultiplier;
-      const dayProgress = getDayProgress(state.clock.year);
-      const dayDuration = 30 / Math.max(0.01, daysPerThirtySeconds);
-      const delay = -dayProgress * dayDuration;
+      this.currentClock = state.clock;
       this.clockEl.innerHTML = `
-        <div class="spaceHudClockGrid" style="--clock-day-duration: ${dayDuration}s; --clock-day-delay: ${delay}s;">
-          <span class="spaceHudClockSpeed">${daysPerThirtySeconds} ${daysPerThirtySeconds === 1 ? "day" : "days"}<br>/ 30 sec</span>
+        <div class="spaceHudClockGrid">
+          <span class="spaceHudClockSpeed">${state.clock.speedMultiplier}x<br>1s = ${state.clock.speedMultiplier}h</span>
           <span class="spaceHudClockLabel">Galactic Standard</span>
-          <span class="spaceHudClockValue">${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")}</span>
-          <span class="spaceHudClockProgress" aria-hidden="true"><span class="spaceHudClockProgressFill"></span></span>
+          <span class="spaceHudClockValue" data-clock-date></span>
+          <span class="spaceHudClockTime" data-clock-time></span>
         </div>
       `;
+      this.renderClock();
+      this.ensureClockAnimation();
     } else {
+      this.currentClock = null;
+      this.stopClockAnimation();
       this.clockEl.innerHTML = "";
     }
     if (state.economy) {
       const flag = `<div class="spaceHudFactionFlag">${this.factionFlagSvg}</div>`;
       const resources = RESOURCE_KINDS.map((resource) => {
         const stockpile = state.economy?.stockpiles[resource] ?? 0;
-        const delta = state.economy?.monthlyDelta[resource] ?? 0;
+        const delta = (state.economy?.monthlyDelta[resource] ?? 0) / GAME_HOURS_PER_MONTH;
         return `
           <div class="spaceHudResourceItem">
             <span class="spaceHudResourceIcon ${resource}">${RESOURCE_ICON_LABELS[resource]}</span>
@@ -927,6 +900,40 @@ export class HudOverlay {
   }
 
   dispose(): void {
+    this.stopClockAnimation();
     this.root.remove();
+  }
+
+  private ensureClockAnimation(): void {
+    if (this.clockFrame !== null) return;
+    const tick = (): void => {
+      this.renderClock();
+      this.clockFrame = window.requestAnimationFrame(tick);
+    };
+    this.clockFrame = window.requestAnimationFrame(tick);
+  }
+
+  private stopClockAnimation(): void {
+    if (this.clockFrame === null) return;
+    window.cancelAnimationFrame(this.clockFrame);
+    this.clockFrame = null;
+  }
+
+  private renderClock(): void {
+    if (!this.currentClock) return;
+    const estimatedYear = estimateClockYear(
+      this.currentClock.year,
+      this.currentClock.syncedAtMs,
+      this.currentClock.speedMultiplier,
+    );
+    const date = gameYearToDateTime(estimatedYear);
+    const dateEl = this.clockEl.querySelector<HTMLElement>("[data-clock-date]");
+    const timeEl = this.clockEl.querySelector<HTMLElement>("[data-clock-time]");
+    if (dateEl) {
+      dateEl.textContent = `${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")}`;
+    }
+    if (timeEl) {
+      timeEl.textContent = `${String(date.hour).padStart(2, "0")}:${String(date.minute).padStart(2, "0")}:${String(date.second).padStart(2, "0")}`;
+    }
   }
 }

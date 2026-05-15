@@ -7,6 +7,7 @@ import {
 import type { StarbaseShipKind } from "../data/Starbase";
 import type { StarData } from "../data/StarMap";
 import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { computeFleetPower } from "../game/combatPower";
 
 export interface FleetManagerPanelData {
@@ -539,8 +540,8 @@ export class FleetManagerPanel {
       const destination = fleet.movementPlan.destinationPlanetId
         ? this.findPlanetName(data, fleet.movementPlan.destinationPlanetId)
         : this.getStarName(data, fleet.movementPlan.destinationStarId);
-      const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - data.clockYear) * 360);
-      const remainingMinutes = remainingDays * 10_000 / 60_000;
+      const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - data.clockYear) * GAME_DAYS_PER_YEAR);
+      const remainingMinutes = remainingDays * REAL_MS_PER_GAME_DAY / 60_000;
       return `${destination} | ${remainingDays.toFixed(1)}d | ${remainingMinutes.toFixed(1)}m`;
     }
     if (fleet.orderType === "build") return "Build Starbase";

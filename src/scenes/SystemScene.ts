@@ -55,6 +55,7 @@ import type { FactionInfo } from "../data/Factions";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
 import type { BattleZone, ClientCommand, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { SelectionPanel } from "../ui/SelectionPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
@@ -1662,8 +1663,8 @@ export class SystemScene implements IGameScene {
     const destination = fleet.movementPlan.destinationPlanetId
       ? this.getPlanetName(fleet.movementPlan.destinationPlanetId)
       : `Star ${fleet.movementPlan.destinationStarId}`;
-    const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - this.clockYear) * 360);
-    const remainingMinutes = remainingDays * 10_000 / 60_000;
+    const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - this.clockYear) * GAME_DAYS_PER_YEAR);
+    const remainingMinutes = remainingDays * REAL_MS_PER_GAME_DAY / 60_000;
     return `Destination: ${destination}. Time remaining: ${remainingDays.toFixed(1)} days (${remainingMinutes.toFixed(1)} minutes).`;
   }
 

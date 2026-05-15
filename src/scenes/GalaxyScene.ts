@@ -37,6 +37,7 @@ import { StarbasePanel } from "../ui/StarbasePanel";
 import { computeStarbasePower } from "../game/combatPower";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
 
@@ -1910,8 +1911,8 @@ export class GalaxyScene implements IGameScene {
     const destination = fleet.movementPlan.destinationPlanetId
       ? this.findPlanetName(fleet.movementPlan.destinationPlanetId)
       : this.stars[fleet.movementPlan.destinationStarId]?.name ?? `Star ${fleet.movementPlan.destinationStarId}`;
-    const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - this.getClockYearEstimate()) * 360);
-    const remainingMinutes = remainingDays * 10_000 / 60_000;
+    const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - this.getClockYearEstimate()) * GAME_DAYS_PER_YEAR);
+    const remainingMinutes = remainingDays * REAL_MS_PER_GAME_DAY / 60_000;
     return `Destination: ${destination}. Time remaining: ${remainingDays.toFixed(1)} days (${remainingMinutes.toFixed(1)} minutes).`;
   }
 

@@ -27,7 +27,7 @@ import {
 } from "../src/data/SystemCoordinates";
 import {
   addResourceCounts,
-  applyPopulationGrowth,
+  applyPopulationGrowthFraction,
   BUILDING_KINDS,
   BUILDING_MINERAL_COSTS,
   cloneResourceCounts,
@@ -37,7 +37,6 @@ import {
   createInitialFactionEconomyState,
   DISTRICT_MINERAL_COSTS,
   filterInvalidQueuedBuildingsForSubDistrictChange,
-  gameYearToMonthIndex,
   getQueuedDistrictCount,
   hasQueuedBuildingTarget,
   isBuildingCompatible,
@@ -96,24 +95,33 @@ import type {
   ServerUpdateField,
   ShipTransitPhase,
 } from "../src/game/GameProtocol";
+import {
+  GAME_DAYS_PER_QUARTER,
+  GAME_DAYS_PER_WEEK,
+  GAME_DAYS_PER_YEAR,
+  GAME_HOURS_PER_MONTH,
+  GAME_HOURS_PER_YEAR,
+  GAME_START_YEAR,
+  REAL_MS_PER_GAME_DAY,
+  REAL_MS_PER_GAME_HOUR,
+  elapsedHoursToGameYear,
+  gameYearToHourIndex,
+  gameYearToMonthIndex,
+  gameYearToWeekIndex,
+} from "../src/game/GameTime";
 import type { AuthAccount } from "../src/auth/types";
 import { authStore, getPerspectiveFromAccount, parseSessionTokenFromCookie } from "./auth-store";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = path.join(__dirname, "state", "game-state.json");
 const PORT = Number(process.env.GAME_SERVER_PORT ?? 8787);
-const GAME_START_YEAR = 2100;
-const GAME_DAYS_PER_YEAR = 360;
-const REAL_MS_PER_GAME_DAY = 10_000;
-const GAME_MONTHS_PER_YEAR = 12;
-const GAME_MONTH_DAYS = GAME_DAYS_PER_YEAR / GAME_MONTHS_PER_YEAR;
 const DISCOVERY_JUMPS = 2;
 const DEPART_DURATION_MS = 20_000;
 const JUMP_DURATION_MS = 10_000;
 const ARRIVE_DURATION_MS = 30_000;
 const BUILD_DURATION_MS = 180_000;
 const SAVE_INTERVAL_MS = 5_000;
-const SERVER_TICK_INTERVAL_MS = REAL_MS_PER_GAME_DAY;
+const SERVER_TICK_INTERVAL_MS = REAL_MS_PER_GAME_HOUR;
 const DEFAULT_SHIP_SPEED = STARBASE_SHIP_DEFINITIONS.corvette.speed;
 const BATTLE_ROUNDS_HISTORY = 4;
 const SHIELD_REGEN_DELAY_ROUNDS = 2;
@@ -136,7 +144,7 @@ interface GameBattle extends ServerBattle {
 }
 
 interface GameState {
-  schemaVersion: 8;
+  schemaVersion: 9;
   stars: StarData[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
@@ -150,7 +158,7 @@ interface GameState {
   battles: GameBattle[];
   discoveredByFaction: Record<string, number[]>;
   lastKnownOwnershipByFaction: Record<string, number[]>;
-  clock: GameClock & { lastUpdatedAt: number };
+  clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number };
 }
 
 interface ClientSession {
@@ -195,14 +203,6 @@ function systemEntryPosition(fleet: Pick<GameFleet, "currentStarId" | "route" | 
   const fromStarId = fleet.route[fleet.routeIndex - 1];
   const fromStar = Number.isInteger(fromStarId) ? state.stars[fromStarId] : undefined;
   return fromStar && toStar ? getSystemHyperlaneEntryPosition(fromStar, toStar) : getSystemFleetStagingPosition();
-}
-
-function currentEconomyMonth(nextState = state): number {
-  return gameYearToMonthIndex(nextState.clock.year);
-}
-
-function currentPopulationQuarter(nextState = state): number {
-  return Math.floor(currentEconomyMonth(nextState) / 4);
 }
 
 function getPlanetDistrictLimitsFromState(nextState: GameState, planetState: PlanetState) {
@@ -522,6 +522,7 @@ function normalizeFactionEconomies(
       stockpiles: existing?.stockpiles ? cloneResourceCounts(normalizeResourceCounts(existing.stockpiles)) : economy.stockpiles,
       monthlyDelta: existing?.monthlyDelta ? cloneResourceCounts(normalizeResourceCounts(existing.monthlyDelta)) : economy.monthlyDelta,
       lastProcessedMonth: existing?.lastProcessedMonth ?? month,
+      lastProcessedHour: existing?.lastProcessedHour ?? gameYearToHourIndex(nextState.clock.year),
     };
   });
 }
@@ -569,8 +570,9 @@ function createInitialState(): GameState {
 
   const now = Date.now();
   const startMonth = gameYearToMonthIndex(GAME_START_YEAR);
+  const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 8,
+    schemaVersion: 9,
     stars,
     planetStates,
     factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
@@ -587,7 +589,9 @@ function createInitialState(): GameState {
     clock: {
       year: GAME_START_YEAR,
       speedMultiplier: 1,
+      syncedAtMs: now,
       lastUpdatedAt: now,
+      lastProcessedPopulationWeek: startPopulationWeek,
     },
   };
   recalculatePlanetEconomies(created);
@@ -600,12 +604,14 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
     const parsed = JSON.parse(raw) as GameState;
-    parsed.schemaVersion = 8;
+    parsed.schemaVersion = 9;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.battles = Array.isArray(parsed.battles) ? parsed.battles : [];
     parsed.clock.lastUpdatedAt = parsed.clock.lastUpdatedAt ?? Date.now();
+    parsed.clock.syncedAtMs = parsed.clock.syncedAtMs ?? parsed.clock.lastUpdatedAt;
+    parsed.clock.lastProcessedPopulationWeek = parsed.clock.lastProcessedPopulationWeek ?? gameYearToWeekIndex(parsed.clock.year);
     const homeStarIds = new Set(parsed.factions.map((faction) => faction.homeStarId));
     let homeStarbaseChanged = false;
     parsed.starbases = (parsed.starbases ?? []).map((starbase) => {
@@ -941,6 +947,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     clock: {
       year: state.clock.year,
       speedMultiplier: state.clock.speedMultiplier,
+      syncedAtMs: state.clock.syncedAtMs,
     },
     hyperlanes,
     factions,
@@ -2684,16 +2691,32 @@ function fleetUpdateSignature(): string {
   })));
 }
 
-function processEconomyMonths(targetMonth: number): boolean {
+function scaleResourceCounts(counts: ResourceCounts, scale: number): ResourceCounts {
+  return {
+    food: counts.food * scale,
+    minerals: counts.minerals * scale,
+    energy: counts.energy * scale,
+    goods: counts.goods * scale,
+    alloys: counts.alloys * scale,
+    research: counts.research * scale,
+  };
+}
+
+function processEconomyHours(targetHour: number): boolean {
   recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
   let processed = false;
   for (const economy of state.factionEconomies) {
-    while (economy.lastProcessedMonth < targetMonth) {
-      economy.stockpiles = addResourceCounts(economy.stockpiles, economy.monthlyDelta);
-      economy.lastProcessedMonth += 1;
-      processed = true;
-    }
+    const processedHour = economy.lastProcessedHour ?? targetHour;
+    const elapsedHours = Math.max(0, targetHour - processedHour);
+    if (elapsedHours <= 0) continue;
+    economy.stockpiles = addResourceCounts(
+      economy.stockpiles,
+      scaleResourceCounts(economy.monthlyDelta, elapsedHours / GAME_HOURS_PER_MONTH),
+    );
+    economy.lastProcessedHour = targetHour;
+    economy.lastProcessedMonth = gameYearToMonthIndex(elapsedHoursToGameYear(targetHour));
+    processed = true;
   }
   if (processed) {
     hasDirtyState = true;
@@ -2788,23 +2811,26 @@ function processStarbaseShipQueues(elapsedDays: number): { starbasesChanged: boo
   return { starbasesChanged, fleetsChanged };
 }
 
-function processPopulationQuarters(previousQuarter: number, targetQuarter: number): boolean {
-  const quarters = Math.max(0, targetQuarter - previousQuarter);
-  if (quarters <= 0) return false;
+function processPopulationWeeks(targetWeek: number): boolean {
+  const previousWeek = state.clock.lastProcessedPopulationWeek ?? targetWeek;
+  const weeks = Math.max(0, targetWeek - previousWeek);
+  if (weeks <= 0) return false;
 
   let changed = false;
   state.planetStates = state.planetStates.map((planetState) => {
     if (!planetState.isHabited) return planetState;
-    const nextPlanetState = applyPopulationGrowth(
+    const nextPlanetState = applyPopulationGrowthFraction(
       planetState,
       getPlanetDistrictLimitsFromState(state, planetState),
-      quarters,
+      (GAME_DAYS_PER_WEEK * weeks) / GAME_DAYS_PER_QUARTER,
     );
     if (nextPlanetState.population !== planetState.population) changed = true;
     if (nextPlanetState.population !== planetState.population) queuePlanetDetailRefresh(planetState.id);
     return nextPlanetState;
   });
 
+  state.clock.lastProcessedPopulationWeek = targetWeek;
+  hasDirtyState = true;
   if (!changed) return false;
   applyPlanetStatesToStars(state.stars, state.planetStates);
   refreshFactionEconomyDeltas();
@@ -2816,14 +2842,14 @@ function advanceState(now: number): Set<ServerUpdateField> {
   const changed = new Set<ServerUpdateField>();
   const elapsedMs = Math.max(0, now - state.clock.lastUpdatedAt);
   if (elapsedMs <= 0) return changed;
-  const previousEconomyMonth = currentEconomyMonth();
-  const previousPopulationQuarter = currentPopulationQuarter();
   const previousFleetSignature = fleetUpdateSignature();
   const arrivingFleets: GameFleet[] = [];
   const scaledMs = elapsedMs * state.clock.speedMultiplier;
-  const elapsedGameDays = scaledMs / REAL_MS_PER_GAME_DAY;
-  state.clock.year += (scaledMs / REAL_MS_PER_GAME_DAY) / GAME_DAYS_PER_YEAR;
+  const elapsedGameHours = scaledMs / REAL_MS_PER_GAME_HOUR;
+  const elapsedGameDays = elapsedGameHours / 24;
+  state.clock.year += elapsedHoursToGameYear(elapsedGameHours);
   state.clock.lastUpdatedAt = now;
+  state.clock.syncedAtMs = now;
   changed.add("clock");
 
   const movingBefore = state.fleets.some((fleet) => fleet.phase !== "idle");
@@ -2876,15 +2902,13 @@ function advanceState(now: number): Set<ServerUpdateField> {
     }
   }
 
-  const nextEconomyMonth = currentEconomyMonth();
-  if (nextEconomyMonth > previousEconomyMonth) {
-    if (processEconomyMonths(nextEconomyMonth)) {
-      changed.add("factionEconomies");
-    }
+  const nextEconomyHour = gameYearToHourIndex(state.clock.year);
+  if (processEconomyHours(nextEconomyHour)) {
+    changed.add("factionEconomies");
   }
 
-  const nextPopulationQuarter = currentPopulationQuarter();
-  if (nextPopulationQuarter > previousPopulationQuarter && processPopulationQuarters(previousPopulationQuarter, nextPopulationQuarter)) {
+  const nextPopulationWeek = gameYearToWeekIndex(state.clock.year);
+  if (processPopulationWeeks(nextPopulationWeek)) {
     changed.add("factionEconomies");
     changed.add("habitedPlanetSystems");
   }
@@ -2974,6 +2998,7 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     const allowed = new Set([1, 2, 3, 4, 5, 50, 100, 200, 500]);
     if (!allowed.has(command.multiplier)) return reject(session.socket, "Unsupported speed multiplier.");
     state.clock.speedMultiplier = command.multiplier;
+    state.clock.syncedAtMs = Date.now();
     hasDirtyState = true;
     accept(session.socket, `Speed set to ${command.multiplier}x.`);
     broadcastUpdates(["clock"]);

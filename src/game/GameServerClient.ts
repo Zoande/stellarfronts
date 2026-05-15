@@ -15,6 +15,17 @@ type PendingRequest<T> = {
   reject: (error: Error) => void;
 };
 
+function withClientClockSync<T extends { clock?: GameSnapshot["clock"] }>(event: T): T {
+  if (!event.clock) return event;
+  return {
+    ...event,
+    clock: {
+      ...event.clock,
+      syncedAtMs: Date.now(),
+    },
+  };
+}
+
 function getWebSocketUrl(): string {
   // Support VITE_WS_URL env var for production (set at build time by Vite)
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_WS_URL) {
@@ -49,17 +60,18 @@ export class GameServerClient {
       socket.addEventListener("message", (event) => {
         const parsed = JSON.parse(String(event.data)) as ServerEvent;
         if (parsed.type === "snapshot") {
-          this.latestSnapshot = parsed;
-          for (const handler of this.snapshotHandlers) handler(parsed);
+          this.latestSnapshot = withClientClockSync(parsed);
+          for (const handler of this.snapshotHandlers) handler(this.latestSnapshot);
           if (!resolved) {
             resolved = true;
-            resolve(parsed);
+            resolve(this.latestSnapshot);
           }
           return;
         }
 
         if (parsed.type === "update") {
           if (!this.latestSnapshot) return;
+          const update = withClientClockSync(parsed);
           const visibleStarIds = Object.prototype.hasOwnProperty.call(parsed, "visibleStarIds")
             ? parsed.visibleStarIds!
             : this.latestSnapshot.visibleStarIds;
@@ -70,7 +82,7 @@ export class GameServerClient {
             ...this.latestSnapshot,
             type: "snapshot",
             perspective: parsed.perspective,
-            clock: parsed.clock ?? this.latestSnapshot.clock,
+            clock: update.clock ?? this.latestSnapshot.clock,
             stars: parsed.stars ?? this.latestSnapshot.stars,
             planetStates: parsed.planetStates ?? this.latestSnapshot.planetStates,
             factionEconomies: parsed.factionEconomies ?? this.latestSnapshot.factionEconomies,

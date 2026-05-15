@@ -971,6 +971,7 @@ export class CelestialObjectPanel {
     const amenityNeed = planetState.population / 1_000_000;
     const amenityDelta = economy.amenities - amenityNeed;
     const growth = economy.populationGrowth;
+    const weeklyGrowth = Math.round(growth.netPerQuarter * (7 / 120));
 
     return `
       <aside class="coPlanetOverview">
@@ -982,7 +983,7 @@ export class CelestialObjectPanel {
         </div>
         <div class="coOverviewGrid">
           <div><span>Unemployment</span><strong>${this.formatPeople(economy.unemployedPopulation)}</strong></div>
-          <div><span>Growth / 4 mo</span><strong>${this.formatSignedPeople(growth.netPerQuarter)}</strong></div>
+          <div><span>Growth / week</span><strong>${this.formatSignedPeople(weeklyGrowth)}</strong></div>
           <div><span>Districts</span><strong>${districtUsed}/${districtLimit}</strong></div>
           <div><span>Happiness</span><strong>${economy.happiness.toFixed(0)}%</strong></div>
           <div><span>Housing Balance</span><strong>${this.formatSignedPeople(housingDelta)}</strong></div>
@@ -1222,10 +1223,9 @@ export class CelestialObjectPanel {
       { className: "lower", label: "Lower Class" },
     ];
     const growth = planetState.economy.populationGrowth;
-    const growthLabel = growth.netPerQuarter >= 0
-      ? this.formatSignedPeople(growth.netPerQuarter)
-      : this.formatSignedPeople(growth.netPerQuarter);
-    const growthRate = `${(growth.ratePerQuarter * 100).toFixed(2)}% / 4 mo`;
+    const weeklyGrowth = Math.round(growth.netPerQuarter * (7 / 120));
+    const growthLabel = this.formatSignedPeople(weeklyGrowth);
+    const growthRate = `${(growth.ratePerQuarter * (7 / 120) * 100).toFixed(3)}% / week`;
 
     return `
       <section class="coBody coEconomyBody">

@@ -24,6 +24,7 @@ import type { HudConnectedSystem, HudSidebarItemKey, HudVisualToggles } from "@/
 import { FleetManagerPanel } from "@/ui/FleetManagerPanel";
 import { GameServerClient } from "./GameServerClient";
 import type { ClientCommand, GameSnapshot, ServerFleet, ServerUpdateField } from "./GameProtocol";
+import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY } from "./GameTime";
 import type { HyperlaneExitPoint } from "./GameplayTypes";
 
 export interface BootOptions {
@@ -125,13 +126,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
   };
 
-  const gameDaysPerYear = 360;
-  const realMsPerGameDay = 10_000;
   const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
 
   const getFleetPhaseProgress = (fleet: ServerFleet): number => {
     if (fleet.phase === "idle" || fleet.phaseDurationDays <= 0) return 0;
-    const elapsedDays = (snapshot.clock.year - fleet.phaseStartedAtYear) * gameDaysPerYear;
+    const elapsedDays = (snapshot.clock.year - fleet.phaseStartedAtYear) * GAME_DAYS_PER_YEAR;
     return clamp01(elapsedDays / fleet.phaseDurationDays);
   };
 
@@ -192,7 +191,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       const planetIndex = targetStar?.system.planets.findIndex((planet) => planet.id === fleet.orbitTargetPlanetId) ?? -1;
       const planet = planetIndex >= 0 ? targetStar.system.planets[planetIndex] : null;
       if (targetStar && planet) {
-        const nowMs = DEFAULT_ORBIT_EPOCH_MS + ((snapshot.clock.year - 2100) * gameDaysPerYear * realMsPerGameDay);
+        const nowMs = DEFAULT_ORBIT_EPOCH_MS + ((snapshot.clock.year - GAME_START_YEAR) * GAME_DAYS_PER_YEAR * REAL_MS_PER_GAME_DAY);
         const planetPosition = getPlanetSystemPosition(planet, planetIndex, nowMs, getSystemOrbitLayout(targetStar.type));
         const offset = fleet.orbitOffset ?? { x: 3.4, y: SYSTEM_FLEET_Y, z: 0 };
         return {
