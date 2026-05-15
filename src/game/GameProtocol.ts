@@ -27,7 +27,9 @@ export type ShipTransitPhase =
   | "departingSystem"
   | "jumpingHyperlane"
   | "arrivingSystem"
-  | "buildingStarbase";
+  | "buildingStarbase"
+  | "movingSystem"
+  | "orbitingPlanet";
 
 export interface GameClock {
   year: number;
@@ -72,6 +74,30 @@ export interface ShipHyperlanePosition {
   progress: number;
 }
 
+export type FleetOrderType = "move" | "build" | "orbit" | null;
+
+export type FleetMovementSegmentKind = "system" | "hyperlane" | "orbit";
+
+export interface FleetMovementSegment {
+  kind: FleetMovementSegmentKind;
+  fromStarId: number;
+  toStarId: number;
+  startYear: number;
+  endYear: number;
+  from: ShipSystemPosition;
+  to: ShipSystemPosition;
+  targetPlanetId?: string | null;
+}
+
+export interface FleetMovementPlan {
+  destinationStarId: number;
+  destinationPlanetId?: string | null;
+  startedAtYear: number;
+  endsAtYear: number;
+  totalDays: number;
+  segments: FleetMovementSegment[];
+}
+
 export interface ServerShip {
   id: string;
   ownerId: number;
@@ -101,10 +127,13 @@ export interface ServerFleet {
   route: number[];
   routeIndex: number;
   phaseProgress: number;
-  orderType: "move" | "build" | null;
+  orderType: FleetOrderType;
   speed: number;
   systemPosition: ShipSystemPosition;
   hyperlanePosition: ShipHyperlanePosition | null;
+  movementPlan: FleetMovementPlan | null;
+  orbitTargetPlanetId: string | null;
+  orbitOffset: ShipSystemPosition | null;
 }
 
 export type BattlePhase = "opening" | "engaged" | "retreating" | "resolved";
@@ -196,6 +225,12 @@ export interface BuildCommand {
   targetStarId: number;
 }
 
+export interface OrbitPlanetCommand {
+  type: "orbitPlanet";
+  fleetId: string;
+  planetId: string;
+}
+
 export interface MergeFleetsCommand {
   type: "mergeFleets";
   targetFleetId: string;
@@ -270,6 +305,7 @@ export type ClientCommand =
   | JoinCommand
   | MoveCommand
   | BuildCommand
+  | OrbitPlanetCommand
   | MergeFleetsCommand
   | SetSpeedCommand
   | BuildDistrictCommand

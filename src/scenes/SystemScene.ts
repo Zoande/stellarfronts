@@ -80,6 +80,7 @@ export interface SystemSceneOptions {
   planetStates?: PlanetState[];
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
+  clockYear?: number;
   onGameplayFrame?: (deltaTime: number) => void;
   onPlanetCommand?: (command: ClientCommand) => void;
   onFleetCommand?: (command: ClientCommand) => void;
@@ -142,6 +143,7 @@ export class SystemScene implements IGameScene {
   private playerFactionId: number;
   private planetStates: PlanetState[];
   private shipTransit: GalaxyShipTransit | null;
+  private clockYear: number;
   private hyperlaneExits: HyperlaneExitPoint[];
   private readonly onExitSystem: ExitSystemHandler;
   private readonly options: SystemSceneOptions;
@@ -268,6 +270,7 @@ export class SystemScene implements IGameScene {
     this.planetStates = options.planetStates ?? [];
     applyPlanetStatesToStars([this.star], this.planetStates);
     this.shipTransit = options.shipTransit ?? null;
+    this.clockYear = options.clockYear ?? 2100;
     this.hyperlaneExits = options.hyperlaneExits ?? [];
     this.onExitSystem = onExitSystem;
     this.options = options;
@@ -806,7 +809,7 @@ export class SystemScene implements IGameScene {
         class: shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
         status: battle ? "Engaged" : this.formatFleetStatus(fleet),
         detail: fleet.ownerId === this.playerFactionId
-          ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : "Fleet selected. Command controls remain in the galaxy map for now.")
+          ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : this.formatFleetNavigationDetail(fleet))
           : "Foreign fleet. Tactical details are limited.",
         ownerName: owner?.name ?? "Unknown",
         ownerColor: owner?.color,
@@ -1647,6 +1650,25 @@ export class SystemScene implements IGameScene {
 
     // Create star label
     this.starLabelMesh = this.createStarLabel();
+  }
+
+  private formatFleetNavigationDetail(fleet: ServerFleet): string {
+    if (!fleet.movementPlan) {
+      if (fleet.phase === "orbitingPlanet" && fleet.orbitTargetPlanetId) {
+        return `Orbiting ${this.getPlanetName(fleet.orbitTargetPlanetId)}.`;
+      }
+      return "Fleet selected. Command controls remain in the galaxy map for now.";
+    }
+    const destination = fleet.movementPlan.destinationPlanetId
+      ? this.getPlanetName(fleet.movementPlan.destinationPlanetId)
+      : `Star ${fleet.movementPlan.destinationStarId}`;
+    const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - this.clockYear) * 360);
+    const remainingMinutes = remainingDays * 10_000 / 60_000;
+    return `Destination: ${destination}. Time remaining: ${remainingDays.toFixed(1)} days (${remainingMinutes.toFixed(1)} minutes).`;
+  }
+
+  private getPlanetName(planetId: string): string {
+    return this.star.system.planets.find((planet) => planet.id === planetId)?.name ?? planetId;
   }
 
   private async createPlayerShipIfPresent(): Promise<void> {
@@ -2829,8 +2851,23 @@ export class SystemScene implements IGameScene {
       planetState,
       imageUrl: this.getPlanetTextureUrl(panelPlanet),
       accentColor: "rgba(102, 236, 199, 0.95)",
+      orbitFleetId: this.getOrbitCapableFleetId(),
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
     });
+  }
+
+  private getOrbitCapableFleetId(): string | null {
+    const selected = this.selectedFleetId
+      ? this.serverFleets.find((fleet) => fleet.id === this.selectedFleetId)
+      : null;
+    if (selected && selected.ownerId === this.playerFactionId && selected.currentStarId === this.star.id && (selected.phase === "idle" || selected.phase === "orbitingPlanet")) {
+      return selected.id;
+    }
+    return this.serverFleets.find((fleet) => (
+      fleet.ownerId === this.playerFactionId
+      && fleet.currentStarId === this.star.id
+      && (fleet.phase === "idle" || fleet.phase === "orbitingPlanet")
+    ))?.id ?? null;
   }
 
   private showStarObjectPanel(): void {
@@ -2960,6 +2997,10 @@ export class SystemScene implements IGameScene {
       this.selectionPanel?.clear();
     }
     this.refreshSystemEntityCards();
+  }
+
+  setClockYear(year: number): void {
+    this.clockYear = year;
   }
 
   setServerShips(ships: ServerShip[]): void {

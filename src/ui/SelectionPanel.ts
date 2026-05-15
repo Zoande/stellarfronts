@@ -360,6 +360,7 @@ export class SelectionPanel {
       attack: "Attack",
       merge: "Merge",
       retreat: "Retreat",
+      orbit: "Orbit",
     };
     const actions = (data.actions && data.actions.length > 0)
       ? data.actions

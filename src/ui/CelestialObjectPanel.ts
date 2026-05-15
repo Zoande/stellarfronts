@@ -48,6 +48,7 @@ export interface CelestialObjectPanelData {
   imageUrl?: string;
   accentColor?: string;
   onPlanetCommand?: (command: ClientCommand) => void;
+  orbitFleetId?: string | null;
 }
 
 const STYLE_ID = "celestial-object-panel-style";
@@ -488,6 +489,11 @@ export class CelestialObjectPanel {
       this.show(data);
     });
 
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-orbit-planet]")?.addEventListener("click", () => {
+      if (!data.orbitFleetId || data.kind !== "planet") return;
+      data.onPlanetCommand?.({ type: "orbitPlanet", fleetId: data.orbitFleetId, planetId: data.objectId });
+    });
+
     const closeFeatures = this.panelElement.querySelector<HTMLButtonElement>("[data-co-close-features]");
     closeFeatures?.addEventListener("click", () => {
       this.featureTrayOpen = false;
@@ -709,7 +715,8 @@ export class CelestialObjectPanel {
       <div class="coHeroRow">
         <div class="coHero" data-co-hero>
           ${isHabitedPlanet ? '<div class="coLeaderCard"><div class="coLeaderPortrait"></div><div><strong>Sector Official</strong><span>No governor assigned</span></div></div>' : ""}
-          ${isPlanet && !isHabitedPlanet ? '<button class="coHeroAction" type="button">Terraform</button>' : ""}
+          ${isPlanet && data.orbitFleetId ? '<button class="coHeroAction" type="button" data-co-orbit-planet>Orbit</button>' : ""}
+          ${isPlanet && !isHabitedPlanet && !data.orbitFleetId ? '<button class="coHeroAction" type="button">Terraform</button>' : ""}
         </div>
         <aside class="coSummary">
           <div class="coSectionTitle">${isPlanet ? "Planet Summary" : "Stellar Summary"}</div>

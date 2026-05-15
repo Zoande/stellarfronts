@@ -16,6 +16,7 @@ export interface FleetManagerPanelData {
   stars: StarData[];
   factions: FactionInfo[];
   playerFactionId: number | null;
+  clockYear: number;
   onFleetCommand?: (command: ClientCommand) => void;
 }
 
@@ -237,7 +238,7 @@ export class FleetManagerPanel {
         ${this.renderStat("Armor", `${Math.round(defense.armor)} / ${Math.round(defense.maxArmor)}`)}
         ${this.renderStat("Hull", `${Math.round(defense.hull)} / ${Math.round(defense.maxHull)}`)}
         ${this.renderStat("Speed", `${this.formatCompact(fleet.speed)} ly/day`)}
-        ${this.renderStat("Order", this.formatFleetOrder(fleet))}
+        ${this.renderStat("Order", this.formatFleetOrder(data, fleet))}
       </div>
       <div class="fmSectionTitle fmCompositionTitle">Fleet Composition</div>
       <div class="fmCompositionList">
@@ -533,10 +534,27 @@ export class FleetManagerPanel {
     }
   }
 
-  private formatFleetOrder(fleet: ServerFleet): string {
+  private formatFleetOrder(data: FleetManagerPanelData, fleet: ServerFleet): string {
+    if (fleet.movementPlan) {
+      const destination = fleet.movementPlan.destinationPlanetId
+        ? this.findPlanetName(data, fleet.movementPlan.destinationPlanetId)
+        : this.getStarName(data, fleet.movementPlan.destinationStarId);
+      const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - data.clockYear) * 360);
+      const remainingMinutes = remainingDays * 10_000 / 60_000;
+      return `${destination} | ${remainingDays.toFixed(1)}d | ${remainingMinutes.toFixed(1)}m`;
+    }
     if (fleet.orderType === "build") return "Build Starbase";
-    if (fleet.orderType === "move") return fleet.targetStarId === null ? "Move" : `Move to ${fleet.targetStarId}`;
+    if (fleet.orderType === "orbit" && fleet.orbitTargetPlanetId) return `Orbiting ${this.findPlanetName(data, fleet.orbitTargetPlanetId)}`;
+    if (fleet.orderType === "move") return fleet.targetStarId === null ? "Move" : `Move to ${this.getStarName(data, fleet.targetStarId)}`;
     return "None";
+  }
+
+  private findPlanetName(data: FleetManagerPanelData, planetId: string): string {
+    for (const star of data.stars) {
+      const planet = star.system.planets.find((candidate) => candidate.id === planetId);
+      if (planet) return planet.name;
+    }
+    return planetId;
   }
 
   private formatCompact(value: number): string {

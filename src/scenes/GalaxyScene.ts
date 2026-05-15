@@ -62,6 +62,7 @@ export interface GalaxySceneOptions {
   playerShipStarId?: number;
   playerShipSystemIds?: Iterable<number>;
   playerShipTransit?: GalaxyShipTransit | null;
+  clockYear?: number;
   serverFleets?: ServerFleet[];
   serverShips?: ServerShip[];
   battles?: ServerBattle[];
@@ -875,6 +876,7 @@ export class GalaxyScene implements IGameScene {
   private playerShipStarId = -1;
   private playerShipSystemIds = new Set<number>();
   private playerShipTransit: GalaxyShipTransit | null = null;
+  private clockYear = 2100;
   private serverFleets: ServerFleet[] = [];
   private serverShips: ServerShip[] = [];
   private battles: ServerBattle[] = [];
@@ -967,6 +969,7 @@ export class GalaxyScene implements IGameScene {
       this.playerShipSystemIds.add(this.playerShipStarId);
     }
     this.playerShipTransit = this.options.playerShipTransit ?? null;
+    this.clockYear = this.options.clockYear ?? 2100;
     this.serverFleets = this.options.serverFleets ?? [];
     this.serverShips = this.options.serverShips ?? [];
     this.battles = this.options.battles ?? [];
@@ -1817,7 +1820,7 @@ export class GalaxyScene implements IGameScene {
               ? serverFleet.phase
               : this.playerShipTransit && shipStarId === this.playerShipStarId ? "Moving" : "Operational",
           detail: canCommand
-            ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : "Select a command, then choose a highlighted system.")
+            ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : this.formatFleetNavigationDetail(serverFleet))
             : "Foreign fleet. Command controls unavailable.",
           ownerName: owner?.name ?? "Unknown",
           ownerColor: owner?.color,
@@ -1900,6 +1903,28 @@ export class GalaxyScene implements IGameScene {
 
   private getPlanetState(planetId: string): PlanetState | undefined {
     return this.planetStates.find((planetState) => planetState.id === planetId);
+  }
+
+  private formatFleetNavigationDetail(fleet: ServerFleet | null): string {
+    if (!fleet?.movementPlan) return "Select a command, then choose a highlighted system.";
+    const destination = fleet.movementPlan.destinationPlanetId
+      ? this.findPlanetName(fleet.movementPlan.destinationPlanetId)
+      : this.stars[fleet.movementPlan.destinationStarId]?.name ?? `Star ${fleet.movementPlan.destinationStarId}`;
+    const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - this.getClockYearEstimate()) * 360);
+    const remainingMinutes = remainingDays * 10_000 / 60_000;
+    return `Destination: ${destination}. Time remaining: ${remainingDays.toFixed(1)} days (${remainingMinutes.toFixed(1)} minutes).`;
+  }
+
+  private getClockYearEstimate(): number {
+    return this.clockYear;
+  }
+
+  private findPlanetName(planetId: string): string {
+    for (const star of this.stars) {
+      const planet = star.system.planets.find((candidate) => candidate.id === planetId);
+      if (planet) return planet.name;
+    }
+    return planetId;
   }
 
   private getPlanetTextureUrl(planet: PlanetConfig): string {
@@ -2024,6 +2049,10 @@ export class GalaxyScene implements IGameScene {
     }
     this.starField?.setPlayerShipSystemIds(this.playerShipSystemIds);
     this.starField?.setShipIconStyles(this.getShipIconStyles());
+  }
+
+  setClockYear(year: number): void {
+    this.clockYear = year;
   }
 
   setPlanetStates(planetStates: PlanetState[]): void {

@@ -1,6 +1,6 @@
 import type { SystemPosition } from "../data/SystemCoordinates";
 
-export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat";
+export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat" | "orbit";
 
 export interface GalaxyShipTransit {
   fromStarId: number;

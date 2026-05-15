@@ -19,6 +19,10 @@ import {
   getSystemFleetStagingPosition,
   getSystemHyperlaneEntryPosition,
   getSystemHyperlaneExitPosition,
+  getPlanetSystemPosition,
+  getSystemOrbitLayout,
+  DEFAULT_ORBIT_EPOCH_MS,
+  SYSTEM_FLEET_Y,
   interpolateSystemPosition,
 } from "../src/data/SystemCoordinates";
 import {
@@ -83,6 +87,9 @@ import type {
   ServerBattleShipState,
   ServerBattleStarbaseState,
   ServerFleet,
+  FleetMovementPlan,
+  FleetMovementSegment,
+  FleetOrderType,
   ServerEvent,
   ServerShip,
   ServerStarbase,
@@ -112,6 +119,8 @@ const BATTLE_ROUNDS_HISTORY = 4;
 const SHIELD_REGEN_DELAY_ROUNDS = 2;
 const SHIELD_REGEN_FRACTION = 0.25;
 const RETREAT_HULL_RATIO = 0.3;
+const SYSTEM_FLEET_SPEED_UNITS_PER_DAY = 5.2;
+const SYSTEM_PLANET_ORBIT_DISTANCE = 3.4;
 
 interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
@@ -340,6 +349,9 @@ function createFleet(
     speed: DEFAULT_SHIP_SPEED,
     systemPosition: systemCenterPosition(),
     hyperlanePosition: null,
+    movementPlan: null,
+    orbitTargetPlanetId: null,
+    orbitOffset: null,
   };
 }
 
@@ -385,6 +397,9 @@ function normalizeFleet(
   const phase = (fleet.phase ?? "idle") as ShipTransitPhase;
   const targetStarId = Number.isInteger(fleet.targetStarId) ? Number(fleet.targetStarId) : null;
   const formation = isFleetFormation(fleet.formation) ? fleet.formation : "line";
+  const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "orbit"
+    ? fleet.orderType
+    : null;
   return {
     id: fleet.id,
     ownerId: Number.isInteger(fleet.ownerId) ? fleet.ownerId : 0,
@@ -399,10 +414,13 @@ function normalizeFleet(
     routeIndex: Math.max(0, Number(fleet.routeIndex) || 0),
     phaseProgress: Math.max(0, Math.min(1, Number(fleet.phaseProgress) || 0)),
     phaseElapsedMs: fleet.phaseElapsedMs ?? Math.round((fleet.phaseProgress ?? 0) * phaseDuration(phase)),
-    orderType: fleet.orderType === "move" || fleet.orderType === "build" ? fleet.orderType : null,
+    orderType,
     speed: Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
     systemPosition: fleet.systemPosition ?? systemCenterPosition(),
     hyperlanePosition: fleet.hyperlanePosition ?? null,
+    movementPlan: fleet.movementPlan ?? null,
+    orbitTargetPlanetId: typeof fleet.orbitTargetPlanetId === "string" ? fleet.orbitTargetPlanetId : null,
+    orbitOffset: fleet.orbitOffset ?? null,
   };
 }
 
@@ -418,7 +436,7 @@ function createLegacyFleetFromShip(ship: Partial<ServerShip> & {
   routeIndex?: number;
   phaseProgress?: number;
   phaseElapsedMs?: number;
-  orderType?: "move" | "build" | null;
+  orderType?: FleetOrderType;
   systemPosition?: ReturnType<typeof systemCenterPosition>;
   hyperlanePosition?: ServerFleet["hyperlanePosition"];
 }): GameFleet {
@@ -667,6 +685,9 @@ function phaseDuration(phase: ShipTransitPhase, fleet?: Pick<ServerFleet, "speed
       return ARRIVE_DURATION_MS * travelScale;
     case "buildingStarbase":
       return BUILD_DURATION_MS;
+    case "movingSystem":
+    case "orbitingPlanet":
+      return 1;
     default:
       return 1;
   }
@@ -967,20 +988,184 @@ function routeIsAllowed(route: number[], ownerId: number): boolean {
   return true;
 }
 
+function gameDaysToYears(days: number): number {
+  return days / GAME_DAYS_PER_YEAR;
+}
+
+function distance3(a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }): number {
+  return Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+}
+
+function systemTravelDays(from: { x: number; y: number; z: number }, to: { x: number; y: number; z: number }, fleet: Pick<ServerFleet, "speed">): number {
+  const speedScale = Math.max(0.05, fleet.speed);
+  return Math.max(0.1, distance3(from, to) / (SYSTEM_FLEET_SPEED_UNITS_PER_DAY * speedScale));
+}
+
+function hyperlaneTravelDays(fromStarId: number, toStarId: number, fleet: Pick<ServerFleet, "speed">): number {
+  const from = state.stars[fromStarId];
+  const to = state.stars[toStarId];
+  if (!from || !to) return phaseDurationDays("jumpingHyperlane", fleet);
+  const distance = Math.hypot(to.x - from.x, to.z - from.z);
+  const speed = Math.max(0.05, fleet.speed);
+  return Math.max(0.1, distance / speed);
+}
+
+function addMovementSegment(
+  segments: FleetMovementSegment[],
+  kind: FleetMovementSegment["kind"],
+  fromStarId: number,
+  toStarId: number,
+  from: ReturnType<typeof systemCenterPosition>,
+  to: ReturnType<typeof systemCenterPosition>,
+  startYear: number,
+  days: number,
+  targetPlanetId: string | null = null,
+): number {
+  const endYear = startYear + gameDaysToYears(days);
+  segments.push({
+    kind,
+    fromStarId,
+    toStarId,
+    from,
+    to,
+    startYear,
+    endYear,
+    targetPlanetId,
+  });
+  return endYear;
+}
+
+function getPlanetConfigById(planetId: string): { star: StarData; planet: PlanetConfig; planetIndex: number } | null {
+  for (const star of state.stars) {
+    const planetIndex = star.system.planets.findIndex((planet) => planet.id === planetId);
+    if (planetIndex < 0) continue;
+    return { star, planet: star.system.planets[planetIndex], planetIndex };
+  }
+  return null;
+}
+
+function getPlanetSystemPositionAt(star: StarData, planet: PlanetConfig, planetIndex: number, year: number) {
+  const nowMs = DEFAULT_ORBIT_EPOCH_MS + ((year - GAME_START_YEAR) * GAME_DAYS_PER_YEAR * REAL_MS_PER_GAME_DAY);
+  return getPlanetSystemPosition(planet, planetIndex, nowMs, getSystemOrbitLayout(star.type));
+}
+
+function createFleetMovementPlan(
+  fleet: GameFleet,
+  route: number[],
+  orderType: Exclude<FleetOrderType, null>,
+  destinationPlanetId: string | null = null,
+): FleetMovementPlan {
+  const segments: FleetMovementSegment[] = [];
+  let cursorYear = state.clock.year;
+  let cursorPosition = fleet.systemPosition ?? systemCenterPosition();
+
+  for (let i = 0; i < route.length - 1; i++) {
+    const fromStarId = route[i];
+    const toStarId = route[i + 1];
+    const fromStar = state.stars[fromStarId];
+    const toStar = state.stars[toStarId];
+    if (!fromStar || !toStar) continue;
+
+    const exit = getSystemHyperlaneExitPosition(fromStar, toStar);
+    cursorYear = addMovementSegment(
+      segments,
+      "system",
+      fromStarId,
+      fromStarId,
+      cursorPosition,
+      exit,
+      cursorYear,
+      systemTravelDays(cursorPosition, exit, fleet),
+    );
+
+    const entry = getSystemHyperlaneEntryPosition(fromStar, toStar);
+    cursorYear = addMovementSegment(
+      segments,
+      "hyperlane",
+      fromStarId,
+      toStarId,
+      exit,
+      entry,
+      cursorYear,
+      hyperlaneTravelDays(fromStarId, toStarId, fleet),
+    );
+
+    cursorPosition = entry;
+    cursorYear = addMovementSegment(
+      segments,
+      "system",
+      toStarId,
+      toStarId,
+      cursorPosition,
+      systemCenterPosition(),
+      cursorYear,
+      systemTravelDays(cursorPosition, systemCenterPosition(), fleet),
+    );
+    cursorPosition = systemCenterPosition();
+  }
+
+  if (destinationPlanetId) {
+    const target = getPlanetConfigById(destinationPlanetId);
+    if (target) {
+      const planetPosition = getPlanetSystemPositionAt(target.star, target.planet, target.planetIndex, cursorYear);
+      const orbitPosition = {
+        x: planetPosition.x + SYSTEM_PLANET_ORBIT_DISTANCE,
+        y: SYSTEM_FLEET_Y,
+        z: planetPosition.z,
+      };
+      cursorYear = addMovementSegment(
+        segments,
+        "orbit",
+        target.star.id,
+        target.star.id,
+        cursorPosition,
+        orbitPosition,
+        cursorYear,
+        systemTravelDays(cursorPosition, orbitPosition, fleet),
+        destinationPlanetId,
+      );
+    }
+  }
+
+  return {
+    destinationStarId: route[route.length - 1] ?? fleet.currentStarId,
+    destinationPlanetId,
+    startedAtYear: state.clock.year,
+    endsAtYear: cursorYear,
+    totalDays: Math.max(0, (cursorYear - state.clock.year) * GAME_DAYS_PER_YEAR),
+    segments,
+  };
+}
+
 function findRoute(fleet: GameFleet, targetStarId: number): number[] | null {
   const discovered = new Set(state.discoveredByFaction[String(fleet.ownerId)] ?? []);
   if (!discovered.has(targetStarId)) return null;
-  const queue: number[] = [fleet.currentStarId];
-  const previous = new Map<number, number | null>([[fleet.currentStarId, null]]);
+  const startStarId = fleet.currentStarId;
+  const distances = new Map<number, number>([[startStarId, 0]]);
+  const previous = new Map<number, number | null>([[startStarId, null]]);
+  const unsettled = new Set<number>([startStarId]);
 
-  while (queue.length > 0) {
-    const current = queue.shift()!;
+  while (unsettled.size > 0) {
+    let current = -1;
+    let currentDistance = Number.POSITIVE_INFINITY;
+    for (const candidate of unsettled) {
+      const distance = distances.get(candidate) ?? Number.POSITIVE_INFINITY;
+      if (distance < currentDistance) {
+        current = candidate;
+        currentDistance = distance;
+      }
+    }
+    if (current < 0) break;
+    unsettled.delete(current);
     if (current === targetStarId) break;
+
     for (const neighbor of state.adjacency[current] ?? []) {
-      if (previous.has(neighbor)) continue;
       if (!discovered.has(neighbor)) continue;
+      const nextDistance = currentDistance + hyperlaneTravelDays(current, neighbor, fleet);
+      if (nextDistance >= (distances.get(neighbor) ?? Number.POSITIVE_INFINITY)) continue;
+      distances.set(neighbor, nextDistance);
       previous.set(neighbor, current);
-      queue.push(neighbor);
+      unsettled.add(neighbor);
     }
   }
 
@@ -1004,6 +1189,9 @@ function startOrder(fleet: GameFleet, targetStarId: number, orderType: "move" | 
     setFleetPhase(fleet, "buildingStarbase");
     fleet.systemPosition = systemCenterPosition();
     fleet.hyperlanePosition = null;
+    fleet.movementPlan = null;
+    fleet.orbitTargetPlanetId = null;
+    fleet.orbitOffset = null;
     return;
   }
 
@@ -1013,9 +1201,34 @@ function startOrder(fleet: GameFleet, targetStarId: number, orderType: "move" | 
   fleet.orderType = orderType;
   fleet.route = route;
   fleet.routeIndex = 0;
+  fleet.movementPlan = createFleetMovementPlan(fleet, route, orderType);
+  fleet.orbitTargetPlanetId = null;
+  fleet.orbitOffset = null;
   setFleetPhase(fleet, "departingSystem");
+  if (fleet.movementPlan.segments[0]) {
+    fleet.phaseDurationDays = Math.max(0.1, (fleet.movementPlan.segments[0].endYear - state.clock.year) * GAME_DAYS_PER_YEAR);
+  }
   fleet.systemPosition = systemCenterPosition();
   fleet.hyperlanePosition = null;
+}
+
+function startOrbitOrder(fleet: GameFleet, planetId: string): void {
+  const target = getPlanetConfigById(planetId);
+  if (!target) throw new Error("Planet not found.");
+  const route = target.star.id === fleet.currentStarId ? [fleet.currentStarId] : findRoute(fleet, target.star.id);
+  if (!route) throw new Error("No discovered safe route to planet.");
+
+  fleet.targetStarId = target.star.id;
+  fleet.orderType = "orbit";
+  fleet.route = route;
+  fleet.routeIndex = 0;
+  fleet.movementPlan = createFleetMovementPlan(fleet, route, "orbit", planetId);
+  fleet.orbitTargetPlanetId = null;
+  fleet.orbitOffset = null;
+  setFleetPhase(fleet, "movingSystem");
+  if (fleet.movementPlan.segments[0]) {
+    fleet.phaseDurationDays = Math.max(0.1, (fleet.movementPlan.segments[0].endYear - state.clock.year) * GAME_DAYS_PER_YEAR);
+  }
 }
 
 function validateCommandPerspective(perspective: GalaxyPerspective): number | null {
@@ -1071,6 +1284,25 @@ function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, fleetId:
     broadcastUpdates(["clock", "fleets", "visibility"]);
   } catch (error) {
     reject(socket, error instanceof Error ? error.message : "Build order rejected.");
+  }
+}
+
+function handleOrbitPlanet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const fleet = resolveFleetForCommand(fleetId, undefined);
+  if (!fleet) return reject(socket, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (isFleetInBattle(fleet.id)) return reject(socket, "Fleet is engaged in battle.");
+  if (fleet.phase !== "idle" && fleet.phase !== "orbitingPlanet") return reject(socket, "Fleet is already busy.");
+  try {
+    startOrbitOrder(fleet, planetId);
+    hasDirtyState = true;
+    refreshDiscovery();
+    accept(socket, "Orbit order accepted.");
+    broadcastUpdates(["clock", "fleets", "visibility"]);
+  } catch (error) {
+    reject(socket, error instanceof Error ? error.message : "Orbit order rejected.");
   }
 }
 
@@ -1531,12 +1763,70 @@ function completeFleetOrder(fleet: GameFleet): void {
   fleet.orderType = null;
   fleet.route = [fleet.currentStarId];
   fleet.routeIndex = 0;
+  fleet.movementPlan = null;
+  fleet.orbitTargetPlanetId = null;
+  fleet.orbitOffset = null;
   setFleetPhase(fleet, "idle");
   fleet.hyperlanePosition = null;
   fleet.systemPosition = systemCenterPosition();
 }
 
 function advanceFleet(fleet: GameFleet, scaledMs: number): boolean {
+  if (fleet.movementPlan && fleet.phase !== "idle" && fleet.phase !== "buildingStarbase" && fleet.phase !== "orbitingPlanet") {
+    const plan = fleet.movementPlan;
+    const nextYear = state.clock.year;
+    const segment = plan.segments.find((candidate) => nextYear >= candidate.startYear && nextYear < candidate.endYear)
+      ?? plan.segments[plan.segments.length - 1];
+
+    if (segment && nextYear < plan.endsAtYear) {
+      const progress = Math.max(0, Math.min(1, (nextYear - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear)));
+      fleet.currentStarId = segment.kind === "hyperlane" ? segment.fromStarId : segment.toStarId;
+      fleet.routeIndex = Math.max(0, fleet.route.indexOf(segment.toStarId));
+      fleet.phaseStartedAtYear = segment.startYear;
+      fleet.phaseDurationDays = Math.max(0.1, (segment.endYear - segment.startYear) * GAME_DAYS_PER_YEAR);
+      fleet.phaseProgress = progress;
+
+      if (segment.kind === "hyperlane") {
+        fleet.phase = "jumpingHyperlane";
+        fleet.hyperlanePosition = { fromStarId: segment.fromStarId, toStarId: segment.toStarId, progress };
+        fleet.systemPosition = interpolateSystemPosition(segment.from, segment.to, progress);
+      } else {
+        fleet.phase = segment.kind === "orbit" ? "movingSystem" : (segment.fromStarId === segment.toStarId && segment.toStarId === plan.destinationStarId ? "arrivingSystem" : "departingSystem");
+        fleet.hyperlanePosition = null;
+        fleet.systemPosition = interpolateSystemPosition(segment.from, segment.to, progress);
+      }
+      return false;
+    }
+
+    fleet.phaseProgress = 1;
+    fleet.currentStarId = plan.destinationStarId;
+    fleet.routeIndex = Math.max(0, fleet.route.length - 1);
+    fleet.hyperlanePosition = null;
+    fleet.systemPosition = plan.segments[plan.segments.length - 1]?.to ?? systemCenterPosition();
+    fleet.movementPlan = null;
+
+    if (fleet.orderType === "orbit" && plan.destinationPlanetId) {
+      fleet.orbitTargetPlanetId = plan.destinationPlanetId;
+      fleet.orbitOffset = { x: SYSTEM_PLANET_ORBIT_DISTANCE, y: SYSTEM_FLEET_Y, z: 0 };
+      setFleetPhase(fleet, "orbitingPlanet");
+      fleet.phaseDurationDays = 0;
+      return true;
+    }
+
+    if (fleet.orderType === "build") {
+      setFleetPhase(fleet, "buildingStarbase");
+      fleet.systemPosition = systemCenterPosition();
+      return true;
+    }
+
+    completeFleetOrder(fleet);
+    return true;
+  }
+
+  if (fleet.phase === "orbitingPlanet") {
+    return false;
+  }
+
   let arrivedSystem = false;
   let remaining = scaledMs;
   while (remaining > 0 && fleet.phase !== "idle") {
@@ -1830,6 +2120,9 @@ function resetFleetForBattle(fleet: GameFleet): void {
   fleet.targetStarId = null;
   fleet.route = [fleet.currentStarId];
   fleet.routeIndex = 0;
+  fleet.movementPlan = null;
+  fleet.orbitTargetPlanetId = null;
+  fleet.orbitOffset = null;
   setFleetPhase(fleet, "idle");
   fleet.hyperlanePosition = null;
   fleet.systemPosition = systemCenterPosition();
@@ -1864,6 +2157,9 @@ function startFleetRetreat(fleet: GameFleet): void {
   fleet.routeIndex = 0;
   fleet.targetStarId = route[route.length - 1];
   fleet.orderType = "move";
+  fleet.movementPlan = createFleetMovementPlan(fleet, route, "move");
+  fleet.orbitTargetPlanetId = null;
+  fleet.orbitOffset = null;
   setFleetPhase(fleet, "departingSystem");
   fleet.hyperlanePosition = null;
   fleet.systemPosition = systemCenterPosition();
@@ -2382,6 +2678,9 @@ function fleetUpdateSignature(): string {
     routeIndex: fleet.routeIndex,
     orderType: fleet.orderType,
     speed: fleet.speed,
+    movementPlan: fleet.movementPlan,
+    orbitTargetPlanetId: fleet.orbitTargetPlanetId,
+    orbitOffset: fleet.orbitOffset,
   })));
 }
 
@@ -2604,6 +2903,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "buildStarbase") {
     handleBuild(session.socket, session.perspective, command.fleetId, command.shipId, command.targetStarId);
+    return;
+  }
+  if (command.type === "orbitPlanet") {
+    handleOrbitPlanet(session.socket, session.perspective, command.fleetId, command.planetId);
     return;
   }
   if (command.type === "mergeFleets") {
