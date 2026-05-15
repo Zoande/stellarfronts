@@ -16,6 +16,12 @@ import {
 } from "../src/data/StarMap";
 import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import {
+  getSystemFleetStagingPosition,
+  getSystemHyperlaneEntryPosition,
+  getSystemHyperlaneExitPosition,
+  interpolateSystemPosition,
+} from "../src/data/SystemCoordinates";
+import {
   addResourceCounts,
   applyPopulationGrowth,
   BUILDING_KINDS,
@@ -165,31 +171,21 @@ function createRuntimeId(prefix: string, parts: Array<string | number | undefine
 }
 
 function systemCenterPosition() {
-  return { x: 23, y: 4.8, z: -19 };
+  return getSystemFleetStagingPosition();
 }
 
-function systemExitPosition() {
-  return { x: 42, y: 4.8, z: -28 };
+function systemExitPosition(fleet: Pick<GameFleet, "currentStarId" | "route" | "routeIndex">) {
+  const fromStar = state.stars[fleet.currentStarId];
+  const toStarId = fleet.route[fleet.routeIndex + 1];
+  const toStar = Number.isInteger(toStarId) ? state.stars[toStarId] : undefined;
+  return fromStar && toStar ? getSystemHyperlaneExitPosition(fromStar, toStar) : getSystemFleetStagingPosition();
 }
 
-function systemEntryPosition() {
-  return { x: -42, y: 4.8, z: 28 };
-}
-
-function mix(a: number, b: number, t: number): number {
-  return a + (b - a) * Math.max(0, Math.min(1, t));
-}
-
-function interpolateSystemPosition(
-  from: ReturnType<typeof systemCenterPosition>,
-  to: ReturnType<typeof systemCenterPosition>,
-  progress: number,
-) {
-  return {
-    x: mix(from.x, to.x, progress),
-    y: mix(from.y, to.y, progress),
-    z: mix(from.z, to.z, progress),
-  };
+function systemEntryPosition(fleet: Pick<GameFleet, "currentStarId" | "route" | "routeIndex">) {
+  const toStar = state.stars[fleet.currentStarId];
+  const fromStarId = fleet.route[fleet.routeIndex - 1];
+  const fromStar = Number.isInteger(fromStarId) ? state.stars[fromStarId] : undefined;
+  return fromStar && toStar ? getSystemHyperlaneEntryPosition(fromStar, toStar) : getSystemFleetStagingPosition();
 }
 
 function currentEconomyMonth(nextState = state): number {
@@ -1552,13 +1548,13 @@ function advanceFleet(fleet: GameFleet, scaledMs: number): boolean {
     remaining -= step;
 
     if (fleet.phase === "departingSystem") {
-      fleet.systemPosition = interpolateSystemPosition(systemCenterPosition(), systemExitPosition(), fleet.phaseProgress);
+      fleet.systemPosition = interpolateSystemPosition(systemCenterPosition(), systemExitPosition(fleet), fleet.phaseProgress);
     } else if (fleet.phase === "jumpingHyperlane") {
       const fromStarId = fleet.route[fleet.routeIndex];
       const toStarId = fleet.route[fleet.routeIndex + 1];
       fleet.hyperlanePosition = { fromStarId, toStarId, progress: fleet.phaseProgress };
     } else if (fleet.phase === "arrivingSystem") {
-      fleet.systemPosition = interpolateSystemPosition(systemEntryPosition(), systemCenterPosition(), fleet.phaseProgress);
+      fleet.systemPosition = interpolateSystemPosition(systemEntryPosition(fleet), systemCenterPosition(), fleet.phaseProgress);
     }
 
     if (fleet.phaseElapsedMs < duration) break;
@@ -1576,7 +1572,7 @@ function advanceFleet(fleet: GameFleet, scaledMs: number): boolean {
       fleet.routeIndex += 1;
       fleet.hyperlanePosition = null;
       setFleetPhase(fleet, "arrivingSystem");
-      fleet.systemPosition = systemEntryPosition();
+      fleet.systemPosition = systemEntryPosition(fleet);
     } else if (fleet.phase === "arrivingSystem") {
       arrivedSystem = true;
       if (fleet.routeIndex < fleet.route.length - 1) {

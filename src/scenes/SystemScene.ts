@@ -41,6 +41,15 @@ import {
   withPlanetObjectDetails,
 } from "../data/StarMap";
 import type { PlanetConfig, StarData, StarVisualKind } from "../data/StarMap";
+import {
+  getHyperlaneExitSystemPosition,
+  getPlanetSystemOrbitRadius,
+  getPlanetSystemPosition,
+  getPlanetVisualDiameter,
+  getSystemOrbitLayout,
+  SYSTEM_HYPERLANE_EXIT_MARKER_Y,
+  withPlanetOrbitFields,
+} from "../data/SystemCoordinates";
 import type { PlanetState } from "../data/Economy";
 import type { FactionInfo } from "../data/Factions";
 import { OrbitSystem } from "../systems/OrbitSystem";
@@ -83,8 +92,6 @@ const PLAYER_SHIP_TARGET_SIZE = 0.8;
 const PLAYER_SHIP_BASE_POSITION = new Vector3(23, 4.8, -19);
 
 const STARBASE_MODEL_URL = "/starbase/star_trek_-_starbase_375.glb";
-const HYPERLANE_EXIT_RADIUS = 38;
-const HYPERLANE_EXIT_Y = 2.8;
 const SHIP_EXIT_END_PROGRESS = 0.28;
 const SHIP_ENTRY_START_PROGRESS = 0.72;
 const SYSTEM_LABEL_TEXTURE_WIDTH = 2048;
@@ -471,7 +478,7 @@ export class SystemScene implements IGameScene {
     const dt = this.engine.getDeltaTime() / 1000;
     this.elapsed += dt;
 
-    this.orbitSystem.update(dt);
+    this.orbitSystem.update(dt, Date.now());
 
     if (this.starMesh) {
       this.starMesh.rotation.y += this.starRotationSpeed * dt;
@@ -1636,6 +1643,7 @@ export class SystemScene implements IGameScene {
     for (let i = 0; i < planets.length; i++) {
       this.createPlanet(i, planets[i]);
     }
+    this.createHyperlaneExits();
 
     // Create star label
     this.starLabelMesh = this.createStarLabel();
@@ -2288,9 +2296,13 @@ export class SystemScene implements IGameScene {
     const textureVariantNum = planet.textureVariation + 1;
     const texturePath = `${planetCfg.texturePrefix}_0${textureVariantNum}-1024x512.png`;
 
-    const orbitRadius = this.orbitBaseOffset + index * this.orbitSpacing + planet.orbitRadius * 1.2;
-    const orbitSpeed = planet.orbitSpeed * 0.35;
-    const diameter = Math.max(0.8, planet.diameter * 1.2);
+    const orbitLayout = {
+      ...getSystemOrbitLayout(this.star.type),
+      orbitBaseOffset: this.orbitBaseOffset,
+      orbitSpacing: this.orbitSpacing,
+    };
+    const orbitRadius = getPlanetSystemOrbitRadius(planet, index, orbitLayout);
+    const diameter = getPlanetVisualDiameter(planet);
 
     const mesh = MeshBuilder.CreateSphere(
       `systemPlanet_${index}`,
@@ -2312,6 +2324,9 @@ export class SystemScene implements IGameScene {
     mat.forceDepthWrite = true;
     mesh.material = mat;
     mesh.isPickable = false;
+    const getSystemPosition = (nowMs: number) => getPlanetSystemPosition(planet, index, nowMs, orbitLayout);
+    const initialPosition = getSystemPosition(Date.now());
+    mesh.position.set(initialPosition.x, initialPosition.y, initialPosition.z);
 
     // Add planet as an occluder to the glow pass so the star's bloom doesn't
     // composite over planets. Planets have near-zero emissive above.
@@ -2327,13 +2342,42 @@ export class SystemScene implements IGameScene {
     const labelMesh = this.createPlanetLabel(index, planet, orbitRadius);
     this.planetLabelMeshes.push(labelMesh);
 
+    const axialPhase = Number.isFinite(planet.orbitPhaseAtEpoch)
+      ? (planet.orbitPhaseAtEpoch / (Math.PI * 2)) % 1
+      : 0;
     this.orbitSystem.addBody({
       mesh,
-      orbitRadius,
-      orbitSpeed,
-      currentAngle: Math.random() * Math.PI * 2,
-      axialRotationSpeed: 0.18 + Math.random() * 0.22,
+      getSystemPosition,
+      axialRotationSpeed: 0.18 + axialPhase * 0.22,
     });
+  }
+
+  private createHyperlaneExits(): void {
+    if (this.hyperlaneExits.length === 0) return;
+    if (!this.hyperlaneExitMaterial) {
+      const material = new StandardMaterial("systemHyperlaneExitMat", this.scene);
+      material.emissiveColor = new Color3(0.32, 0.75, 1.0);
+      material.diffuseColor = new Color3(0.08, 0.22, 0.32);
+      material.specularColor = new Color3(0.35, 0.75, 1.0);
+      material.alpha = 0.78;
+      this.hyperlaneExitMaterial = material;
+    }
+
+    for (const exit of this.hyperlaneExits) {
+      const position = exit.systemPosition ?? getHyperlaneExitSystemPosition(exit);
+      const marker = MeshBuilder.CreateTorus(
+        `hyperlaneExit_${this.star.id}_${exit.starId}`,
+        { diameter: 2.4, thickness: 0.08, tessellation: 36 },
+        this.scene,
+      );
+      marker.position.set(position.x, SYSTEM_HYPERLANE_EXIT_MARKER_Y, position.z);
+      marker.rotation.x = Math.PI / 2;
+      marker.material = this.hyperlaneExitMaterial;
+      marker.isPickable = false;
+      marker.alwaysSelectAsActiveMesh = true;
+      this.hyperlaneExitMeshes.push(marker);
+      this.glowLayer.addIncludedOnlyMesh(marker);
+    }
   }
 
   private createOrbitRing(index: number, radius: number): void {
@@ -2818,22 +2862,30 @@ export class SystemScene implements IGameScene {
   }
 
   private createFallbackPlanets(kind: StarVisualKind): PlanetConfig[] {
+    const createFallbackPlanet = (
+      index: number,
+      planet: Omit<PlanetConfig, "objectDetails" | "orbitPhaseAtEpoch" | "orbitEpochMs">,
+    ): PlanetConfig => withPlanetObjectDetails(
+      withPlanetOrbitFields(planet, this.star.id, index),
+      `${this.star.id}:fallback:${index}`,
+    );
+
     if (kind === "black-hole") {
       return [
-        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32, name: `${this.star.name} I` }, `${this.star.id}:fallback:0`),
-        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 1), type: PlanetType.Methane, textureVariation: 0, diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2, name: `${this.star.name} II` }, `${this.star.id}:fallback:1`),
+        createFallbackPlanet(0, { id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.2, orbitRadius: 12, orbitSpeed: 0.32, name: `${this.star.name} I` }),
+        createFallbackPlanet(1, { id: createPlanetId(this.star.id, 1), type: PlanetType.Methane, textureVariation: 0, diameter: 2.8, orbitRadius: 20, orbitSpeed: 0.2, name: `${this.star.name} II` }),
       ];
     }
     if (kind === "neutron-star" || kind === "pulsar") {
       return [
-        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62, name: `${this.star.name} I` }, `${this.star.id}:fallback:0`),
-        withPlanetObjectDetails({ id: createPlanetId(this.star.id, 1), type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46, name: `${this.star.name} II` }, `${this.star.id}:fallback:1`),
+        createFallbackPlanet(0, { id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.0, orbitRadius: 9, orbitSpeed: 0.62, name: `${this.star.name} I` }),
+        createFallbackPlanet(1, { id: createPlanetId(this.star.id, 1), type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 15, orbitSpeed: 0.46, name: `${this.star.name} II` }),
       ];
     }
     return [
-      withPlanetObjectDetails({ id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55, name: `${this.star.name} I` }, `${this.star.id}:fallback:0`),
-      withPlanetObjectDetails({ id: createPlanetId(this.star.id, 1), type: PlanetType.Gaseous, textureVariation: 0, diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24, name: `${this.star.name} II` }, `${this.star.id}:fallback:1`),
-      withPlanetObjectDetails({ id: createPlanetId(this.star.id, 2), type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4, name: `${this.star.name} III` }, `${this.star.id}:fallback:2`),
+      createFallbackPlanet(0, { id: createPlanetId(this.star.id, 0), type: PlanetType.Barren, textureVariation: 0, diameter: 1.4, orbitRadius: 7, orbitSpeed: 0.55, name: `${this.star.name} I` }),
+      createFallbackPlanet(1, { id: createPlanetId(this.star.id, 1), type: PlanetType.Gaseous, textureVariation: 0, diameter: 3.2, orbitRadius: 12, orbitSpeed: 0.24, name: `${this.star.name} II` }),
+      createFallbackPlanet(2, { id: createPlanetId(this.star.id, 2), type: PlanetType.Snowy, textureVariation: 0, diameter: 1.1, orbitRadius: 18, orbitSpeed: 0.4, name: `${this.star.name} III` }),
     ];
   }
 
@@ -2858,6 +2910,9 @@ export class SystemScene implements IGameScene {
     }
     if (this.playerShipRoot) {
       this.playerShipRoot.setEnabled(visible);
+    }
+    for (const marker of this.hyperlaneExitMeshes) {
+      marker.setEnabled(visible);
     }
     for (const [, root] of this.battleShipRoots) {
       root.setEnabled(visible);

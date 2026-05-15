@@ -11,6 +11,12 @@ import {
   PlanetType,
 } from "../src/data/StarMap";
 import type { DistrictKind, PlanetConfig } from "../src/data/StarMap";
+import {
+  DEFAULT_ORBIT_EPOCH_MS,
+  getPlanetOrbitAngularSpeed,
+  getPlanetSystemOrbitRadius,
+  normalizePlanetOrbitFields,
+} from "../src/data/SystemCoordinates";
 import { getEffectiveSpeciesHabitability } from "../src/data/Economy";
 
 const DISTRICT_KINDS: DistrictKind[] = ["city", "generator", "mining", "agriculture"];
@@ -104,4 +110,44 @@ test("legacy planet metadata migrates to stable IDs and clamped mutable state", 
 
   applyPlanetStatesToStars(stars, normalized.planetStates);
   assert.equal(migratedPlanet.isHabited, true);
+});
+
+test("planet orbit phase fields are deterministic and migrate without ticking saves", () => {
+  const stars = createTestStars();
+  const star = stars.find((candidate) => candidate.system.planets.length > 0);
+  assert.ok(star, "test map should contain at least one planet");
+
+  const planet = star.system.planets[0];
+  assert.equal(Number.isFinite(planet.orbitPhaseAtEpoch), true);
+  assert.equal(planet.orbitEpochMs, DEFAULT_ORBIT_EPOCH_MS);
+
+  const legacyPlanet = {
+    ...planet,
+    orbitPhaseAtEpoch: undefined as unknown as number,
+    orbitEpochMs: undefined as unknown as number,
+  };
+  const changed = normalizePlanetOrbitFields(legacyPlanet, star.id, 0);
+  const migratedPhase = legacyPlanet.orbitPhaseAtEpoch;
+  const migratedEpoch = legacyPlanet.orbitEpochMs;
+
+  assert.equal(changed, true);
+  assert.equal(Number.isFinite(migratedPhase), true);
+  assert.equal(migratedEpoch, DEFAULT_ORBIT_EPOCH_MS);
+  assert.equal(normalizePlanetOrbitFields(legacyPlanet, star.id, 0), false);
+  assert.equal(legacyPlanet.orbitPhaseAtEpoch, migratedPhase);
+});
+
+test("outer planet orbit speed scales down with system-view distance", () => {
+  const stars = createTestStars();
+  const star = stars.find((candidate) => candidate.system.planets.length > 0);
+  assert.ok(star, "test map should contain at least one planet");
+
+  const planet = star.system.planets[0];
+  const innerRadius = getPlanetSystemOrbitRadius({ ...planet, orbitRadius: 7 }, 0);
+  const outerRadius = getPlanetSystemOrbitRadius({ ...planet, orbitRadius: 70 }, 4);
+  const innerSpeed = getPlanetOrbitAngularSpeed(planet, innerRadius);
+  const outerSpeed = getPlanetOrbitAngularSpeed(planet, outerRadius);
+
+  assert.ok(outerRadius > innerRadius);
+  assert.ok(outerSpeed < innerSpeed * 0.25);
 });

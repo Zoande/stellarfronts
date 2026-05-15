@@ -16,6 +16,7 @@ import type {
   StarbaseShipQueueItem,
 } from "../data/Starbase";
 import type { PlanetConfig, StarData } from "../data/StarMap";
+import type { SystemPosition } from "../data/SystemCoordinates";
 
 export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat";
 
@@ -63,11 +64,7 @@ export interface ServerStarbase {
   shipQueue: StarbaseShipQueueItem[];
 }
 
-export interface ShipSystemPosition {
-  x: number;
-  y: number;
-  z: number;
-}
+export type ShipSystemPosition = SystemPosition;
 
 export interface ShipHyperlanePosition {
   fromStarId: number;

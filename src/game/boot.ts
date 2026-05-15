@@ -4,6 +4,14 @@ import { SystemScene } from "@/scenes/SystemScene";
 import type { IGameScene } from "@/SceneManager";
 import { applyPlanetStatesToStars } from "@/data/StarMap";
 import type { PlanetConfig, StarData } from "@/data/StarMap";
+import {
+  getHyperlaneDirection,
+  getHyperlaneExitSystemPosition,
+  getSystemFleetStagingPosition,
+  getSystemHyperlaneEntryPosition,
+  getSystemHyperlaneExitPosition,
+  interpolateSystemPosition,
+} from "@/data/SystemCoordinates";
 import type { PlanetState } from "@/data/Economy";
 import type { GalaxySceneOptions, GalaxyViewState } from "@/scenes/GalaxyScene";
 import { buildHyperlaneAdjacency } from "@/data/Hyperlanes";
@@ -12,6 +20,7 @@ import type { HudConnectedSystem, HudSidebarItemKey, HudVisualToggles } from "@/
 import { FleetManagerPanel } from "@/ui/FleetManagerPanel";
 import { GameServerClient } from "./GameServerClient";
 import type { ClientCommand, GameSnapshot, ServerFleet, ServerUpdateField } from "./GameProtocol";
+import type { HyperlaneExitPoint } from "./GameplayTypes";
 
 export interface BootOptions {
   onProgress?: (progress: number, detail: string) => void;
@@ -112,20 +121,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   };
 
   const gameDaysPerYear = 360;
-  const systemCenterPosition = () => ({ x: 23, y: 4.8, z: -19 });
-  const systemExitPosition = () => ({ x: 42, y: 4.8, z: -28 });
-  const systemEntryPosition = () => ({ x: -42, y: 4.8, z: 28 });
   const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
-  const mix = (a: number, b: number, t: number): number => a + (b - a) * clamp01(t);
-  const interpolateSystemPosition = (
-    from: ReturnType<typeof systemCenterPosition>,
-    to: ReturnType<typeof systemCenterPosition>,
-    progress: number,
-  ) => ({
-    x: mix(from.x, to.x, progress),
-    y: mix(from.y, to.y, progress),
-    z: mix(from.z, to.z, progress),
-  });
 
   const getFleetPhaseProgress = (fleet: ServerFleet): number => {
     if (fleet.phase === "idle" || fleet.phaseDurationDays <= 0) return 0;
@@ -134,6 +130,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   };
 
   const getFleetHyperlanePosition = (fleet: ServerFleet) => {
+    if (fleet.hyperlanePosition) return fleet.hyperlanePosition;
     if (fleet.phase !== "jumpingHyperlane") return null;
     const fromStarId = fleet.route[fleet.routeIndex];
     const toStarId = fleet.route[fleet.routeIndex + 1];
@@ -170,14 +167,28 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   };
 
   const getFleetSystemPosition = (fleet: ServerFleet): { x: number; y: number; z: number } => {
+    if (fleet.systemPosition) return fleet.systemPosition;
     const progress = getFleetPhaseProgress(fleet);
+    const stars = resolveRoutingStars();
     if (fleet.phase === "departingSystem") {
-      return interpolateSystemPosition(systemCenterPosition(), systemExitPosition(), progress);
+      const fromStar = stars[fleet.currentStarId];
+      const toStar = fleet.route[fleet.routeIndex + 1] !== undefined
+        ? stars[fleet.route[fleet.routeIndex + 1]]
+        : undefined;
+      return fromStar && toStar
+        ? interpolateSystemPosition(getSystemFleetStagingPosition(), getSystemHyperlaneExitPosition(fromStar, toStar), progress)
+        : getSystemFleetStagingPosition();
     }
     if (fleet.phase === "arrivingSystem") {
-      return interpolateSystemPosition(systemEntryPosition(), systemCenterPosition(), progress);
+      const toStar = stars[fleet.currentStarId];
+      const fromStar = fleet.route[fleet.routeIndex - 1] !== undefined
+        ? stars[fleet.route[fleet.routeIndex - 1]]
+        : undefined;
+      return fromStar && toStar
+        ? interpolateSystemPosition(getSystemHyperlaneEntryPosition(fromStar, toStar), getSystemFleetStagingPosition(), progress)
+        : getSystemFleetStagingPosition();
     }
-    return systemCenterPosition();
+    return getSystemFleetStagingPosition();
   };
 
   const getFleetSystemPositions = (): Record<number, { x: number; y: number; z: number }> => (
@@ -185,6 +196,24 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       .filter((fleet) => fleet.phase !== "jumpingHyperlane")
       .map((fleet) => [fleet.currentStarId, getFleetSystemPosition(fleet)]))
   );
+
+  const getHyperlaneExitsForSystem = (star: StarData): HyperlaneExitPoint[] => {
+    const stars = resolveRoutingStars();
+    return (cachedHyperlaneAdjacency[star.id] ?? [])
+      .map((targetStarId) => {
+        const targetStar = stars[targetStarId];
+        if (!targetStar) return null;
+        const direction = getHyperlaneDirection(star, targetStar);
+        return {
+          starId: targetStar.id,
+          name: targetStar.name,
+          dx: direction.dx,
+          dz: direction.dz,
+          systemPosition: getHyperlaneExitSystemPosition(direction),
+        };
+      })
+      .filter((exit): exit is HyperlaneExitPoint => exit !== null);
+  };
 
   const hyperlaneListsEqual = (a: Array<[number, number]>, b: Array<[number, number]>): boolean => {
     if (a.length !== b.length) return false;
@@ -448,6 +477,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           playerShipStarId: getPrimaryFleetStarId(),
           shipTransit: getPrimaryTransit(),
           fleetSystemPositions: getFleetSystemPositions(),
+          hyperlaneExits: getHyperlaneExitsForSystem(systemStar),
           planetStates: details.planetStates,
           onPlanetCommand: sendPlanetCommand,
           onFleetCommand: (command) => server.send(command),

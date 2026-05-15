@@ -1,3 +1,5 @@
+import type { SystemPosition } from "../data/SystemCoordinates";
+
 export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat";
 
 export interface GalaxyShipTransit {
@@ -11,4 +13,5 @@ export interface HyperlaneExitPoint {
   name: string;
   dx: number;
   dz: number;
+  systemPosition: SystemPosition;
 }
