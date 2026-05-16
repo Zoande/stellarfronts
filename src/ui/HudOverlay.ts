@@ -371,40 +371,23 @@ const HUD_STYLE = `
   right: 0;
   transform: scale(1.3);
   transform-origin: top right;
-  min-width: 252px;
+  min-width: 286px;
   min-height: 39px;
   border-left: 1px solid rgba(94, 173, 142, 0.72);
   border-bottom: 1px solid rgba(94, 173, 142, 0.48);
   background:
     linear-gradient(180deg, rgba(9, 34, 25, 0.96), rgba(4, 13, 12, 0.98)),
     radial-gradient(circle at 12% 0%, rgba(246, 170, 77, 0.16), transparent 9rem);
-  padding: 4px 12px 7px 42px;
+  padding: 5px 12px 7px;
   pointer-events: none;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), inset 0 -1px 0 rgba(117, 255, 208, 0.08);
 }
 
-#spaceHudClock::before {
-  content: "II";
-  position: absolute;
-  left: 12px;
-  top: 7px;
-  width: 22px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(235, 142, 61, 0.84);
-  color: #f2a34c;
-  background: rgba(77, 39, 14, 0.62);
-  font-size: 11px;
-  font-weight: 900;
-}
-
 .spaceHudClockGrid {
   display: grid;
-  grid-template-columns: 82px minmax(0, 1fr);
-  grid-template-rows: auto auto;
-  align-items: end;
-  gap: 0 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
 }
 
 #spaceHudResources {
@@ -516,7 +499,7 @@ const HUD_STYLE = `
 
 .spaceHudClockLabel {
   display: block;
-  grid-column: 2;
+  grid-column: 1 / span 2;
   grid-row: 1;
   color: rgba(175, 208, 197, 0.72);
   font-size: 7px;
@@ -527,7 +510,7 @@ const HUD_STYLE = `
 
 .spaceHudClockValue {
   display: block;
-  grid-column: 2;
+  grid-column: 1;
   grid-row: 2;
   color: #edf4ff;
   font-size: 11px;
@@ -541,30 +524,11 @@ const HUD_STYLE = `
   display: block;
   grid-column: 2;
   grid-row: 2;
-  margin-top: 13px;
   color: rgba(246, 170, 77, 0.95);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.1em;
   text-align: right;
-}
-
-.spaceHudClockSpeed {
-  display: grid;
-  grid-column: 1;
-  grid-row: 1 / span 2;
-  align-self: center;
-  min-height: 24px;
-  place-items: center;
-  padding: 0 6px;
-  border: 1px solid rgba(235, 142, 61, 0.56);
-  background: rgba(77, 39, 14, 0.34);
-  color: rgba(246, 170, 77, 0.95);
-  font-size: 8px;
-  line-height: 1.1;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  text-align: center;
 }
 
 .spaceHudToggleBtn {
@@ -833,7 +797,6 @@ export class HudOverlay {
       this.currentClock = state.clock;
       this.clockEl.innerHTML = `
         <div class="spaceHudClockGrid">
-          <span class="spaceHudClockSpeed">${state.clock.speedMultiplier}x<br>1s = ${state.clock.speedMultiplier}h</span>
           <span class="spaceHudClockLabel">Galactic Standard</span>
           <span class="spaceHudClockValue" data-clock-date></span>
           <span class="spaceHudClockTime" data-clock-time></span>

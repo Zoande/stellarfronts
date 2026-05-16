@@ -29,7 +29,7 @@ export interface SelectionData {
 }
 
 export interface SelectionPanelCallbacks {
-  onShipAction?: (action: ShipAction) => void;
+  onShipAction?: (action: ShipAction, selection?: SelectionData) => void;
 }
 
 export class SelectionPanel {
@@ -273,7 +273,16 @@ export class SelectionPanel {
 
   public clear(): void {
     this.selections.clear();
+    this.activeShipAction = null;
     this.render();
+  }
+
+  public hasSelection(type: SelectionType, id?: string): boolean {
+    if (id) return this.selections.has(`${type}:${id}`);
+    for (const key of this.selections.keys()) {
+      if (key.startsWith(`${type}:`)) return true;
+    }
+    return false;
   }
 
   public setActiveShipAction(action: ShipAction | null): void {
@@ -372,6 +381,7 @@ export class SelectionPanel {
             <button
               class="spaceSelectionActionBtn ${this.activeShipAction === action ? "active" : ""}"
               type="button"
+              data-selection-key="${this.escapeHtml(this.getSelectionKey(data))}"
               data-action="${action}">
               ${actionLabels[action as ShipAction] ?? action}
             </button>
@@ -421,7 +431,9 @@ export class SelectionPanel {
         ev.stopPropagation();
         const action = button.dataset.action as ShipAction | undefined;
         if (!action) return;
-        this.callbacks.onShipAction?.(action);
+        const selectionKey = button.dataset.selectionKey;
+        const selection = selectionKey ? this.selections.get(selectionKey) : undefined;
+        this.callbacks.onShipAction?.(action, selection);
       });
     }
 

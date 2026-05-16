@@ -238,7 +238,7 @@ export class FleetManagerPanel {
         ${this.renderStat("Shields", `${Math.round(defense.shield)} / ${Math.round(defense.maxShield)}`)}
         ${this.renderStat("Armor", `${Math.round(defense.armor)} / ${Math.round(defense.maxArmor)}`)}
         ${this.renderStat("Hull", `${Math.round(defense.hull)} / ${Math.round(defense.maxHull)}`)}
-        ${this.renderStat("Speed", `${this.formatCompact(fleet.speed)} ly/day`)}
+        ${this.renderStat("Speed", `${this.formatCompact(fleet.speed * 2)} ly/day`)}
         ${this.renderStat("Order", this.formatFleetOrder(data, fleet))}
       </div>
       <div class="fmSectionTitle fmCompositionTitle">Fleet Composition</div>
@@ -529,6 +529,11 @@ export class FleetManagerPanel {
         return "Building";
       case "jumpingHyperlane":
         return "In Transit";
+      case "movingSystem":
+        return fleet.orderType === "merge" ? "Merging" : "Maneuvering";
+      case "orbiting":
+      case "orbitingPlanet":
+        return "Orbiting";
       case "idle":
       default:
         return "Operational";
@@ -539,15 +544,28 @@ export class FleetManagerPanel {
     if (fleet.movementPlan) {
       const destination = fleet.movementPlan.destinationPlanetId
         ? this.findPlanetName(data, fleet.movementPlan.destinationPlanetId)
-        : this.getStarName(data, fleet.movementPlan.destinationStarId);
+        : (fleet.movementPlan.destinationOrbitTarget
+          ? this.formatOrbitTarget(data, fleet.movementPlan.destinationOrbitTarget)
+          : this.getStarName(data, fleet.movementPlan.destinationStarId));
       const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - data.clockYear) * GAME_DAYS_PER_YEAR);
       const remainingMinutes = remainingDays * REAL_MS_PER_GAME_DAY / 60_000;
       return `${destination} | ${remainingDays.toFixed(1)}d | ${remainingMinutes.toFixed(1)}m`;
     }
     if (fleet.orderType === "build") return "Build Starbase";
     if (fleet.orderType === "orbit" && fleet.orbitTargetPlanetId) return `Orbiting ${this.findPlanetName(data, fleet.orbitTargetPlanetId)}`;
+    if (fleet.orbitTarget) return `Orbiting ${this.formatOrbitTarget(data, fleet.orbitTarget)}`;
+    if (fleet.orderType === "merge") return "Merge rendezvous";
     if (fleet.orderType === "move") return fleet.targetStarId === null ? "Move" : `Move to ${this.getStarName(data, fleet.targetStarId)}`;
     return "None";
+  }
+
+  private formatOrbitTarget(data: FleetManagerPanelData, target: NonNullable<ServerFleet["orbitTarget"]>): string {
+    if (target.kind === "planet" && target.planetId) return this.findPlanetName(data, target.planetId);
+    if (target.kind === "star") return this.getStarName(data, target.starId);
+    if (target.kind === "starbase") return `${this.getStarName(data, target.starId)} Starbase`;
+    if (target.kind === "hyperlane") return `${this.getStarName(data, target.starId)} Hyperlane`;
+    if (target.kind === "fleet") return "Fleet";
+    return this.getStarName(data, target.starId);
   }
 
   private findPlanetName(data: FleetManagerPanelData, planetId: string): string {

@@ -47,17 +47,22 @@ import {
   getPlanetSystemPosition,
   getPlanetVisualDiameter,
   getSystemOrbitLayout,
+  getSystemStarOrbitPosition,
+  getSystemStarbaseOrbitPosition,
+  SYSTEM_FLEET_Y,
   SYSTEM_HYPERLANE_EXIT_MARKER_Y,
   withPlanetOrbitFields,
 } from "../data/SystemCoordinates";
+import type { SystemPosition } from "../data/SystemCoordinates";
 import type { PlanetState } from "../data/Economy";
 import type { FactionInfo } from "../data/Factions";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
-import type { BattleZone, ClientCommand, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { BattleZone, ClientCommand, FleetOrbitTarget, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { SelectionPanel } from "../ui/SelectionPanel";
+import type { SelectionData } from "../ui/SelectionPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
 import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
 import { createFlagDesign } from "../flags/flagGenerator";
@@ -65,6 +70,19 @@ import { renderFlagSvg } from "../flags/renderFlagSvg";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
 
 type ExitSystemHandler = () => void | Promise<void>;
+
+type SystemActionTargetKind = "star" | "planet" | "starbase" | "hyperlane";
+
+interface SystemActionTarget {
+  kind: SystemActionTargetKind;
+  label: string;
+  starId: number;
+  position: SystemPosition;
+  markerPosition: SystemPosition;
+  planetId?: string;
+  starbaseId?: string;
+  connectedStarId?: number;
+}
 
 export interface SystemSceneOptions {
   homeSystemStarIds?: number[];
@@ -83,6 +101,10 @@ export interface SystemSceneOptions {
   hyperlaneExits?: HyperlaneExitPoint[];
   clockYear?: number;
   onGameplayFrame?: (deltaTime: number) => void;
+  selectedFleetId?: string | null;
+  selectedFleetIds?: Iterable<string>;
+  onSelectedFleetIdsChange?: (fleetIds: string[]) => void;
+  onRequestFleetActionInGalaxy?: (fleetId: string, action: ShipAction) => void;
   onPlanetCommand?: (command: ClientCommand) => void;
   onFleetCommand?: (command: ClientCommand) => void;
   onRequestPlanetDetails?: (planetId: string) => Promise<{ planet: PlanetConfig; planetState: PlanetState }>;
@@ -92,6 +114,21 @@ const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
 const PLAYER_SHIP_MODEL_FILE = "Fighter_01.obj";
 const PLAYER_SHIP_TARGET_SIZE = 0.8;
 const PLAYER_SHIP_BASE_POSITION = new Vector3(23, 4.8, -19);
+const PLAYER_SHIP_MODEL_PITCH = 0.18;
+const PLAYER_SHIP_MODEL_ROLL = -0.08;
+const PLAYER_SHIP_MODEL_YAW_OFFSET = 0;
+const PLAYER_SHIP_TURN_RATE = 8;
+const PLAYER_SHIP_TRAIL_SAMPLE_INTERVAL = 0.03;
+const PLAYER_SHIP_TRAIL_TTL = 2.0;
+const PLAYER_SHIP_TRAIL_MIN_DISTANCE = 0.01;
+const PLAYER_SHIP_TRAIL_MAX_SEGMENT_DISTANCE = 2.5;
+const PLAYER_SHIP_TRAIL_RADIUS = 0.06;
+const PLAYER_SHIP_TRAIL_START_ALPHA = 0.72;
+const SELECTED_FLEET_ROUTE_LINE_Y_OFFSET = 0.08;
+const SYSTEM_ACTION_MARKER_COLOR = new Color3(0.18, 1.0, 0.9);
+const SYSTEM_ACTION_MARKER_PULSE_SPEED = 4.2;
+const SYSTEM_ACTION_MARKER_ROTATION_SPEED = 0.42;
+const SYSTEM_ACTION_MARKER_MAX_EMPTY_MOVE_RADIUS = 72;
 
 const STARBASE_MODEL_URL = "/starbase/star_trek_-_starbase_375.glb";
 const SHIP_EXIT_END_PROGRESS = 0.28;
@@ -168,6 +205,10 @@ export class SystemScene implements IGameScene {
   private playerShipThrusterMaterial: StandardMaterial | null = null;
   private playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
   private playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
+  private playerShipTrailTimer = 0;
+  private playerShipLastTrailPosition: Vector3 | null = null;
+  private playerShipTrailSegments: Array<{ mesh: Mesh; material: StandardMaterial; age: number; ttl: number }> = [];
+  private selectedFleetRouteLine: LinesMesh | null = null;
 
   private battleShipTemplate: TransformNode | null = null;
   private battleShipTemplatePromise: Promise<void> | null = null;
@@ -193,6 +234,10 @@ export class SystemScene implements IGameScene {
   private starbasePanel!: StarbasePanel;
   private entityCardLayer: HTMLDivElement | null = null;
   private selectedFleetId: string | null = null;
+  private selectedFleetIds = new Set<string>();
+  private activeFleetAction: ShipAction | null = null;
+  private systemActionTargetRoots: Array<{ root: TransformNode; target: SystemActionTarget; meshes: Mesh[] }> = [];
+  private systemActionMarkerMaterial: StandardMaterial | null = null;
   private readonly factionFlagSvgCache = new Map<number, string>();
   private pointerObserver: Observer<PointerInfo> | null = null;
   private starOccluded = false;
@@ -273,6 +318,8 @@ export class SystemScene implements IGameScene {
     this.shipTransit = options.shipTransit ?? null;
     this.clockYear = options.clockYear ?? 2100;
     this.hyperlaneExits = options.hyperlaneExits ?? [];
+    this.selectedFleetId = options.selectedFleetId ?? null;
+    this.selectedFleetIds = new Set(options.selectedFleetIds ?? (this.selectedFleetId ? [this.selectedFleetId] : []));
     this.onExitSystem = onExitSystem;
     this.options = options;
     this.scene = new Scene(engine);
@@ -463,8 +510,9 @@ export class SystemScene implements IGameScene {
     this.buildSystemObjects();
     this.objectPanel = new CelestialObjectPanel();
     this.selectionPanel = new SelectionPanel(canvas, {
-      onShipAction: (action) => this.handleSelectedFleetAction(action),
+      onShipAction: (action, selection) => this.handleSelectedFleetAction(action, selection?.id),
     });
+    this.renderSelectedFleetPanels();
     this.starbasePanel = new StarbasePanel();
     this.installObjectLabelClicks();
     await this.createPlayerShipIfPresent();
@@ -480,6 +528,7 @@ export class SystemScene implements IGameScene {
 
   onBeforeRender(): void {
     const dt = this.engine.getDeltaTime() / 1000;
+    this.options.onGameplayFrame?.(dt);
     this.elapsed += dt;
 
     this.orbitSystem.update(dt, Date.now());
@@ -498,6 +547,7 @@ export class SystemScene implements IGameScene {
     }
 
     if (this.playerShipRoot) {
+      const previousShipPosition = this.playerShipRoot.position.clone();
       const t = Math.min(1, dt * 4.5);
       this.playerShipBasePosition.x = this.playerShipBasePosition.x + (this.playerShipTargetPosition.x - this.playerShipBasePosition.x) * t;
       this.playerShipBasePosition.y = this.playerShipBasePosition.y + (this.playerShipTargetPosition.y - this.playerShipBasePosition.y) * t;
@@ -506,8 +556,12 @@ export class SystemScene implements IGameScene {
       this.playerShipRoot.position.y =
         this.playerShipBasePosition.y + Math.sin(this.elapsed * 1.15) * 0.32;
       this.playerShipRoot.position.z = this.playerShipBasePosition.z;
-      this.playerShipRoot.rotation.y += dt * 0.16;
+      this.updatePlayerShipHeading(dt);
+      this.updatePlayerShipTrail(dt, previousShipPosition, this.playerShipRoot.position);
     }
+    this.updatePlayerShipTrailFades(dt);
+    this.updateSelectedFleetRouteLine();
+    this.updateSystemActionTargetMarkers();
 
     if (this.battleShipRoots.size > 0) {
       const moveT = Math.min(1, dt * 5);
@@ -613,6 +667,525 @@ export class SystemScene implements IGameScene {
       );
       this.faceSystemLabelToCamera(this.starLabelMesh);
     }
+  }
+
+  private updatePlayerShipHeading(deltaTime: number): void {
+    if (!this.playerShipRoot) return;
+    const dx = this.playerShipTargetPosition.x - this.playerShipBasePosition.x;
+    const dz = this.playerShipTargetPosition.z - this.playerShipBasePosition.z;
+    if (Math.hypot(dx, dz) < 0.02) return;
+
+    const targetYaw = Math.atan2(dx, dz) + PLAYER_SHIP_MODEL_YAW_OFFSET;
+    const currentYaw = this.playerShipRoot.rotation.y;
+    const yawDelta = Math.atan2(Math.sin(targetYaw - currentYaw), Math.cos(targetYaw - currentYaw));
+    const turn = Math.min(1, deltaTime * PLAYER_SHIP_TURN_RATE);
+    this.playerShipRoot.rotation.set(
+      PLAYER_SHIP_MODEL_PITCH,
+      currentYaw + yawDelta * turn,
+      PLAYER_SHIP_MODEL_ROLL,
+    );
+  }
+
+  private updatePlayerShipTrail(deltaTime: number, previousPosition: Vector3, currentPosition: Vector3): void {
+    if (!this.playerShipRoot?.isEnabled()) {
+      this.playerShipLastTrailPosition = null;
+      return;
+    }
+    this.playerShipTrailTimer += deltaTime;
+    if (!this.playerShipLastTrailPosition) {
+      this.playerShipLastTrailPosition = previousPosition.clone();
+    }
+    const distance = Vector3.Distance(this.playerShipLastTrailPosition, currentPosition);
+    if (distance > PLAYER_SHIP_TRAIL_MAX_SEGMENT_DISTANCE) {
+      this.playerShipLastTrailPosition = currentPosition.clone();
+      this.playerShipTrailTimer = 0;
+      return;
+    }
+    if (this.playerShipTrailTimer < PLAYER_SHIP_TRAIL_SAMPLE_INTERVAL || distance < PLAYER_SHIP_TRAIL_MIN_DISTANCE) return;
+    this.playerShipTrailTimer = 0;
+
+    const direction = currentPosition.subtract(this.playerShipLastTrailPosition);
+    if (direction.lengthSquared() < 0.0001) return;
+    this.createPlayerShipTrailSegment(this.playerShipLastTrailPosition, currentPosition);
+    this.playerShipLastTrailPosition = currentPosition.clone();
+  }
+
+  private updatePlayerShipTrailFades(deltaTime: number): void {
+    if (this.playerShipTrailSegments.length === 0) return;
+    const nextSegments: typeof this.playerShipTrailSegments = [];
+    for (const segment of this.playerShipTrailSegments) {
+      segment.age += deltaTime;
+      const life = Math.max(0, 1 - segment.age / segment.ttl);
+      segment.material.alpha = PLAYER_SHIP_TRAIL_START_ALPHA * Math.pow(life, 1.35);
+      if (segment.age < segment.ttl) {
+        nextSegments.push(segment);
+      } else {
+        this.glowLayer.removeIncludedOnlyMesh(segment.mesh);
+        segment.mesh.dispose();
+        segment.material.dispose();
+      }
+    }
+    this.playerShipTrailSegments = nextSegments;
+  }
+
+  private createPlayerShipTrailSegment(from: Vector3, to: Vector3): void {
+    const path = [
+      new Vector3(from.x, from.y - 0.22, from.z),
+      new Vector3(to.x, to.y - 0.22, to.z),
+    ];
+    const material = new StandardMaterial("playerShipTrailSegmentMat", this.scene);
+    material.diffuseColor = new Color3(0.02, 0.16, 0.48);
+    material.emissiveColor = new Color3(0.08, 0.75, 1.0);
+    material.specularColor = Color3.Black();
+    material.disableLighting = true;
+    material.alpha = PLAYER_SHIP_TRAIL_START_ALPHA;
+    material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+
+    const mesh = MeshBuilder.CreateTube(
+      "playerShipTrailSegment",
+      {
+        path,
+        radius: PLAYER_SHIP_TRAIL_RADIUS,
+        tessellation: 8,
+        cap: Mesh.NO_CAP,
+      },
+      this.scene,
+    );
+    mesh.material = material;
+    mesh.isPickable = false;
+    mesh.alwaysSelectAsActiveMesh = true;
+    this.glowLayer.addIncludedOnlyMesh(mesh);
+    this.playerShipTrailSegments.push({ mesh, material, age: 0, ttl: PLAYER_SHIP_TRAIL_TTL });
+  }
+
+  private disposePlayerShipTrail(): void {
+    for (const segment of this.playerShipTrailSegments) {
+      this.glowLayer.removeIncludedOnlyMesh(segment.mesh);
+      segment.mesh.dispose();
+      segment.material.dispose();
+    }
+    this.playerShipTrailSegments = [];
+    this.playerShipLastTrailPosition = null;
+    this.playerShipTrailTimer = 0;
+  }
+
+  private updateSelectedFleetRouteLine(): void {
+    const route = this.getSelectedFleetRouteLinePoints();
+    if (!route) {
+      this.disposeSelectedFleetRouteLine();
+      return;
+    }
+
+    const points = [
+      new Vector3(route.from.x, route.from.y + SELECTED_FLEET_ROUTE_LINE_Y_OFFSET, route.from.z),
+      new Vector3(route.to.x, route.to.y + SELECTED_FLEET_ROUTE_LINE_Y_OFFSET, route.to.z),
+    ];
+    this.disposeSelectedFleetRouteLine();
+    this.selectedFleetRouteLine = MeshBuilder.CreateLines("selectedFleetRouteLine", { points }, this.scene);
+    this.selectedFleetRouteLine.color = new Color3(1, 0.55, 0.08);
+    this.selectedFleetRouteLine.alpha = 0.92;
+    this.selectedFleetRouteLine.isPickable = false;
+    this.glowLayer.addIncludedOnlyMesh(this.selectedFleetRouteLine);
+  }
+
+  private getSelectedFleetRouteLinePoints(): { from: Vector3; to: Vector3 } | null {
+    const selectedFleetId = this.getPrimarySelectedFleetId();
+    if (!selectedFleetId) return null;
+    const fleet = this.serverFleets.find((candidate) => candidate.id === selectedFleetId);
+    if (!fleet?.movementPlan) return null;
+
+    const currentSegment = fleet.movementPlan.segments.find((segment) => (
+      this.clockYear >= segment.startYear
+      && this.clockYear < segment.endYear
+      && segment.fromStarId === this.star.id
+      && segment.toStarId === this.star.id
+    ));
+    if (currentSegment) {
+      const progress = Math.max(
+        0,
+        Math.min(1, (this.clockYear - currentSegment.startYear) / Math.max(0.000001, currentSegment.endYear - currentSegment.startYear)),
+      );
+      const renderedFrom = this.playerShipRoot?.isEnabled()
+        ? this.playerShipRoot.position.clone()
+        : null;
+      return {
+        from: renderedFrom ?? this.vectorFromPosition({
+          x: currentSegment.from.x + (currentSegment.to.x - currentSegment.from.x) * progress,
+          y: currentSegment.from.y + (currentSegment.to.y - currentSegment.from.y) * progress,
+          z: currentSegment.from.z + (currentSegment.to.z - currentSegment.from.z) * progress,
+        }),
+        to: this.vectorFromPosition(currentSegment.to),
+      };
+    }
+
+    const nextLocalSegment = fleet.movementPlan.segments.find((segment) => (
+      segment.kind !== "hyperlane"
+      && segment.fromStarId === this.star.id
+      && segment.toStarId === this.star.id
+      && this.clockYear < segment.endYear
+    ));
+    if (!nextLocalSegment) return null;
+    return {
+      from: this.vectorFromPosition(nextLocalSegment.from),
+      to: this.vectorFromPosition(nextLocalSegment.to),
+    };
+  }
+
+  private vectorFromPosition(position: { x: number; y: number; z: number }): Vector3 {
+    return new Vector3(position.x, position.y, position.z);
+  }
+
+  private getPrimarySelectedFleetId(): string | null {
+    if (this.selectedFleetId && this.selectedFleetIds.has(this.selectedFleetId)) return this.selectedFleetId;
+    return this.selectedFleetIds.values().next().value ?? null;
+  }
+
+  private disposeSelectedFleetRouteLine(): void {
+    if (!this.selectedFleetRouteLine) return;
+    this.glowLayer.removeIncludedOnlyMesh(this.selectedFleetRouteLine);
+    this.selectedFleetRouteLine.dispose();
+    this.selectedFleetRouteLine = null;
+  }
+
+  private beginFleetAction(action: ShipAction): void {
+    const fleetId = this.getPrimarySelectedFleetId();
+    if (!fleetId) {
+      this.clearFleetAction();
+      return;
+    }
+
+    if (action === "merge") {
+      this.mergeSelectedFleets();
+      return;
+    }
+    if (action === "retreat") {
+      this.options.onFleetCommand?.({ type: "retreatFleet", fleetId });
+      this.clearFleetAction();
+      return;
+    }
+    if (action === "attack") {
+      console.info("Attack command is a placeholder.");
+      this.clearFleetAction();
+      return;
+    }
+
+    if (this.activeFleetAction === action) {
+      this.clearFleetAction();
+      return;
+    }
+    this.activeFleetAction = action;
+    this.selectionPanel?.setActiveShipAction(action);
+    this.rebuildSystemActionTargetMarkers();
+  }
+
+  private clearFleetAction(): void {
+    this.activeFleetAction = null;
+    this.selectionPanel?.setActiveShipAction(null);
+    this.disposeSystemActionTargetMarkers();
+  }
+
+  private mergeSelectedFleets(): void {
+    const targetFleetId = this.selectedFleetId ?? this.getPrimarySelectedFleetId();
+    if (!targetFleetId) {
+      this.clearFleetAction();
+      return;
+    }
+    const sourceFleetIds = Array.from(this.selectedFleetIds).filter((fleetId) => fleetId !== targetFleetId);
+    if (sourceFleetIds.length === 0) {
+      this.clearFleetAction();
+      return;
+    }
+    this.options.onFleetCommand?.({ type: "mergeFleets", targetFleetId, sourceFleetIds });
+    this.clearFleetAction();
+  }
+
+  private rebuildSystemActionTargetMarkers(): void {
+    this.disposeSystemActionTargetMarkers();
+    const targets = this.getSystemActionTargets();
+    if (targets.length === 0) return;
+    const material = this.getSystemActionMarkerMaterial();
+    for (const target of targets) {
+      const root = new TransformNode(`systemActionTarget_${target.kind}_${target.starId}`, this.scene);
+      root.position.set(target.markerPosition.x, target.markerPosition.y, target.markerPosition.z);
+      const radius = this.getSystemActionMarkerRadius(target);
+      const meshes = this.createSystemActionMarkerBoxes(root, material, radius);
+      this.systemActionTargetRoots.push({ root, target, meshes });
+    }
+  }
+
+  private getSystemActionMarkerMaterial(): StandardMaterial {
+    if (!this.systemActionMarkerMaterial) {
+      const material = new StandardMaterial("systemActionTargetMarkerMat", this.scene);
+      material.diffuseColor = SYSTEM_ACTION_MARKER_COLOR.scale(0.14);
+      material.emissiveColor = SYSTEM_ACTION_MARKER_COLOR.scale(2.2);
+      material.specularColor = Color3.Black();
+      material.disableLighting = true;
+      material.backFaceCulling = false;
+      material.alpha = 0.58;
+      material.alphaMode = 2;
+      this.systemActionMarkerMaterial = material;
+    }
+    return this.systemActionMarkerMaterial;
+  }
+
+  private createSystemActionMarkerBoxes(
+    parent: TransformNode,
+    material: StandardMaterial,
+    radius: number,
+  ): Mesh[] {
+    const meshes: Mesh[] = [];
+    const angles = [-Math.PI / 2, Math.PI / 6, (Math.PI * 5) / 6];
+    const width = Math.max(1.8, radius * 0.42);
+    const depth = Math.max(1.0, radius * 0.22);
+    const thickness = Math.max(0.16, radius * 0.045);
+    for (let i = 0; i < angles.length; i++) {
+      const angle = angles[i];
+      const radialX = Math.cos(angle);
+      const radialZ = Math.sin(angle);
+      const box = MeshBuilder.CreateBox(
+        `systemActionTargetRect_${i}`,
+        { width, height: thickness, depth },
+        this.scene,
+      );
+      box.parent = parent;
+      box.position.set(radialX * radius, 0, radialZ * radius);
+      box.rotation.y = -angle - Math.PI / 2;
+      box.material = material;
+      box.isPickable = true;
+      box.alwaysSelectAsActiveMesh = true;
+      this.glowLayer.addIncludedOnlyMesh(box);
+      meshes.push(box);
+    }
+    return meshes;
+  }
+
+  private updateSystemActionTargetMarkers(): void {
+    if (this.systemActionTargetRoots.length === 0) return;
+    const pulse = 0.5 + 0.5 * Math.sin(this.elapsed * SYSTEM_ACTION_MARKER_PULSE_SPEED);
+    const scale = 0.94 + pulse * 0.12;
+    if (this.systemActionMarkerMaterial) {
+      this.systemActionMarkerMaterial.alpha = 0.42 + pulse * 0.22;
+      this.systemActionMarkerMaterial.emissiveColor = SYSTEM_ACTION_MARKER_COLOR.scale(1.6 + pulse * 1.0);
+    }
+    for (const item of this.systemActionTargetRoots) {
+      const target = this.resolveSystemActionTargetMarkerPosition(item.target);
+      item.target = target;
+      item.root.position.set(target.markerPosition.x, target.markerPosition.y, target.markerPosition.z);
+      item.root.rotation.y = -this.elapsed * SYSTEM_ACTION_MARKER_ROTATION_SPEED;
+      item.root.scaling.set(scale, scale, scale);
+    }
+  }
+
+  private disposeSystemActionTargetMarkers(): void {
+    for (const item of this.systemActionTargetRoots) {
+      for (const mesh of item.meshes) {
+        this.glowLayer.removeIncludedOnlyMesh(mesh);
+        mesh.dispose();
+      }
+      item.root.dispose();
+    }
+    this.systemActionTargetRoots = [];
+  }
+
+  private getSystemActionTargets(): SystemActionTarget[] {
+    if (!this.activeFleetAction) return [];
+    if (this.activeFleetAction === "build") {
+      const starPosition = getSystemStarOrbitPosition();
+      return [{
+        kind: "star",
+        label: this.star.name,
+        starId: this.star.id,
+        position: starPosition,
+        markerPosition: { x: 0, y: SYSTEM_FLEET_Y, z: 0 },
+      }];
+    }
+    if (this.activeFleetAction !== "move") return [];
+
+    const targets: SystemActionTarget[] = [];
+    const starPosition = getSystemStarOrbitPosition();
+    targets.push({
+      kind: "star",
+      label: this.star.name,
+      starId: this.star.id,
+      position: starPosition,
+      markerPosition: { x: 0, y: SYSTEM_FLEET_Y, z: 0 },
+    });
+
+    const starbase = this.getStarbasesInCurrentSystem()[0];
+    if (starbase) {
+      const starbasePosition = getSystemStarbaseOrbitPosition();
+      targets.push({
+        kind: "starbase",
+        label: "Starbase",
+        starId: this.star.id,
+        starbaseId: starbase.id,
+        position: starbasePosition,
+        markerPosition: starbasePosition,
+      });
+    }
+
+    for (let i = 0; i < this.planetConfigs.length; i++) {
+      const planet = this.planetConfigs[i];
+      const mesh = this.planetMeshes[i];
+      if (!planet || !mesh) continue;
+      targets.push(this.resolveSystemActionTargetMarkerPosition({
+        kind: "planet",
+        label: planet.name,
+        starId: this.star.id,
+        planetId: planet.id,
+        position: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
+        markerPosition: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
+      }));
+    }
+
+    for (const exit of this.hyperlaneExits) {
+      const markerPosition = exit.systemPosition ?? getHyperlaneExitSystemPosition(exit);
+      const destinationPosition = getHyperlaneExitSystemPosition({ dx: -exit.dx, dz: -exit.dz });
+      targets.push({
+        kind: "hyperlane",
+        label: exit.name,
+        starId: exit.starId,
+        connectedStarId: exit.starId,
+        position: destinationPosition,
+        markerPosition: { x: markerPosition.x, y: SYSTEM_FLEET_Y, z: markerPosition.z },
+      });
+    }
+    return targets;
+  }
+
+  private resolveSystemActionTargetMarkerPosition(target: SystemActionTarget): SystemActionTarget {
+    if (target.kind !== "planet" || !target.planetId) return target;
+    const index = this.planetConfigs.findIndex((planet) => planet.id === target.planetId);
+    const mesh = index >= 0 ? this.planetMeshes[index] : null;
+    if (!mesh) return target;
+    return {
+      ...target,
+      position: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
+      markerPosition: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
+    };
+  }
+
+  private getSystemActionMarkerRadius(target: SystemActionTarget): number {
+    if (target.kind === "star") return Math.max(6, this.starDiameter * 0.75);
+    if (target.kind === "planet" && target.planetId) {
+      const index = this.planetConfigs.findIndex((planet) => planet.id === target.planetId);
+      return Math.max(2.2, (this.planetDiameters[index] ?? 2) * 0.9);
+    }
+    if (target.kind === "starbase") return 6.8;
+    return 2.9;
+  }
+
+  private tryIssueActiveFleetActionAtPointer(ev: PointerEvent): boolean {
+    if (!this.activeFleetAction) return false;
+    const markerTarget = this.pickSystemActionTarget(ev);
+    if (markerTarget) {
+      this.issueFleetActionTarget(markerTarget);
+      return true;
+    }
+    if (this.activeFleetAction === "move") {
+      const position = this.getPointerSystemPlanePosition(ev);
+      if (position) {
+        this.issueMoveToSystemPosition(position);
+      } else {
+        this.clearFleetAction();
+      }
+      return true;
+    }
+    this.clearFleetAction();
+    return true;
+  }
+
+  private pickSystemActionTarget(ev: PointerEvent): SystemActionTarget | null {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas || this.systemActionTargetRoots.length === 0) return null;
+    const rect = canvas.getBoundingClientRect();
+    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const targetMeshes = new Set(this.systemActionTargetRoots.flatMap((item) => item.meshes));
+    const pick = this.scene.pick(
+      canvasX,
+      canvasY,
+      (mesh) => targetMeshes.has(mesh as Mesh),
+    );
+    if (!pick?.hit || !pick.pickedMesh) return null;
+    const item = this.systemActionTargetRoots.find((candidate) => candidate.meshes.includes(pick.pickedMesh as Mesh));
+    return item?.target ?? null;
+  }
+
+  private getPointerSystemPlanePosition(ev: PointerEvent): SystemPosition | null {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const ray = this.scene.createPickingRay(canvasX, canvasY, Matrix.Identity(), this.camera);
+    if (Math.abs(ray.direction.y) < 0.0001) return null;
+    const t = (0 - ray.origin.y) / ray.direction.y;
+    if (t < 0) return null;
+    const hit = ray.origin.add(ray.direction.scale(t));
+    const distance = Math.hypot(hit.x, hit.z);
+    const scale = distance > SYSTEM_ACTION_MARKER_MAX_EMPTY_MOVE_RADIUS
+      ? SYSTEM_ACTION_MARKER_MAX_EMPTY_MOVE_RADIUS / distance
+      : 1;
+    return { x: hit.x * scale, y: SYSTEM_FLEET_Y, z: hit.z * scale };
+  }
+
+  private issueFleetActionTarget(target: SystemActionTarget): void {
+    if (this.activeFleetAction === "build") {
+      this.issueBuildAtStar();
+      return;
+    }
+    if (this.activeFleetAction !== "move") {
+      this.clearFleetAction();
+      return;
+    }
+    if (target.kind === "planet" && target.planetId) {
+      const fleetId = this.getPrimarySelectedFleetId();
+      if (fleetId) this.options.onFleetCommand?.({ type: "orbitPlanet", fleetId, planetId: target.planetId });
+      this.clearFleetAction();
+      return;
+    }
+    const orbitTarget = this.createFleetOrbitTarget(target);
+    this.issueMoveToSystemPosition(target.position, target.starId, orbitTarget);
+  }
+
+  private issueMoveToSystemPosition(
+    position: SystemPosition,
+    targetStarId = this.star.id,
+    orbitTarget: FleetOrbitTarget | null = null,
+  ): void {
+    const fleetId = this.getPrimarySelectedFleetId();
+    if (!fleetId) {
+      this.clearFleetAction();
+      return;
+    }
+    this.options.onFleetCommand?.({
+      type: "moveFleet",
+      fleetId,
+      targetStarId,
+      targetSystemPosition: position,
+      orbitTarget,
+    });
+    this.clearFleetAction();
+  }
+
+  private issueBuildAtStar(): void {
+    const fleetId = this.getPrimarySelectedFleetId();
+    if (fleetId) {
+      this.options.onFleetCommand?.({ type: "buildStarbase", fleetId, targetStarId: this.star.id });
+    }
+    this.clearFleetAction();
+  }
+
+  private createFleetOrbitTarget(target: SystemActionTarget): FleetOrbitTarget | null {
+    if (target.kind === "planet" || !target.kind) return null;
+    return {
+      kind: target.kind,
+      starId: target.starId,
+      position: target.position,
+      starbaseId: target.starbaseId ?? null,
+      connectedStarId: target.connectedStarId ?? null,
+    };
   }
 
   private faceSystemLabelToCamera(labelMesh: Mesh): void {
@@ -787,66 +1360,91 @@ export class SystemScene implements IGameScene {
   }
 
   private selectFleetFromCard(fleet: ServerFleet, shiftKey: boolean): void {
+    if (!shiftKey) this.selectedFleetIds.clear();
+    this.selectedFleetIds.add(fleet.id);
+    this.selectedFleetId = fleet.id;
+    this.notifyFleetSelectionChanged();
+    this.selectionPanel.select(this.createFleetSelectionData(fleet), shiftKey);
+  }
+
+  private createFleetSelectionData(fleet: ServerFleet): SelectionData {
     const owner = this.getFaction(fleet.ownerId);
     const ships = this.getShipsForFleet(fleet.id);
     const shipCount = fleet.shipIds.length || ships.length || 1;
     const defense = this.getFleetDefense(fleet.id);
     const battle = this.getBattleForFleet(fleet.id);
-    const actions: ShipAction[] = battle ? ["retreat"] : ["merge"];
-    this.selectedFleetId = fleet.id;
-    this.selectionPanel.select(
-      {
-        type: "fleet",
-        id: fleet.id,
-        name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
-        hp: defense.hull,
-        maxHp: defense.maxHull,
-        shield: defense.shield,
-        maxShield: defense.maxShield,
-        armor: defense.armor,
-        maxArmor: defense.maxArmor,
-        hull: defense.hull,
-        maxHull: defense.maxHull,
-        class: shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
-        status: battle ? "Engaged" : this.formatFleetStatus(fleet),
-        detail: fleet.ownerId === this.playerFactionId
-          ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : this.formatFleetNavigationDetail(fleet))
-          : "Foreign fleet. Tactical details are limited.",
-        ownerName: owner?.name ?? "Unknown",
-        ownerColor: owner?.color,
-        canCommand: fleet.ownerId === this.playerFactionId,
-        actions: fleet.ownerId === this.playerFactionId ? actions : undefined,
-      },
-      shiftKey,
-    );
+    const actions: ShipAction[] = battle
+      ? ["retreat"]
+      : ["move", "build", "attack", "merge"];
+    return {
+      type: "fleet",
+      id: fleet.id,
+      name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+      hp: defense.hull,
+      maxHp: defense.maxHull,
+      shield: defense.shield,
+      maxShield: defense.maxShield,
+      armor: defense.armor,
+      maxArmor: defense.maxArmor,
+      hull: defense.hull,
+      maxHull: defense.maxHull,
+      class: shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
+      status: battle ? "Engaged" : this.formatFleetStatus(fleet),
+      detail: fleet.ownerId === this.playerFactionId
+        ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : this.formatFleetNavigationDetail(fleet))
+        : "Foreign fleet. Tactical details are limited.",
+      ownerName: owner?.name ?? "Unknown",
+      ownerColor: owner?.color,
+      canCommand: fleet.ownerId === this.playerFactionId,
+      actions: fleet.ownerId === this.playerFactionId ? actions : undefined,
+    };
   }
 
-  private handleSelectedFleetAction(action: ShipAction): void {
-    if (action === "retreat") {
-      if (this.selectedFleetId) {
-        this.options.onFleetCommand?.({ type: "retreatFleet", fleetId: this.selectedFleetId });
-      }
-      return;
+  private renderSelectedFleetPanels(): void {
+    if (!this.selectionPanel) return;
+    this.selectionPanel.clear();
+    let append = false;
+    for (const fleetId of this.selectedFleetIds) {
+      const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+      if (!fleet) continue;
+      this.selectionPanel.select(this.createFleetSelectionData(fleet), append);
+      append = true;
     }
-    if (action !== "merge") return;
-    const targetFleet = this.serverFleets.find((fleet) => fleet.id === this.selectedFleetId);
-    if (!targetFleet || targetFleet.ownerId !== this.playerFactionId || targetFleet.phase !== "idle") return;
-    const sourceFleetIds = this.serverFleets
-      .filter((fleet) => (
-        fleet.id !== targetFleet.id
-        && fleet.ownerId === targetFleet.ownerId
-        && fleet.currentStarId === targetFleet.currentStarId
-        && fleet.phase === "idle"
-      ))
-      .map((fleet) => fleet.id);
-    if (sourceFleetIds.length === 0) return;
-    this.options.onFleetCommand?.({ type: "mergeFleets", targetFleetId: targetFleet.id, sourceFleetIds });
+    if (append && this.activeFleetAction) {
+      this.selectionPanel.setActiveShipAction(this.activeFleetAction);
+    }
+    if (!append) {
+      this.selectedFleetIds.clear();
+      this.selectedFleetId = null;
+      this.clearFleetAction();
+      this.notifyFleetSelectionChanged();
+    }
+  }
+
+  private clearFleetSelection(): void {
+    if (this.selectedFleetIds.size === 0 && !this.selectedFleetId) return;
+    this.selectedFleetIds.clear();
+    this.selectedFleetId = null;
+    this.selectionPanel?.clear();
+    this.disposeSelectedFleetRouteLine();
+    this.clearFleetAction();
+    this.notifyFleetSelectionChanged();
+  }
+
+  private notifyFleetSelectionChanged(): void {
+    this.options.onSelectedFleetIdsChange?.(Array.from(this.selectedFleetIds));
+  }
+
+  private handleSelectedFleetAction(action: ShipAction, fleetId?: string): void {
+    if (fleetId && this.selectedFleetIds.has(fleetId)) {
+      this.selectedFleetId = fleetId;
+    }
+    this.beginFleetAction(action);
   }
 
   private openStarbasePanel(starbase: ServerStarbase): void {
     const owner = this.getFaction(starbase.ownerId);
-    this.selectedFleetId = null;
-    this.selectionPanel.clear();
+    this.clearFleetSelection();
     this.starbasePanel.show({
       id: starbase.id,
       name: `${this.star.name} Station`,
@@ -944,6 +1542,11 @@ export class SystemScene implements IGameScene {
         return "Building";
       case "jumpingHyperlane":
         return "In Transit";
+      case "movingSystem":
+        return fleet.orderType === "merge" ? "Merging" : "Maneuvering";
+      case "orbiting":
+      case "orbitingPlanet":
+        return "Orbiting";
       case "idle":
       default:
         return "Operational";
@@ -1658,11 +2261,16 @@ export class SystemScene implements IGameScene {
       if (fleet.phase === "orbitingPlanet" && fleet.orbitTargetPlanetId) {
         return `Orbiting ${this.getPlanetName(fleet.orbitTargetPlanetId)}.`;
       }
-      return "Fleet selected. Command controls remain in the galaxy map for now.";
+      if (fleet.phase === "orbiting" && fleet.orbitTarget) {
+        return `Holding orbit at ${this.formatOrbitTargetName(fleet.orbitTarget)}.`;
+      }
+      return "Fleet selected. Choose a command or click empty space while Move is active.";
     }
     const destination = fleet.movementPlan.destinationPlanetId
       ? this.getPlanetName(fleet.movementPlan.destinationPlanetId)
-      : `Star ${fleet.movementPlan.destinationStarId}`;
+      : (fleet.movementPlan.destinationOrbitTarget
+        ? this.formatOrbitTargetName(fleet.movementPlan.destinationOrbitTarget)
+        : `Star ${fleet.movementPlan.destinationStarId}`);
     const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - this.clockYear) * GAME_DAYS_PER_YEAR);
     const remainingMinutes = remainingDays * REAL_MS_PER_GAME_DAY / 60_000;
     return `Destination: ${destination}. Time remaining: ${remainingDays.toFixed(1)} days (${remainingMinutes.toFixed(1)} minutes).`;
@@ -1670,6 +2278,15 @@ export class SystemScene implements IGameScene {
 
   private getPlanetName(planetId: string): string {
     return this.star.system.planets.find((planet) => planet.id === planetId)?.name ?? planetId;
+  }
+
+  private formatOrbitTargetName(target: FleetOrbitTarget): string {
+    if (target.kind === "star") return this.star.id === target.starId ? this.star.name : `Star ${target.starId}`;
+    if (target.kind === "starbase") return "Starbase";
+    if (target.kind === "hyperlane") return "Hyperlane point";
+    if (target.kind === "planet" && target.planetId) return this.getPlanetName(target.planetId);
+    if (target.kind === "fleet") return "merge rendezvous";
+    return "system point";
   }
 
   private async createPlayerShipIfPresent(): Promise<void> {
@@ -2784,9 +3401,15 @@ export class SystemScene implements IGameScene {
       if (pointerInfo.type !== PointerEventTypes.POINTERDOWN) return;
       const ev = pointerInfo.event as PointerEvent;
       if (ev.button !== 0) return;
+      if (this.tryIssueActiveFleetActionAtPointer(ev)) {
+        ev.preventDefault();
+        return;
+      }
       if (this.tryOpenObjectPanelAtPointer(ev)) {
         ev.preventDefault();
+        return;
       }
+      if (!ev.shiftKey) this.clearFleetSelection();
     });
   }
 
@@ -2802,11 +3425,13 @@ export class SystemScene implements IGameScene {
       const labelMesh = this.planetLabelMeshes[i];
       const planet = this.planetConfigs[i];
       if (!labelMesh || !planet || !labelMesh.isEnabled() || !this.hitLabelPlane(ray, labelMesh)) continue;
+      this.clearFleetSelection();
       void this.showPlanetObjectPanel(planet);
       return true;
     }
 
     if (this.starLabelMesh && this.starLabelMesh.isEnabled() && this.hitLabelPlane(ray, this.starLabelMesh)) {
+      this.clearFleetSelection();
       this.showStarObjectPanel();
       return true;
     }
@@ -2858,16 +3483,17 @@ export class SystemScene implements IGameScene {
   }
 
   private getOrbitCapableFleetId(): string | null {
-    const selected = this.selectedFleetId
-      ? this.serverFleets.find((fleet) => fleet.id === this.selectedFleetId)
+    const primarySelectedFleetId = this.getPrimarySelectedFleetId();
+    const selected = primarySelectedFleetId
+      ? this.serverFleets.find((fleet) => fleet.id === primarySelectedFleetId)
       : null;
-    if (selected && selected.ownerId === this.playerFactionId && selected.currentStarId === this.star.id && (selected.phase === "idle" || selected.phase === "orbitingPlanet")) {
+    if (selected && selected.ownerId === this.playerFactionId && selected.currentStarId === this.star.id && (selected.phase === "idle" || selected.phase === "orbitingPlanet" || selected.phase === "orbiting")) {
       return selected.id;
     }
     return this.serverFleets.find((fleet) => (
       fleet.ownerId === this.playerFactionId
       && fleet.currentStarId === this.star.id
-      && (fleet.phase === "idle" || fleet.phase === "orbitingPlanet")
+      && (fleet.phase === "idle" || fleet.phase === "orbitingPlanet" || fleet.phase === "orbiting")
     ))?.id ?? null;
   }
 
@@ -2964,19 +3590,23 @@ export class SystemScene implements IGameScene {
     }
   }
 
-  setFleetSystemPositions(positions: Record<number, { x: number; y: number; z: number }>): void {
+  setFleetSystemPositions(
+    positions: Record<number, { x: number; y: number; z: number }>,
+    options: { refreshCards?: boolean } = {},
+  ): void {
+    const refreshCards = options.refreshCards ?? true;
     this.fleetSystemPositions = positions;
     const position = positions[this.star.id];
     if (!position) {
       this.playerShipRoot?.setEnabled(false);
-      this.refreshSystemEntityCards();
+      if (refreshCards) this.refreshSystemEntityCards();
       return;
     }
 
     this.playerShipTargetPosition.set(position.x, position.y, position.z);
     if (this.hasActiveBattleInSystem()) {
       this.playerShipRoot?.setEnabled(false);
-      this.refreshSystemEntityCards();
+      if (refreshCards) this.refreshSystemEntityCards();
       return;
     }
     if (!this.playerShipRoot) {
@@ -2988,14 +3618,27 @@ export class SystemScene implements IGameScene {
     }
 
     this.playerShipRoot.setEnabled(this.starsVisible);
-    this.refreshSystemEntityCards();
+    if (refreshCards) this.refreshSystemEntityCards();
   }
 
   setServerFleets(fleets: ServerFleet[]): void {
     this.serverFleets = fleets;
-    if (this.selectedFleetId && !fleets.some((fleet) => fleet.id === this.selectedFleetId)) {
-      this.selectedFleetId = null;
-      this.selectionPanel?.clear();
+    let selectionChanged = false;
+    for (const fleetId of Array.from(this.selectedFleetIds)) {
+      if (!fleets.some((fleet) => fleet.id === fleetId)) {
+        this.selectedFleetIds.delete(fleetId);
+        selectionChanged = true;
+      }
+    }
+    if (this.selectedFleetId && !this.selectedFleetIds.has(this.selectedFleetId)) {
+      this.selectedFleetId = this.getPrimarySelectedFleetId();
+      selectionChanged = true;
+    }
+    if (selectionChanged) {
+      this.notifyFleetSelectionChanged();
+      this.renderSelectedFleetPanels();
+    } else if (this.selectedFleetIds.size > 0) {
+      this.renderSelectedFleetPanels();
     }
     this.refreshSystemEntityCards();
   }
@@ -3102,6 +3745,11 @@ export class SystemScene implements IGameScene {
       beam.mesh.dispose();
     }
     this.battleBeams = [];
+    this.disposePlayerShipTrail();
+    this.disposeSelectedFleetRouteLine();
+    this.disposeSystemActionTargetMarkers();
+    this.systemActionMarkerMaterial?.dispose();
+    this.systemActionMarkerMaterial = null;
     this.battleShipTemplate?.dispose();
     this.battleShipTemplate = null;
     this.entityCardLayer?.remove();

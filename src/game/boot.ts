@@ -24,8 +24,8 @@ import type { HudConnectedSystem, HudSidebarItemKey, HudVisualToggles } from "@/
 import { FleetManagerPanel } from "@/ui/FleetManagerPanel";
 import { GameServerClient } from "./GameServerClient";
 import type { ClientCommand, GameSnapshot, ServerFleet, ServerUpdateField } from "./GameProtocol";
-import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY } from "./GameTime";
-import type { HyperlaneExitPoint } from "./GameplayTypes";
+import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY, estimateClockYear } from "./GameTime";
+import type { HyperlaneExitPoint, ShipAction } from "./GameplayTypes";
 
 export interface BootOptions {
   onProgress?: (progress: number, detail: string) => void;
@@ -58,6 +58,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let currentSystemStar: StarData | null = null;
   let hud: HudOverlay | null = null;
   let fleetManagerPanel: FleetManagerPanel | null = null;
+  let selectedFleetIds = new Set<string>();
 
   const visualToggles: HudVisualToggles = {
     hyperlanes: true,
@@ -101,13 +102,22 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const getPlayerFactionId = (): number | null => (
     snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : null
   );
+  const setSelectedFleetIds = (fleetIds: Iterable<string>): void => {
+    selectedFleetIds = new Set(fleetIds);
+  };
+  const requestFleetActionInGalaxy = (fleetId: string, action: ShipAction): void => {
+    setSelectedFleetIds([fleetId]);
+    void openGalaxyView().then(() => {
+      activeGalaxyScene?.startFleetAction(fleetId, action);
+    });
+  };
   const getFleetManagerData = () => ({
     fleets: snapshot.fleets,
     ships: snapshot.ships,
     starbases: snapshot.starbases,
     stars: snapshot.stars,
     factions: snapshot.factions,
-    clockYear: snapshot.clock.year,
+    clockYear: getRenderClockYear(),
     playerFactionId: getPlayerFactionId(),
     onFleetCommand: (command: ClientCommand) => server.send(command),
   });
@@ -127,25 +137,30 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   };
 
   const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+  const getRenderClockYear = (): number => estimateClockYear(
+    snapshot.clock.year,
+    snapshot.clock.syncedAtMs,
+    snapshot.clock.speedMultiplier,
+  );
 
-  const getFleetPhaseProgress = (fleet: ServerFleet): number => {
+  const getFleetPhaseProgress = (fleet: ServerFleet, year = getRenderClockYear()): number => {
     if (fleet.phase === "idle" || fleet.phaseDurationDays <= 0) return 0;
-    const elapsedDays = (snapshot.clock.year - fleet.phaseStartedAtYear) * GAME_DAYS_PER_YEAR;
+    const elapsedDays = (year - fleet.phaseStartedAtYear) * GAME_DAYS_PER_YEAR;
     return clamp01(elapsedDays / fleet.phaseDurationDays);
   };
 
-  const getFleetHyperlanePosition = (fleet: ServerFleet) => {
+  const getFleetHyperlanePosition = (fleet: ServerFleet, year = getRenderClockYear()) => {
     if (fleet.movementPlan) {
       const segment = fleet.movementPlan.segments.find((candidate) => (
         candidate.kind === "hyperlane"
-        && snapshot.clock.year >= candidate.startYear
-        && snapshot.clock.year < candidate.endYear
+        && year >= candidate.startYear
+        && year < candidate.endYear
       ));
       if (segment) {
         return {
           fromStarId: segment.fromStarId,
           toStarId: segment.toStarId,
-          progress: clamp01((snapshot.clock.year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear)),
+          progress: clamp01((year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear)),
         };
       }
     }
@@ -157,7 +172,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     return {
       fromStarId,
       toStarId,
-      progress: getFleetPhaseProgress(fleet),
+      progress: getFleetPhaseProgress(fleet, year),
     };
   };
 
@@ -185,13 +200,17 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     return null;
   };
 
-  const getFleetSystemPosition = (fleet: ServerFleet): { x: number; y: number; z: number } => {
+  const getFleetSystemPosition = (fleet: ServerFleet, year = getRenderClockYear()): { x: number; y: number; z: number } => {
+    if (fleet.orbitTarget?.kind && fleet.orbitTarget.kind !== "planet") {
+      return fleet.orbitTarget.position;
+    }
+
     if (fleet.orbitTargetPlanetId) {
       const targetStar = snapshot.stars[fleet.currentStarId];
       const planetIndex = targetStar?.system.planets.findIndex((planet) => planet.id === fleet.orbitTargetPlanetId) ?? -1;
       const planet = planetIndex >= 0 ? targetStar.system.planets[planetIndex] : null;
       if (targetStar && planet) {
-        const nowMs = DEFAULT_ORBIT_EPOCH_MS + ((snapshot.clock.year - GAME_START_YEAR) * GAME_DAYS_PER_YEAR * REAL_MS_PER_GAME_DAY);
+        const nowMs = DEFAULT_ORBIT_EPOCH_MS + ((year - GAME_START_YEAR) * GAME_DAYS_PER_YEAR * REAL_MS_PER_GAME_DAY);
         const planetPosition = getPlanetSystemPosition(planet, planetIndex, nowMs, getSystemOrbitLayout(targetStar.type));
         const offset = fleet.orbitOffset ?? { x: 3.4, y: SYSTEM_FLEET_Y, z: 0 };
         return {
@@ -204,10 +223,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
     if (fleet.movementPlan) {
       const segment = fleet.movementPlan.segments.find((candidate) => (
-        snapshot.clock.year >= candidate.startYear && snapshot.clock.year < candidate.endYear
+        year >= candidate.startYear && year < candidate.endYear
       ));
       if (segment) {
-        const progress = clamp01((snapshot.clock.year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear));
+        const progress = clamp01((year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear));
         return interpolateSystemPosition(segment.from, segment.to, progress);
       }
       const finalSegment = fleet.movementPlan.segments[fleet.movementPlan.segments.length - 1];
@@ -215,7 +234,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
 
     if (fleet.systemPosition) return fleet.systemPosition;
-    const progress = getFleetPhaseProgress(fleet);
+    const progress = getFleetPhaseProgress(fleet, year);
     const stars = resolveRoutingStars();
     if (fleet.phase === "departingSystem") {
       const fromStar = stars[fleet.currentStarId];
@@ -238,11 +257,20 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     return getSystemFleetStagingPosition();
   };
 
-  const getFleetSystemPositions = (): Record<number, { x: number; y: number; z: number }> => (
+  const getFleetSystemPositions = (year = getRenderClockYear()): Record<number, { x: number; y: number; z: number }> => (
     Object.fromEntries(snapshot.fleets
-      .filter((fleet) => fleet.phase !== "jumpingHyperlane")
-      .map((fleet) => [fleet.currentStarId, getFleetSystemPosition(fleet)]))
+      .filter((fleet) => !getFleetHyperlanePosition(fleet, year))
+      .map((fleet) => [getFleetSystemStarId(fleet, year), getFleetSystemPosition(fleet, year)]))
   );
+
+  const getFleetSystemStarId = (fleet: ServerFleet, year = getRenderClockYear()): number => {
+    const segment = fleet.movementPlan?.segments.find((candidate) => (
+      candidate.kind !== "hyperlane"
+      && year >= candidate.startYear
+      && year < candidate.endYear
+    ));
+    return segment?.toStarId ?? fleet.currentStarId;
+  };
 
   const getHyperlaneExitsForSystem = (star: StarData): HyperlaneExitPoint[] => {
     const stars = resolveRoutingStars();
@@ -260,6 +288,18 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         };
       })
       .filter((exit): exit is HyperlaneExitPoint => exit !== null);
+  };
+
+  const updateSmoothGameplayFrame = (): void => {
+    const year = getRenderClockYear();
+    if (activeGalaxyScene) {
+      activeGalaxyScene.setClockYear(year);
+      activeGalaxyScene.setPlayerShipState(getPrimaryFleetStarId(), getPrimaryTransit());
+    }
+    if (activeSystemScene) {
+      activeSystemScene.setClockYear(year);
+      activeSystemScene.setFleetSystemPositions(getFleetSystemPositions(year), { refreshCards: false });
+    }
   };
 
   const hyperlaneListsEqual = (a: Array<[number, number]>, b: Array<[number, number]>): boolean => {
@@ -367,6 +407,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     const isFull = !changed;
     const has = (field: ServerUpdateField): boolean => isFull || changed.includes(field);
 
+    if (isFull || has("fleets")) {
+      const fleetIds = new Set(snapshot.fleets.map((fleet) => fleet.id));
+      selectedFleetIds = new Set(Array.from(selectedFleetIds).filter((fleetId) => fleetIds.has(fleetId)));
+    }
+
     if (isFull || has("planetStates")) {
       applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
     }
@@ -377,7 +422,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
 
     if (activeGalaxyScene) {
-      activeGalaxyScene.setClockYear(snapshot.clock.year);
+      activeGalaxyScene.setClockYear(getRenderClockYear());
       if (isFull || has("battles") || has("visibility")) {
         activeGalaxyScene.setBattles(snapshot.battles);
       }
@@ -410,7 +455,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
 
     if (activeSystemScene) {
-      activeSystemScene.setClockYear(snapshot.clock.year);
+      activeSystemScene.setClockYear(getRenderClockYear());
       if (isFull || has("battles") || has("visibility")) {
         activeSystemScene.setBattles(snapshot.battles);
       }
@@ -455,7 +500,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       playerFactionId: snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : 0,
       playerShipStarId: getPrimaryFleetStarId(),
       playerShipTransit: getPrimaryTransit(),
-      clockYear: snapshot.clock.year,
+      clockYear: getRenderClockYear(),
       playerShipSystemIds: getFleetSystemIds(),
       serverFleets: snapshot.fleets,
       serverShips: snapshot.ships,
@@ -466,6 +511,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       starOwnership: expandStarOwnership(),
       visibleStarIds: snapshot.visibleStarIds,
       knownStarIds: snapshot.knownStarIds,
+      selectedFleetIds,
           planetStates: snapshot.planetStates,
           habitedPlanetSystemIds: snapshot.habitedPlanetSystemIds,
       onShipCommand: (action, targetStarId, fleetId) => {
@@ -477,8 +523,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         }
       },
       onFleetCommand: (command) => server.send(command),
+      onSelectedFleetIdsChange: setSelectedFleetIds,
       onPlanetCommand: sendPlanetCommand,
       onOpenHabitedPlanet: (starId) => openFirstHabitedPlanetFromGalaxy(starId),
+      onGameplayFrame: updateSmoothGameplayFrame,
     };
 
     if (cachedGalaxyViewState) {
@@ -504,7 +552,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     const systemStar = details.star;
 
     if (activeGalaxyScene) {
-      activeGalaxyScene.setClockYear(snapshot.clock.year);
+      activeGalaxyScene.setClockYear(getRenderClockYear());
       cachedGalaxyViewState = activeGalaxyScene.captureViewState();
       activeGalaxyScene = null;
     }
@@ -529,10 +577,14 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           shipTransit: getPrimaryTransit(),
           fleetSystemPositions: getFleetSystemPositions(),
           hyperlaneExits: getHyperlaneExitsForSystem(systemStar),
-          clockYear: snapshot.clock.year,
+          clockYear: getRenderClockYear(),
+          selectedFleetIds,
           planetStates: details.planetStates,
           onPlanetCommand: sendPlanetCommand,
           onFleetCommand: (command) => server.send(command),
+          onGameplayFrame: updateSmoothGameplayFrame,
+          onSelectedFleetIdsChange: setSelectedFleetIds,
+          onRequestFleetActionInGalaxy: requestFleetActionInGalaxy,
           onRequestPlanetDetails: async (planetId) => {
             const planetDetails = await server.requestPlanetDetails(planetId);
             cachePlanetDetails(planetDetails.starId, planetDetails.planet, planetDetails.planetState);
