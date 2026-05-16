@@ -20,6 +20,7 @@ import {
   getSystemHyperlaneEntryPosition,
   getSystemHyperlaneExitPosition,
   getSystemStarOrbitPosition,
+  getSystemStarbasePosition,
   getSystemStarbaseOrbitPosition,
   getPlanetSystemPosition,
   getSystemOrbitLayout,
@@ -147,7 +148,7 @@ interface GameBattle extends ServerBattle {
 }
 
 interface GameState {
-  schemaVersion: 10;
+  schemaVersion: 11;
   stars: StarData[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
@@ -273,6 +274,7 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
     id: starbase.id,
     ownerId: starbase.ownerId,
     starId: starbase.starId,
+    systemPosition: starbase.systemPosition ?? getSystemStarbasePosition(),
     status: starbase.status ?? "online",
     buildProgress: starbase.buildProgress ?? 1,
     level,
@@ -556,6 +558,7 @@ function createInitialState(): GameState {
     id: `starbase-${faction.id}`,
     ownerId: faction.id,
     starId: faction.homeStarId,
+    systemPosition: getSystemStarbasePosition(),
     status: "online",
     buildProgress: 1,
     level: "starbase",
@@ -579,7 +582,7 @@ function createInitialState(): GameState {
   const startMonth = gameYearToMonthIndex(GAME_START_YEAR);
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 10,
+    schemaVersion: 11,
     stars,
     planetStates,
     factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
@@ -611,7 +614,7 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
     const parsed = JSON.parse(raw) as GameState;
-    parsed.schemaVersion = 10;
+    parsed.schemaVersion = 11;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
@@ -1098,19 +1101,21 @@ function createStarOrbitTarget(starId: number, position = getSystemStarOrbitPosi
   return { kind: "star", starId, position: cloneSystemPosition(position) };
 }
 
-function createStarbaseOrbitTarget(starbase: ServerStarbase, position = getSystemStarbaseOrbitPosition()): FleetOrbitTarget {
+function createStarbaseOrbitTarget(starbase: ServerStarbase, position?: ReturnType<typeof systemCenterPosition>): FleetOrbitTarget {
+  const starbasePosition = starbase.systemPosition ?? getSystemStarbasePosition();
+  const orbitPosition = position ?? getSystemStarbaseOrbitPosition(starbasePosition);
   return {
     kind: "starbase",
     starId: starbase.starId,
     starbaseId: starbase.id,
-    position: cloneSystemPosition(position),
+    position: cloneSystemPosition(orbitPosition),
   };
 }
 
 function getDefaultMoveDestination(starId: number): { position: ReturnType<typeof systemCenterPosition>; orbitTarget: FleetOrbitTarget } {
   const starbase = getStarbaseInSystem(starId);
   if (starbase) {
-    const position = getSystemStarbaseOrbitPosition();
+    const position = getSystemStarbaseOrbitPosition(starbase.systemPosition);
     return { position, orbitTarget: createStarbaseOrbitTarget(starbase, position) };
   }
   const position = getSystemStarOrbitPosition();
@@ -1949,6 +1954,7 @@ function completeFleetOrder(fleet: GameFleet): void {
         id: createRuntimeId("starbase", [fleet.ownerId, starId]),
         ownerId: fleet.ownerId,
         starId,
+        systemPosition: getSystemStarbasePosition(),
         status: "online",
         buildProgress: 1,
         level: "outpost",
@@ -1960,7 +1966,7 @@ function completeFleetOrder(fleet: GameFleet): void {
       state.starbases.push(starbase);
       state.starOwnership[starId] = fleet.ownerId;
     }
-    finalOrbitTarget = createStarbaseOrbitTarget(starbase, getSystemStarbaseOrbitPosition());
+    finalOrbitTarget = createStarbaseOrbitTarget(starbase);
     fleet.systemPosition = finalOrbitTarget.position;
   }
 
@@ -2989,7 +2995,7 @@ function spawnCompletedShip(starbase: ServerStarbase, item: { shipKind: Starbase
   const fleet = createFleet(starbase.ownerId, starbase.starId, [ship.id], fleetId);
   fleet.phaseStartedAtYear = state.clock.year;
   fleet.speed = ship.speed;
-  fleet.systemPosition = getSystemStarbaseOrbitPosition();
+  fleet.systemPosition = getSystemStarbaseOrbitPosition(starbase.systemPosition);
   applyFleetOrbitTarget(fleet, createStarbaseOrbitTarget(starbase, fleet.systemPosition));
   setFleetPhase(fleet, "orbiting");
   state.ships.push(ship);

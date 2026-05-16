@@ -59,6 +59,7 @@ export interface ServerStarbase {
   id: string;
   ownerId: number;
   starId: number;
+  systemPosition: ShipSystemPosition;
   status: "online" | "building";
   buildProgress: number;
   level: StarbaseLevel;

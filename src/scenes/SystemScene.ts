@@ -48,6 +48,7 @@ import {
   getPlanetVisualDiameter,
   getSystemOrbitLayout,
   getSystemStarOrbitPosition,
+  getSystemStarbasePosition,
   getSystemStarbaseOrbitPosition,
   SYSTEM_FLEET_Y,
   SYSTEM_HYPERLANE_EXIT_MARKER_Y,
@@ -344,11 +345,11 @@ export class SystemScene implements IGameScene {
     if (!this.hasStarbasePresence() || this.starbaseRoot) return;
     console.log(`✅ This is the starbase system!`);
 
-    const starRadius = Math.max(0.6, this.starDiameter * 0.5);
+    const starbaseSystemPosition = this.getStarbasesInCurrentSystem()[0]?.systemPosition ?? getSystemStarbasePosition();
     const starbaseBasePosition = new Vector3(
-      3.2,
+      starbaseSystemPosition.x,
       8.5,
-      -(starRadius + 4.5 + 10),
+      starbaseSystemPosition.z,
     );
     this.starbaseRoot = new TransformNode("starbaseRoot", this.scene);
     this.starbaseRoot.position = starbaseBasePosition.clone();
@@ -1013,13 +1014,14 @@ export class SystemScene implements IGameScene {
 
     const starbase = this.getStarbasesInCurrentSystem()[0];
     if (starbase) {
-      const starbasePosition = getSystemStarbaseOrbitPosition();
+      const starbasePosition = starbase.systemPosition ?? getSystemStarbasePosition();
+      const starbaseOrbitPosition = getSystemStarbaseOrbitPosition(starbasePosition);
       targets.push({
         kind: "starbase",
         label: "Starbase",
         starId: this.star.id,
         starbaseId: starbase.id,
-        position: starbasePosition,
+        position: starbaseOrbitPosition,
         markerPosition: starbasePosition,
       });
     }

@@ -25,7 +25,8 @@ export const SYSTEM_HYPERLANE_EXIT_MARKER_Y = 2.8;
 
 const SYSTEM_FLEET_STAGING_POSITION: SystemPosition = { x: 23, y: SYSTEM_FLEET_Y, z: -19 };
 const SYSTEM_STAR_ORBIT_POSITION: SystemPosition = { x: 0, y: SYSTEM_FLEET_Y, z: -8 };
-const SYSTEM_STARBASE_ORBIT_POSITION: SystemPosition = { x: 3.2, y: SYSTEM_FLEET_Y, z: -18 };
+const SYSTEM_STARBASE_POSITION: SystemPosition = { x: 3.2, y: SYSTEM_FLEET_Y, z: -18 };
+const SYSTEM_STARBASE_ORBIT_OFFSET: SystemPosition = { x: 10, y: 0, z: 0 };
 
 export interface SystemOrbitLayout {
   orbitBaseOffset: number;
@@ -207,8 +208,18 @@ export function getSystemStarOrbitPosition(): SystemPosition {
   return { ...SYSTEM_STAR_ORBIT_POSITION };
 }
 
-export function getSystemStarbaseOrbitPosition(): SystemPosition {
-  return { ...SYSTEM_STARBASE_ORBIT_POSITION };
+export function getSystemStarbasePosition(): SystemPosition {
+  return { ...SYSTEM_STARBASE_POSITION };
+}
+
+export function getSystemStarbaseOrbitPosition(
+  starbasePosition: SystemPosition = SYSTEM_STARBASE_POSITION,
+): SystemPosition {
+  return {
+    x: starbasePosition.x + SYSTEM_STARBASE_ORBIT_OFFSET.x,
+    y: SYSTEM_FLEET_Y,
+    z: starbasePosition.z + SYSTEM_STARBASE_ORBIT_OFFSET.z,
+  };
 }
 
 export function interpolateSystemPosition(
