@@ -112,6 +112,7 @@ import type {
   ServerBattleRound,
   ServerBattleShipState,
   ServerBattleStarbaseState,
+  ServerBattleWeaponEffect,
   ServerFleet,
   FleetMovementPlan,
   FleetMovementSegment,
@@ -4804,6 +4805,8 @@ function processBattles(arrivingFleets: GameFleet[]): {
       let anyHit = false;
       let anyAccuracyMiss = false;
       let anyDodged = false;
+      const targetGroupId = targetShip?.groupId ?? (targetIsStarbase ? starbaseState?.groupId ?? null : null);
+      const weaponEffects: ServerBattleWeaponEffect[] = [];
 
       const targetEvasion = targetShip
         ? getShipEvasion(targetShip, fleetsById, shipsById)
@@ -4816,6 +4819,19 @@ function processBattles(arrivingFleets: GameFleet[]): {
         const roll = rollWeaponShot(mount, targetEvasion);
         anyAccuracyMiss ||= roll.accuracyMiss;
         anyDodged ||= roll.dodged;
+        const weaponEffect: ServerBattleWeaponEffect = {
+          targetId: shipState.targetId,
+          targetGroupId,
+          weaponId: getWeaponId(mount),
+          weaponName: getWeaponName(mount),
+          hit: roll.hit,
+          accuracyMiss: roll.accuracyMiss,
+          dodged: roll.dodged,
+          shieldDamage: 0,
+          armorDamage: 0,
+          hullDamage: 0,
+          targetDestroyed: false,
+        };
         if (!roll.hit) {
           recordBattleShot(
             battle,
@@ -4826,6 +4842,7 @@ function processBattles(arrivingFleets: GameFleet[]): {
             mount,
             roll,
           );
+          weaponEffects.push(weaponEffect);
           continue;
         }
         anyHit = true;
@@ -4836,11 +4853,15 @@ function processBattles(arrivingFleets: GameFleet[]): {
           totalShieldDamage += result.shieldDamage;
           totalArmorDamage += result.armorDamage;
           totalHullDamage += result.hullDamage;
+          weaponEffect.shieldDamage = result.shieldDamage;
+          weaponEffect.armorDamage = result.armorDamage;
+          weaponEffect.hullDamage = result.hullDamage;
           targetShip.lastHitRound = battle.round;
           hitTargets.add(targetShip.shipId);
           if (result.destroyed) {
             targetShip.destroyed = true;
           }
+          weaponEffect.targetDestroyed = !wasDestroyed && targetShip.destroyed;
           recordBattleShot(
             battle,
             shipState.participantId ?? getFleetParticipantId(shipState.fleetId),
@@ -4857,12 +4878,16 @@ function processBattles(arrivingFleets: GameFleet[]): {
           totalShieldDamage += result.shieldDamage;
           totalArmorDamage += result.armorDamage;
           totalHullDamage += result.hullDamage;
+          weaponEffect.shieldDamage = result.shieldDamage;
+          weaponEffect.armorDamage = result.armorDamage;
+          weaponEffect.hullDamage = result.hullDamage;
           starbaseState.lastHitRound = battle.round;
           if (result.shieldDamage > 0 && starbaseEntity) starbaseEntity.lastShieldDamageAtYear = state.clock.year;
           hitTargets.add(starbaseState.starbaseId);
           if (result.destroyed) {
             starbaseState.destroyed = true;
           }
+          weaponEffect.targetDestroyed = result.destroyed;
           recordBattleShot(
             battle,
             shipState.participantId ?? getFleetParticipantId(shipState.fleetId),
@@ -4874,14 +4899,17 @@ function processBattles(arrivingFleets: GameFleet[]): {
             { shield: result.shieldDamage, armor: result.armorDamage, hull: result.hullDamage },
           );
         }
+        weaponEffects.push(weaponEffect);
       }
 
       const targetDestroyed = targetShip ? targetShip.destroyed : (targetIsStarbase ? !!starbaseState?.destroyed : false);
+      const representativeEffect = weaponEffects.find((effect) => effect.hit) ?? weaponEffects[0];
       action.fired = {
         targetId: shipState.targetId,
-        targetGroupId: targetShip?.groupId ?? (targetIsStarbase ? starbaseState?.groupId ?? null : null),
-        weaponId: mounts[0] ? getWeaponId(mounts[0]) : undefined,
-        weaponName: mounts[0] ? getWeaponName(mounts[0]) : undefined,
+        targetGroupId,
+        weaponId: representativeEffect?.weaponId,
+        weaponName: representativeEffect?.weaponName,
+        weaponEffects,
         hit: anyHit,
         accuracyMiss: anyAccuracyMiss,
         dodged: anyDodged,
@@ -4912,6 +4940,8 @@ function processBattles(arrivingFleets: GameFleet[]): {
             let anyHit = false;
             let anyAccuracyMiss = false;
             let anyDodged = false;
+            const targetGroupId = target.groupId ?? null;
+            const weaponEffects: ServerBattleWeaponEffect[] = [];
             const targetEvasion = getShipEvasion(target, fleetsById, shipsById);
 
             for (const mount of mounts) {
@@ -4920,6 +4950,19 @@ function processBattles(arrivingFleets: GameFleet[]): {
               const roll = rollWeaponShot(mount, targetEvasion);
               anyAccuracyMiss ||= roll.accuracyMiss;
               anyDodged ||= roll.dodged;
+              const weaponEffect: ServerBattleWeaponEffect = {
+                targetId: target.shipId,
+                targetGroupId,
+                weaponId: getWeaponId(mount),
+                weaponName: getWeaponName(mount),
+                hit: roll.hit,
+                accuracyMiss: roll.accuracyMiss,
+                dodged: roll.dodged,
+                shieldDamage: 0,
+                armorDamage: 0,
+                hullDamage: 0,
+                targetDestroyed: false,
+              };
               if (!roll.hit) {
                 recordBattleShot(
                   battle,
@@ -4930,6 +4973,7 @@ function processBattles(arrivingFleets: GameFleet[]): {
                   mount,
                   roll,
                 );
+                weaponEffects.push(weaponEffect);
                 continue;
               }
               anyHit = true;
@@ -4938,11 +4982,15 @@ function processBattles(arrivingFleets: GameFleet[]): {
               totalShieldDamage += result.shieldDamage;
               totalArmorDamage += result.armorDamage;
               totalHullDamage += result.hullDamage;
+              weaponEffect.shieldDamage = result.shieldDamage;
+              weaponEffect.armorDamage = result.armorDamage;
+              weaponEffect.hullDamage = result.hullDamage;
               target.lastHitRound = battle.round;
               hitTargets.add(target.shipId);
               if (result.destroyed) {
                 target.destroyed = true;
               }
+              weaponEffect.targetDestroyed = !wasDestroyed && target.destroyed;
               recordBattleShot(
                 battle,
                 starbaseState.participantId ?? getStarbaseParticipantId(starbaseState.starbaseId),
@@ -4954,13 +5002,16 @@ function processBattles(arrivingFleets: GameFleet[]): {
                 { shield: result.shieldDamage, armor: result.armorDamage, hull: result.hullDamage },
                 !wasDestroyed && result.destroyed,
               );
+              weaponEffects.push(weaponEffect);
             }
 
+            const representativeEffect = weaponEffects.find((effect) => effect.hit) ?? weaponEffects[0];
             action.fired = {
               targetId: target.shipId,
-              targetGroupId: target.groupId ?? null,
-              weaponId: mounts[0] ? getWeaponId(mounts[0]) : undefined,
-              weaponName: mounts[0] ? getWeaponName(mounts[0]) : undefined,
+              targetGroupId,
+              weaponId: representativeEffect?.weaponId,
+              weaponName: representativeEffect?.weaponName,
+              weaponEffects,
               hit: anyHit,
               accuracyMiss: anyAccuracyMiss,
               dodged: anyDodged,

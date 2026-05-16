@@ -367,6 +367,7 @@ export interface ServerBattleAction {
     targetGroupId?: string | null;
     weaponId?: string;
     weaponName?: string;
+    weaponEffects?: ServerBattleWeaponEffect[];
     hit: boolean;
     accuracyMiss?: boolean;
     dodged?: boolean;
@@ -375,6 +376,20 @@ export interface ServerBattleAction {
     hullDamage: number;
     targetDestroyed: boolean;
   };
+}
+
+export interface ServerBattleWeaponEffect {
+  targetId: string;
+  targetGroupId?: string | null;
+  weaponId?: string;
+  weaponName?: string;
+  hit: boolean;
+  accuracyMiss?: boolean;
+  dodged?: boolean;
+  shieldDamage: number;
+  armorDamage: number;
+  hullDamage: number;
+  targetDestroyed: boolean;
 }
 
 export interface ServerBattleRound {

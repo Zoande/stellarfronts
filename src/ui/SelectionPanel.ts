@@ -122,7 +122,8 @@ export class SelectionPanel {
 }
 
 .spaceSelectionPanel.ship,
-.spaceSelectionPanel.fleet {
+.spaceSelectionPanel.fleet,
+.spaceSelectionPanel.battleGroup {
   border-color: var(--selection-color);
 }
 
@@ -141,7 +142,8 @@ export class SelectionPanel {
 }
 
 .spaceSelectionPanel.ship .spaceSelectionPanelTitle,
-.spaceSelectionPanel.fleet .spaceSelectionPanelTitle {
+.spaceSelectionPanel.fleet .spaceSelectionPanelTitle,
+.spaceSelectionPanel.battleGroup .spaceSelectionPanelTitle {
   color: var(--selection-color);
 }
 
@@ -190,7 +192,8 @@ export class SelectionPanel {
 }
 
 .spaceSelectionPanel.ship .spaceSelectionPanelHpFill,
-.spaceSelectionPanel.fleet .spaceSelectionPanelHpFill {
+.spaceSelectionPanel.fleet .spaceSelectionPanelHpFill,
+.spaceSelectionPanel.battleGroup .spaceSelectionPanelHpFill {
   background: linear-gradient(90deg, var(--selection-color-soft), var(--selection-color));
 }
 
