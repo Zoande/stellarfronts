@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   applyWeaponDamage,
+  getCombatGroupMinSize,
   getCombatGroupMaxSize,
+  getCombatGroupSizeRules,
+  getWeaponMaxSystemRange,
+  getWeaponMinSystemRange,
   getPreferredRangeBand,
+  rangeBandForSystemDistance,
   rollWeaponShot,
+  weaponCanFireAtDistance,
   weaponCanFireAtRange,
 } from "./combat";
 import type { WeaponMountDefinition } from "../src/data/Starbase";
@@ -87,8 +93,10 @@ test("accuracy miss and evasion dodge are separate rolls", () => {
 });
 
 test("combat group caps preserve small ship detail", () => {
+  assert.equal(getCombatGroupMinSize("corvette"), 5);
   assert.equal(getCombatGroupMaxSize("corvette"), 20);
   assert.equal(getCombatGroupMaxSize(null), 10);
+  assert.deepEqual(getCombatGroupSizeRules("corvette"), { min: 5, max: 20 });
 });
 
 test("range bands gate weapon fire and preferred range", () => {
@@ -108,4 +116,18 @@ test("long-range weapons can outrange short-range stationary defenses", () => {
 
   assert.equal(weaponCanFireAtRange(artillery, "long"), true);
   assert.equal(weaponCanFireAtRange(stationLaser, "long"), false);
+});
+
+test("real system distance gates weapon fire with minimum range", () => {
+  const artillery = weapon({ minRangeBand: "long", maxRangeBand: "extreme", optimalRangeBand: "extreme" });
+  const pointDefense = weapon({ minRangeBand: "pointBlank", maxRangeBand: "close", optimalRangeBand: "close" });
+
+  assert.equal(getWeaponMinSystemRange(artillery), 30);
+  assert.equal(getWeaponMaxSystemRange(artillery), 64);
+  assert.equal(weaponCanFireAtDistance(artillery, 46), true);
+  assert.equal(weaponCanFireAtDistance(artillery, 10), false);
+  assert.equal(weaponCanFireAtDistance(pointDefense, 10), true);
+  assert.equal(weaponCanFireAtDistance(pointDefense, 30), false);
+  assert.equal(rangeBandForSystemDistance(5), "pointBlank");
+  assert.equal(rangeBandForSystemDistance(47), "extreme");
 });

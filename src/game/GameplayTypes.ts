@@ -8,7 +8,9 @@ export type ShipAction =
   | "retreat"
   | "retreatTo"
   | "emergencyRetreatTo"
-  | "orbit";
+  | "orbit"
+  | "hold"
+  | "protect";
 
 export interface GalaxyShipTransit {
   fromStarId: number;

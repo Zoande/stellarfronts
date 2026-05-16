@@ -6,7 +6,7 @@
 import type { ShipAction } from "../game/GameplayTypes";
 import type { BattleLayerDamage } from "../game/GameProtocol";
 
-export type SelectionType = "ship" | "fleet" | "starbase";
+export type SelectionType = "ship" | "fleet" | "starbase" | "battleGroup";
 
 export interface SelectionData {
   type: SelectionType;
@@ -493,11 +493,13 @@ export class SelectionPanel {
       retreatTo: "Retreat To",
       emergencyRetreatTo: "Emergency Retreat",
       orbit: "Orbit",
+      hold: "Hold",
+      protect: "Protect",
     };
     const actions = (data.actions && data.actions.length > 0)
       ? data.actions
       : ["move", "build", "attack", "merge"];
-    const actionButtons = (data.type === "ship" || data.type === "fleet") && data.canCommand
+    const actionButtons = (data.type === "ship" || data.type === "fleet" || data.type === "battleGroup") && data.canCommand
       ? `
         <div class="spaceSelectionActions">
           ${actions.map((action) => `

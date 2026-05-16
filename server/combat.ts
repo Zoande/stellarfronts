@@ -108,6 +108,47 @@ export function weaponCanFireAtRange(mount: WeaponMountDefinition, rangeBand: Ra
   return range >= RANGE_BAND_INDEX[getWeaponMinRangeBand(mount)] && range <= RANGE_BAND_INDEX[getWeaponMaxRangeBand(mount)];
 }
 
+export const RANGE_BAND_SYSTEM_DISTANCE: Record<RangeBand, number> = {
+  pointBlank: 6,
+  close: 16,
+  medium: 30,
+  long: 46,
+  extreme: 64,
+  outOfRange: Number.POSITIVE_INFINITY,
+};
+
+export const RANGE_BAND_MIN_SYSTEM_DISTANCE: Record<RangeBand, number> = {
+  pointBlank: 0,
+  close: RANGE_BAND_SYSTEM_DISTANCE.pointBlank,
+  medium: RANGE_BAND_SYSTEM_DISTANCE.close,
+  long: RANGE_BAND_SYSTEM_DISTANCE.medium,
+  extreme: RANGE_BAND_SYSTEM_DISTANCE.long,
+  outOfRange: RANGE_BAND_SYSTEM_DISTANCE.extreme,
+};
+
+export function getWeaponMinSystemRange(mount: WeaponMountDefinition): number {
+  return RANGE_BAND_MIN_SYSTEM_DISTANCE[getWeaponMinRangeBand(mount)] ?? 0;
+}
+
+export function getWeaponMaxSystemRange(mount: WeaponMountDefinition): number {
+  return RANGE_BAND_SYSTEM_DISTANCE[getWeaponMaxRangeBand(mount)] ?? RANGE_BAND_SYSTEM_DISTANCE.close;
+}
+
+export function weaponCanFireAtDistance(mount: WeaponMountDefinition, distance: number): boolean {
+  const normalized = Math.max(0, Number.isFinite(distance) ? distance : Number.POSITIVE_INFINITY);
+  return normalized >= getWeaponMinSystemRange(mount) && normalized <= getWeaponMaxSystemRange(mount);
+}
+
+export function rangeBandForSystemDistance(distance: number): RangeBand {
+  const normalized = Math.max(0, Number.isFinite(distance) ? distance : Number.POSITIVE_INFINITY);
+  if (normalized <= RANGE_BAND_SYSTEM_DISTANCE.pointBlank) return "pointBlank";
+  if (normalized <= RANGE_BAND_SYSTEM_DISTANCE.close) return "close";
+  if (normalized <= RANGE_BAND_SYSTEM_DISTANCE.medium) return "medium";
+  if (normalized <= RANGE_BAND_SYSTEM_DISTANCE.long) return "long";
+  if (normalized <= RANGE_BAND_SYSTEM_DISTANCE.extreme) return "extreme";
+  return "outOfRange";
+}
+
 export function getLegacyWeaponRange(mount: WeaponMountDefinition): number {
   return WEAPON_KIND_DEFINITIONS[mount.kind]?.range ?? Math.max(1, RANGE_BAND_INDEX[getWeaponMaxRangeBand(mount)]);
 }
@@ -121,6 +162,18 @@ export function getPreferredRangeBand(mounts: WeaponMountDefinition[]): RangeBan
 export function getCombatGroupMaxSize(shipKind?: StarbaseShipKind | null): number {
   if (shipKind === "corvette") return 20;
   return 10;
+}
+
+export function getCombatGroupMinSize(shipKind?: StarbaseShipKind | null): number {
+  if (shipKind === "corvette") return 5;
+  return 3;
+}
+
+export function getCombatGroupSizeRules(shipKind?: StarbaseShipKind | null): { min: number; max: number } {
+  return {
+    min: getCombatGroupMinSize(shipKind),
+    max: getCombatGroupMaxSize(shipKind),
+  };
 }
 
 export function rollWeaponShot(

@@ -84,11 +84,18 @@ import type {
 import { buildHyperlaneAdjacency, buildHyperlanePairs } from "../src/data/Hyperlanes";
 import {
   RANGE_BAND_INDEX,
-  rangeBandFromIndex,
+  type BattleGroupBehavior,
+  type BattleGroupChaseSetting,
+  type BattleGroupOrderType,
   type CombatStance,
   type RangeBand,
 } from "../src/game/CombatTypes";
 import type {
+  BattleGroupConfig,
+  BattleGroupProtectedTarget,
+  BattleGroupRetreatDestination,
+  BattleGroupRetreatPolicy,
+  BattleGroupTacticalOrder,
   BattleHostilityEdge,
   BattleParticipant,
   ClientCommand,
@@ -110,6 +117,7 @@ import type {
   FleetMovementSegment,
   FleetOrbitTarget,
   FleetOrderType,
+  FleetCombatSettings,
   FleetRetreatState,
   ServerEvent,
   ServerShip,
@@ -126,14 +134,17 @@ import {
   ensureOwnerStats,
   ensureParticipantStats,
   ensureWeaponStats,
+  getCombatGroupMinSize,
   getCombatGroupMaxSize,
   getLegacyWeaponRange,
   getPreferredRangeBand,
   getWeaponId,
-  getWeaponMaxRangeBand,
   getWeaponName,
+  getWeaponMaxSystemRange,
+  getWeaponMinSystemRange,
+  rangeBandForSystemDistance,
   rollWeaponShot,
-  weaponCanFireAtRange,
+  weaponCanFireAtDistance,
 } from "./combat";
 import {
   GAME_DAYS_PER_QUARTER,
@@ -179,15 +190,11 @@ const EMERGENCY_RETREAT_SHIP_LOSS_CHANCE = 0.06;
 const EMERGENCY_RETREAT_MIN_MIA_DAYS = 8;
 const EMERGENCY_RETREAT_DISTANCE_MIA_DIVISOR = 14;
 const SYSTEM_FLEET_SPEED_UNITS_PER_DAY = 10.4;
+const BATTLE_GROUP_SPEED_UNITS_PER_DAY = 7.2;
+const DEFAULT_BATTLE_GROUP_LEASH_RADIUS = 42;
+const DEFENDER_BATTLE_GROUP_LEASH_RADIUS = 36;
+const RETREAT_ESCAPE_DISTANCE = 78;
 const SYSTEM_PLANET_ORBIT_DISTANCE = 3.4;
-const RANGE_BAND_SYSTEM_DISTANCE: Record<RangeBand, number> = {
-  pointBlank: 6,
-  close: 16,
-  medium: 30,
-  long: 46,
-  extreme: 64,
-  outOfRange: 0,
-};
 
 interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
@@ -237,6 +244,15 @@ let runtimeIdCounter = 0;
 
 const FLEET_FORMATIONS: FleetFormation[] = ["line", "vanguard", "echelon", "defensive"];
 const COMBAT_STANCES: CombatStance[] = ["passive", "defensive", "aggressive", "evade", "holdPosition"];
+const BATTLE_GROUP_BEHAVIORS: BattleGroupBehavior[] = ["screen", "brawler", "line", "artillery", "defender"];
+const BATTLE_GROUP_CHASE_SETTINGS: BattleGroupChaseSetting[] = [
+  "none",
+  "system",
+  "friendlySystems",
+  "neutralSystems",
+  "enemySystems",
+];
+const BATTLE_GROUP_ORDER_TYPES: BattleGroupOrderType[] = ["move", "attack", "hold", "protect", "retreat"];
 
 function isFleetFormation(value: string | undefined): value is FleetFormation {
   return !!value && FLEET_FORMATIONS.includes(value as FleetFormation);
@@ -244,6 +260,18 @@ function isFleetFormation(value: string | undefined): value is FleetFormation {
 
 function isCombatStance(value: string | undefined): value is CombatStance {
   return !!value && COMBAT_STANCES.includes(value as CombatStance);
+}
+
+function isBattleGroupBehavior(value: unknown): value is BattleGroupBehavior {
+  return typeof value === "string" && BATTLE_GROUP_BEHAVIORS.includes(value as BattleGroupBehavior);
+}
+
+function isBattleGroupChaseSetting(value: unknown): value is BattleGroupChaseSetting {
+  return typeof value === "string" && BATTLE_GROUP_CHASE_SETTINGS.includes(value as BattleGroupChaseSetting);
+}
+
+function isBattleGroupOrderType(value: unknown): value is BattleGroupOrderType {
+  return typeof value === "string" && BATTLE_GROUP_ORDER_TYPES.includes(value as BattleGroupOrderType);
 }
 
 function createRuntimeId(prefix: string, parts: Array<string | number | undefined> = []): string {
@@ -492,6 +520,9 @@ function createFleet(
     orbitOffset: null,
     orbitTarget: null,
     mergeTargetFleetId: null,
+    battleGroups: [],
+    combatSettings: createDefaultFleetCombatSettings(),
+    alertMode: false,
   };
 }
 
@@ -529,6 +560,144 @@ function normalizeFleetRetreatState(retreatState: Partial<FleetRetreatState> | n
     startedAtYear: Number(retreatState.startedAtYear) || GAME_START_YEAR,
     miaUntilYear: Number.isFinite(retreatState.miaUntilYear) ? retreatState.miaUntilYear ?? null : null,
     riskApplied: retreatState.riskApplied === true,
+  };
+}
+
+function normalizeSystemPositionValue(
+  position: Partial<ReturnType<typeof systemCenterPosition>> | null | undefined,
+  fallback: ReturnType<typeof systemCenterPosition> | null = null,
+): ReturnType<typeof systemCenterPosition> | null {
+  if (!position) return fallback ? cloneSystemPosition(fallback) : null;
+  const x = Number(position.x);
+  const y = Number(position.y);
+  const z = Number(position.z);
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+    return fallback ? cloneSystemPosition(fallback) : null;
+  }
+  return { x, y, z };
+}
+
+function normalizeBattleGroupRetreatPolicy(value: Partial<BattleGroupRetreatPolicy> | null | undefined): BattleGroupRetreatPolicy {
+  const mode = value?.mode === "none" ? "none" : "hpPercent";
+  if (mode === "none") return { mode: "none", thresholdPercent: null };
+  const threshold = Number(value?.thresholdPercent);
+  return {
+    mode: "hpPercent",
+    thresholdPercent: clamp(Number.isFinite(threshold) ? threshold : 30, 1, 99),
+  };
+}
+
+function normalizeBattleGroupRetreatDestination(
+  value: Partial<BattleGroupRetreatDestination> | null | undefined,
+): BattleGroupRetreatDestination | null {
+  if (!value) return null;
+  if (value.kind === "selectedSystem") {
+    const targetStarId = Number(value.targetStarId);
+    if (!Number.isInteger(targetStarId) || targetStarId < 0) return null;
+    return {
+      kind: "selectedSystem",
+      targetStarId,
+      targetSystemPosition: normalizeSystemPositionValue(value.targetSystemPosition),
+    };
+  }
+  if (value.kind === "nearestFriendlyStarbase") {
+    return { kind: "nearestFriendlyStarbase" };
+  }
+  return null;
+}
+
+function normalizeBattleGroupProtectedTarget(
+  value: Partial<BattleGroupProtectedTarget> | null | undefined,
+): BattleGroupProtectedTarget | null {
+  if (!value) return null;
+  if (value.kind !== "battleGroup" && value.kind !== "fleet" && value.kind !== "starbase" && value.kind !== "planet" && value.kind !== "position") {
+    return null;
+  }
+  return {
+    kind: value.kind,
+    id: typeof value.id === "string" ? value.id : null,
+    position: normalizeSystemPositionValue(value.position),
+  };
+}
+
+function normalizeBattleGroupOrder(
+  order: Partial<BattleGroupTacticalOrder> | null | undefined,
+): BattleGroupTacticalOrder | null {
+  if (!order || !isBattleGroupOrderType(order.type)) return null;
+  return {
+    type: order.type,
+    targetGroupId: typeof order.targetGroupId === "string" ? order.targetGroupId : null,
+    targetObjectId: typeof order.targetObjectId === "string" ? order.targetObjectId : null,
+    targetPosition: normalizeSystemPositionValue(order.targetPosition),
+    protectedTarget: normalizeBattleGroupProtectedTarget(order.protectedTarget),
+    issuedAtYear: Number.isFinite(order.issuedAtYear) ? Number(order.issuedAtYear) : null,
+  };
+}
+
+function createDefaultFleetCombatSettings(
+  overrides: Partial<FleetCombatSettings> | null | undefined = null,
+): FleetCombatSettings {
+  return {
+    retreatDestination: normalizeBattleGroupRetreatDestination(overrides?.retreatDestination),
+    retreatOrder: overrides?.retreatOrder === "retreat" ? "retreat" : "none",
+    defaultBehavior: isBattleGroupBehavior(overrides?.defaultBehavior) ? overrides!.defaultBehavior! : "line",
+    defaultChaseSetting: isBattleGroupChaseSetting(overrides?.defaultChaseSetting) ? overrides!.defaultChaseSetting! : "system",
+  };
+}
+
+function getDefaultChaseForBehavior(behavior: BattleGroupBehavior): BattleGroupChaseSetting {
+  if (behavior === "artillery" || behavior === "defender" || behavior === "line") return "none";
+  return "system";
+}
+
+function getDefaultRetreatPolicyForBehavior(behavior: BattleGroupBehavior): BattleGroupRetreatPolicy {
+  if (behavior === "artillery") return { mode: "hpPercent", thresholdPercent: 70 };
+  if (behavior === "line") return { mode: "hpPercent", thresholdPercent: 40 };
+  if (behavior === "screen") return { mode: "hpPercent", thresholdPercent: 20 };
+  if (behavior === "defender") return { mode: "hpPercent", thresholdPercent: 35 };
+  return { mode: "hpPercent", thresholdPercent: 30 };
+}
+
+function getDefaultBehaviorForMounts(mounts: WeaponMountDefinition[]): BattleGroupBehavior {
+  const preferred = getPreferredRangeBand(mounts);
+  if (preferred === "long" || preferred === "extreme") return "artillery";
+  if (preferred === "pointBlank" || preferred === "close") return "brawler";
+  return "line";
+}
+
+function normalizeBattleGroupConfig(
+  value: Partial<BattleGroupConfig> | null | undefined,
+  fleet: Pick<GameFleet, "id" | "systemPosition" | "combatSettings">,
+  fallbackId: string,
+  fallbackName: string,
+  fallbackBehavior: BattleGroupBehavior,
+  validShipIds: Set<string>,
+): BattleGroupConfig {
+  const behavior = isBattleGroupBehavior(value?.behavior)
+    ? value!.behavior!
+    : (fallbackBehavior ?? fleet.combatSettings.defaultBehavior);
+  const origin = normalizeSystemPositionValue(value?.originPosition);
+  const deployed = normalizeSystemPositionValue(value?.deployedPosition, origin ?? fleet.systemPosition ?? systemCenterPosition());
+  const leash = Number(value?.leashRadius);
+  return {
+    id: typeof value?.id === "string" && value.id.trim().length > 0 ? value.id : fallbackId,
+    name: typeof value?.name === "string" && value.name.trim().length > 0
+      ? value.name.trim().slice(0, 48)
+      : fallbackName,
+    shipIds: Array.isArray(value?.shipIds)
+      ? Array.from(new Set(value.shipIds.filter((shipId): shipId is string => validShipIds.has(shipId))))
+      : [],
+    behavior,
+    retreatPolicy: normalizeBattleGroupRetreatPolicy(value?.retreatPolicy ?? getDefaultRetreatPolicyForBehavior(behavior)),
+    retreatDestination: normalizeBattleGroupRetreatDestination(value?.retreatDestination),
+    chaseSetting: isBattleGroupChaseSetting(value?.chaseSetting)
+      ? value!.chaseSetting!
+      : getDefaultChaseForBehavior(behavior),
+    protectedTarget: normalizeBattleGroupProtectedTarget(value?.protectedTarget),
+    originPosition: origin,
+    deployedPosition: deployed,
+    leashRadius: Number.isFinite(leash) && leash > 0 ? clamp(leash, 8, 160) : (behavior === "defender" ? DEFENDER_BATTLE_GROUP_LEASH_RADIUS : DEFAULT_BATTLE_GROUP_LEASH_RADIUS),
+    currentOrder: normalizeBattleGroupOrder(value?.currentOrder),
   };
 }
 
@@ -581,10 +750,14 @@ function normalizeFleet(
   const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "orbit" || fleet.orderType === "merge" || fleet.orderType === "retreat"
     ? fleet.orderType
     : null;
+  const shipIds = Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [];
+  const validShipIds = new Set(shipIds);
+  const combatSettings = createDefaultFleetCombatSettings(fleet.combatSettings);
+  const systemPosition = fleet.systemPosition ?? systemCenterPosition();
   return {
     id: fleet.id,
     ownerId: Number.isInteger(fleet.ownerId) ? fleet.ownerId : 0,
-    shipIds: Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [],
+    shipIds,
     formation,
     currentStarId,
     targetStarId,
@@ -599,13 +772,25 @@ function normalizeFleet(
     speed: Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
     combatStance: isCombatStance(fleet.combatStance) ? fleet.combatStance : "aggressive",
     retreatState: normalizeFleetRetreatState(fleet.retreatState),
-    systemPosition: fleet.systemPosition ?? systemCenterPosition(),
+    systemPosition,
     hyperlanePosition: fleet.hyperlanePosition ?? null,
     movementPlan: fleet.movementPlan ?? null,
     orbitTargetPlanetId: typeof fleet.orbitTargetPlanetId === "string" ? fleet.orbitTargetPlanetId : null,
     orbitOffset: fleet.orbitOffset ?? null,
     orbitTarget: fleet.orbitTarget ?? null,
     mergeTargetFleetId: typeof fleet.mergeTargetFleetId === "string" ? fleet.mergeTargetFleetId : null,
+    battleGroups: Array.isArray(fleet.battleGroups)
+      ? fleet.battleGroups.map((group, index) => normalizeBattleGroupConfig(
+        group,
+        { id: fleet.id, systemPosition, combatSettings },
+        `bg-${fleet.id}-${index}`,
+        `Battle Group ${index + 1}`,
+        combatSettings.defaultBehavior,
+        validShipIds,
+      ))
+      : [],
+    combatSettings,
+    alertMode: fleet.alertMode === true,
   };
 }
 
@@ -644,6 +829,167 @@ function createLegacyFleetFromShip(ship: Partial<ServerShip> & {
     systemPosition: ship.systemPosition ?? systemCenterPosition(),
     hyperlanePosition: ship.hyperlanePosition ?? null,
   });
+}
+
+function getShipDesignForStateShip(
+  nextState: Pick<GameState, "shipDesigns" | "clock">,
+  ship: Pick<ServerShip, "ownerId" | "shipKind" | "designId">,
+): ShipDesign {
+  return resolveShipDesign(nextState.shipDesigns, ship.ownerId, ship.shipKind, ship.designId);
+}
+
+function getBattleGroupCompatibilityKey(
+  nextState: Pick<GameState, "shipDesigns" | "clock">,
+  ship: GameShip,
+): string {
+  const design = getShipDesignForStateShip(nextState, ship);
+  return `${ship.ownerId}:${ship.shipKind}:${design.id}`;
+}
+
+function chunkShipIdsForBattleGroups(shipIds: string[], shipKind: StarbaseShipKind | null | undefined): string[][] {
+  const count = shipIds.length;
+  if (count === 0) return [];
+  const minSize = getCombatGroupMinSize(shipKind);
+  const maxSize = getCombatGroupMaxSize(shipKind);
+  if (count <= maxSize) return [shipIds];
+  let groupCount = Math.ceil(count / maxSize);
+  while (groupCount > 1 && Math.floor(count / groupCount) < minSize) {
+    groupCount -= 1;
+  }
+  const baseSize = Math.floor(count / groupCount);
+  let remainder = count % groupCount;
+  const chunks: string[][] = [];
+  let cursor = 0;
+  for (let index = 0; index < groupCount; index += 1) {
+    const size = baseSize + (remainder > 0 ? 1 : 0);
+    remainder = Math.max(0, remainder - 1);
+    chunks.push(shipIds.slice(cursor, cursor + size));
+    cursor += size;
+  }
+  return chunks;
+}
+
+function createAutoBattleGroupsForShips(
+  nextState: Pick<GameState, "shipDesigns" | "clock">,
+  fleet: GameFleet,
+  ships: GameShip[],
+  namePrefix = "Battle Group",
+): BattleGroupConfig[] {
+  const byCompatibility = new Map<string, GameShip[]>();
+  for (const ship of ships) {
+    const key = getBattleGroupCompatibilityKey(nextState, ship);
+    const list = byCompatibility.get(key) ?? [];
+    list.push(ship);
+    byCompatibility.set(key, list);
+  }
+
+  const groups: BattleGroupConfig[] = [];
+  let nextIndex = 1;
+  for (const compatibleShips of byCompatibility.values()) {
+    compatibleShips.sort((a, b) => a.id.localeCompare(b.id));
+    const firstShip = compatibleShips[0];
+    if (!firstShip) continue;
+    const design = getShipDesignForStateShip(nextState, firstShip);
+    const behavior = getDefaultBehaviorForMounts(calculateShipDesignStats(design).combat.weaponMounts);
+    const chunks = chunkShipIdsForBattleGroups(compatibleShips.map((ship) => ship.id), firstShip.shipKind);
+    for (const chunk of chunks) {
+      const id = `bg-${fleet.id}-${design.id}-${nextIndex}`;
+      groups.push(normalizeBattleGroupConfig(
+        {
+          id,
+          name: `${namePrefix} ${nextIndex}`,
+          shipIds: chunk,
+          behavior,
+          retreatPolicy: getDefaultRetreatPolicyForBehavior(behavior),
+          chaseSetting: getDefaultChaseForBehavior(behavior),
+        },
+        fleet,
+        id,
+        `${namePrefix} ${nextIndex}`,
+        behavior,
+        new Set(fleet.shipIds),
+      ));
+      nextIndex += 1;
+    }
+  }
+  return groups;
+}
+
+function getBattleGroupShipKind(group: BattleGroupConfig, shipsById: Map<string, GameShip>): StarbaseShipKind | null {
+  const firstShip = group.shipIds.map((shipId) => shipsById.get(shipId)).find((ship): ship is GameShip => !!ship);
+  return firstShip?.shipKind ?? null;
+}
+
+function battleGroupAssignmentsSignature(groups: BattleGroupConfig[]): string {
+  return JSON.stringify(groups.map((group) => ({
+    id: group.id,
+    name: group.name,
+    shipIds: group.shipIds,
+    behavior: group.behavior,
+    retreatPolicy: group.retreatPolicy,
+    retreatDestination: group.retreatDestination ?? null,
+    chaseSetting: group.chaseSetting,
+    protectedTarget: group.protectedTarget ?? null,
+    originPosition: group.originPosition ?? null,
+    deployedPosition: group.deployedPosition ?? null,
+    leashRadius: group.leashRadius ?? null,
+    currentOrder: group.currentOrder ?? null,
+  })));
+}
+
+function syncFleetBattleGroups(nextState: GameState, fleet: GameFleet, ships: GameShip[]): boolean {
+  const before = battleGroupAssignmentsSignature(fleet.battleGroups ?? []);
+  const validShipIds = new Set(ships.map((ship) => ship.id));
+  const assigned = new Set<string>();
+  const shipsById = new Map(ships.map((ship) => [ship.id, ship]));
+
+  let groups = (fleet.battleGroups ?? []).map((group, index) => normalizeBattleGroupConfig(
+    group,
+    fleet,
+    group.id || `bg-${fleet.id}-${index}`,
+    group.name || `Battle Group ${index + 1}`,
+    group.behavior,
+    validShipIds,
+  ));
+
+  groups = groups.map((group) => {
+    const nextShipIds: string[] = [];
+    for (const shipId of group.shipIds) {
+      if (!validShipIds.has(shipId) || assigned.has(shipId)) continue;
+      nextShipIds.push(shipId);
+      assigned.add(shipId);
+    }
+    return { ...group, shipIds: nextShipIds };
+  });
+
+  const unassignedShips = ships.filter((ship) => !assigned.has(ship.id));
+  if (groups.length === 0) {
+    groups = createAutoBattleGroupsForShips(nextState, fleet, ships);
+  } else if (unassignedShips.length > 0) {
+    groups.push(...createAutoBattleGroupsForShips(nextState, fleet, unassignedShips, "Reserve Group"));
+  }
+
+  const splitGroups: BattleGroupConfig[] = [];
+  for (const group of groups) {
+    const shipKind = getBattleGroupShipKind(group, shipsById);
+    const maxSize = getCombatGroupMaxSize(shipKind);
+    if (group.shipIds.length <= maxSize) {
+      splitGroups.push(group);
+      continue;
+    }
+    const chunks = chunkShipIdsForBattleGroups(group.shipIds, shipKind);
+    chunks.forEach((chunk, index) => {
+      splitGroups.push({
+        ...group,
+        id: index === 0 ? group.id : `${group.id}-${index + 1}`,
+        name: index === 0 ? group.name : `${group.name} ${index + 1}`,
+        shipIds: chunk,
+      });
+    });
+  }
+
+  fleet.battleGroups = splitGroups;
+  return before !== battleGroupAssignmentsSignature(fleet.battleGroups);
 }
 
 function syncFleetMembership(nextState: GameState): boolean {
@@ -686,6 +1032,9 @@ function syncFleetMembership(nextState: GameState): boolean {
     const nextSpeed = Math.min(...ships.map((ship) => Math.max(0.05, ship.speed)));
     if (Math.abs(fleet.speed - nextSpeed) > 0.0001) {
       fleet.speed = nextSpeed;
+      changed = true;
+    }
+    if (syncFleetBattleGroups(nextState, fleet, ships)) {
       changed = true;
     }
     return true;
@@ -1388,6 +1737,83 @@ function getDefaultMoveDestination(starId: number): { position: ReturnType<typeo
   return { position, orbitTarget: createStarOrbitTarget(starId, position) };
 }
 
+function offsetSystemPosition(
+  position: ReturnType<typeof systemCenterPosition>,
+  dx: number,
+  dz: number,
+): ReturnType<typeof systemCenterPosition> {
+  return { x: position.x + dx, y: SYSTEM_FLEET_Y, z: position.z + dz };
+}
+
+function getBattleGroupDeploymentOffset(
+  group: BattleGroupConfig,
+  index: number,
+  total: number,
+): { dx: number; dz: number } {
+  const lane = index - (total - 1) / 2;
+  const spread = Math.min(18, Math.max(7, total * 2.8));
+  const behaviorDz: Record<BattleGroupBehavior, number> = {
+    screen: -14,
+    brawler: -8,
+    line: 0,
+    artillery: 14,
+    defender: 6,
+  };
+  return {
+    dx: lane * spread,
+    dz: behaviorDz[group.behavior] ?? 0,
+  };
+}
+
+function deployFleetBattleGroups(fleet: GameFleet, force = false): boolean {
+  let changed = false;
+  const groups = fleet.battleGroups.filter((group) => group.shipIds.length > 0);
+  const base = getFleetAuthoritativeSystemPosition(fleet);
+  groups.forEach((group, index) => {
+    const offset = getBattleGroupDeploymentOffset(group, index, groups.length);
+    const position = offsetSystemPosition(base, offset.dx, offset.dz);
+    if (force || !group.deployedPosition) {
+      group.deployedPosition = cloneSystemPosition(position);
+      changed = true;
+    }
+    if (force || !group.originPosition) {
+      group.originPosition = cloneSystemPosition(group.deployedPosition ?? position);
+      changed = true;
+    }
+    if (!group.leashRadius || group.leashRadius <= 0) {
+      group.leashRadius = group.behavior === "defender" ? DEFENDER_BATTLE_GROUP_LEASH_RADIUS : DEFAULT_BATTLE_GROUP_LEASH_RADIUS;
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function movePointToward(
+  from: ReturnType<typeof systemCenterPosition>,
+  to: ReturnType<typeof systemCenterPosition>,
+  maxDistance: number,
+): ReturnType<typeof systemCenterPosition> {
+  const dx = to.x - from.x;
+  const dz = to.z - from.z;
+  const distance = Math.hypot(dx, dz);
+  if (distance <= 0.0001 || distance <= maxDistance) return cloneSystemPosition(to);
+  const scale = maxDistance / distance;
+  return { x: from.x + dx * scale, y: SYSTEM_FLEET_Y, z: from.z + dz * scale };
+}
+
+function clampPositionToLeash(
+  position: ReturnType<typeof systemCenterPosition>,
+  origin: ReturnType<typeof systemCenterPosition>,
+  radius: number,
+): ReturnType<typeof systemCenterPosition> {
+  const dx = position.x - origin.x;
+  const dz = position.z - origin.z;
+  const distance = Math.hypot(dx, dz);
+  if (distance <= radius || radius <= 0) return position;
+  const scale = radius / distance;
+  return { x: origin.x + dx * scale, y: SYSTEM_FLEET_Y, z: origin.z + dz * scale };
+}
+
 function isFleetAvailableForOrders(fleet: GameFleet): boolean {
   return fleet.phase === "idle" || fleet.phase === "orbitingPlanet" || fleet.phase === "orbiting";
 }
@@ -1830,8 +2256,8 @@ function handleMergeFleets(
 
 function handleRetreatFleet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): void {
   const fleet = state.fleets.find((candidate) => candidate.id === fleetId);
-  const targetStarId = fleet ? computeRetreatRoute(fleet)?.at(-1) ?? fleet.currentStarId : -1;
-  handleRetreatFleetTo(socket, perspective, fleetId, targetStarId);
+  const destination = fleet ? resolveBattleGroupRetreatDestinationForFleet(fleet, null) : null;
+  handleRetreatFleetTo(socket, perspective, fleetId, destination?.targetStarId ?? -1, destination?.targetSystemPosition ?? undefined);
 }
 
 function getActiveBattleForFleetId(fleetId: string): GameBattle | null {
@@ -1883,6 +2309,15 @@ function handleRetreatFleetTo(
     targetStarId,
     targetSystemPosition: targetSystemPosition ?? null,
     startedAtYear: state.clock.year,
+  };
+  fleet.combatSettings = {
+    ...fleet.combatSettings,
+    retreatOrder: "retreat",
+    retreatDestination: {
+      kind: "selectedSystem",
+      targetStarId,
+      targetSystemPosition: targetSystemPosition ?? null,
+    },
   };
   if (!battle.retreatingFleetIds.includes(fleetId)) {
     battle.retreatingFleetIds.push(fleetId);
@@ -2012,6 +2447,316 @@ function handleAttackTarget(
   if (result.shipsChanged) changed.push("ships");
   if (result.starbasesChanged) changed.push("starbases");
   broadcastUpdates(changed);
+}
+
+function getOwnedFleetForCombatCommand(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): GameFleet | null {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) {
+    reject(socket, "Observer mode is read-only.");
+    return null;
+  }
+  const fleet = state.fleets.find((candidate) => candidate.id === fleetId) ?? null;
+  if (!fleet) {
+    reject(socket, "Fleet not found.");
+    return null;
+  }
+  if (fleet.ownerId !== factionId) {
+    reject(socket, "You do not own that fleet.");
+    return null;
+  }
+  return fleet;
+}
+
+function getFleetShips(fleet: GameFleet): GameShip[] {
+  const shipIds = new Set(fleet.shipIds);
+  return state.ships.filter((ship) => shipIds.has(ship.id));
+}
+
+function getBattleGroupById(fleet: GameFleet, battleGroupId: string): BattleGroupConfig | null {
+  return fleet.battleGroups.find((group) => group.id === battleGroupId) ?? null;
+}
+
+function getShipCompatibilityKeys(shipIds: string[]): Set<string> {
+  return new Set(shipIds.map((shipId) => {
+    const ship = state.ships.find((candidate) => candidate.id === shipId);
+    return ship ? getBattleGroupCompatibilityKey(state, ship) : "";
+  }).filter(Boolean));
+}
+
+function canBattleGroupAcceptShips(
+  group: BattleGroupConfig,
+  shipIds: string[],
+): { ok: boolean; message?: string } {
+  const nextShipIds = Array.from(new Set([...group.shipIds, ...shipIds]));
+  const ships = nextShipIds
+    .map((shipId) => state.ships.find((candidate) => candidate.id === shipId))
+    .filter((ship): ship is GameShip => !!ship);
+  if (ships.length !== nextShipIds.length) return { ok: false, message: "A ship was not found." };
+  const compatibilityKeys = getShipCompatibilityKeys(nextShipIds);
+  if (compatibilityKeys.size > 1) return { ok: false, message: "Battle groups can only mix compatible ship designs." };
+  const shipKind = ships[0]?.shipKind ?? null;
+  const maxSize = getCombatGroupMaxSize(shipKind);
+  if (nextShipIds.length > maxSize) return { ok: false, message: `Battle group exceeds maximum size ${maxSize}.` };
+  return { ok: true };
+}
+
+function commitBattleGroupChange(socket: WebSocket, message: string, fleet: GameFleet): void {
+  syncFleetBattleGroups(state, fleet, getFleetShips(fleet));
+  if (fleet.alertMode) deployFleetBattleGroups(fleet);
+  hasDirtyState = true;
+  accept(socket, message);
+  broadcastUpdates(["fleets", "battles"]);
+}
+
+function removeShipsFromBattleGroups(fleet: GameFleet, shipIds: Set<string>): void {
+  fleet.battleGroups = fleet.battleGroups.map((group) => ({
+    ...group,
+    shipIds: group.shipIds.filter((shipId) => !shipIds.has(shipId)),
+  }));
+}
+
+function handleCreateBattleGroup(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  command: Extract<ClientCommand, { type: "createBattleGroup" }>,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, command.fleetId);
+  if (!fleet) return;
+  const selectedShipIds = Array.from(new Set(command.shipIds ?? [])).filter((shipId) => fleet.shipIds.includes(shipId));
+  const behavior = isBattleGroupBehavior(command.behavior) ? command.behavior : fleet.combatSettings.defaultBehavior;
+  if (selectedShipIds.length > 0) {
+    const validation = canBattleGroupAcceptShips({
+      id: "new",
+      name: "New",
+      shipIds: [],
+      behavior,
+      retreatPolicy: getDefaultRetreatPolicyForBehavior(behavior),
+      chaseSetting: getDefaultChaseForBehavior(behavior),
+    }, selectedShipIds);
+    if (!validation.ok) return reject(socket, validation.message ?? "Invalid battle group.");
+    removeShipsFromBattleGroups(fleet, new Set(selectedShipIds));
+  }
+  const id = createRuntimeId("bg", [fleet.id]);
+  fleet.battleGroups.push(normalizeBattleGroupConfig(
+    {
+      id,
+      name: command.name ?? `Battle Group ${fleet.battleGroups.length + 1}`,
+      shipIds: selectedShipIds,
+      behavior,
+      retreatPolicy: getDefaultRetreatPolicyForBehavior(behavior),
+      chaseSetting: getDefaultChaseForBehavior(behavior),
+    },
+    fleet,
+    id,
+    `Battle Group ${fleet.battleGroups.length + 1}`,
+    behavior,
+    new Set(fleet.shipIds),
+  ));
+  commitBattleGroupChange(socket, "Battle group created.", fleet);
+}
+
+function handleDeleteBattleGroup(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, battleGroupId: string): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
+  if (!fleet) return;
+  const group = getBattleGroupById(fleet, battleGroupId);
+  if (!group) return reject(socket, "Battle group not found.");
+  fleet.battleGroups = fleet.battleGroups.filter((candidate) => candidate.id !== battleGroupId);
+  if (fleet.battleGroups.length === 0) {
+    fleet.battleGroups = createAutoBattleGroupsForShips(state, fleet, getFleetShips(fleet));
+  } else if (group.shipIds.length > 0) {
+    fleet.battleGroups.push(...createAutoBattleGroupsForShips(
+      state,
+      fleet,
+      group.shipIds.map((shipId) => state.ships.find((ship) => ship.id === shipId)).filter((ship): ship is GameShip => !!ship),
+      "Reserve Group",
+    ));
+  }
+  commitBattleGroupChange(socket, "Battle group deleted.", fleet);
+}
+
+function handleRenameBattleGroup(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, battleGroupId: string, name: string): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
+  if (!fleet) return;
+  const group = getBattleGroupById(fleet, battleGroupId);
+  if (!group) return reject(socket, "Battle group not found.");
+  const nextName = name.trim().slice(0, 48);
+  if (!nextName) return reject(socket, "Battle group name is required.");
+  group.name = nextName;
+  commitBattleGroupChange(socket, "Battle group renamed.", fleet);
+}
+
+function handleMoveShipsToBattleGroup(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  command: Extract<ClientCommand, { type: "moveShipsToBattleGroup" }>,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, command.fleetId);
+  if (!fleet) return;
+  const target = getBattleGroupById(fleet, command.toBattleGroupId);
+  if (!target) return reject(socket, "Target battle group not found.");
+  const shipIds = Array.from(new Set(command.shipIds)).filter((shipId) => fleet.shipIds.includes(shipId));
+  if (shipIds.length === 0) return reject(socket, "No valid ships selected.");
+  const validation = canBattleGroupAcceptShips(target, shipIds);
+  if (!validation.ok) return reject(socket, validation.message ?? "Ships are not compatible with that battle group.");
+  removeShipsFromBattleGroups(fleet, new Set(shipIds));
+  target.shipIds = Array.from(new Set([...target.shipIds, ...shipIds]));
+  commitBattleGroupChange(socket, "Ships moved between battle groups.", fleet);
+}
+
+function handleSplitBattleGroup(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  command: Extract<ClientCommand, { type: "splitBattleGroup" }>,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, command.fleetId);
+  if (!fleet) return;
+  const source = getBattleGroupById(fleet, command.battleGroupId);
+  if (!source) return reject(socket, "Battle group not found.");
+  const shipIds = Array.from(new Set(command.shipIds)).filter((shipId) => source.shipIds.includes(shipId));
+  if (shipIds.length === 0 || shipIds.length >= source.shipIds.length) return reject(socket, "Select a subset of ships to split.");
+  const validation = canBattleGroupAcceptShips({ ...source, id: "split", shipIds: [] }, shipIds);
+  if (!validation.ok) return reject(socket, validation.message ?? "Split group is invalid.");
+  source.shipIds = source.shipIds.filter((shipId) => !shipIds.includes(shipId));
+  const id = createRuntimeId("bg", [fleet.id]);
+  fleet.battleGroups.push({
+    ...source,
+    id,
+    name: command.name?.trim().slice(0, 48) || `${source.name} Split`,
+    shipIds,
+    originPosition: source.originPosition ? cloneSystemPosition(source.originPosition) : null,
+    deployedPosition: source.deployedPosition ? cloneSystemPosition(source.deployedPosition) : null,
+  });
+  commitBattleGroupChange(socket, "Battle group split.", fleet);
+}
+
+function handleMergeBattleGroups(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  command: Extract<ClientCommand, { type: "mergeBattleGroups" }>,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, command.fleetId);
+  if (!fleet) return;
+  const source = getBattleGroupById(fleet, command.sourceBattleGroupId);
+  const target = getBattleGroupById(fleet, command.targetBattleGroupId);
+  if (!source || !target || source.id === target.id) return reject(socket, "Battle groups not found.");
+  const validation = canBattleGroupAcceptShips(target, source.shipIds);
+  if (!validation.ok) return reject(socket, validation.message ?? "Battle groups are not compatible.");
+  target.shipIds = Array.from(new Set([...target.shipIds, ...source.shipIds]));
+  fleet.battleGroups = fleet.battleGroups.filter((group) => group.id !== source.id);
+  commitBattleGroupChange(socket, "Battle groups merged.", fleet);
+}
+
+function handleSetBattleGroupBehavior(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, battleGroupId: string, behavior: BattleGroupBehavior): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
+  if (!fleet) return;
+  if (!isBattleGroupBehavior(behavior)) return reject(socket, "Invalid battle group behavior.");
+  const group = getBattleGroupById(fleet, battleGroupId);
+  if (!group) return reject(socket, "Battle group not found.");
+  group.behavior = behavior;
+  group.chaseSetting = getDefaultChaseForBehavior(behavior);
+  commitBattleGroupChange(socket, "Battle group behavior updated.", fleet);
+}
+
+function handleSetBattleGroupRetreatPolicy(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  fleetId: string,
+  battleGroupId: string,
+  retreatPolicy: BattleGroupRetreatPolicy,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
+  if (!fleet) return;
+  const group = getBattleGroupById(fleet, battleGroupId);
+  if (!group) return reject(socket, "Battle group not found.");
+  group.retreatPolicy = normalizeBattleGroupRetreatPolicy(retreatPolicy);
+  commitBattleGroupChange(socket, "Battle group retreat policy updated.", fleet);
+}
+
+function handleSetBattleGroupChaseSetting(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  fleetId: string,
+  battleGroupId: string,
+  chaseSetting: BattleGroupChaseSetting,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
+  if (!fleet) return;
+  if (!isBattleGroupChaseSetting(chaseSetting)) return reject(socket, "Invalid chase setting.");
+  const group = getBattleGroupById(fleet, battleGroupId);
+  if (!group) return reject(socket, "Battle group not found.");
+  group.chaseSetting = chaseSetting;
+  commitBattleGroupChange(socket, "Battle group chase setting updated.", fleet);
+}
+
+function handleSetBattleGroupRetreatDestination(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  fleetId: string,
+  battleGroupId: string,
+  retreatDestination: BattleGroupRetreatDestination | null,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
+  if (!fleet) return;
+  const group = getBattleGroupById(fleet, battleGroupId);
+  if (!group) return reject(socket, "Battle group not found.");
+  group.retreatDestination = normalizeBattleGroupRetreatDestination(retreatDestination);
+  commitBattleGroupChange(socket, "Battle group retreat destination updated.", fleet);
+}
+
+function handleSetFleetCombatSettings(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  fleetId: string,
+  combatSettings: Partial<FleetCombatSettings>,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
+  if (!fleet) return;
+  fleet.combatSettings = createDefaultFleetCombatSettings({
+    ...fleet.combatSettings,
+    ...combatSettings,
+  });
+  if (fleet.combatSettings.retreatOrder === "retreat") {
+    const battle = getActiveBattleForFleetId(fleet.id);
+    if (battle && !battle.retreatingFleetIds.includes(fleet.id)) {
+      battle.retreatingFleetIds.push(fleet.id);
+      battle.phase = "retreating";
+    }
+  }
+  commitBattleGroupChange(socket, "Fleet combat settings updated.", fleet);
+}
+
+function handleSetFleetAlertMode(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, alertMode: boolean): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
+  if (!fleet) return;
+  if (isFleetInBattle(fleet.id)) return reject(socket, "Fleet is engaged in battle.");
+  fleet.alertMode = alertMode === true;
+  if (fleet.alertMode) deployFleetBattleGroups(fleet, true);
+  commitBattleGroupChange(socket, fleet.alertMode ? "Fleet entered alert mode." : "Fleet stood down from alert mode.", fleet);
+}
+
+function handleIssueBattleGroupOrder(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  command: Extract<ClientCommand, { type: "issueBattleGroupOrder" }>,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, command.fleetId);
+  if (!fleet) return;
+  const group = getBattleGroupById(fleet, command.battleGroupId);
+  if (!group) return reject(socket, "Battle group not found.");
+  const order = normalizeBattleGroupOrder({
+    ...command.order,
+    issuedAtYear: state.clock.year,
+  });
+  if (!order) return reject(socket, "Invalid battle group order.");
+  if (order.type === "move" && !order.targetPosition) return reject(socket, "Move orders require a system position.");
+  if (order.type === "attack" && !order.targetGroupId && !order.targetObjectId) return reject(socket, "Attack orders require a target.");
+  if (order.type === "protect" && !order.protectedTarget) return reject(socket, "Protect orders require a target.");
+  if (!group.deployedPosition) deployFleetBattleGroups(fleet);
+  group.currentOrder = order;
+  if (order.type === "move" && !fleet.alertMode && !isFleetInBattle(fleet.id)) {
+    fleet.alertMode = true;
+  }
+  commitBattleGroupChange(socket, "Battle group order accepted.", fleet);
 }
 
 function getPlanetState(planetId: string): PlanetState | null {
@@ -2557,6 +3302,7 @@ function advanceFleet(fleet: GameFleet, scaledMs: number): boolean {
     const finalOrbitTarget = plan.destinationOrbitTarget ?? null;
     if (fleet.orderType === "retreat") {
       fleet.retreatState = null;
+      fleet.combatSettings = { ...fleet.combatSettings, retreatOrder: "none" };
     }
     fleet.targetStarId = null;
     fleet.orderType = null;
@@ -2624,6 +3370,41 @@ function advanceFleet(fleet: GameFleet, scaledMs: number): boolean {
     }
   }
   return arrivedSystem;
+}
+
+function processAlertBattleGroups(elapsedGameDays: number): boolean {
+  let changed = false;
+  const stepBase = Math.max(0, elapsedGameDays) * BATTLE_GROUP_SPEED_UNITS_PER_DAY;
+  for (const fleet of state.fleets) {
+    if (!fleet.alertMode || isFleetInBattle(fleet.id)) continue;
+    if (deployFleetBattleGroups(fleet)) changed = true;
+    const step = stepBase * Math.max(0.2, fleet.speed);
+    for (const group of fleet.battleGroups) {
+      if (group.shipIds.length === 0) continue;
+      const current = group.deployedPosition ?? group.originPosition ?? getFleetAuthoritativeSystemPosition(fleet);
+      if (!group.originPosition) {
+        group.originPosition = cloneSystemPosition(current);
+        changed = true;
+      }
+      if (!group.deployedPosition) {
+        group.deployedPosition = cloneSystemPosition(current);
+        changed = true;
+      }
+      if (group.currentOrder?.type !== "move" || !group.currentOrder.targetPosition || step <= 0) continue;
+      const nextPosition = movePointToward(current, group.currentOrder.targetPosition, step);
+      if (!isSameSystemPosition(nextPosition, current)) {
+        group.deployedPosition = nextPosition;
+        group.originPosition = cloneSystemPosition(nextPosition);
+        changed = true;
+      }
+      if (isSameSystemPosition(nextPosition, group.currentOrder.targetPosition)) {
+        group.currentOrder = { type: "hold", issuedAtYear: state.clock.year };
+        changed = true;
+      }
+    }
+  }
+  if (changed) hasDirtyState = true;
+  return changed;
 }
 
 function processMissingInActionFleets(): boolean {
@@ -2812,7 +3593,7 @@ function getStarbaseWeaponMounts(starbase: ServerStarbase): WeaponMountDefinitio
 }
 
 function getWeaponMountSystemRange(mount: WeaponMountDefinition): number {
-  return RANGE_BAND_SYSTEM_DISTANCE[getWeaponMaxRangeBand(mount)] ?? RANGE_BAND_SYSTEM_DISTANCE.close;
+  return getWeaponMaxSystemRange(mount);
 }
 
 function getFleetWeaponMounts(fleet: GameFleet, shipsById: Map<string, GameShip>): WeaponMountDefinition[] {
@@ -2826,6 +3607,45 @@ function getMaxWeaponSystemRange(mounts: WeaponMountDefinition[]): number {
   return mounts.reduce((max, mount) => Math.max(max, getWeaponMountSystemRange(mount)), 0);
 }
 
+function getFleetEngagementProfiles(
+  fleet: GameFleet,
+  shipsById: Map<string, GameShip>,
+): Array<{ position: ReturnType<typeof systemCenterPosition>; range: number }> {
+  if (fleet.battleGroups.length > 0) {
+    deployFleetBattleGroups(fleet);
+    const profiles = fleet.battleGroups
+      .filter((group) => group.shipIds.length > 0)
+      .map((group) => {
+        const mounts = group.shipIds.flatMap((shipId) => {
+          const ship = shipsById.get(shipId);
+          return ship ? calculateShipDesignStats(getShipDesignForShip(ship)).combat.weaponMounts : [];
+        });
+        return {
+          position: group.deployedPosition ?? group.originPosition ?? getFleetAuthoritativeSystemPosition(fleet),
+          range: getMaxWeaponSystemRange(mounts),
+        };
+      })
+      .filter((profile) => profile.range > 0);
+    if (profiles.length > 0) return profiles;
+  }
+  return [{
+    position: getFleetAuthoritativeSystemPosition(fleet),
+    range: getMaxWeaponSystemRange(getFleetWeaponMounts(fleet, shipsById)),
+  }];
+}
+
+function engagementProfilesCanInteract(
+  a: Array<{ position: ReturnType<typeof systemCenterPosition>; range: number }>,
+  b: Array<{ position: ReturnType<typeof systemCenterPosition>; range: number }>,
+): boolean {
+  for (const left of a) {
+    for (const right of b) {
+      if (distance3(left.position, right.position) <= Math.max(left.range, right.range)) return true;
+    }
+  }
+  return false;
+}
+
 function canFleetInitiateCombat(fleet: GameFleet): boolean {
   return fleet.combatStance === "aggressive" || fleet.combatStance === "defensive" || fleet.combatStance === "holdPosition";
 }
@@ -2833,19 +3653,20 @@ function canFleetInitiateCombat(fleet: GameFleet): boolean {
 function canFleetEngageFleet(fleet: GameFleet, target: GameFleet, shipsById: Map<string, GameShip>): boolean {
   if (!isHostileOwner(fleet.ownerId, target.ownerId)) return false;
   if (!canFleetInitiateCombat(fleet) && !canFleetInitiateCombat(target)) return false;
-  const distance = distance3(getFleetAuthoritativeSystemPosition(fleet), getFleetAuthoritativeSystemPosition(target));
-  const fleetRange = getMaxWeaponSystemRange(getFleetWeaponMounts(fleet, shipsById));
-  const targetRange = getMaxWeaponSystemRange(getFleetWeaponMounts(target, shipsById));
-  return distance <= Math.max(fleetRange, targetRange);
+  return engagementProfilesCanInteract(
+    getFleetEngagementProfiles(fleet, shipsById),
+    getFleetEngagementProfiles(target, shipsById),
+  );
 }
 
 function canFleetEngageStarbase(fleet: GameFleet, starbase: ServerStarbase, shipsById: Map<string, GameShip>): boolean {
   if (!isHostileOwner(fleet.ownerId, starbase.ownerId)) return false;
   if (!canFleetInitiateCombat(fleet) && starbase.status !== "online") return false;
-  const distance = distance3(getFleetAuthoritativeSystemPosition(fleet), starbase.systemPosition);
-  const fleetRange = getMaxWeaponSystemRange(getFleetWeaponMounts(fleet, shipsById));
   const starbaseRange = getMaxWeaponSystemRange(getStarbaseWeaponMounts(starbase));
-  return distance <= Math.max(fleetRange, starbaseRange);
+  return engagementProfilesCanInteract(
+    getFleetEngagementProfiles(fleet, shipsById),
+    [{ position: starbase.systemPosition, range: starbaseRange }],
+  );
 }
 
 function createBattleParticipantStatsRecord(battle: GameBattle, participantId: string, ownerId: number): void {
@@ -2917,6 +3738,30 @@ function getGroupRoleForRange(rangeBand: RangeBand): CombatGroup["role"] {
   if (rangeBand === "long" || rangeBand === "extreme") return "artillery";
   if (rangeBand === "close" || rangeBand === "pointBlank") return "screen";
   return "line";
+}
+
+function getCombatGroupHealthRatio(group: Pick<CombatGroup, "shipIds">, battle: GameBattle): number {
+  const shipStates = group.shipIds
+    .map((shipId) => battle.ships.find((ship) => ship.shipId === shipId))
+    .filter((ship): ship is ServerBattleShipState => !!ship && !ship.destroyed);
+  if (shipStates.length === 0) return 0;
+  const current = shipStates.reduce((total, ship) => total + ship.shield + ship.armor + ship.hull, 0);
+  const max = shipStates.reduce((total, ship) => total + ship.maxShield + ship.maxArmor + ship.maxHull, 0);
+  return max > 0 ? clamp(current / max, 0, 1) : 0;
+}
+
+function getCombatGroupWeaponRangeSummary(mounts: WeaponMountDefinition[]): { minWeaponRange: number; maxWeaponRange: number } {
+  if (mounts.length === 0) return { minWeaponRange: 0, maxWeaponRange: 0 };
+  return {
+    minWeaponRange: mounts.reduce((min, mount) => Math.min(min, getWeaponMinSystemRange(mount)), Number.POSITIVE_INFINITY),
+    maxWeaponRange: getMaxWeaponSystemRange(mounts),
+  };
+}
+
+function shouldBattleGroupRetreat(group: CombatGroup): boolean {
+  if (group.retreatPolicy?.mode !== "hpPercent") return false;
+  const threshold = clamp(Number(group.retreatPolicy.thresholdPercent ?? 0), 0, 100) / 100;
+  return threshold > 0 && group.hpRatio <= threshold;
 }
 
 function syncBattleParticipants(
@@ -2995,6 +3840,7 @@ function buildBattleCombatGroups(
   const previousGroups = new Map(battle.combatGroups.map((group) => [group.id, group]));
   const groups: CombatGroup[] = [];
   const livingShips = battle.ships.filter((shipState) => !shipState.destroyed);
+  const shipStatesById = new Map(livingShips.map((shipState) => [shipState.shipId, shipState]));
   const shipsByFleet = new Map<string, ServerBattleShipState[]>();
   for (const shipState of livingShips) {
     const list = shipsByFleet.get(shipState.fleetId) ?? [];
@@ -3006,18 +3852,17 @@ function buildBattleCombatGroups(
     const fleet = fleetsById.get(fleetId);
     if (!fleet) continue;
     const participantId = getFleetParticipantId(fleetId);
-    const shipsByDesign = new Map<string, ServerBattleShipState[]>();
-    for (const shipState of shipStates) {
-      const ship = shipsById.get(shipState.shipId);
-      if (!ship) continue;
-      const design = getShipDesignForShip(ship);
-      const list = shipsByDesign.get(design.id) ?? [];
-      list.push(shipState);
-      shipsByDesign.set(design.id, list);
-    }
+    deployFleetBattleGroups(fleet);
+    const configuredGroups = fleet.battleGroups.length > 0
+      ? fleet.battleGroups
+      : createAutoBattleGroupsForShips(state, fleet, shipStates.map((shipState) => shipsById.get(shipState.shipId)).filter((ship): ship is GameShip => !!ship));
 
-    for (const [shipDesignId, designShipStates] of shipsByDesign) {
-      const firstShip = shipsById.get(designShipStates[0]?.shipId ?? "");
+    for (const config of configuredGroups) {
+      const chunk = config.shipIds
+        .map((shipId) => shipStatesById.get(shipId))
+        .filter((shipState): shipState is ServerBattleShipState => !!shipState && shipState.fleetId === fleetId);
+      if (chunk.length === 0) continue;
+      const firstShip = shipsById.get(chunk[0]?.shipId ?? "");
       if (!firstShip) continue;
       const design = getShipDesignForShip(firstShip);
       const shipKind = design.shipKind;
@@ -3025,53 +3870,79 @@ function buildBattleCombatGroups(
       const maxGroupSize = getCombatGroupMaxSize(shipKind);
       const mounts = designStats.combat.weaponMounts;
       const preferredRangeBand = getPreferredRangeBand(mounts);
-      for (let start = 0; start < designShipStates.length; start += maxGroupSize) {
-        const chunk = designShipStates.slice(start, start + maxGroupSize);
-        const groupIndex = Math.floor(start / maxGroupSize);
-        const groupId = `group:fleet:${fleetId}:${shipDesignId}:${groupIndex}`;
-        const previous = previousGroups.get(groupId);
-        const retreatState = fleet.retreatState
-          ? {
-            mode: fleet.retreatState.mode,
-            status: fleet.retreatState.status,
-            targetStarId: fleet.retreatState.targetStarId,
-            startedAtYear: fleet.retreatState.startedAtYear,
-            miaUntilYear: fleet.retreatState.miaUntilYear ?? null,
-          }
-          : null;
-        const status: CombatGroup["status"] = battle.retreatingFleetIds.includes(fleetId) ? "retreating" : "active";
-        const currentRangeBand = previous?.currentRangeBand ?? (status === "retreating" ? "extreme" : "long");
-        const group: CombatGroup = {
-          id: groupId,
-          battleId: battle.id,
-          participantId,
-          sourceObjectId: fleetId,
-          sourceFleetId: fleetId,
-          ownerId: fleet.ownerId,
-          shipKind,
-          shipDesignId,
-          shipIds: chunk.map((ship) => ship.shipId),
-          count: chunk.length,
-          maxGroupSize,
-          weaponIds: mounts.map((mount) => getWeaponId(mount)),
-          role: getGroupRoleForRange(preferredRangeBand),
-          preferredRangeBand,
-          targetGroupId: previous?.targetGroupId ?? null,
-          currentRangeBand,
-          movementProgress: previous?.movementProgress ?? 0,
-          speed: fleet.speed,
-          retreatState,
-          status,
-        };
-        groups.push(group);
-        const side = getBattleSideForParticipant(battle, participantId);
-        const zone = rangeBandToBattleZone(side, group.currentRangeBand);
-        for (const shipState of chunk) {
-          shipState.participantId = participantId;
-          shipState.groupId = groupId;
-          shipState.rangeBand = group.currentRangeBand;
-          shipState.zone = zone;
+      const behavior = config.behavior;
+      const groupId = config.id;
+      const previous = previousGroups.get(groupId);
+      const fleetRetreating = battle.retreatingFleetIds.includes(fleetId) || fleet.combatSettings.retreatOrder === "retreat";
+      const manualRetreat = config.currentOrder?.type === "retreat";
+      const hpRatio = getCombatGroupHealthRatio({ shipIds: chunk.map((ship) => ship.shipId) }, battle);
+      const retreatState = fleet.retreatState
+        ? {
+          mode: fleet.retreatState.mode,
+          status: fleet.retreatState.status,
+          targetStarId: fleet.retreatState.targetStarId,
+          startedAtYear: fleet.retreatState.startedAtYear,
+          miaUntilYear: fleet.retreatState.miaUntilYear ?? null,
         }
+        : null;
+      const status: CombatGroup["status"] = previous?.status === "escaped" || previous?.status === "destroyed"
+        ? previous.status
+        : (fleetRetreating || manualRetreat ? "retreating" : "active");
+      const position = previous?.position
+        ?? config.deployedPosition
+        ?? config.originPosition
+        ?? getFleetAuthoritativeSystemPosition(fleet);
+      const originPosition = previous?.originPosition
+        ?? config.originPosition
+        ?? position;
+      const rangeSummary = getCombatGroupWeaponRangeSummary(mounts);
+      const group: CombatGroup = {
+        id: groupId,
+        battleId: battle.id,
+        participantId,
+        sourceObjectId: fleetId,
+        sourceFleetId: fleetId,
+        ownerId: fleet.ownerId,
+        shipKind,
+        shipDesignId: design.id,
+        shipIds: chunk.map((ship) => ship.shipId),
+        count: chunk.length,
+        maxGroupSize,
+        weaponIds: mounts.map((mount) => getWeaponId(mount)),
+        role: behavior ?? getGroupRoleForRange(preferredRangeBand),
+        behavior,
+        preferredRangeBand,
+        targetGroupId: previous?.targetGroupId ?? null,
+        currentRangeBand: previous?.currentRangeBand ?? "outOfRange",
+        movementProgress: previous?.movementProgress ?? 0,
+        speed: fleet.speed,
+        retreatState,
+        status,
+        position: cloneSystemPosition(position),
+        destination: previous?.destination ?? config.currentOrder?.targetPosition ?? null,
+        originPosition: cloneSystemPosition(originPosition),
+        leashRadius: config.leashRadius ?? (behavior === "defender" ? DEFENDER_BATTLE_GROUP_LEASH_RADIUS : DEFAULT_BATTLE_GROUP_LEASH_RADIUS),
+        currentOrder: config.currentOrder ?? null,
+        chaseSetting: config.chaseSetting,
+        retreatPolicy: config.retreatPolicy,
+        retreatDestination: config.retreatDestination ?? null,
+        protectedTarget: config.protectedTarget ?? null,
+        maxWeaponRange: rangeSummary.maxWeaponRange,
+        minWeaponRange: Number.isFinite(rangeSummary.minWeaponRange) ? rangeSummary.minWeaponRange : 0,
+        hpRatio,
+      };
+      if (status === "active" && shouldBattleGroupRetreat(group)) {
+        group.status = "retreating";
+        group.currentOrder = { type: "retreat", issuedAtYear: state.clock.year };
+      }
+      groups.push(group);
+      const side = getBattleSideForParticipant(battle, participantId);
+      const zone = rangeBandToBattleZone(side, group.currentRangeBand);
+      for (const shipState of chunk) {
+        shipState.participantId = participantId;
+        shipState.groupId = groupId;
+        shipState.rangeBand = group.currentRangeBand;
+        shipState.zone = zone;
       }
     }
   }
@@ -3081,6 +3952,7 @@ function buildBattleCombatGroups(
     const groupId = `group:starbase:${starbaseEntity.id}`;
     const previous = previousGroups.get(groupId);
     const mounts = getStarbaseWeaponMounts(starbaseEntity);
+    const rangeSummary = getCombatGroupWeaponRangeSummary(mounts);
     groups.push({
       id: groupId,
       battleId: battle.id,
@@ -3095,13 +3967,28 @@ function buildBattleCombatGroups(
       maxGroupSize: 1,
       weaponIds: mounts.map((mount) => getWeaponId(mount)),
       role: "station",
+      behavior: "station",
       preferredRangeBand: getPreferredRangeBand(mounts),
       targetGroupId: previous?.targetGroupId ?? null,
-      currentRangeBand: previous?.currentRangeBand ?? "long",
+      currentRangeBand: previous?.currentRangeBand ?? "outOfRange",
       movementProgress: 0,
       speed: 0,
       retreatState: null,
       status: "active",
+      position: cloneSystemPosition(starbaseEntity.systemPosition ?? getSystemStarbasePosition()),
+      destination: null,
+      originPosition: cloneSystemPosition(starbaseEntity.systemPosition ?? getSystemStarbasePosition()),
+      leashRadius: 0,
+      currentOrder: null,
+      chaseSetting: "none",
+      retreatPolicy: { mode: "none", thresholdPercent: null },
+      retreatDestination: null,
+      protectedTarget: null,
+      maxWeaponRange: rangeSummary.maxWeaponRange,
+      minWeaponRange: Number.isFinite(rangeSummary.minWeaponRange) ? rangeSummary.minWeaponRange : 0,
+      hpRatio: battle.starbase.maxShield + battle.starbase.maxArmor + battle.starbase.maxHull > 0
+        ? clamp((battle.starbase.shield + battle.starbase.armor + battle.starbase.hull) / (battle.starbase.maxShield + battle.starbase.maxArmor + battle.starbase.maxHull), 0, 1)
+        : 0,
     });
     battle.starbase.participantId = participantId;
     battle.starbase.groupId = groupId;
@@ -3144,51 +4031,256 @@ function getGroupTargetEntityId(group: CombatGroup, targetGroup: CombatGroup | u
   return group.targetGroupId ?? null;
 }
 
+function getProtectedTargetPosition(
+  group: CombatGroup,
+  groups: CombatGroup[],
+  battle: GameBattle,
+): ReturnType<typeof systemCenterPosition> | null {
+  const protectedTarget = group.currentOrder?.protectedTarget ?? group.protectedTarget;
+  if (!protectedTarget) return null;
+  if (protectedTarget.position) return cloneSystemPosition(protectedTarget.position);
+  if (protectedTarget.kind === "battleGroup" && protectedTarget.id) {
+    const target = groups.find((candidate) => candidate.id === protectedTarget.id);
+    return target ? cloneSystemPosition(target.position) : null;
+  }
+  if (protectedTarget.kind === "starbase" && protectedTarget.id && battle.starbase?.starbaseId === protectedTarget.id) {
+    const starbaseGroup = groups.find((candidate) => candidate.sourceObjectId === protectedTarget.id);
+    return starbaseGroup ? cloneSystemPosition(starbaseGroup.position) : null;
+  }
+  return null;
+}
+
+function isTargetGroupInWeaponRange(group: CombatGroup, target: CombatGroup, mounts: WeaponMountDefinition[]): boolean {
+  const distance = distance3(group.position, target.position);
+  return mounts.some((mount) => weaponCanFireAtDistance(mount, distance));
+}
+
+function scoreTargetGroup(
+  group: CombatGroup,
+  target: CombatGroup,
+  groups: CombatGroup[],
+  mounts: WeaponMountDefinition[],
+  battle: GameBattle,
+): number {
+  const distance = distance3(group.position, target.position);
+  const inRange = isTargetGroupInWeaponRange(group, target, mounts);
+  const damagedScore = (1 - target.hpRatio) * 35;
+  const countScore = Math.min(40, target.count * 2);
+  let score = 120 - distance + damagedScore + countScore;
+  if (inRange) score += 90;
+
+  const explicitTarget = group.currentOrder?.type === "attack"
+    && (
+      group.currentOrder.targetGroupId === target.id
+      || group.currentOrder.targetObjectId === target.sourceObjectId
+      || group.currentOrder.targetObjectId === target.sourceFleetId
+    );
+  if (explicitTarget) score += 250;
+
+  const protectedPosition = getProtectedTargetPosition(group, groups, battle);
+  switch (group.behavior) {
+    case "screen":
+      if (protectedPosition) {
+        const threatDistance = distance3(target.position, protectedPosition);
+        score += Math.max(0, 90 - threatDistance * 2);
+      }
+      if (target.behavior === "brawler" || target.behavior === "screen") score += 25;
+      score += Math.max(0, 60 - distance);
+      break;
+    case "brawler":
+      score += Math.max(0, 80 - distance * 1.4);
+      score += damagedScore;
+      break;
+    case "line":
+      if (distance <= group.maxWeaponRange) score += 45;
+      if (distance3(target.position, group.originPosition) <= group.leashRadius + 16) score += 35;
+      if (target.behavior === "screen" || target.behavior === "brawler") score += 15;
+      break;
+    case "artillery":
+      if (target.role === "station") score += 140;
+      if (target.shipKind && target.count >= 8) score += 35;
+      if (target.behavior === "artillery" || target.behavior === "defender") score += 30;
+      if (distance >= group.minWeaponRange && distance <= group.maxWeaponRange) score += 55;
+      if (target.behavior === "screen" && target.hpRatio > 0.6) score -= 25;
+      break;
+    case "defender":
+      if (distance3(target.position, group.originPosition) <= group.leashRadius) score += 110;
+      if (target.behavior === "artillery") score += 35;
+      if (protectedPosition) score += Math.max(0, 80 - distance3(target.position, protectedPosition) * 1.5);
+      break;
+    case "station":
+      score += Math.max(0, 90 - distance);
+      if (target.behavior === "artillery") score += 35;
+      break;
+    default:
+      break;
+  }
+  return score;
+}
+
+function selectTargetGroup(
+  group: CombatGroup,
+  groups: CombatGroup[],
+  mounts: WeaponMountDefinition[],
+  battle: GameBattle,
+): CombatGroup | null {
+  const hostileGroups = groups.filter((candidate) => (
+    candidate.id !== group.id
+    && candidate.status !== "destroyed"
+    && candidate.status !== "escaped"
+    && candidate.count > 0
+    && areParticipantsHostile(battle, group.participantId, candidate.participantId)
+  ));
+  if (hostileGroups.length === 0) return null;
+  hostileGroups.sort((a, b) => (
+    scoreTargetGroup(group, b, groups, mounts, battle) - scoreTargetGroup(group, a, groups, mounts, battle)
+    || a.id.localeCompare(b.id)
+  ));
+  return hostileGroups[0] ?? null;
+}
+
+function getDesiredRangeDistance(group: CombatGroup): number {
+  if (group.behavior === "brawler" || group.behavior === "screen") {
+    return Math.max(3, Math.min(12, group.maxWeaponRange * 0.55));
+  }
+  if (group.behavior === "line") {
+    return Math.max(12, group.maxWeaponRange * 0.75);
+  }
+  if (group.behavior === "artillery") {
+    return Math.max(group.minWeaponRange + 4, group.maxWeaponRange * 0.92);
+  }
+  if (group.behavior === "defender") {
+    return Math.max(10, group.maxWeaponRange * 0.65);
+  }
+  return Math.max(6, group.maxWeaponRange * 0.75);
+}
+
+function positionAtRangeFromTarget(
+  current: ReturnType<typeof systemCenterPosition>,
+  target: ReturnType<typeof systemCenterPosition>,
+  desiredDistance: number,
+): ReturnType<typeof systemCenterPosition> {
+  const dx = current.x - target.x;
+  const dz = current.z - target.z;
+  const distance = Math.hypot(dx, dz);
+  const ux = distance <= 0.0001 ? 1 : dx / distance;
+  const uz = distance <= 0.0001 ? 0 : dz / distance;
+  return { x: target.x + ux * desiredDistance, y: SYSTEM_FLEET_Y, z: target.z + uz * desiredDistance };
+}
+
+function getRetreatDestinationForGroup(group: CombatGroup, groups: CombatGroup[]): ReturnType<typeof systemCenterPosition> {
+  const nearestHostile = groups
+    .filter((candidate) => candidate.ownerId !== group.ownerId && candidate.status !== "destroyed" && candidate.status !== "escaped")
+    .sort((a, b) => distance3(group.position, a.position) - distance3(group.position, b.position))[0];
+  const awayFrom = nearestHostile?.position ?? group.originPosition;
+  const dx = group.position.x - awayFrom.x;
+  const dz = group.position.z - awayFrom.z;
+  const distance = Math.hypot(dx, dz);
+  const ux = distance <= 0.0001 ? 1 : dx / distance;
+  const uz = distance <= 0.0001 ? 0 : dz / distance;
+  return {
+    x: group.originPosition.x + ux * RETREAT_ESCAPE_DISTANCE,
+    y: SYSTEM_FLEET_Y,
+    z: group.originPosition.z + uz * RETREAT_ESCAPE_DISTANCE,
+  };
+}
+
+function resolveBattleGroupDestination(
+  group: CombatGroup,
+  target: CombatGroup | null,
+  groups: CombatGroup[],
+  battle: GameBattle,
+): ReturnType<typeof systemCenterPosition> | null {
+  if (group.status === "retreating" || group.currentOrder?.type === "retreat") {
+    return getRetreatDestinationForGroup(group, groups);
+  }
+  if (group.currentOrder?.type === "hold") return group.position;
+  if (group.currentOrder?.type === "move" && group.currentOrder.targetPosition) {
+    return cloneSystemPosition(group.currentOrder.targetPosition);
+  }
+  if (group.currentOrder?.type === "protect") {
+    const protectedPosition = getProtectedTargetPosition(group, groups, battle);
+    if (protectedPosition && target) {
+      return movePointToward(protectedPosition, target.position, Math.min(14, distance3(protectedPosition, target.position) * 0.45));
+    }
+    return protectedPosition;
+  }
+  if (!target) {
+    if (group.behavior === "line" || group.behavior === "artillery" || group.behavior === "defender") return group.originPosition;
+    return null;
+  }
+
+  if (group.behavior === "artillery") {
+    const distance = distance3(group.position, target.position);
+    if (distance >= group.minWeaponRange && distance <= group.maxWeaponRange) return group.originPosition;
+    return positionAtRangeFromTarget(group.position, target.position, getDesiredRangeDistance(group));
+  }
+  if (group.behavior === "defender") {
+    if (distance3(target.position, group.originPosition) > group.leashRadius + 8) return group.originPosition;
+    return positionAtRangeFromTarget(group.position, target.position, getDesiredRangeDistance(group));
+  }
+  if (group.behavior === "line") {
+    const desired = positionAtRangeFromTarget(group.position, target.position, getDesiredRangeDistance(group));
+    return clampPositionToLeash(desired, group.originPosition, group.leashRadius);
+  }
+  return positionAtRangeFromTarget(group.position, target.position, getDesiredRangeDistance(group));
+}
+
+function canBattleGroupLeaveLeash(group: CombatGroup): boolean {
+  if (group.status === "retreating" || group.currentOrder?.type === "retreat") return true;
+  if (group.currentOrder?.type === "move") return true;
+  if (group.currentOrder?.type === "attack") return group.chaseSetting !== "none";
+  return group.chaseSetting !== "none";
+}
+
+function persistCombatGroupPosition(group: CombatGroup, fleetsById: Map<string, GameFleet>): void {
+  if (!group.sourceFleetId) return;
+  const fleet = fleetsById.get(group.sourceFleetId);
+  const config = fleet?.battleGroups.find((candidate) => candidate.id === group.id);
+  if (!config) return;
+  config.deployedPosition = cloneSystemPosition(group.position);
+  config.originPosition = cloneSystemPosition(group.originPosition);
+  config.leashRadius = group.leashRadius;
+  config.currentOrder = group.currentOrder ?? null;
+}
+
 function updateCombatGroupsAndTargets(
   battle: GameBattle,
   shipsById: Map<string, GameShip>,
   fleetsById: Map<string, GameFleet>,
   starbaseEntity: ServerStarbase | null,
+  elapsedDays: number,
 ): void {
   syncBattleParticipants(battle, fleetsById, starbaseEntity);
   let groups = buildBattleCombatGroups(battle, shipsById, fleetsById, starbaseEntity);
+  const step = Math.max(0.05, elapsedDays) * BATTLE_GROUP_SPEED_UNITS_PER_DAY;
 
   for (const group of groups) {
     if (group.status === "destroyed" || group.status === "escaped") continue;
     const mounts = getCombatGroupWeaponMounts(group, shipsById, starbaseEntity);
-    const hostileGroups = groups.filter((candidate) => (
-      candidate.id !== group.id
-      && candidate.status !== "destroyed"
-      && candidate.status !== "escaped"
-      && candidate.count > 0
-      && areParticipantsHostile(battle, group.participantId, candidate.participantId)
-    ));
+    const target = group.status === "retreating" ? null : selectTargetGroup(group, groups, mounts, battle);
+    group.targetGroupId = target?.id ?? null;
+    const distanceToTarget = target ? distance3(group.position, target.position) : Number.POSITIVE_INFINITY;
+    group.currentRangeBand = rangeBandForSystemDistance(distanceToTarget);
 
-    if (group.status === "retreating") {
-      group.targetGroupId = null;
-    } else if (hostileGroups.length > 0) {
-      hostileGroups.sort((a, b) => {
-        const aInRange = mounts.some((mount) => weaponCanFireAtRange(mount, group.currentRangeBand)) ? 0 : 1;
-        const bInRange = mounts.some((mount) => weaponCanFireAtRange(mount, group.currentRangeBand)) ? 0 : 1;
-        if (aInRange !== bInRange) return aInRange - bInRange;
-        if (a.count !== b.count) return b.count - a.count;
-        return a.id.localeCompare(b.id);
-      });
-      group.targetGroupId = hostileGroups[0].id;
-    } else {
-      group.targetGroupId = null;
-    }
-
-    const desiredRange = group.status === "retreating" ? "outOfRange" : group.preferredRangeBand;
-    const desiredIndex = RANGE_BAND_INDEX[desiredRange];
-    const currentIndex = RANGE_BAND_INDEX[group.currentRangeBand];
-    if (group.role !== "station" && currentIndex !== desiredIndex) {
-      group.movementProgress += Math.max(0.25, group.speed * (group.status === "retreating" ? 0.7 : 0.45));
-      if (group.movementProgress >= 1) {
-        const direction = desiredIndex > currentIndex ? 1 : -1;
-        group.currentRangeBand = rangeBandFromIndex(currentIndex + direction);
-        group.movementProgress = 0;
+    if (group.role !== "station") {
+      const destination = resolveBattleGroupDestination(group, target, groups, battle);
+      group.destination = destination ? cloneSystemPosition(destination) : null;
+      if (destination) {
+        let nextPosition = movePointToward(group.position, destination, step * Math.max(0.2, group.speed));
+        if (!canBattleGroupLeaveLeash(group)) {
+          nextPosition = clampPositionToLeash(nextPosition, group.originPosition, group.leashRadius);
+        }
+        group.movementProgress = distance3(group.position, nextPosition);
+        group.position = nextPosition;
       }
+      if (group.status === "retreating" && distance3(group.position, group.originPosition) >= RETREAT_ESCAPE_DISTANCE - 1) {
+        group.status = "escaped";
+      }
+      persistCombatGroupPosition(group, fleetsById);
+    }
+    if (target) {
+      group.currentRangeBand = rangeBandForSystemDistance(distance3(group.position, target.position));
     }
   }
 
@@ -3222,6 +4314,7 @@ function updateCombatGroupsAndTargets(
     count: group.shipIds.length > 0
       ? group.shipIds.filter((shipId) => !battle.ships.find((ship) => ship.shipId === shipId)?.destroyed).length
       : group.count,
+    hpRatio: group.shipIds.length > 0 ? getCombatGroupHealthRatio(group, battle) : group.hpRatio,
   }));
   battle.combatGroups = groups.filter((group) => group.count > 0 || group.role === "station");
 }
@@ -3346,6 +4439,7 @@ function normalizeBattleRuntimeFields(battle: GameBattle): void {
 }
 
 function resetFleetForBattle(fleet: GameFleet): void {
+  const currentPosition = getFleetAuthoritativeSystemPosition(fleet);
   fleet.orderType = null;
   fleet.targetStarId = null;
   fleet.route = [fleet.currentStarId];
@@ -3354,7 +4448,47 @@ function resetFleetForBattle(fleet: GameFleet): void {
   clearFleetOrbit(fleet);
   setFleetPhase(fleet, "idle");
   fleet.hyperlanePosition = null;
-  fleet.systemPosition = systemCenterPosition();
+  fleet.systemPosition = currentPosition;
+  deployFleetBattleGroups(fleet);
+}
+
+function findNearestFriendlyStarbase(fleet: GameFleet): ServerStarbase | null {
+  const friendly = state.starbases.filter((starbase) => (
+    starbase.ownerId === fleet.ownerId
+    && starbase.status === "online"
+  ));
+  if (friendly.length === 0) return null;
+  const from = state.stars[fleet.currentStarId];
+  friendly.sort((a, b) => {
+    const starA = state.stars[a.starId];
+    const starB = state.stars[b.starId];
+    const distanceA = from && starA ? Math.hypot(starA.x - from.x, starA.z - from.z) : Number.POSITIVE_INFINITY;
+    const distanceB = from && starB ? Math.hypot(starB.x - from.x, starB.z - from.z) : Number.POSITIVE_INFINITY;
+    return distanceA - distanceB;
+  });
+  return friendly[0] ?? null;
+}
+
+function resolveBattleGroupRetreatDestinationForFleet(
+  fleet: GameFleet,
+  groupDestination: BattleGroupRetreatDestination | null | undefined,
+): { targetStarId: number; targetSystemPosition?: ReturnType<typeof systemCenterPosition> | null } {
+  const destination = groupDestination ?? fleet.combatSettings.retreatDestination ?? { kind: "nearestFriendlyStarbase" as const };
+  if (destination.kind === "selectedSystem" && Number.isInteger(destination.targetStarId)) {
+    return {
+      targetStarId: destination.targetStarId!,
+      targetSystemPosition: normalizeSystemPositionValue(destination.targetSystemPosition),
+    };
+  }
+  const starbase = findNearestFriendlyStarbase(fleet);
+  if (starbase) {
+    return {
+      targetStarId: starbase.starId,
+      targetSystemPosition: getSystemStarbaseOrbitPosition(starbase.systemPosition),
+    };
+  }
+  const route = computeRetreatRoute(fleet);
+  return { targetStarId: route?.at(-1) ?? fleet.currentStarId, targetSystemPosition: null };
 }
 
 function computeRetreatRoute(fleet: GameFleet): number[] | null {
@@ -3427,15 +4561,42 @@ function processBattles(arrivingFleets: GameFleet[]): {
     arrivalsByStar.set(fleet.currentStarId, list);
   }
 
-  for (const [starId, arrivals] of arrivalsByStar) {
+  const candidateStarIds = new Set<number>(arrivalsByStar.keys());
+  for (const fleet of state.fleets) {
+    if (fleet.phase !== "idle" && fleet.phase !== "buildingStarbase" && fleet.phase !== "orbiting" && fleet.phase !== "orbitingPlanet") continue;
+    if (fleet.shipIds.length === 0) continue;
+    if (isFleetInBattle(fleet.id)) continue;
+    candidateStarIds.add(fleet.currentStarId);
+  }
+
+  for (const starId of candidateStarIds) {
+    const arrivals = arrivalsByStar.get(starId) ?? [];
     const existingBattle = getActiveBattleForStar(starId);
     if (existingBattle) {
       normalizeBattleRuntimeFields(existingBattle);
-      for (const fleet of arrivals) {
+      const fleetsAtStar = state.fleets.filter((fleet) => (
+        fleet.currentStarId === starId
+        && (fleet.phase === "idle" || fleet.phase === "buildingStarbase" || fleet.phase === "orbiting" || fleet.phase === "orbitingPlanet")
+        && !existingBattle.attackerFleetIds.includes(fleet.id)
+        && !existingBattle.defenderFleetIds.includes(fleet.id)
+      ));
+      for (const fleet of [...arrivals, ...fleetsAtStar]) {
+        if (!fleet.shipIds.some((shipId) => shipsById.has(shipId))) continue;
+        const canJoin = existingBattle.participants.some((participant) => (
+          isHostileOwner(participant.ownerId, fleet.ownerId)
+          && (participant.sourceType !== "fleet"
+            || canFleetEngageFleet(fleet, fleetsById.get(participant.sourceId) ?? fleet, shipsById))
+        ));
+        if (!canJoin && arrivals.length === 0) continue;
         const side = getBattleSideForFleet(existingBattle, fleet);
         addFleetToBattle(existingBattle, fleet, side, shipsById);
         resetFleetForBattle(fleet);
         fleetsChanged = true;
+      }
+      const starbase = state.starbases.find((candidate) => candidate.starId === starId && candidate.status === "online") ?? null;
+      if (starbase && !existingBattle.starbase && existingBattle.participants.some((participant) => isHostileOwner(participant.ownerId, starbase.ownerId))) {
+        existingBattle.starbaseId = starbase.id;
+        existingBattle.starbase = buildBattleStarbaseState(starbase);
       }
       battlesChanged = true;
       continue;
@@ -3445,7 +4606,10 @@ function processBattles(arrivingFleets: GameFleet[]): {
       fleet.currentStarId === starId
       && (fleet.phase === "idle" || fleet.phase === "buildingStarbase" || fleet.phase === "orbiting" || fleet.phase === "orbitingPlanet")
     ));
-    const arrivalFactions = Array.from(new Set(arrivals.map((fleet) => fleet.ownerId)));
+    const candidateInitiators = arrivals.length > 0
+      ? arrivals
+      : fleetsAtStar.filter((fleet) => canFleetInitiateCombat(fleet) || fleet.alertMode);
+    const arrivalFactions = Array.from(new Set(candidateInitiators.map((fleet) => fleet.ownerId)));
     if (arrivalFactions.length === 0) continue;
     const attackerFactionId = arrivalFactions[0];
     const starbase = state.starbases.find((candidate) => candidate.starId === starId) ?? null;
@@ -3527,6 +4691,7 @@ function processBattles(arrivingFleets: GameFleet[]): {
       continue;
     }
 
+    const elapsedBattleDays = Math.max(REAL_MS_PER_GAME_HOUR / REAL_MS_PER_GAME_DAY, (state.clock.year - battle.lastTickYear) * GAME_DAYS_PER_YEAR);
     battle.round += 1;
     battle.lastTickYear = state.clock.year;
     const actionsByActor = new Map<string, ServerBattleAction>();
@@ -3536,7 +4701,7 @@ function processBattles(arrivingFleets: GameFleet[]): {
     const shipStateById = new Map(shipStates.map((ship) => [ship.shipId, ship]));
     const starbaseState = battle.starbase && !battle.starbase.destroyed ? battle.starbase : null;
     const starbaseEntity = starbaseState ? state.starbases.find((sb) => sb.id === starbaseState.starbaseId) ?? null : null;
-    updateCombatGroupsAndTargets(battle, shipsById, fleetsById, starbaseEntity);
+    updateCombatGroupsAndTargets(battle, shipsById, fleetsById, starbaseEntity, elapsedBattleDays);
     const groupById = new Map(battle.combatGroups.map((group) => [group.id, group]));
 
     for (const shipState of shipStates) {
@@ -3622,8 +4787,14 @@ function processBattles(arrivingFleets: GameFleet[]): {
         : (targetIsStarbase ? starbaseState?.zone : null);
       if (targetZone === null || targetZone === undefined) continue;
       const actorGroup = shipState.groupId ? groupById.get(shipState.groupId) : null;
-      const rangeBand = actorGroup?.currentRangeBand ?? shipState.rangeBand ?? rangeBandFromIndex(Math.abs(shipState.zone - targetZone));
-      if (!mounts.some((mount) => weaponCanFireAtRange(mount, rangeBand))) continue;
+      const targetGroup = targetShip?.groupId
+        ? groupById.get(targetShip.groupId)
+        : (targetIsStarbase && starbaseState?.groupId ? groupById.get(starbaseState.groupId) : null);
+      const targetDistance = actorGroup && targetGroup
+        ? distance3(actorGroup.position, targetGroup.position)
+        : Math.abs(shipState.zone - targetZone);
+      const rangeBand = rangeBandForSystemDistance(targetDistance);
+      if (!mounts.some((mount) => weaponCanFireAtDistance(mount, targetDistance))) continue;
 
       const action = ensureAction(shipState.shipId);
       action.actorGroupId = shipState.groupId ?? null;
@@ -3639,7 +4810,7 @@ function processBattles(arrivingFleets: GameFleet[]): {
         : (starbaseEntity ? STARBASE_LEVEL_DEFINITIONS[starbaseEntity.level]?.combat.evasion ?? 0 : 0);
 
       for (const mount of mounts) {
-        if (!weaponCanFireAtRange(mount, rangeBand)) continue;
+        if (!weaponCanFireAtDistance(mount, targetDistance)) continue;
         if (targetShip?.destroyed) break;
         if (starbaseState?.destroyed && targetIsStarbase) break;
         const roll = rollWeaponShot(mount, targetEvasion);
@@ -3727,8 +4898,12 @@ function processBattles(arrivingFleets: GameFleet[]): {
         const target = shipStateById.get(starbaseTargetId);
         if (target && !target.destroyed) {
           const starbaseGroup = starbaseState.groupId ? groupById.get(starbaseState.groupId) : null;
-          const rangeBand = starbaseGroup?.currentRangeBand ?? starbaseState.rangeBand ?? rangeBandFromIndex(Math.abs(target.zone - starbaseState.zone));
-          if (mounts.some((mount) => weaponCanFireAtRange(mount, rangeBand))) {
+          const targetGroup = target.groupId ? groupById.get(target.groupId) : null;
+          const targetDistance = starbaseGroup && targetGroup
+            ? distance3(starbaseGroup.position, targetGroup.position)
+            : Math.abs(target.zone - starbaseState.zone);
+          const rangeBand = rangeBandForSystemDistance(targetDistance);
+          if (mounts.some((mount) => weaponCanFireAtDistance(mount, targetDistance))) {
             const action = ensureAction(starbaseState.starbaseId);
             action.actorGroupId = starbaseState.groupId ?? null;
             let totalShieldDamage = 0;
@@ -3740,7 +4915,7 @@ function processBattles(arrivingFleets: GameFleet[]): {
             const targetEvasion = getShipEvasion(target, fleetsById, shipsById);
 
             for (const mount of mounts) {
-              if (!weaponCanFireAtRange(mount, rangeBand)) continue;
+              if (!weaponCanFireAtDistance(mount, targetDistance)) continue;
               if (target.destroyed) break;
               const roll = rollWeaponShot(mount, targetEvasion);
               anyAccuracyMiss ||= roll.accuracyMiss;
@@ -3848,6 +5023,52 @@ function processBattles(arrivingFleets: GameFleet[]): {
       shipsChanged = true;
     }
 
+    const escapedGroupShipIds = new Set(
+      battle.combatGroups
+        .filter((group) => group.status === "escaped" && group.shipIds.length > 0)
+        .flatMap((group) => group.shipIds),
+    );
+    if (escapedGroupShipIds.size > 0) {
+      const escapedFleetIds = new Set<string>();
+      const escapedDestinationsByFleet = new Map<string, BattleGroupRetreatDestination | null | undefined>();
+      for (const group of battle.combatGroups) {
+        if (group.status === "escaped" && group.sourceFleetId) {
+          escapedDestinationsByFleet.set(group.sourceFleetId, group.retreatDestination);
+        }
+      }
+      for (const shipState of shipStates) {
+        if (!escapedGroupShipIds.has(shipState.shipId) || shipState.destroyed) continue;
+        escapedFleetIds.add(shipState.fleetId);
+        const participantId = shipState.participantId ?? getFleetParticipantId(shipState.fleetId);
+        ensureParticipantStats(battle.stats, participantId).escapedShips += 1;
+        ensureOwnerStats(battle.stats, shipState.ownerId).escapedShips += 1;
+      }
+      battle.ships = battle.ships.filter((ship) => !escapedGroupShipIds.has(ship.shipId));
+      for (const fleetId of escapedFleetIds) {
+        const remainingInBattle = battle.ships.some((ship) => ship.fleetId === fleetId && !ship.destroyed);
+        if (remainingInBattle) continue;
+        battle.attackerFleetIds = battle.attackerFleetIds.filter((id) => id !== fleetId);
+        battle.defenderFleetIds = battle.defenderFleetIds.filter((id) => id !== fleetId);
+        battle.retreatingFleetIds = battle.retreatingFleetIds.filter((id) => id !== fleetId);
+        const fleet = fleetsById.get(fleetId);
+        if (fleet) {
+          if (!fleet.retreatState) {
+            const destination = resolveBattleGroupRetreatDestinationForFleet(fleet, escapedDestinationsByFleet.get(fleetId));
+            fleet.retreatState = {
+              mode: "system",
+              status: "escaping",
+              targetStarId: destination.targetStarId,
+              targetSystemPosition: destination.targetSystemPosition ?? null,
+              startedAtYear: state.clock.year,
+            };
+          }
+          startFleetRetreat(fleet);
+          fleetsChanged = true;
+        }
+      }
+      battlesChanged = true;
+    }
+
     for (const fleetId of [...battle.attackerFleetIds, ...battle.defenderFleetIds]) {
       if (battle.retreatingFleetIds.includes(fleetId)) continue;
       const fleetStarting = battle.fleetStartingHull[fleetId] ?? 0;
@@ -3860,11 +5081,12 @@ function processBattles(arrivingFleets: GameFleet[]): {
         battle.phase = "retreating";
         const fleet = fleetsById.get(fleetId);
         if (fleet && !fleet.retreatState) {
-          const fallbackTarget = computeRetreatRoute(fleet)?.at(-1) ?? fleet.currentStarId;
+          const destination = resolveBattleGroupRetreatDestinationForFleet(fleet, null);
           fleet.retreatState = {
             mode: "system",
             status: "escaping",
-            targetStarId: fallbackTarget,
+            targetStarId: destination.targetStarId,
+            targetSystemPosition: destination.targetSystemPosition ?? null,
             startedAtYear: state.clock.year,
           };
         }
@@ -4023,6 +5245,9 @@ function fleetUpdateSignature(): string {
     orbitOffset: fleet.orbitOffset,
     orbitTarget: fleet.orbitTarget,
     mergeTargetFleetId: fleet.mergeTargetFleetId,
+    battleGroups: fleet.battleGroups,
+    combatSettings: fleet.combatSettings,
+    alertMode: fleet.alertMode,
   })));
 }
 
@@ -4252,6 +5477,9 @@ function advanceState(now: number): Set<ServerUpdateField> {
   if (movingBefore || movingAfter) {
     refreshDiscovery();
   }
+  if (processAlertBattleGroups(elapsedGameDays)) {
+    changed.add("fleets");
+  }
 
   const battleResult = processBattles(arrivingFleets);
   if (battleResult.battlesChanged) changed.add("battles");
@@ -4421,6 +5649,58 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "attackTarget") {
     handleAttackTarget(session.socket, session.perspective, command.fleetId, command.targetId, command.targetKind);
+    return;
+  }
+  if (command.type === "createBattleGroup") {
+    handleCreateBattleGroup(session.socket, session.perspective, command);
+    return;
+  }
+  if (command.type === "deleteBattleGroup") {
+    handleDeleteBattleGroup(session.socket, session.perspective, command.fleetId, command.battleGroupId);
+    return;
+  }
+  if (command.type === "renameBattleGroup") {
+    handleRenameBattleGroup(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.name);
+    return;
+  }
+  if (command.type === "moveShipsToBattleGroup") {
+    handleMoveShipsToBattleGroup(session.socket, session.perspective, command);
+    return;
+  }
+  if (command.type === "splitBattleGroup") {
+    handleSplitBattleGroup(session.socket, session.perspective, command);
+    return;
+  }
+  if (command.type === "mergeBattleGroups") {
+    handleMergeBattleGroups(session.socket, session.perspective, command);
+    return;
+  }
+  if (command.type === "setBattleGroupBehavior") {
+    handleSetBattleGroupBehavior(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.behavior);
+    return;
+  }
+  if (command.type === "setBattleGroupRetreatPolicy") {
+    handleSetBattleGroupRetreatPolicy(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.retreatPolicy);
+    return;
+  }
+  if (command.type === "setBattleGroupChaseSetting") {
+    handleSetBattleGroupChaseSetting(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.chaseSetting);
+    return;
+  }
+  if (command.type === "setBattleGroupRetreatDestination") {
+    handleSetBattleGroupRetreatDestination(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.retreatDestination);
+    return;
+  }
+  if (command.type === "setFleetCombatSettings") {
+    handleSetFleetCombatSettings(session.socket, session.perspective, command.fleetId, command.combatSettings);
+    return;
+  }
+  if (command.type === "setFleetAlertMode") {
+    handleSetFleetAlertMode(session.socket, session.perspective, command.fleetId, command.alertMode);
+    return;
+  }
+  if (command.type === "issueBattleGroupOrder") {
+    handleIssueBattleGroupOrder(session.socket, session.perspective, command);
     return;
   }
   if (command.type === "setSpeedMultiplier") {

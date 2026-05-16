@@ -18,7 +18,15 @@ import type {
 import type { ShipDesign } from "../data/ShipDesigns";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 import type { SystemPosition } from "../data/SystemCoordinates";
-import type { CombatStance, RangeBand } from "./CombatTypes";
+import type {
+  BattleGroupBehavior,
+  BattleGroupChaseSetting,
+  BattleGroupOrderType,
+  BattleGroupRetreatDestinationKind,
+  BattleGroupRetreatMode,
+  CombatStance,
+  RangeBand,
+} from "./CombatTypes";
 
 export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat" | "retreatTo" | "emergencyRetreatTo";
 
@@ -139,6 +147,56 @@ export interface FleetRetreatState {
   riskApplied?: boolean;
 }
 
+export interface BattleGroupRetreatPolicy {
+  mode: BattleGroupRetreatMode;
+  thresholdPercent?: number | null;
+}
+
+export interface BattleGroupRetreatDestination {
+  kind: BattleGroupRetreatDestinationKind;
+  targetStarId?: number | null;
+  targetSystemPosition?: ShipSystemPosition | null;
+}
+
+export interface BattleGroupProtectedTarget {
+  kind: "battleGroup" | "fleet" | "starbase" | "planet" | "position";
+  id?: string | null;
+  position?: ShipSystemPosition | null;
+}
+
+export interface BattleGroupTacticalOrder {
+  type: BattleGroupOrderType;
+  targetGroupId?: string | null;
+  targetObjectId?: string | null;
+  targetPosition?: ShipSystemPosition | null;
+  protectedTarget?: BattleGroupProtectedTarget | null;
+  issuedAtYear?: number | null;
+}
+
+export interface BattleGroupConfig {
+  id: string;
+  name: string;
+  shipIds: string[];
+  behavior: BattleGroupBehavior;
+  retreatPolicy: BattleGroupRetreatPolicy;
+  retreatDestination?: BattleGroupRetreatDestination | null;
+  chaseSetting: BattleGroupChaseSetting;
+  protectedTarget?: BattleGroupProtectedTarget | null;
+  originPosition?: ShipSystemPosition | null;
+  deployedPosition?: ShipSystemPosition | null;
+  leashRadius?: number | null;
+  currentOrder?: BattleGroupTacticalOrder | null;
+}
+
+export type FleetRetreatOrder = "none" | "retreat";
+
+export interface FleetCombatSettings {
+  retreatDestination?: BattleGroupRetreatDestination | null;
+  retreatOrder: FleetRetreatOrder;
+  defaultBehavior: BattleGroupBehavior;
+  defaultChaseSetting: BattleGroupChaseSetting;
+}
+
 export interface ServerShip {
   id: string;
   ownerId: number;
@@ -180,6 +238,9 @@ export interface ServerFleet {
   orbitOffset: ShipSystemPosition | null;
   orbitTarget: FleetOrbitTarget | null;
   mergeTargetFleetId: string | null;
+  battleGroups: BattleGroupConfig[];
+  combatSettings: FleetCombatSettings;
+  alertMode: boolean;
 }
 
 export type BattlePhase = "opening" | "engaged" | "retreating" | "resolved";
@@ -193,7 +254,7 @@ export type BattleParticipantSourceType =
   | "monster"
   | "minefield"
   | "megastructure";
-export type CombatGroupRole = "screen" | "line" | "artillery" | "station" | "support";
+export type CombatGroupRole = BattleGroupBehavior | "station" | "support";
 export type CombatGroupStatus = "active" | "retreating" | "escaped" | "destroyed";
 
 export interface BattleRetreatState {
@@ -233,6 +294,7 @@ export interface CombatGroup {
   maxGroupSize: number;
   weaponIds: string[];
   role: CombatGroupRole;
+  behavior: BattleGroupBehavior | "station";
   preferredRangeBand: RangeBand;
   targetGroupId?: string | null;
   currentRangeBand: RangeBand;
@@ -240,6 +302,18 @@ export interface CombatGroup {
   speed: number;
   retreatState?: BattleRetreatState | null;
   status: CombatGroupStatus;
+  position: ShipSystemPosition;
+  destination?: ShipSystemPosition | null;
+  originPosition: ShipSystemPosition;
+  leashRadius: number;
+  currentOrder?: BattleGroupTacticalOrder | null;
+  chaseSetting: BattleGroupChaseSetting;
+  retreatPolicy?: BattleGroupRetreatPolicy | null;
+  retreatDestination?: BattleGroupRetreatDestination | null;
+  protectedTarget?: BattleGroupProtectedTarget | null;
+  maxWeaponRange: number;
+  minWeaponRange: number;
+  hpRatio: number;
 }
 
 export interface BattleLayerDamage {
@@ -487,6 +561,97 @@ export interface AttackTargetCommand {
   targetKind: "fleet" | "starbase";
 }
 
+export interface CreateBattleGroupCommand {
+  type: "createBattleGroup";
+  fleetId: string;
+  name?: string;
+  shipIds?: string[];
+  behavior?: BattleGroupBehavior;
+}
+
+export interface DeleteBattleGroupCommand {
+  type: "deleteBattleGroup";
+  fleetId: string;
+  battleGroupId: string;
+}
+
+export interface RenameBattleGroupCommand {
+  type: "renameBattleGroup";
+  fleetId: string;
+  battleGroupId: string;
+  name: string;
+}
+
+export interface MoveShipsToBattleGroupCommand {
+  type: "moveShipsToBattleGroup";
+  fleetId: string;
+  fromBattleGroupId?: string | null;
+  toBattleGroupId: string;
+  shipIds: string[];
+}
+
+export interface SplitBattleGroupCommand {
+  type: "splitBattleGroup";
+  fleetId: string;
+  battleGroupId: string;
+  shipIds: string[];
+  name?: string;
+}
+
+export interface MergeBattleGroupsCommand {
+  type: "mergeBattleGroups";
+  fleetId: string;
+  sourceBattleGroupId: string;
+  targetBattleGroupId: string;
+}
+
+export interface SetBattleGroupBehaviorCommand {
+  type: "setBattleGroupBehavior";
+  fleetId: string;
+  battleGroupId: string;
+  behavior: BattleGroupBehavior;
+}
+
+export interface SetBattleGroupRetreatPolicyCommand {
+  type: "setBattleGroupRetreatPolicy";
+  fleetId: string;
+  battleGroupId: string;
+  retreatPolicy: BattleGroupRetreatPolicy;
+}
+
+export interface SetBattleGroupChaseSettingCommand {
+  type: "setBattleGroupChaseSetting";
+  fleetId: string;
+  battleGroupId: string;
+  chaseSetting: BattleGroupChaseSetting;
+}
+
+export interface SetBattleGroupRetreatDestinationCommand {
+  type: "setBattleGroupRetreatDestination";
+  fleetId: string;
+  battleGroupId: string;
+  retreatDestination: BattleGroupRetreatDestination | null;
+}
+
+export interface SetFleetCombatSettingsCommand {
+  type: "setFleetCombatSettings";
+  fleetId: string;
+  combatSettings: Partial<FleetCombatSettings>;
+}
+
+export interface SetFleetAlertModeCommand {
+  type: "setFleetAlertMode";
+  fleetId: string;
+  alertMode: boolean;
+}
+
+export interface IssueBattleGroupOrderCommand {
+  type: "issueBattleGroupOrder";
+  fleetId: string;
+  battleGroupId: string;
+  order: BattleGroupTacticalOrder;
+}
+
 export interface RequestSystemDetailsCommand {
   type: "requestSystemDetails";
   starId: number;
@@ -521,7 +686,20 @@ export type ClientCommand =
   | RetreatFleetCommand
   | RetreatFleetToCommand
   | EmergencyRetreatFleetToCommand
-  | AttackTargetCommand;
+  | AttackTargetCommand
+  | CreateBattleGroupCommand
+  | DeleteBattleGroupCommand
+  | RenameBattleGroupCommand
+  | MoveShipsToBattleGroupCommand
+  | SplitBattleGroupCommand
+  | MergeBattleGroupsCommand
+  | SetBattleGroupBehaviorCommand
+  | SetBattleGroupRetreatPolicyCommand
+  | SetBattleGroupChaseSettingCommand
+  | SetBattleGroupRetreatDestinationCommand
+  | SetFleetCombatSettingsCommand
+  | SetFleetAlertModeCommand
+  | IssueBattleGroupOrderCommand;
 
 export interface GameSnapshot {
   type: "snapshot";

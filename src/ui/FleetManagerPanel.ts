@@ -15,7 +15,8 @@ import {
 } from "../data/ShipDesigns";
 import type { ShipDesign, ShipModuleDefinition, ShipModuleSlotType } from "../data/ShipDesigns";
 import type { StarData } from "../data/StarMap";
-import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { BattleGroupConfig, ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { BattleGroupBehavior, BattleGroupChaseSetting } from "../game/CombatTypes";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { computeCombatPowerFromStats, computeFleetPower } from "../game/combatPower";
 
@@ -42,6 +43,7 @@ export class FleetManagerPanel {
   private currentData: FleetManagerPanelData | null = null;
   private activeTab: FleetManagerTab = "fleetManager";
   private selectedFleetId: string | null = null;
+  private selectedBattleGroupId: string | null = null;
   private selectedDesignId: string | null = null;
   private designerDraft: ShipDesign | null = null;
   private selectedDesignerSlot = "weapon:0";
@@ -139,6 +141,7 @@ export class FleetManagerPanel {
         const fleetId = button.dataset.fmSelectFleet;
         if (!fleetId) return;
         this.selectedFleetId = fleetId;
+        this.selectedBattleGroupId = null;
         this.addShipsOpen = false;
         this.show(data);
       });
@@ -146,6 +149,108 @@ export class FleetManagerPanel {
     this.panelElement.querySelector<HTMLButtonElement>("[data-fm-add-ships]")?.addEventListener("click", () => {
       this.addShipsOpen = true;
       this.show(data);
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-toggle-alert]")?.addEventListener("click", () => {
+      const fleet = this.getSelectedFleet(data);
+      if (!fleet) return;
+      data.onFleetCommand?.({ type: "setFleetAlertMode", fleetId: fleet.id, alertMode: !fleet.alertMode });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-create-bg]")?.addEventListener("click", () => {
+      const fleet = this.getSelectedFleet(data);
+      if (!fleet) return;
+      data.onFleetCommand?.({ type: "createBattleGroup", fleetId: fleet.id, name: `Battle Group ${fleet.battleGroups.length + 1}` });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-select-bg]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.selectedBattleGroupId = button.dataset.fmSelectBg ?? null;
+        this.show(data);
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-delete-bg]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const fleet = this.getSelectedFleet(data);
+        const battleGroupId = button.dataset.fmDeleteBg;
+        if (!fleet || !battleGroupId) return;
+        data.onFleetCommand?.({ type: "deleteBattleGroup", fleetId: fleet.id, battleGroupId });
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-split-bg]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const fleet = this.getSelectedFleet(data);
+        const battleGroupId = button.dataset.fmSplitBg;
+        const group = fleet?.battleGroups.find((candidate) => candidate.id === battleGroupId);
+        if (!fleet || !group || group.shipIds.length < 2) return;
+        data.onFleetCommand?.({
+          type: "splitBattleGroup",
+          fleetId: fleet.id,
+          battleGroupId: group.id,
+          shipIds: group.shipIds.slice(Math.ceil(group.shipIds.length / 2)),
+        });
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-merge-bg]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const fleet = this.getSelectedFleet(data);
+        const sourceBattleGroupId = button.dataset.fmMergeBg;
+        const targetBattleGroupId = this.selectedBattleGroupId;
+        if (!fleet || !sourceBattleGroupId || !targetBattleGroupId || sourceBattleGroupId === targetBattleGroupId) return;
+        data.onFleetCommand?.({ type: "mergeBattleGroups", fleetId: fleet.id, sourceBattleGroupId, targetBattleGroupId });
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-bg-behavior]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const fleet = this.getSelectedFleet(data);
+        const battleGroupId = select.dataset.fmBgBehavior;
+        if (!fleet || !battleGroupId) return;
+        data.onFleetCommand?.({
+          type: "setBattleGroupBehavior",
+          fleetId: fleet.id,
+          battleGroupId,
+          behavior: select.value as BattleGroupBehavior,
+        });
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-bg-chase]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const fleet = this.getSelectedFleet(data);
+        const battleGroupId = select.dataset.fmBgChase;
+        if (!fleet || !battleGroupId) return;
+        data.onFleetCommand?.({
+          type: "setBattleGroupChaseSetting",
+          fleetId: fleet.id,
+          battleGroupId,
+          chaseSetting: select.value as BattleGroupChaseSetting,
+        });
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLInputElement>("[data-fm-bg-retreat]").forEach((input) => {
+      input.addEventListener("change", () => {
+        const fleet = this.getSelectedFleet(data);
+        const battleGroupId = input.dataset.fmBgRetreat;
+        if (!fleet || !battleGroupId) return;
+        const thresholdPercent = Number(input.value);
+        data.onFleetCommand?.({
+          type: "setBattleGroupRetreatPolicy",
+          fleetId: fleet.id,
+          battleGroupId,
+          retreatPolicy: Number.isFinite(thresholdPercent) && thresholdPercent > 0
+            ? { mode: "hpPercent", thresholdPercent }
+            : { mode: "none", thresholdPercent: null },
+        });
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-ship-bg-target]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const fleet = this.getSelectedFleet(data);
+        const shipId = select.dataset.fmShipId;
+        if (!fleet || !shipId || !select.value) return;
+        data.onFleetCommand?.({
+          type: "moveShipsToBattleGroup",
+          fleetId: fleet.id,
+          toBattleGroupId: select.value,
+          shipIds: [shipId],
+        });
+      });
     });
     this.panelElement.querySelector<HTMLButtonElement>("[data-fm-close-ship-picker]")?.addEventListener("click", () => {
       this.addShipsOpen = false;
@@ -335,11 +440,113 @@ export class FleetManagerPanel {
         ${this.renderStat("Speed", `${this.formatCompact(fleet.speed * 2)} ly/day`)}
         ${this.renderStat("Order", this.formatFleetOrder(data, fleet))}
       </div>
-      <div class="fmSectionTitle fmCompositionTitle">Fleet Composition</div>
-      <div class="fmCompositionList">
-        ${this.renderCompositionRows(data, fleet, ships)}
-      </div>
+      ${this.renderBattleGroupEditor(data, fleet, ships)}
       <button class="fmAddShipsButton" type="button" data-fm-add-ships ${data.playerFactionId === fleet.ownerId ? "" : "disabled"}>Add Ships</button>
+    `;
+  }
+
+  private renderBattleGroupEditor(data: FleetManagerPanelData, fleet: ServerFleet, ships: ServerShip[]): string {
+    const groups = fleet.battleGroups ?? [];
+    const selectedGroupId = this.selectedBattleGroupId && groups.some((group) => group.id === this.selectedBattleGroupId)
+      ? this.selectedBattleGroupId
+      : groups[0]?.id ?? null;
+    this.selectedBattleGroupId = selectedGroupId;
+    return `
+      <div class="fmDoctrineHeader">
+        <div>
+          <div class="fmSectionTitle fmCompositionTitle">Battle Groups</div>
+          <span>${fleet.alertMode ? "Alert deployed" : "Fleet stowed"} | ${groups.length || 0} group${groups.length === 1 ? "" : "s"}</span>
+        </div>
+        <div class="fmDoctrineActions">
+          <button type="button" data-fm-toggle-alert ${data.playerFactionId === fleet.ownerId ? "" : "disabled"}>${fleet.alertMode ? "Stand Down" : "Alert"}</button>
+          <button type="button" data-fm-create-bg ${data.playerFactionId === fleet.ownerId ? "" : "disabled"}>New</button>
+        </div>
+      </div>
+      <div class="fmBattleGroupList">
+        ${groups.length === 0
+          ? '<div class="fmEmpty">Battle groups will be generated automatically from compatible ships.</div>'
+          : groups.map((group) => this.renderBattleGroupCard(data, fleet, group, ships, group.id === selectedGroupId)).join("")}
+      </div>
+    `;
+  }
+
+  private renderBattleGroupCard(
+    data: FleetManagerPanelData,
+    fleet: ServerFleet,
+    group: BattleGroupConfig,
+    ships: ServerShip[],
+    selected: boolean,
+  ): string {
+    const groupShips = group.shipIds
+      .map((shipId) => ships.find((ship) => ship.id === shipId))
+      .filter((ship): ship is ServerShip => !!ship);
+    const hp = this.getShipsDefense(groupShips);
+    const hpPct = hp.maxTotal > 0 ? Math.round((hp.total / hp.maxTotal) * 100) : 0;
+    const canCommand = data.playerFactionId === fleet.ownerId;
+    return `
+      <article class="fmBattleGroupCard ${selected ? "selected" : ""}">
+        <button class="fmBattleGroupTitle" type="button" data-fm-select-bg="${this.escapeAttribute(group.id)}">
+          <strong>${this.escapeHtml(group.name)}</strong>
+          <span>${groupShips.length} ships | ${hpPct}% total HP</span>
+        </button>
+        <div class="fmBattleGroupControls">
+          <label>Behavior ${this.renderBattleGroupBehaviorSelect(group)}</label>
+          <label>Chase ${this.renderBattleGroupChaseSelect(group)}</label>
+          <label>Retreat <input type="number" min="0" max="99" step="5" value="${group.retreatPolicy.mode === "hpPercent" ? Math.round(group.retreatPolicy.thresholdPercent ?? 0) : 0}" data-fm-bg-retreat="${this.escapeAttribute(group.id)}" ${canCommand ? "" : "disabled"}></label>
+        </div>
+        <div class="fmBattleGroupShips">
+          ${groupShips.length === 0
+            ? '<div class="fmEmpty">No ships assigned.</div>'
+            : groupShips.map((ship) => this.renderBattleGroupShipRow(data, fleet, group, ship)).join("")}
+        </div>
+        <div class="fmBattleGroupButtons">
+          <button type="button" data-fm-split-bg="${this.escapeAttribute(group.id)}" ${canCommand && group.shipIds.length >= 2 ? "" : "disabled"}>Split</button>
+          <button type="button" data-fm-merge-bg="${this.escapeAttribute(group.id)}" ${!canCommand || selected ? "disabled" : ""}>Merge Into Selected</button>
+          <button type="button" data-fm-delete-bg="${this.escapeAttribute(group.id)}" ${canCommand ? "" : "disabled"}>Delete</button>
+        </div>
+      </article>
+    `;
+  }
+
+  private renderBattleGroupBehaviorSelect(group: BattleGroupConfig): string {
+    const options: BattleGroupBehavior[] = ["screen", "brawler", "line", "artillery", "defender"];
+    return `
+      <select data-fm-bg-behavior="${this.escapeAttribute(group.id)}">
+        ${options.map((option) => `<option value="${option}" ${group.behavior === option ? "selected" : ""}>${this.escapeHtml(this.formatBattleGroupBehavior(option))}</option>`).join("")}
+      </select>
+    `;
+  }
+
+  private renderBattleGroupChaseSelect(group: BattleGroupConfig): string {
+    const options: BattleGroupChaseSetting[] = ["none", "system", "friendlySystems", "neutralSystems", "enemySystems"];
+    return `
+      <select data-fm-bg-chase="${this.escapeAttribute(group.id)}">
+        ${options.map((option) => `<option value="${option}" ${group.chaseSetting === option ? "selected" : ""}>${this.escapeHtml(this.formatChaseSetting(option))}</option>`).join("")}
+      </select>
+    `;
+  }
+
+  private renderBattleGroupShipRow(
+    data: FleetManagerPanelData,
+    fleet: ServerFleet,
+    group: BattleGroupConfig,
+    ship: ServerShip,
+  ): string {
+    const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind];
+    const design = this.getDesignById(data, ship.designId);
+    return `
+      <div class="fmBattleGroupShipRow">
+        <span class="fmShipIcon">${this.escapeHtml(this.getInitials(definition?.label ?? ship.shipKind))}</span>
+        <span>
+          <strong>${this.escapeHtml(definition?.label ?? ship.shipKind)}</strong>
+          <small>${this.escapeHtml(design?.name ?? definition?.className ?? "Unknown class")}</small>
+        </span>
+        <select data-fm-ship-bg-target="${this.escapeAttribute(group.id)}" data-fm-ship-id="${this.escapeAttribute(ship.id)}">
+          ${(fleet.battleGroups ?? []).map((candidate) => `
+            <option value="${this.escapeAttribute(candidate.id)}" ${candidate.id === group.id ? "selected" : ""}>${this.escapeHtml(candidate.name)}</option>
+          `).join("")}
+        </select>
+      </div>
     `;
   }
 
@@ -765,6 +972,38 @@ export class FleetManagerPanel {
       }),
       { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 },
     );
+  }
+
+  private getShipsDefense(ships: ServerShip[]): { total: number; maxTotal: number } {
+    return ships.reduce(
+      (total, ship) => ({
+        total: total.total + ship.shield + ship.armor + ship.hull,
+        maxTotal: total.maxTotal + ship.maxShield + ship.maxArmor + ship.maxHull,
+      }),
+      { total: 0, maxTotal: 0 },
+    );
+  }
+
+  private formatBattleGroupBehavior(behavior: BattleGroupBehavior): string {
+    const labels: Record<BattleGroupBehavior, string> = {
+      screen: "Screen",
+      brawler: "Brawler",
+      line: "Line",
+      artillery: "Artillery",
+      defender: "Defender",
+    };
+    return labels[behavior] ?? behavior;
+  }
+
+  private formatChaseSetting(chase: BattleGroupChaseSetting): string {
+    const labels: Record<BattleGroupChaseSetting, string> = {
+      none: "No chase",
+      system: "In system",
+      friendlySystems: "Friendly systems",
+      neutralSystems: "Neutral systems",
+      enemySystems: "Enemy systems",
+    };
+    return labels[chase] ?? chase;
   }
 
   private getFleetName(data: FleetManagerPanelData, fleet: ServerFleet, index: number): string {
@@ -1205,6 +1444,144 @@ export class FleetManagerPanel {
 
 .fmCompositionTitle {
   margin-top: 10px;
+}
+
+.fmDoctrineHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(103, 255, 221, 0.2);
+}
+
+.fmDoctrineHeader span {
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 10px;
+}
+
+.fmDoctrineActions,
+.fmBattleGroupButtons {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.fmDoctrineActions button,
+.fmBattleGroupButtons button {
+  min-height: 26px;
+  border: 1px solid rgba(103, 255, 221, 0.38);
+  background: rgba(6, 42, 38, 0.72);
+  color: #d8fff6;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.fmDoctrineActions button:disabled,
+.fmBattleGroupButtons button:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.fmBattleGroupList {
+  max-height: 300px;
+  overflow-y: auto;
+  display: grid;
+  gap: 7px;
+  padding-right: 3px;
+  scrollbar-width: thin;
+}
+
+.fmBattleGroupCard {
+  display: grid;
+  gap: 6px;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: rgba(1, 8, 10, 0.36);
+  padding: 7px;
+}
+
+.fmBattleGroupCard.selected {
+  border-color: rgba(248, 218, 103, 0.72);
+}
+
+.fmBattleGroupTitle {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  border: 0;
+  background: transparent;
+  color: #eafff8;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+
+.fmBattleGroupTitle strong,
+.fmBattleGroupTitle span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmBattleGroupTitle span {
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 10px;
+}
+
+.fmBattleGroupControls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.fmBattleGroupControls label {
+  display: grid;
+  gap: 3px;
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.fmBattleGroupControls select,
+.fmBattleGroupControls input,
+.fmBattleGroupShipRow select {
+  min-width: 0;
+  height: 26px;
+  border: 1px solid rgba(103, 255, 221, 0.28);
+  background: rgba(0, 0, 0, 0.32);
+  color: #eafff8;
+  font: inherit;
+  font-size: 10px;
+}
+
+.fmBattleGroupShips {
+  display: grid;
+  gap: 5px;
+}
+
+.fmBattleGroupShipRow {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 120px;
+  gap: 7px;
+  align-items: center;
+  min-height: 42px;
+}
+
+.fmBattleGroupShipRow strong,
+.fmBattleGroupShipRow small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmBattleGroupShipRow small {
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 10px;
 }
 
 .fmCompositionRow,
