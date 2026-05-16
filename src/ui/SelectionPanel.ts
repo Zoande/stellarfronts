@@ -4,6 +4,7 @@
  */
 
 import type { ShipAction } from "../game/GameplayTypes";
+import type { BattleLayerDamage } from "../game/GameProtocol";
 
 export type SelectionType = "ship" | "fleet" | "starbase";
 
@@ -26,6 +27,28 @@ export interface SelectionData {
   ownerColor?: [number, number, number];
   canCommand?: boolean;
   actions?: ShipAction[];
+  battle?: BattleSelectionData;
+}
+
+export interface BattleSelectionParticipant {
+  id: string;
+  name: string;
+  ownerName: string;
+  status: string;
+  groups: string[];
+  damageDealt: BattleLayerDamage;
+  damageReceived: BattleLayerDamage;
+  topWeapons: string[];
+  hitRate: number;
+  dodgeRate: number;
+  shipsLost: number;
+  escapedShips: number;
+}
+
+export interface BattleSelectionData {
+  battleId: string;
+  allied: BattleSelectionParticipant[];
+  hostile: BattleSelectionParticipant[];
 }
 
 export interface SelectionPanelCallbacks {
@@ -221,7 +244,7 @@ export class SelectionPanel {
 
 .spaceSelectionActions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
   margin-top: 10px;
 }
@@ -249,6 +272,104 @@ export class SelectionPanel {
   border-color: var(--selection-color);
   color: #edfaff;
   box-shadow: 0 0 16px var(--selection-color-soft);
+}
+
+.spaceBattlePanel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.spaceBattleSide {
+  border: 1px solid var(--hud-line);
+  border-radius: 6px;
+  padding: 7px;
+  background: rgba(5, 9, 14, 0.36);
+  min-width: 0;
+}
+
+.spaceBattleSideTitle {
+  font-size: 10px;
+  font-weight: 800;
+  color: #e5f7ff;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 6px;
+}
+
+.spaceBattleEmpty,
+.spaceBattleMeta {
+  color: var(--hud-muted);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.spaceBattleParticipant {
+  display: grid;
+  gap: 5px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.spaceBattleParticipant:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.spaceBattleParticipantHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  font-size: 10px;
+}
+
+.spaceBattleParticipantHeader strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spaceBattleParticipantHeader span {
+  color: var(--hud-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.spaceBattleGroups,
+.spaceBattleWeapons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.spaceBattleGroups span,
+.spaceBattleWeapons span {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 2px 4px;
+  color: #c9d8e8;
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.spaceBattleStatsGrid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 6px;
+  font-size: 9px;
+}
+
+.spaceBattleStatsGrid span {
+  color: var(--hud-muted);
+}
+
+.spaceBattleStatsGrid b {
+  color: #e1edf7;
+  font-weight: 700;
+  text-align: right;
 }
     `;
     document.head.appendChild(style);
@@ -369,6 +490,8 @@ export class SelectionPanel {
       attack: "Attack",
       merge: "Merge",
       retreat: "Retreat",
+      retreatTo: "Retreat To",
+      emergencyRetreatTo: "Emergency Retreat",
       orbit: "Orbit",
     };
     const actions = (data.actions && data.actions.length > 0)
@@ -389,6 +512,8 @@ export class SelectionPanel {
         </div>
       `
       : "";
+
+    const battleBlock = data.battle ? this.renderBattleBlock(data.battle) : "";
 
     panel.innerHTML = `
       <div class="spaceSelectionPanelTitle">${this.escapeHtml(data.name)}</div>
@@ -422,6 +547,7 @@ export class SelectionPanel {
             ? `S ${Math.round(shield)} / ${Math.round(maxShield)} | A ${Math.round(armor)} / ${Math.round(maxArmor)} | H ${Math.round(hull)} / ${Math.round(maxHull)}`
             : `${Math.round(hull)} / ${Math.round(maxHull)}`}
         </div>
+        ${battleBlock}
         ${actionButtons}
       </div>
     `;
@@ -438,6 +564,47 @@ export class SelectionPanel {
     }
 
     return panel;
+  }
+
+  private renderBattleBlock(battle: BattleSelectionData): string {
+    const renderSide = (title: string, participants: BattleSelectionParticipant[]) => `
+      <div class="spaceBattleSide">
+        <div class="spaceBattleSideTitle">${this.escapeHtml(title)}</div>
+        ${participants.length === 0
+          ? '<div class="spaceBattleEmpty">No active contacts</div>'
+          : participants.map((participant) => this.renderBattleParticipant(participant)).join("")}
+      </div>
+    `;
+    return `
+      <div class="spaceBattlePanel">
+        ${renderSide("Allied", battle.allied)}
+        ${renderSide("Hostile", battle.hostile)}
+      </div>
+    `;
+  }
+
+  private renderBattleParticipant(participant: BattleSelectionParticipant): string {
+    const dealt = participant.damageDealt;
+    const received = participant.damageReceived;
+    return `
+      <div class="spaceBattleParticipant">
+        <div class="spaceBattleParticipantHeader">
+          <strong>${this.escapeHtml(participant.name)}</strong>
+          <span>${this.escapeHtml(participant.status)}</span>
+        </div>
+        <div class="spaceBattleMeta">${this.escapeHtml(participant.ownerName)}</div>
+        <div class="spaceBattleGroups">${participant.groups.map((group) => `<span>${this.escapeHtml(group)}</span>`).join("")}</div>
+        <div class="spaceBattleStatsGrid">
+          <span>Dealt</span><b>S ${Math.round(dealt.shield)} | A ${Math.round(dealt.armor)} | H ${Math.round(dealt.hull)}</b>
+          <span>Taken</span><b>S ${Math.round(received.shield)} | A ${Math.round(received.armor)} | H ${Math.round(received.hull)}</b>
+          <span>Hit</span><b>${Math.round(participant.hitRate * 100)}%</b>
+          <span>Dodge</span><b>${Math.round(participant.dodgeRate * 100)}%</b>
+          <span>Lost</span><b>${participant.shipsLost}</b>
+          <span>Escaped</span><b>${participant.escapedShips}</b>
+        </div>
+        <div class="spaceBattleWeapons">${participant.topWeapons.map((weapon) => `<span>${this.escapeHtml(weapon)}</span>`).join("")}</div>
+      </div>
+    `;
   }
 
   private getSelectionKey(data: SelectionData): string {

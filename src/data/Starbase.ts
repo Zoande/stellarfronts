@@ -1,5 +1,6 @@
 import { createEmptyResourceCounts } from "./Economy";
 import type { ResourceCounts } from "./Economy";
+import type { RangeBand } from "../game/CombatTypes";
 
 export type StarbaseLevel = "outpost" | "starbase" | "starhold" | "starFortress";
 export type StarbaseBuildingKind =
@@ -15,12 +16,18 @@ export type StarbaseShipKind = "corvette";
 export type WeaponKind = "laser";
 
 export interface WeaponMountDefinition {
+  id?: string;
   kind: WeaponKind;
+  label?: string;
   barrels: number;
   damage: number;
   shieldPenetration: number;
   armorPenetration: number;
   accuracy: number;
+  minRangeBand?: RangeBand;
+  maxRangeBand?: RangeBand;
+  optimalRangeBand?: RangeBand;
+  cooldownRounds?: number;
 }
 
 export interface CombatStats {
@@ -32,8 +39,20 @@ export interface CombatStats {
   weaponMounts: WeaponMountDefinition[];
 }
 
-export const WEAPON_KIND_DEFINITIONS: Record<WeaponKind, { range: number }> = {
-  laser: { range: 2 },
+export const WEAPON_KIND_DEFINITIONS: Record<WeaponKind, {
+  range: number;
+  minRangeBand: RangeBand;
+  maxRangeBand: RangeBand;
+  optimalRangeBand: RangeBand;
+  cooldownRounds: number;
+}> = {
+  laser: {
+    range: 2,
+    minRangeBand: "close",
+    maxRangeBand: "medium",
+    optimalRangeBand: "medium",
+    cooldownRounds: 1,
+  },
 };
 
 export interface StarbaseEconomy {
@@ -119,12 +138,18 @@ function createConstructionId(prefix: string, parts: Array<string | number | und
 
 function createLaserMount(overrides: Partial<WeaponMountDefinition> = {}): WeaponMountDefinition {
   return {
+    id: "laser",
     kind: "laser",
+    label: "Laser Battery",
     barrels: 2,
     damage: 12,
     shieldPenetration: 0.12,
     armorPenetration: 0.35,
     accuracy: 0.82,
+    minRangeBand: WEAPON_KIND_DEFINITIONS.laser.minRangeBand,
+    maxRangeBand: WEAPON_KIND_DEFINITIONS.laser.maxRangeBand,
+    optimalRangeBand: WEAPON_KIND_DEFINITIONS.laser.optimalRangeBand,
+    cooldownRounds: WEAPON_KIND_DEFINITIONS.laser.cooldownRounds,
     ...overrides,
   };
 }

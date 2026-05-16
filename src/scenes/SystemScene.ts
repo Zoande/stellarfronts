@@ -59,11 +59,11 @@ import type { PlanetState } from "../data/Economy";
 import type { FactionInfo } from "../data/Factions";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
-import type { BattleZone, ClientCommand, FleetOrbitTarget, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { BattleLayerDamage, BattleZone, ClientCommand, FleetOrbitTarget, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { SelectionPanel } from "../ui/SelectionPanel";
-import type { SelectionData } from "../ui/SelectionPanel";
+import type { BattleSelectionParticipant, SelectionData } from "../ui/SelectionPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
 import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
 import { createFlagDesign } from "../flags/flagGenerator";
@@ -859,13 +859,18 @@ export class SystemScene implements IGameScene {
       this.mergeSelectedFleets();
       return;
     }
+    if (action === "retreatTo" || action === "emergencyRetreatTo") {
+      this.options.onRequestFleetActionInGalaxy?.(fleetId, action);
+      this.clearFleetAction();
+      return;
+    }
     if (action === "retreat") {
       this.options.onFleetCommand?.({ type: "retreatFleet", fleetId });
       this.clearFleetAction();
       return;
     }
     if (action === "attack") {
-      console.info("Attack command is a placeholder.");
+      this.issueBasicAttack(fleetId);
       this.clearFleetAction();
       return;
     }
@@ -898,6 +903,37 @@ export class SystemScene implements IGameScene {
     }
     this.options.onFleetCommand?.({ type: "mergeFleets", targetFleetId, sourceFleetIds });
     this.clearFleetAction();
+  }
+
+  private issueBasicAttack(fleetId: string): void {
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet) return;
+    const hostileFleet = this.serverFleets.find((candidate) => (
+      candidate.id !== fleet.id
+      && candidate.currentStarId === fleet.currentStarId
+      && candidate.ownerId !== fleet.ownerId
+    ));
+    if (hostileFleet) {
+      this.options.onFleetCommand?.({
+        type: "attackTarget",
+        fleetId,
+        targetKind: "fleet",
+        targetId: hostileFleet.id,
+      });
+      return;
+    }
+    const hostileStarbase = this.starbases.find((candidate) => (
+      candidate.starId === fleet.currentStarId
+      && candidate.ownerId !== fleet.ownerId
+    ));
+    if (hostileStarbase) {
+      this.options.onFleetCommand?.({
+        type: "attackTarget",
+        fleetId,
+        targetKind: "starbase",
+        targetId: hostileStarbase.id,
+      });
+    }
   }
 
   private rebuildSystemActionTargetMarkers(): void {
@@ -1376,7 +1412,7 @@ export class SystemScene implements IGameScene {
     const defense = this.getFleetDefense(fleet.id);
     const battle = this.getBattleForFleet(fleet.id);
     const actions: ShipAction[] = battle
-      ? ["retreat"]
+      ? ["retreatTo", "emergencyRetreatTo"]
       : ["move", "build", "attack", "merge"];
     return {
       type: "fleet",
@@ -1399,6 +1435,7 @@ export class SystemScene implements IGameScene {
       ownerColor: owner?.color,
       canCommand: fleet.ownerId === this.playerFactionId,
       actions: fleet.ownerId === this.playerFactionId ? actions : undefined,
+      battle: battle ? this.createBattleSelectionData(battle, `fleet:${fleet.id}`) : undefined,
     };
   }
 
@@ -1447,6 +1484,31 @@ export class SystemScene implements IGameScene {
   private openStarbasePanel(starbase: ServerStarbase): void {
     const owner = this.getFaction(starbase.ownerId);
     this.clearFleetSelection();
+    const battle = this.getBattleForStarbase(starbase.id);
+    if (battle) {
+      this.starbasePanel.close();
+      this.selectionPanel.select({
+        type: "starbase",
+        id: starbase.id,
+        name: `${this.star.name} Starbase`,
+        hp: starbase.hull,
+        maxHp: starbase.maxHull,
+        shield: starbase.shield,
+        maxShield: starbase.maxShield,
+        armor: starbase.armor,
+        maxArmor: starbase.maxArmor,
+        hull: starbase.hull,
+        maxHull: starbase.maxHull,
+        class: "Station",
+        status: "Engaged",
+        detail: "Station is engaged in battle.",
+        ownerName: owner?.name ?? "Unknown",
+        ownerColor: owner?.color,
+        canCommand: false,
+        battle: this.createBattleSelectionData(battle, `starbase:${starbase.id}`),
+      }, false);
+      return;
+    }
     this.starbasePanel.show({
       id: starbase.id,
       name: `${this.star.name} Station`,
@@ -1491,6 +1553,71 @@ export class SystemScene implements IGameScene {
       battle.phase !== "resolved"
       && (battle.attackerFleetIds.includes(fleetId) || battle.defenderFleetIds.includes(fleetId))
     )) ?? null;
+  }
+
+  private getBattleForStarbase(starbaseId: string): ServerBattle | null {
+    return this.battles.find((battle) => (
+      battle.phase !== "resolved"
+      && battle.starbaseId === starbaseId
+    )) ?? null;
+  }
+
+  private createEmptyDamage(): BattleLayerDamage {
+    return { shield: 0, armor: 0, hull: 0 };
+  }
+
+  private createBattleSelectionData(battle: ServerBattle, focusParticipantId: string): SelectionData["battle"] {
+    const focus = battle.participants?.find((participant) => participant.id === focusParticipantId)
+      ?? battle.participants?.find((participant) => participant.ownerId === this.playerFactionId)
+      ?? null;
+    const hostileIds = new Set(focus?.hostileParticipantIds ?? []);
+    const allied: BattleSelectionParticipant[] = [];
+    const hostile: BattleSelectionParticipant[] = [];
+    for (const participant of battle.participants ?? []) {
+      const rendered = this.createBattleParticipantSummary(battle, participant.id);
+      if (!rendered) continue;
+      if (hostileIds.has(participant.id)) hostile.push(rendered);
+      else allied.push(rendered);
+    }
+    return { battleId: battle.id, allied, hostile };
+  }
+
+  private createBattleParticipantSummary(battle: ServerBattle, participantId: string): BattleSelectionParticipant | null {
+    const participant = battle.participants?.find((candidate) => candidate.id === participantId);
+    if (!participant) return null;
+    const owner = this.getFaction(participant.ownerId);
+    const groups = (battle.combatGroups ?? [])
+      .filter((group) => group.participantId === participantId && group.status !== "destroyed")
+      .map((group) => {
+        if (group.role === "station") return "Station";
+        const kind = group.shipKind ? `${group.shipKind}` : "ships";
+        return `${group.count} ${kind}`;
+      });
+    const stats = battle.stats?.byParticipant?.[participantId];
+    const shots = stats ? Math.max(1, stats.shotsFired) : 1;
+    const evasionAttempts = stats ? Math.max(1, stats.shotsHit + stats.shotsDodged) : 1;
+    const topWeapons = Object.values(battle.stats?.weapons ?? {})
+      .filter((weapon) => weapon.ownerParticipantId === participantId)
+      .sort((a, b) => b.damageDealt - a.damageDealt)
+      .slice(0, 3)
+      .map((weapon) => `${weapon.weaponName} ${Math.round(weapon.damageDealt)}`);
+    const name = participant.sourceType === "starbase"
+      ? `${this.star.name} Starbase`
+      : (participant.sourceType === "fleet" ? `${owner?.name ?? "Unknown"} Fleet` : participant.sourceType);
+    return {
+      id: participant.id,
+      name,
+      ownerName: owner?.name ?? "Unknown",
+      status: participant.status,
+      groups,
+      damageDealt: stats?.damageDealt ?? this.createEmptyDamage(),
+      damageReceived: stats?.damageReceived ?? this.createEmptyDamage(),
+      topWeapons,
+      hitRate: stats ? stats.shotsHit / shots : 0,
+      dodgeRate: stats ? stats.shotsDodged / evasionAttempts : 0,
+      shipsLost: stats?.shipsLost ?? 0,
+      escapedShips: stats?.escapedShips ?? 0,
+    };
   }
 
   private getFleetDefense(fleetId: string): {

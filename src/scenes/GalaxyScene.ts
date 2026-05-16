@@ -1545,6 +1545,14 @@ export class GalaxyScene implements IGameScene {
   private getReachableStarIds(action: ShipAction): Set<number> {
     const reachable = new Set<number>();
     if (action === "attack") return reachable;
+    if (action === "emergencyRetreatTo") {
+      if (this.knownStarIds === null) {
+        this.stars.forEach((star) => reachable.add(star.id));
+      } else {
+        for (const starId of this.knownStarIds) reachable.add(starId);
+      }
+      return reachable;
+    }
 
     const start = this.getCurrentCommandOriginStarId();
     if (start < 0 || start >= this.hyperlaneAdjacency.length) return reachable;
@@ -1561,15 +1569,17 @@ export class GalaxyScene implements IGameScene {
         if (reachable.has(neighbor)) continue;
         if (!this.isStarKnownToPerspective(neighbor)) continue;
 
-        const owner = this.starOwnership[neighbor] ?? -1;
-        if (owner >= 0 && owner !== this.playerFactionId) continue;
+        if (action !== "retreatTo") {
+          const owner = this.starOwnership[neighbor] ?? -1;
+          if (owner >= 0 && owner !== this.playerFactionId) continue;
+        }
 
         reachable.add(neighbor);
         queue.push(neighbor);
       }
     }
 
-    if (action === "move") {
+    if (action === "move" || action === "retreatTo") {
       reachable.delete(start);
       return reachable;
     }
@@ -1603,7 +1613,7 @@ export class GalaxyScene implements IGameScene {
     }
 
     if (action === "attack") {
-      console.info("Attack command is a placeholder.");
+      if (this.selectedCommandShipId) this.issueBasicAttack(this.selectedCommandShipId);
       this.clearShipAction();
       return;
     }
@@ -1644,6 +1654,37 @@ export class GalaxyScene implements IGameScene {
     }
     this.options.onFleetCommand?.({ type: "mergeFleets", targetFleetId: targetFleet.id, sourceFleetIds });
     this.clearShipAction();
+  }
+
+  private issueBasicAttack(fleetId: string): void {
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet) return;
+    const hostileFleet = this.serverFleets.find((candidate) => (
+      candidate.id !== fleet.id
+      && candidate.currentStarId === fleet.currentStarId
+      && candidate.ownerId !== fleet.ownerId
+    ));
+    if (hostileFleet) {
+      this.options.onFleetCommand?.({
+        type: "attackTarget",
+        fleetId,
+        targetKind: "fleet",
+        targetId: hostileFleet.id,
+      });
+      return;
+    }
+    const hostileStarbase = this.starbases.find((candidate) => (
+      candidate.starId === fleet.currentStarId
+      && candidate.ownerId !== fleet.ownerId
+    ));
+    if (hostileStarbase) {
+      this.options.onFleetCommand?.({
+        type: "attackTarget",
+        fleetId,
+        targetKind: "starbase",
+        targetId: hostileStarbase.id,
+      });
+    }
   }
 
   private clearShipAction(): void {
@@ -1817,7 +1858,7 @@ export class GalaxyScene implements IGameScene {
     const defense = this.getFleetDefense(fleet.id);
     const battle = this.getBattleForFleet(fleet.id);
     const actions: ShipAction[] = battle
-      ? ["retreat"]
+      ? ["retreatTo", "emergencyRetreatTo"]
       : ["move", "build", "attack", "merge"];
     return {
       type: "fleet",
@@ -1867,7 +1908,7 @@ export class GalaxyScene implements IGameScene {
       const defense = this.getFleetDefense(serverFleet?.id ?? null);
       const battle = this.getBattleForFleet(serverFleet?.id ?? null);
       const actions: ShipAction[] = battle
-        ? ["retreat"]
+        ? ["retreatTo", "emergencyRetreatTo"]
         : ["move", "build", "attack", "merge"];
 
       if (canCommand) {
