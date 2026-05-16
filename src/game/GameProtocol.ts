@@ -15,6 +15,7 @@ import type {
   StarbaseShipKind,
   StarbaseShipQueueItem,
 } from "../data/Starbase";
+import type { ShipDesign } from "../data/ShipDesigns";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type { CombatStance, RangeBand } from "./CombatTypes";
@@ -47,6 +48,7 @@ export type ServerUpdateField =
   | "habitedPlanetSystems"
   | "factionEconomies"
   | "ships"
+  | "shipDesigns"
   | "fleets"
   | "starbases"
   | "battles";
@@ -142,6 +144,7 @@ export interface ServerShip {
   ownerId: number;
   fleetId: string;
   shipKind: StarbaseShipKind;
+  designId?: string;
   speed: number;
   hp: number;
   maxHp: number;
@@ -224,6 +227,7 @@ export interface CombatGroup {
   sourceFleetId?: string | null;
   ownerId: number;
   shipKind?: StarbaseShipKind | null;
+  shipDesignId?: string | null;
   shipIds: string[];
   count: number;
   maxGroupSize: number;
@@ -440,6 +444,22 @@ export interface BuildStarbaseShipCommand {
   type: "buildStarbaseShip";
   starbaseId: string;
   shipKind: StarbaseShipKind;
+  designId?: string;
+}
+
+export interface SaveShipDesignCommand {
+  type: "saveShipDesign";
+  designId?: string;
+  shipKind: StarbaseShipKind;
+  name: string;
+  weaponModuleIds: string[];
+  defenseModuleIds: string[];
+  utilityModuleId?: string | null;
+}
+
+export interface DecommissionShipDesignCommand {
+  type: "decommissionShipDesign";
+  designId: string;
 }
 
 export interface RetreatFleetCommand {
@@ -493,6 +513,8 @@ export type ClientCommand =
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
   | BuildStarbaseShipCommand
+  | SaveShipDesignCommand
+  | DecommissionShipDesignCommand
   | SetUrbanSubDistrictCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand
@@ -515,6 +537,7 @@ export interface GameSnapshot {
   visibleStarIds: number[] | null;
   knownStarIds: number[] | null;
   ships: ServerShip[];
+  shipDesigns: ShipDesign[];
   fleets: ServerFleet[];
   starbases: ServerStarbase[];
   battles: ServerBattle[];
@@ -535,6 +558,7 @@ export interface GameUpdate {
   visibleStarIds?: number[] | null;
   knownStarIds?: number[] | null;
   ships?: ServerShip[];
+  shipDesigns?: ShipDesign[];
   fleets?: ServerFleet[];
   starbases?: ServerStarbase[];
   battles?: ServerBattle[];

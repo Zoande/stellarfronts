@@ -93,6 +93,7 @@ export class GameServerClient {
             visibleStarIds,
             knownStarIds,
             ships: parsed.ships ?? this.latestSnapshot.ships,
+            shipDesigns: parsed.shipDesigns ?? this.latestSnapshot.shipDesigns,
             fleets: parsed.fleets ?? this.latestSnapshot.fleets,
             starbases: parsed.starbases ?? this.latestSnapshot.starbases,
             battles: parsed.battles ?? this.latestSnapshot.battles,

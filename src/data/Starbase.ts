@@ -13,7 +13,7 @@ export type StarbaseBuildingKind =
   | "logisticsDepot";
 export type StarbaseShipKind = "corvette";
 
-export type WeaponKind = "laser";
+export type WeaponKind = "laser" | "missile" | "pointDefense";
 
 export interface WeaponMountDefinition {
   id?: string;
@@ -51,6 +51,20 @@ export const WEAPON_KIND_DEFINITIONS: Record<WeaponKind, {
     minRangeBand: "close",
     maxRangeBand: "medium",
     optimalRangeBand: "medium",
+    cooldownRounds: 1,
+  },
+  missile: {
+    range: 4,
+    minRangeBand: "medium",
+    maxRangeBand: "long",
+    optimalRangeBand: "long",
+    cooldownRounds: 2,
+  },
+  pointDefense: {
+    range: 1,
+    minRangeBand: "pointBlank",
+    maxRangeBand: "close",
+    optimalRangeBand: "close",
     cooldownRounds: 1,
   },
 };
@@ -94,6 +108,7 @@ export interface StarbaseConstructionQueueItem {
 export interface StarbaseShipQueueItem {
   id: string;
   shipKind: StarbaseShipKind;
+  designId?: string | null;
   label: string;
   totalDays: number;
   remainingDays: number;
@@ -417,17 +432,19 @@ export function countStarbaseShipyards(buildingSlots: Array<StarbaseBuildingKind
 
 export function createStarbaseShipQueueItem(
   shipKind: StarbaseShipKind,
+  overrides: Partial<Omit<StarbaseShipQueueItem, "id" | "shipKind">> = {},
   id = createConstructionId("starbase-ship", [shipKind]),
 ): StarbaseShipQueueItem {
   const definition = STARBASE_SHIP_DEFINITIONS[shipKind];
   return {
     id,
     shipKind,
-    label: definition.label,
-    totalDays: definition.buildDays,
-    remainingDays: definition.buildDays,
-    alloyUpkeepPerDay: definition.alloyUpkeepPerDay,
-    crewDemand: definition.crewDemand,
+    designId: overrides.designId ?? null,
+    label: overrides.label ?? definition.label,
+    totalDays: overrides.totalDays ?? definition.buildDays,
+    remainingDays: overrides.remainingDays ?? overrides.totalDays ?? definition.buildDays,
+    alloyUpkeepPerDay: overrides.alloyUpkeepPerDay ?? definition.alloyUpkeepPerDay,
+    crewDemand: overrides.crewDemand ?? definition.crewDemand,
   };
 }
 

@@ -1,18 +1,28 @@
 import type { FactionInfo } from "../data/Factions";
 import {
   STARBASE_SHIP_DEFINITIONS,
-  STARBASE_SHIP_KINDS,
   countStarbaseShipyards,
 } from "../data/Starbase";
 import type { StarbaseShipKind } from "../data/Starbase";
+import {
+  calculateShipDesignStats,
+  createDefaultShipDesign,
+  getShipModuleDefinition,
+  SHIP_DEFENSE_MODULES,
+  SHIP_HULL_DEFINITIONS,
+  SHIP_UTILITY_MODULES,
+  SHIP_WEAPON_MODULES,
+} from "../data/ShipDesigns";
+import type { ShipDesign, ShipModuleDefinition, ShipModuleSlotType } from "../data/ShipDesigns";
 import type { StarData } from "../data/StarMap";
 import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
-import { computeFleetPower } from "../game/combatPower";
+import { computeCombatPowerFromStats, computeFleetPower } from "../game/combatPower";
 
 export interface FleetManagerPanelData {
   fleets: ServerFleet[];
   ships: ServerShip[];
+  shipDesigns: ShipDesign[];
   starbases: ServerStarbase[];
   stars: StarData[];
   factions: FactionInfo[];
@@ -24,6 +34,7 @@ export interface FleetManagerPanelData {
 const STYLE_ID = "fleet-manager-panel-style";
 
 type FleetManagerTab = "fleetManager" | "shipDesigner";
+type DesignerSlotKind = "weapon" | "defense" | "utility";
 
 export class FleetManagerPanel {
   private root: HTMLDivElement;
@@ -31,6 +42,9 @@ export class FleetManagerPanel {
   private currentData: FleetManagerPanelData | null = null;
   private activeTab: FleetManagerTab = "fleetManager";
   private selectedFleetId: string | null = null;
+  private selectedDesignId: string | null = null;
+  private designerDraft: ShipDesign | null = null;
+  private selectedDesignerSlot = "weapon:0";
   private addShipsOpen = false;
   private position = { x: 62, y: 82 };
   private dragOffset = { x: 0, y: 0 };
@@ -64,6 +78,7 @@ export class FleetManagerPanel {
   public show(data: FleetManagerPanelData): void {
     this.currentData = data;
     this.ensureSelectedFleet(data);
+    if (this.activeTab === "shipDesigner") this.ensureDesignerDraft(data);
     if (!this.panelElement) {
       this.panelElement = document.createElement("div");
       this.panelElement.className = "fleetManagerPanel";
@@ -91,6 +106,8 @@ export class FleetManagerPanel {
     this.currentData = null;
     this.activeTab = "fleetManager";
     this.addShipsOpen = false;
+    this.selectedDesignId = null;
+    this.designerDraft = null;
   }
 
   public dispose(): void {
@@ -138,6 +155,7 @@ export class FleetManagerPanel {
       button.addEventListener("click", () => {
         const fleet = this.getSelectedFleet(data);
         const shipKind = button.dataset.fmBuildShip as StarbaseShipKind | undefined;
+        const designId = button.dataset.fmBuildDesign;
         if (!fleet || !shipKind) return;
         const shipyard = this.findNearestShipyard(data, fleet);
         if (!shipyard) return;
@@ -145,8 +163,84 @@ export class FleetManagerPanel {
           type: "buildStarbaseShip",
           starbaseId: shipyard.id,
           shipKind,
+          designId,
         });
       });
+    });
+    this.bindDesignerEvents(data);
+  }
+
+  private bindDesignerEvents(data: FleetManagerPanelData): void {
+    if (!this.panelElement || this.activeTab !== "shipDesigner") return;
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-select-design]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const design = data.shipDesigns.find((candidate) => candidate.id === button.dataset.fmSelectDesign);
+        if (!design) return;
+        this.selectedDesignId = design.id;
+        this.designerDraft = this.cloneDesign(design);
+        this.selectedDesignerSlot = "weapon:0";
+        this.show(data);
+      });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-new-design]")?.addEventListener("click", () => {
+      const ownerId = data.playerFactionId ?? data.factions[0]?.id ?? 0;
+      const draft = createDefaultShipDesign(ownerId, "corvette", data.clockYear);
+      this.selectedDesignId = null;
+      this.designerDraft = {
+        ...draft,
+        id: "",
+        name: "New Corvette Design",
+      };
+      this.selectedDesignerSlot = "weapon:0";
+      this.show(data);
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-design-slot]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const slot = button.dataset.fmDesignSlot;
+        if (!slot) return;
+        this.selectedDesignerSlot = slot;
+        this.show(data);
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-module]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const moduleId = button.dataset.fmModule;
+        if (!moduleId || !this.designerDraft) return;
+        this.applyModuleToDraft(moduleId);
+        this.show(data);
+      });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-clear-design]")?.addEventListener("click", () => {
+      if (!this.designerDraft) return;
+      const ownerId = this.designerDraft.ownerId;
+      const shipKind = this.designerDraft.shipKind;
+      const base = createDefaultShipDesign(ownerId, shipKind, data.clockYear);
+      this.designerDraft = {
+        ...this.designerDraft,
+        weaponModuleIds: [...base.weaponModuleIds],
+        defenseModuleIds: [...base.defenseModuleIds],
+        utilityModuleId: base.utilityModuleId,
+      };
+      this.show(data);
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-save-design]")?.addEventListener("click", () => {
+      if (!this.designerDraft) return;
+      const nameInput = this.panelElement?.querySelector<HTMLInputElement>("[data-fm-design-name]");
+      const name = (nameInput?.value ?? this.designerDraft.name).trim() || this.designerDraft.name;
+      this.designerDraft.name = name;
+      data.onFleetCommand?.({
+        type: "saveShipDesign",
+        designId: this.designerDraft.id || undefined,
+        shipKind: this.designerDraft.shipKind,
+        name,
+        weaponModuleIds: [...this.designerDraft.weaponModuleIds],
+        defenseModuleIds: [...this.designerDraft.defenseModuleIds],
+        utilityModuleId: this.designerDraft.utilityModuleId,
+      });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-decommission-design]")?.addEventListener("click", () => {
+      if (!this.designerDraft?.id) return;
+      data.onFleetCommand?.({ type: "decommissionShipDesign", designId: this.designerDraft.id });
     });
   }
 
@@ -166,7 +260,7 @@ export class FleetManagerPanel {
         </div>
         <button class="fmClose" type="button" data-fm-close aria-label="Close fleet manager">X</button>
       </div>
-      ${this.activeTab === "shipDesigner" ? this.renderShipDesigner() : this.renderFleetManager(data)}
+      ${this.activeTab === "shipDesigner" ? this.renderShipDesigner(data) : this.renderFleetManager(data)}
       <nav class="fmTabs">
         ${this.renderTab("fleetManager", "Fleet Manager")}
         ${this.renderTab("shipDesigner", "Ship Designer")}
@@ -255,7 +349,7 @@ export class FleetManagerPanel {
     ships: ServerShip[],
   ): string {
     if (ships.length > 0) {
-      return ships.map((ship) => this.renderShipRow(ship)).join("");
+      return ships.map((ship) => this.renderShipRow(data, ship)).join("");
     }
     if (fleet.shipIds.length > 0) {
       return fleet.shipIds.map((shipId) => `
@@ -272,8 +366,9 @@ export class FleetManagerPanel {
     return '<div class="fmEmpty">No ships assigned to this fleet.</div>';
   }
 
-  private renderShipRow(ship: ServerShip): string {
+  private renderShipRow(data: FleetManagerPanelData, ship: ServerShip): string {
     const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind];
+    const design = this.getDesignById(data, ship.designId);
     const shieldPct = ship.maxShield > 0 ? Math.round((ship.shield / ship.maxShield) * 100) : 0;
     const armorPct = ship.maxArmor > 0 ? Math.round((ship.armor / ship.maxArmor) * 100) : 0;
     const hullPct = ship.maxHull > 0 ? Math.round((ship.hull / ship.maxHull) * 100) : 0;
@@ -282,7 +377,7 @@ export class FleetManagerPanel {
         <span class="fmShipIcon">${this.escapeHtml(this.getInitials(definition?.label ?? ship.shipKind))}</span>
         <span>
           <strong>${this.escapeHtml(definition?.label ?? ship.shipKind)}</strong>
-          <small>${this.escapeHtml(definition?.className ?? "Unknown class")}</small>
+          <small>${this.escapeHtml(design?.name ?? definition?.className ?? "Unknown class")}</small>
         </span>
         <em>S ${shieldPct}% | A ${armorPct}% | H ${hullPct}%</em>
       </div>
@@ -328,6 +423,7 @@ export class FleetManagerPanel {
 
   private renderShipPicker(data: FleetManagerPanelData, fleet: ServerFleet): string {
     const nearest = this.findNearestShipyard(data, fleet);
+    const designs = this.getActiveDesigns(data, fleet.ownerId);
     return `
       <div class="fmShipPicker">
         <div class="fmPickerHeader">
@@ -338,16 +434,16 @@ export class FleetManagerPanel {
           <button type="button" data-fm-close-ship-picker aria-label="Close add ships">X</button>
         </div>
         <div class="fmBuildShipList">
-          ${STARBASE_SHIP_KINDS.map((kind) => {
-            const definition = STARBASE_SHIP_DEFINITIONS[kind];
-            const predictedAlloys = definition.alloyUpkeepPerDay * definition.buildDays;
+          ${designs.length === 0 ? '<div class="fmEmpty">No active designs available.</div>' : designs.map((design) => {
+            const stats = calculateShipDesignStats(design);
+            const predictedAlloys = stats.alloyUpkeepPerDay * stats.buildDays;
             return `
-              <button class="fmBuildShipCard" type="button" data-fm-build-ship="${kind}">
-                <span class="fmShipIcon">${this.escapeHtml(this.getInitials(definition.label))}</span>
+              <button class="fmBuildShipCard" type="button" data-fm-build-ship="${design.shipKind}" data-fm-build-design="${this.escapeAttribute(design.id)}" ${nearest ? "" : "disabled"}>
+                <span class="fmShipIcon">${this.escapeHtml(this.getInitials(SHIP_HULL_DEFINITIONS[design.shipKind]?.label ?? design.shipKind))}</span>
                 <span>
-                  <strong>${this.escapeHtml(definition.label)}</strong>
-                  <small>${this.escapeHtml(definition.className)}</small>
-                  <em>${this.formatCompact(predictedAlloys)} alloys predicted | ${definition.buildDays} days | ${this.formatCompact(definition.crewDemand)} crew</em>
+                  <strong>${this.escapeHtml(design.name)}</strong>
+                  <small>${this.escapeHtml(SHIP_HULL_DEFINITIONS[design.shipKind]?.label ?? design.shipKind)}</small>
+                  <em>${this.formatCompact(predictedAlloys)} alloys predicted | ${stats.buildDays.toFixed(1)} days | ${this.formatCompact(stats.crewDemand)} crew</em>
                 </span>
               </button>
             `;
@@ -357,18 +453,157 @@ export class FleetManagerPanel {
     `;
   }
 
-  private renderShipDesigner(): string {
+  private renderShipDesigner(data: FleetManagerPanelData): string {
+    const draft = this.getDesignerDraft(data);
+    if (!draft) {
+      return `
+        <section class="fmDesignerBody">
+          <article class="fmDesignerEmpty">
+            <div class="fmSectionTitle">Ship Designer</div>
+            <p>No ship designs are available.</p>
+          </article>
+        </section>
+      `;
+    }
+    const stats = calculateShipDesignStats(draft);
+    const activeDesignCount = this.getActiveDesigns(data, draft.ownerId, draft.shipKind).length;
     return `
       <section class="fmDesignerBody">
-        <article class="fmDesignerPlaceholder">
-          <div class="fmDesignerIcon">SD</div>
-          <div>
-            <div class="fmSectionTitle">Ship Designer</div>
-            <h3>Placeholder</h3>
-            <p>Design templates, ship sections, weapons, utilities, and auto-upgrade controls will be wired here later.</p>
+        <aside class="fmDesignListPane">
+          <button class="fmNewDesignCard" type="button" data-fm-new-design>
+            <span>+</span>
+            <strong>New Design</strong>
+          </button>
+          ${this.renderDesignList(data, draft)}
+        </aside>
+        <main class="fmDesignWorkbench">
+          <div class="fmDesignNameBar">
+            <input type="text" value="${this.escapeAttribute(draft.name)}" maxlength="40" data-fm-design-name aria-label="Design name">
+            <span>${this.escapeHtml(SHIP_HULL_DEFINITIONS[draft.shipKind]?.label ?? draft.shipKind)}</span>
           </div>
-        </article>
+          <div class="fmCoreSection">
+            <div class="fmSectionTitle">Corvette Core</div>
+            <div class="fmSlotRow fmWeaponSlots">
+              ${draft.weaponModuleIds.map((moduleId, index) => this.renderDesignSlot("weapon", index, moduleId)).join("")}
+            </div>
+          </div>
+          <div class="fmDesignViewport" aria-label="Ship preview"></div>
+          <div class="fmLowerSections">
+            <div>
+              <div class="fmSectionTitle">Defense</div>
+              <div class="fmSlotRow fmDefenseSlots">
+                ${draft.defenseModuleIds.map((moduleId, index) => this.renderDesignSlot("defense", index, moduleId)).join("")}
+              </div>
+            </div>
+            <div>
+              <div class="fmSectionTitle">Extra</div>
+              <div class="fmSlotRow">
+                ${this.renderDesignSlot("utility", 0, draft.utilityModuleId)}
+              </div>
+            </div>
+          </div>
+          <div class="fmModulePalette">
+            ${this.renderModulePalette()}
+          </div>
+        </main>
+        <aside class="fmDesignStatsPane">
+          <div class="fmStatsHeader">
+            <div>
+              <div class="fmSectionTitle">Ship Stats</div>
+              <span>${this.escapeHtml(stats.className)}</span>
+            </div>
+          </div>
+          <div class="fmOverallGrid fmDesignStatGrid">
+            ${this.renderStat("Power", this.formatPowerValue(computeCombatPowerFromStats(stats.combat)))}
+            ${this.renderStat("Damage", this.formatCompact(stats.combat.weaponMounts.reduce((sum, mount) => sum + mount.damage * mount.barrels, 0)))}
+            ${this.renderStat("Shields", this.formatCompact(stats.combat.maxShield))}
+            ${this.renderStat("Armor", this.formatCompact(stats.combat.maxArmor))}
+            ${this.renderStat("Hull", this.formatCompact(stats.combat.maxHull))}
+            ${this.renderStat("Evasion", `${Math.round(stats.combat.evasion * 100)}%`)}
+            ${this.renderStat("Speed", this.formatCompact(stats.speed))}
+            ${this.renderStat("Sensor", this.formatCompact(stats.combat.sensorRange))}
+          </div>
+          <div class="fmStatsNote">
+            <strong>Cost</strong>
+            <span>${this.escapeHtml(this.formatResources(stats.cost))}</span>
+          </div>
+          <div class="fmStatsNote">
+            <strong>Upkeep</strong>
+            <span>${this.escapeHtml(this.formatResources(stats.upkeep))}</span>
+          </div>
+          <div class="fmControlStack">
+            <button type="button" data-fm-clear-design>Auto-complete</button>
+            <button type="button" data-fm-save-design>Save</button>
+            <button type="button" data-fm-decommission-design ${draft.id && activeDesignCount > 1 ? "" : "disabled"}>Decommission</button>
+          </div>
+        </aside>
       </section>
+    `;
+  }
+
+  private renderDesignList(data: FleetManagerPanelData, draft: ShipDesign): string {
+    const groups = new Map<StarbaseShipKind, ShipDesign[]>();
+    for (const design of data.shipDesigns.filter((candidate) => candidate.status === "active")) {
+      if (data.playerFactionId !== null && design.ownerId !== data.playerFactionId) continue;
+      const list = groups.get(design.shipKind) ?? [];
+      list.push(design);
+      groups.set(design.shipKind, list);
+    }
+    const orderedKinds: StarbaseShipKind[] = ["corvette"];
+    return orderedKinds.map((shipKind) => {
+      const designs = (groups.get(shipKind) ?? []).sort((a, b) => a.name.localeCompare(b.name));
+      if (designs.length === 0) return "";
+      const hull = SHIP_HULL_DEFINITIONS[shipKind];
+      return `
+        <div class="fmDesignTypeGroup">
+          <div class="fmDesignTypeLabel">${this.escapeHtml(hull?.label ?? shipKind)}</div>
+          ${designs.map((design) => `
+            <button class="fmDesignCard ${draft.id === design.id ? "selected" : ""}" type="button" data-fm-select-design="${this.escapeAttribute(design.id)}">
+              <span class="fmDesignThumb">${this.escapeHtml(this.getInitials(hull?.label ?? shipKind))}</span>
+              <span>
+                <strong>${this.escapeHtml(design.name)}</strong>
+                <small>${this.escapeHtml(hull?.label ?? shipKind)}</small>
+              </span>
+            </button>
+          `).join("")}
+        </div>
+      `;
+    }).join("");
+  }
+
+  private renderDesignSlot(kind: DesignerSlotKind, index: number, moduleId: string | null | undefined): string {
+    const module = getShipModuleDefinition(moduleId);
+    const slot = `${kind}:${index}`;
+    const selected = this.selectedDesignerSlot === slot;
+    const emptyLabel = kind === "utility" ? "Extra" : kind === "weapon" ? "Weapon" : "Defense";
+    return `
+      <button class="fmDesignSlot ${selected ? "selected" : ""} ${module ? "" : "empty"}" type="button" data-fm-design-slot="${this.escapeAttribute(slot)}">
+        <span>${this.escapeHtml(module ? this.getInitials(module.label) : "+")}</span>
+        <strong>${this.escapeHtml(module?.label ?? emptyLabel)}</strong>
+      </button>
+    `;
+  }
+
+  private renderModulePalette(): string {
+    const slot = this.parseDesignerSlot(this.selectedDesignerSlot);
+    const modules = this.getModulesForSlot(slot.kind);
+    return `
+      <div class="fmPaletteHeader">
+        <strong>${this.escapeHtml(this.formatSlotKind(slot.kind))}</strong>
+      </div>
+      <div class="fmPaletteList">
+        ${modules.map((module) => this.renderModuleButton(module)).join("")}
+      </div>
+    `;
+  }
+
+  private renderModuleButton(module: ShipModuleDefinition): string {
+    const selected = this.isModuleSelectedInSlot(module.id);
+    return `
+      <button class="fmModuleButton ${selected ? "selected" : ""}" type="button" data-fm-module="${this.escapeAttribute(module.id)}">
+        <span>${this.escapeHtml(this.getInitials(module.label))}</span>
+        <strong>${this.escapeHtml(module.label)}</strong>
+      </button>
     `;
   }
 
@@ -383,6 +618,102 @@ export class FleetManagerPanel {
         <strong>${this.escapeHtml(value)}</strong>
       </div>
     `;
+  }
+
+  private ensureDesignerDraft(data: FleetManagerPanelData): void {
+    const available = this.getActiveDesigns(data, data.playerFactionId ?? undefined);
+    const selected = this.selectedDesignId
+      ? data.shipDesigns.find((design) => design.id === this.selectedDesignId)
+      : null;
+    if (this.designerDraft && (!this.selectedDesignId || selected)) return;
+    const design = selected ?? available[0] ?? data.shipDesigns.find((candidate) => candidate.status === "active");
+    this.selectedDesignId = design?.id ?? null;
+    this.designerDraft = design ? this.cloneDesign(design) : null;
+  }
+
+  private getDesignerDraft(data: FleetManagerPanelData): ShipDesign | null {
+    this.ensureDesignerDraft(data);
+    return this.designerDraft;
+  }
+
+  private cloneDesign(design: ShipDesign): ShipDesign {
+    return {
+      ...design,
+      weaponModuleIds: [...design.weaponModuleIds],
+      defenseModuleIds: [...design.defenseModuleIds],
+    };
+  }
+
+  private getDesignById(data: FleetManagerPanelData, designId: string | null | undefined): ShipDesign | null {
+    if (!designId) return null;
+    return data.shipDesigns.find((design) => design.id === designId) ?? null;
+  }
+
+  private getActiveDesigns(
+    data: FleetManagerPanelData,
+    ownerId?: number | null,
+    shipKind?: StarbaseShipKind,
+  ): ShipDesign[] {
+    return data.shipDesigns
+      .filter((design) => (
+        design.status === "active"
+        && (ownerId === undefined || ownerId === null || design.ownerId === ownerId)
+        && (!shipKind || design.shipKind === shipKind)
+      ))
+      .sort((a, b) => {
+        const kindDelta = a.shipKind.localeCompare(b.shipKind);
+        return kindDelta !== 0 ? kindDelta : a.name.localeCompare(b.name);
+      });
+  }
+
+  private parseDesignerSlot(slot: string): { kind: DesignerSlotKind; index: number } {
+    const [kind, indexText] = slot.split(":");
+    if (kind === "defense" || kind === "utility" || kind === "weapon") {
+      return { kind, index: Math.max(0, Number(indexText) || 0) };
+    }
+    return { kind: "weapon", index: 0 };
+  }
+
+  private getModulesForSlot(kind: DesignerSlotKind): ShipModuleDefinition[] {
+    if (kind === "defense") return SHIP_DEFENSE_MODULES;
+    if (kind === "utility") return SHIP_UTILITY_MODULES;
+    return SHIP_WEAPON_MODULES;
+  }
+
+  private applyModuleToDraft(moduleId: string): void {
+    if (!this.designerDraft) return;
+    const module = getShipModuleDefinition(moduleId);
+    if (!module) return;
+    const slot = this.parseDesignerSlot(this.selectedDesignerSlot);
+    if (module.slotType !== slot.kind) return;
+    if (slot.kind === "weapon" && slot.index < this.designerDraft.weaponModuleIds.length) {
+      this.designerDraft.weaponModuleIds[slot.index] = moduleId;
+    } else if (slot.kind === "defense" && slot.index < this.designerDraft.defenseModuleIds.length) {
+      this.designerDraft.defenseModuleIds[slot.index] = moduleId;
+    } else if (slot.kind === "utility") {
+      this.designerDraft.utilityModuleId = moduleId;
+    }
+  }
+
+  private isModuleSelectedInSlot(moduleId: string): boolean {
+    if (!this.designerDraft) return false;
+    const slot = this.parseDesignerSlot(this.selectedDesignerSlot);
+    if (slot.kind === "weapon") return this.designerDraft.weaponModuleIds[slot.index] === moduleId;
+    if (slot.kind === "defense") return this.designerDraft.defenseModuleIds[slot.index] === moduleId;
+    return this.designerDraft.utilityModuleId === moduleId;
+  }
+
+  private formatSlotKind(kind: ShipModuleSlotType): string {
+    if (kind === "defense") return "Defense Modules";
+    if (kind === "utility") return "Extra Components";
+    return "Weapons";
+  }
+
+  private formatResources(resources: Record<string, number>): string {
+    const parts = Object.entries(resources)
+      .filter(([, value]) => Math.abs(value) > 0.001)
+      .map(([resource, value]) => `${this.formatCompact(value)} ${resource}`);
+    return parts.length > 0 ? parts.join(" | ") : "None";
   }
 
   private ensureSelectedFleet(data: FleetManagerPanelData): void {
@@ -507,7 +838,7 @@ export class FleetManagerPanel {
 
   private getFleetPowerValue(data: FleetManagerPanelData, fleet: ServerFleet, index: number): number {
     const ships = this.getShipsForFleet(data, fleet.id);
-    return computeFleetPower(ships, Math.max(1, this.getFleetShipCount(data, fleet)));
+    return computeFleetPower(ships, Math.max(1, this.getFleetShipCount(data, fleet)), undefined, data.shipDesigns);
   }
 
   private formatFleetPower(data: FleetManagerPanelData, fleet: ServerFleet, index: number): string {
@@ -603,8 +934,8 @@ export class FleetManagerPanel {
 .fleetManagerPanel {
   --fleet-accent: rgba(114, 226, 255, 0.95);
   position: fixed;
-  width: min(920px, calc(100vw - 32px));
-  height: min(612px, calc(100vh - 32px));
+  width: min(1120px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 32px));
   z-index: 58;
   pointer-events: auto;
   display: grid;
@@ -674,7 +1005,10 @@ export class FleetManagerPanel {
 }
 
 .fmColumn,
-.fmDesignerPlaceholder {
+.fmDesignerEmpty,
+.fmDesignListPane,
+.fmDesignWorkbench,
+.fmDesignStatsPane {
   min-height: 0;
   overflow: hidden;
   border: 1px solid rgba(103, 255, 221, 0.26);
@@ -809,8 +1143,7 @@ export class FleetManagerPanel {
   border-bottom: 1px solid rgba(103, 255, 221, 0.2);
 }
 
-.fmSelectedHeader h3,
-.fmDesignerPlaceholder h3 {
+.fmSelectedHeader h3 {
   margin: 0;
   color: #eafff8;
   font-size: 17px;
@@ -818,7 +1151,7 @@ export class FleetManagerPanel {
 
 .fmSelectedHeader span,
 .fmStatsHeader span,
-.fmDesignerPlaceholder p {
+.fmDesignerEmpty p {
   display: block;
   margin-top: 3px;
   color: rgba(206, 232, 226, 0.62);
@@ -1007,6 +1340,11 @@ export class FleetManagerPanel {
   border-color: rgba(103, 255, 221, 0.72);
 }
 
+.fmBuildShipCard:disabled {
+  opacity: 0.44;
+  cursor: default;
+}
+
 .fmNoSelection,
 .fmEmpty {
   color: rgba(206, 232, 226, 0.56);
@@ -1016,22 +1354,273 @@ export class FleetManagerPanel {
 
 .fmDesignerBody {
   min-height: 0;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 248px;
+  gap: 8px;
   padding: 8px;
 }
 
-.fmDesignerPlaceholder {
+.fmDesignerEmpty {
   height: 100%;
-  display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
-  align-items: center;
-  gap: 14px;
   padding: 18px;
 }
 
-.fmDesignerIcon {
-  width: 64px;
-  height: 64px;
-  font-size: 16px;
+.fmDesignListPane,
+.fmDesignWorkbench,
+.fmDesignStatsPane {
+  padding: 8px;
+}
+
+.fmDesignListPane {
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.fmNewDesignCard,
+.fmDesignCard {
+  width: 100%;
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(103, 255, 221, 0.24);
+  background: rgba(1, 8, 10, 0.42);
+  color: #e9fff8;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fmNewDesignCard {
+  grid-template-columns: 34px minmax(0, 1fr);
+  min-height: 52px;
+  margin-bottom: 10px;
+  background: rgba(103, 255, 221, 0.08);
+}
+
+.fmNewDesignCard span,
+.fmDesignThumb {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(103, 255, 221, 0.38);
+  color: #a9ffea;
+  font-weight: 900;
+}
+
+.fmDesignTypeGroup {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.fmDesignTypeLabel {
+  color: rgba(206, 232, 226, 0.66);
+  font-size: 10px;
+  text-transform: uppercase;
+  font-weight: 900;
+}
+
+.fmDesignCard {
+  grid-template-columns: 40px minmax(0, 1fr);
+  min-height: 62px;
+  padding: 7px;
+}
+
+.fmDesignCard.selected,
+.fmDesignSlot.selected,
+.fmModuleButton.selected {
+  border-color: rgba(248, 218, 103, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(248, 218, 103, 0.24);
+}
+
+.fmDesignCard strong,
+.fmDesignCard small,
+.fmNewDesignCard strong {
+  display: block;
+}
+
+.fmDesignCard strong,
+.fmNewDesignCard strong {
+  color: #eafff8;
+  font-size: 12px;
+}
+
+.fmDesignCard small {
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 10px;
+}
+
+.fmDesignWorkbench {
+  display: grid;
+  grid-template-rows: 36px auto minmax(180px, 1fr) auto 114px;
+  gap: 8px;
+}
+
+.fmDesignNameBar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.fmDesignNameBar input {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid rgba(103, 255, 221, 0.38);
+  background: rgba(0, 0, 0, 0.32);
+  color: #eafff8;
+  padding: 0 9px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.fmDesignNameBar span {
+  color: #75ff9b;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.fmCoreSection,
+.fmLowerSections,
+.fmModulePalette {
+  border: 1px solid rgba(103, 255, 221, 0.18);
+  background: rgba(1, 8, 10, 0.32);
+  padding: 8px;
+}
+
+.fmSlotRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.fmDesignSlot {
+  width: 92px;
+  height: 60px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  border: 1px solid rgba(103, 255, 221, 0.28);
+  background: rgba(5, 20, 22, 0.72);
+  color: #e9fff8;
+  font: inherit;
+  cursor: pointer;
+  padding: 5px;
+}
+
+.fmDesignSlot span {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid rgba(103, 255, 221, 0.34);
+  color: #a9ffea;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.fmDesignSlot strong {
+  min-width: 0;
+  color: #eafff8;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fmDesignViewport {
+  min-height: 180px;
+  border: 1px solid rgba(103, 255, 221, 0.2);
+  background: #000;
+  box-shadow: inset 0 0 28px rgba(103, 255, 221, 0.08);
+}
+
+.fmLowerSections {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 116px;
+  gap: 8px;
+}
+
+.fmModulePalette {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.fmPaletteHeader {
+  margin-bottom: 7px;
+  color: #eafff8;
+  font-size: 12px;
+}
+
+.fmPaletteList {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 3px;
+}
+
+.fmModuleButton {
+  min-width: 132px;
+  height: 58px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  border: 1px solid rgba(103, 255, 221, 0.24);
+  background: rgba(1, 8, 10, 0.42);
+  color: #e9fff8;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 6px;
+}
+
+.fmModuleButton span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(103, 255, 221, 0.34);
+  color: #a9ffea;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.fmModuleButton strong {
+  min-width: 0;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fmDesignStatsPane {
+  overflow-y: auto;
+}
+
+.fmDesignStatGrid {
+  grid-template-columns: 1fr;
+}
+
+.fmControlStack {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.fmControlStack button {
+  min-height: 34px;
+  border: 1px solid rgba(103, 255, 221, 0.44);
+  background: rgba(6, 42, 38, 0.72);
+  color: #d8fff6;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.fmControlStack button:disabled {
+  opacity: 0.38;
+  cursor: default;
 }
 
 .fmTabs {
@@ -1061,6 +1650,11 @@ export class FleetManagerPanel {
   }
 
   .fmBody {
+    grid-template-columns: 1fr;
+    overflow-y: auto;
+  }
+
+  .fmDesignerBody {
     grid-template-columns: 1fr;
     overflow-y: auto;
   }

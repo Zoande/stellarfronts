@@ -114,6 +114,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const getFleetManagerData = () => ({
     fleets: snapshot.fleets,
     ships: snapshot.ships,
+    shipDesigns: snapshot.shipDesigns,
     starbases: snapshot.starbases,
     stars: snapshot.stars,
     factions: snapshot.factions,
@@ -466,6 +467,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       if (isFull || has("ships")) {
         activeSystemScene.setServerShips(snapshot.ships);
       }
+      if (isFull || has("shipDesigns")) {
+        activeSystemScene.setShipDesigns(snapshot.shipDesigns);
+      }
       if (isFull || has("starbases")) {
         activeSystemScene.setStarbaseSystemIds(getStarbaseSystemIds());
         activeSystemScene.setServerStarbases(snapshot.starbases);
@@ -572,6 +576,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           playerShipSystemIds: getFleetSystemIds(),
           serverFleets: snapshot.fleets,
           serverShips: snapshot.ships,
+          shipDesigns: snapshot.shipDesigns,
           battles: snapshot.battles,
           starbaseSystemIds: getStarbaseSystemIds(),
           starbases: snapshot.starbases,

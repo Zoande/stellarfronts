@@ -57,6 +57,7 @@ import {
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type { PlanetState } from "../data/Economy";
 import type { FactionInfo } from "../data/Factions";
+import type { ShipDesign } from "../data/ShipDesigns";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
 import type { BattleLayerDamage, BattleZone, ClientCommand, FleetOrbitTarget, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
@@ -92,6 +93,7 @@ export interface SystemSceneOptions {
   fleetSystemPositions?: Record<number, { x: number; y: number; z: number }>;
   serverFleets?: ServerFleet[];
   serverShips?: ServerShip[];
+  shipDesigns?: ShipDesign[];
   battles?: ServerBattle[];
   starbaseSystemIds?: number[];
   starbases?: ServerStarbase[];
@@ -175,6 +177,7 @@ export class SystemScene implements IGameScene {
   private fleetSystemPositions: Record<number, { x: number; y: number; z: number }>;
   private serverFleets: ServerFleet[];
   private serverShips: ServerShip[];
+  private shipDesigns: ShipDesign[];
   private battles: ServerBattle[];
   private starbaseSystemIds: Set<number>;
   private starbases: ServerStarbase[];
@@ -216,6 +219,7 @@ export class SystemScene implements IGameScene {
   private battleShipRoots = new Map<string, TransformNode>();
   private battleShipTargets = new Map<string, Vector3>();
   private battleBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
+  private battleProjectiles: Array<{ mesh: Mesh; material: StandardMaterial; velocity: Vector3; ttl: number; maxTtl: number }> = [];
   private battleRoundSeen = new Map<string, number>();
 
   private starbaseRoot: TransformNode | null = null;
@@ -309,6 +313,7 @@ export class SystemScene implements IGameScene {
     this.fleetSystemPositions = options.fleetSystemPositions ?? {};
     this.serverFleets = options.serverFleets ?? [];
     this.serverShips = options.serverShips ?? [];
+    this.shipDesigns = options.shipDesigns ?? [];
     this.battles = options.battles ?? [];
     this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
     this.starbases = options.starbases ?? [];
@@ -589,6 +594,22 @@ export class SystemScene implements IGameScene {
         nextBeams.push(beam);
       }
       this.battleBeams = nextBeams;
+    }
+    if (this.battleProjectiles.length > 0) {
+      const nextProjectiles: Array<{ mesh: Mesh; material: StandardMaterial; velocity: Vector3; ttl: number; maxTtl: number }> = [];
+      for (const projectile of this.battleProjectiles) {
+        projectile.ttl -= dt;
+        if (projectile.ttl <= 0) {
+          projectile.mesh.dispose();
+          projectile.material.dispose();
+          continue;
+        }
+        projectile.mesh.position.addInPlace(projectile.velocity.scale(dt));
+        const alpha = Math.max(0, projectile.ttl / projectile.maxTtl);
+        projectile.material.alpha = alpha;
+        nextProjectiles.push(projectile);
+      }
+      this.battleProjectiles = nextProjectiles;
     }
     if (this.playerShipThrusterMaterial) {
       const thrusterPulse = 0.65 + 0.35 * Math.sin(this.elapsed * 5.8);
@@ -1651,7 +1672,7 @@ export class SystemScene implements IGameScene {
 
   private formatFleetPower(fleet: ServerFleet, index: number): string {
     const ships = this.getShipsForFleet(fleet.id);
-    const value = computeFleetPower(ships, Math.max(1, fleet.shipIds.length));
+    const value = computeFleetPower(ships, Math.max(1, fleet.shipIds.length), undefined, this.shipDesigns);
     return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : `${Math.round(value / 1000)}K`;
   }
 
@@ -2845,6 +2866,32 @@ export class SystemScene implements IGameScene {
         const from = this.getBattleEntityPosition(action.actorId);
         const to = this.getBattleEntityPosition(action.fired.targetId);
         if (!from || !to) continue;
+        const weaponId = action.fired.weaponId?.toLowerCase() ?? "";
+        if (weaponId.includes("missile")) {
+          this.queueBattleProjectile(
+            `battleMissile-${battle.id}-${action.actorId}-${latestRound.round}`,
+            from,
+            to,
+            action.fired.hit ? new Color3(1.0, 0.52, 0.16) : new Color3(1.0, 0.25, 0.12),
+            0.8,
+            0.24,
+          );
+          continue;
+        }
+        if (weaponId.includes("point-defense") || weaponId.includes("pointdefense")) {
+          for (let i = 0; i < 4; i += 1) {
+            const jitter = new Vector3((Math.random() - 0.5) * 0.9, (Math.random() - 0.5) * 0.35, (Math.random() - 0.5) * 0.9);
+            this.queueBattleProjectile(
+              `battlePd-${battle.id}-${action.actorId}-${latestRound.round}-${i}`,
+              from.add(jitter),
+              to.add(jitter.scale(0.35)),
+              action.fired.hit ? new Color3(1.0, 0.86, 0.38) : new Color3(1.0, 0.38, 0.24),
+              0.34,
+              0.1,
+            );
+          }
+          continue;
+        }
         const beam = MeshBuilder.CreateLines(
           `battleBeam-${battle.id}-${action.actorId}-${latestRound.round}`,
           { points: [from, to] },
@@ -2855,6 +2902,29 @@ export class SystemScene implements IGameScene {
         this.battleBeams.push({ mesh: beam, ttl: BATTLE_BEAM_TTL, maxTtl: BATTLE_BEAM_TTL });
       }
     }
+  }
+
+  private queueBattleProjectile(
+    name: string,
+    from: Vector3,
+    to: Vector3,
+    color: Color3,
+    ttl: number,
+    diameter: number,
+  ): void {
+    const projectile = MeshBuilder.CreateSphere(name, { diameter, segments: 10 }, this.scene);
+    projectile.position.copyFrom(from);
+    projectile.isPickable = false;
+    const material = new StandardMaterial(`${name}Mat`, this.scene);
+    material.diffuseColor = Color3.Black();
+    material.specularColor = Color3.Black();
+    material.emissiveColor = color.scale(1.8);
+    material.disableLighting = true;
+    material.alpha = 1;
+    projectile.material = material;
+    this.glowLayer.addIncludedOnlyMesh(projectile);
+    const velocity = to.subtract(from).scale(1 / Math.max(0.01, ttl));
+    this.battleProjectiles.push({ mesh: projectile, material, velocity, ttl, maxTtl: ttl });
   }
 
   private createRedGiantAtmosphere(starDiameter: number, starTint: Color3): void {
@@ -3781,6 +3851,11 @@ export class SystemScene implements IGameScene {
     this.refreshSystemEntityCards();
   }
 
+  setShipDesigns(shipDesigns: ShipDesign[]): void {
+    this.shipDesigns = shipDesigns;
+    this.refreshSystemEntityCards();
+  }
+
   setBattles(battles: ServerBattle[]): void {
     this.battles = battles;
     this.refreshBattleShips();
@@ -3874,6 +3949,11 @@ export class SystemScene implements IGameScene {
       beam.mesh.dispose();
     }
     this.battleBeams = [];
+    for (const projectile of this.battleProjectiles) {
+      projectile.mesh.dispose();
+      projectile.material.dispose();
+    }
+    this.battleProjectiles = [];
     this.disposePlayerShipTrail();
     this.disposeSelectedFleetRouteLine();
     this.disposeSystemActionTargetMarkers();
