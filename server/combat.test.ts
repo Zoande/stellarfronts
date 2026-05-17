@@ -3,9 +3,6 @@ import { test } from "node:test";
 import {
   applyWeaponDamage,
   combatEngagementProfilesCanInteract,
-  getCombatGroupMinSize,
-  getCombatGroupMaxSize,
-  getCombatGroupSizeRules,
   getWeaponMaxSystemRange,
   getWeaponMinSystemRange,
   getPreferredRangeBand,
@@ -91,13 +88,6 @@ test("accuracy miss and evasion dodge are separate rolls", () => {
     accuracyMiss: false,
     dodged: false,
   });
-});
-
-test("combat group caps preserve small ship detail", () => {
-  assert.equal(getCombatGroupMinSize("corvette"), 5);
-  assert.equal(getCombatGroupMaxSize("corvette"), 20);
-  assert.equal(getCombatGroupMaxSize(null), 10);
-  assert.deepEqual(getCombatGroupSizeRules("corvette"), { min: 5, max: 20 });
 });
 
 test("range bands gate weapon fire and preferred range", () => {

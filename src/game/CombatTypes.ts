@@ -24,21 +24,6 @@ export type CombatTargetKind = "fleet" | "starbase";
 
 export type RangeBand = "pointBlank" | "close" | "medium" | "long" | "extreme" | "outOfRange";
 
-export type BattleGroupBehavior = "screen" | "brawler" | "line" | "artillery" | "defender";
-
-export type BattleGroupChaseSetting =
-  | "none"
-  | "system"
-  | "friendlySystems"
-  | "neutralSystems"
-  | "enemySystems";
-
-export type BattleGroupOrderType = "move" | "attack" | "hold" | "protect" | "retreat";
-
-export type BattleGroupRetreatMode = "none" | "hpPercent";
-
-export type BattleGroupRetreatDestinationKind = "nearestFriendlyStarbase" | "selectedSystem";
-
 export const RANGE_BANDS: RangeBand[] = ["pointBlank", "close", "medium", "long", "extreme", "outOfRange"];
 
 export const RANGE_BAND_INDEX: Record<RangeBand, number> = {

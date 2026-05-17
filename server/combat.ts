@@ -3,14 +3,8 @@ import {
   rangeBandFromIndex,
   type RangeBand,
 } from "../src/game/CombatTypes";
-import type {
-  BattleLayerDamage,
-  BattleParticipantStats,
-  BattleStats,
-  BattleWeaponStats,
-} from "../src/game/GameProtocol";
 import { WEAPON_KIND_DEFINITIONS } from "../src/data/Starbase";
-import type { StarbaseShipKind, WeaponMountDefinition } from "../src/data/Starbase";
+import type { WeaponMountDefinition } from "../src/data/Starbase";
 
 export interface CombatLayerState {
   shield: number;
@@ -41,46 +35,6 @@ export interface CombatEngagementProfile {
 
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-export function createEmptyLayerDamage(): BattleLayerDamage {
-  return { shield: 0, armor: 0, hull: 0 };
-}
-
-export function createEmptyParticipantStats(): BattleParticipantStats {
-  return {
-    damageDealt: createEmptyLayerDamage(),
-    damageReceived: createEmptyLayerDamage(),
-    shotsFired: 0,
-    shotsHit: 0,
-    shotsMissed: 0,
-    shotsDodged: 0,
-    shipsDestroyed: 0,
-    shipsLost: 0,
-    retreatingShips: 0,
-    escapedShips: 0,
-  };
-}
-
-export function createEmptyBattleStats(): BattleStats {
-  return { byParticipant: {}, byOwner: {}, weapons: {} };
-}
-
-export function ensureParticipantStats(stats: BattleStats, participantId: string): BattleParticipantStats {
-  stats.byParticipant[participantId] ??= createEmptyParticipantStats();
-  return stats.byParticipant[participantId];
-}
-
-export function ensureOwnerStats(stats: BattleStats, ownerId: number): BattleParticipantStats {
-  const key = String(ownerId);
-  stats.byOwner[key] ??= createEmptyParticipantStats();
-  return stats.byOwner[key];
-}
-
-export function addLayerDamage(total: BattleLayerDamage, damage: BattleLayerDamage): void {
-  total.shield += damage.shield;
-  total.armor += damage.armor;
-  total.hull += damage.hull;
 }
 
 export function getWeaponId(mount: WeaponMountDefinition): string {
@@ -178,23 +132,6 @@ export function getPreferredRangeBand(mounts: WeaponMountDefinition[]): RangeBan
   return rangeBandFromIndex(average);
 }
 
-export function getCombatGroupMaxSize(shipKind?: StarbaseShipKind | null): number {
-  if (shipKind === "corvette") return 20;
-  return 10;
-}
-
-export function getCombatGroupMinSize(shipKind?: StarbaseShipKind | null): number {
-  if (shipKind === "corvette") return 5;
-  return 3;
-}
-
-export function getCombatGroupSizeRules(shipKind?: StarbaseShipKind | null): { min: number; max: number } {
-  return {
-    min: getCombatGroupMinSize(shipKind),
-    max: getCombatGroupMaxSize(shipKind),
-  };
-}
-
 export function rollWeaponShot(
   mount: WeaponMountDefinition,
   targetEvasion: number,
@@ -239,23 +176,4 @@ export function applyWeaponDamage(
     armorDamage,
     hullDamage,
   };
-}
-
-export function ensureWeaponStats(
-  stats: BattleStats,
-  participantId: string,
-  mount: WeaponMountDefinition,
-): BattleWeaponStats {
-  const weaponId = getWeaponId(mount);
-  const key = `${participantId}:${weaponId}`;
-  stats.weapons[key] ??= {
-    weaponId,
-    weaponName: getWeaponName(mount),
-    ownerParticipantId: participantId,
-    shotsFired: 0,
-    shotsHit: 0,
-    damageDealt: 0,
-    kills: 0,
-  };
-  return stats.weapons[key];
 }
