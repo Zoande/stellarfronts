@@ -45,6 +45,7 @@ import {
   isBuildingCompatible,
   progressPlanetConstructionQueue,
   recalculatePlanetStateEconomy,
+  RESOURCE_KINDS,
   URBAN_SUB_DISTRICT_KINDS,
 } from "../src/data/Economy";
 import {
@@ -69,6 +70,7 @@ import {
   createDefaultShipDesign,
   isKnownShipKind,
   normalizeShipDesign,
+  SHIP_MODULE_DEFINITIONS,
   SHIP_HULL_DEFINITIONS,
 } from "../src/data/ShipDesigns";
 import type { ShipDesign } from "../src/data/ShipDesigns";
@@ -78,6 +80,7 @@ import type {
   DistrictKind,
   FactionEconomyState,
   PlanetState,
+  ResourceKind,
   ResourceCounts,
   UrbanSubDistrictKind,
 } from "../src/data/Economy";
@@ -138,6 +141,13 @@ import {
   gameYearToWeekIndex,
 } from "../src/game/GameTime";
 import { getFleetTacticalRadius } from "../src/game/tacticalFormation";
+import {
+  ADMIN_COMMAND_DEFINITIONS,
+  formatAdminCommandHelp,
+  getAdminCommandDefinition,
+  parseAdminCommand,
+} from "../src/game/AdminCommands";
+import type { AdminCommandContext, AdminCommandResult, AdminCommandRow, ParsedAdminCommand } from "../src/game/AdminCommands";
 import type { AuthAccount } from "../src/auth/types";
 import { authStore, getPerspectiveFromAccount, parseSessionTokenFromCookie } from "./auth-store";
 
@@ -150,7 +160,9 @@ const JUMP_DURATION_MS = 10_000;
 const ARRIVE_DURATION_MS = 30_000;
 const BUILD_DURATION_MS = 180_000;
 const SAVE_INTERVAL_MS = 5_000;
-const SERVER_TICK_INTERVAL_MS = REAL_MS_PER_GAME_HOUR;
+const SERVER_TICK_INTERVAL_MS = 100;
+const DEFAULT_TICK_SIZE_DAYS = 1 / 24;
+const DEFAULT_TICK_SPEED_SECONDS = 1;
 const DEFAULT_SHIP_SPEED = STARBASE_SHIP_DEFINITIONS.corvette.speed;
 const STARBASE_ARMOR_REPAIR_FRACTION_PER_DAY = 0.025;
 const STARBASE_HULL_REPAIR_FRACTION_PER_DAY = 0.012;
@@ -222,6 +234,38 @@ const FLEET_BEHAVIORS: FleetBehavior[] = ["artillery", "line", "brawler", "swarm
 const FLEET_CHASE_POLICIES: FleetChasePolicy[] = ["none", "system", "friendlySystems", "neutralSystems", "enemySystems"];
 const FLEET_RETREAT_POLICIES: FleetRetreatPolicy[] = ["none", "low", "medium", "high"];
 const FLEET_TACTICAL_ORDER_TYPES: FleetTacticalOrderType[] = ["move", "attack", "hold", "guard", "retreat"];
+
+function computeSpeedMultiplier(tickSizeDays: number, tickSpeedSeconds: number, paused: boolean): number {
+  if (paused) return 0;
+  return Math.max(0, tickSizeDays * 24 / Math.max(0.01, tickSpeedSeconds));
+}
+
+function normalizeClock(clock: Partial<GameState["clock"]> | undefined, now = Date.now()): GameState["clock"] {
+  const tickSizeDays = Math.max(0.000001, Number(clock?.tickSizeDays) || DEFAULT_TICK_SIZE_DAYS);
+  const tickSpeedSeconds = Math.max(0.01, Number(clock?.tickSpeedSeconds) || DEFAULT_TICK_SPEED_SECONDS);
+  const paused = clock?.paused === true;
+  return {
+    year: Number.isFinite(clock?.year) ? Number(clock?.year) : GAME_START_YEAR,
+    tickSizeDays,
+    tickSpeedSeconds,
+    paused,
+    speedMultiplier: computeSpeedMultiplier(tickSizeDays, tickSpeedSeconds, paused),
+    syncedAtMs: Number(clock?.syncedAtMs) || now,
+    lastUpdatedAt: Number(clock?.lastUpdatedAt) || now,
+    lastProcessedPopulationWeek: Number(clock?.lastProcessedPopulationWeek) || gameYearToWeekIndex(Number(clock?.year) || GAME_START_YEAR),
+  };
+}
+
+function syncClockSpeedFields(): void {
+  state.clock.tickSizeDays = Math.max(0.000001, Number(state.clock.tickSizeDays) || DEFAULT_TICK_SIZE_DAYS);
+  state.clock.tickSpeedSeconds = Math.max(0.01, Number(state.clock.tickSpeedSeconds) || DEFAULT_TICK_SPEED_SECONDS);
+  state.clock.paused = state.clock.paused === true;
+  state.clock.speedMultiplier = computeSpeedMultiplier(
+    state.clock.tickSizeDays,
+    state.clock.tickSpeedSeconds,
+    state.clock.paused,
+  );
+}
 
 function isFleetFormation(value: string | undefined): value is FleetFormation {
   return !!value && FLEET_FORMATIONS.includes(value as FleetFormation);
@@ -955,7 +999,10 @@ function createInitialState(): GameState {
     lastKnownOwnershipByFaction: {},
     clock: {
       year: GAME_START_YEAR,
-      speedMultiplier: 1,
+      tickSizeDays: DEFAULT_TICK_SIZE_DAYS,
+      tickSpeedSeconds: DEFAULT_TICK_SPEED_SECONDS,
+      paused: false,
+      speedMultiplier: computeSpeedMultiplier(DEFAULT_TICK_SIZE_DAYS, DEFAULT_TICK_SPEED_SECONDS, false),
       syncedAtMs: now,
       lastUpdatedAt: now,
       lastProcessedPopulationWeek: startPopulationWeek,
@@ -978,9 +1025,7 @@ async function loadState(): Promise<GameState> {
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.recentCombatContacts = [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
-    parsed.clock.lastUpdatedAt = parsed.clock.lastUpdatedAt ?? Date.now();
-    parsed.clock.syncedAtMs = parsed.clock.syncedAtMs ?? parsed.clock.lastUpdatedAt;
-    parsed.clock.lastProcessedPopulationWeek = parsed.clock.lastProcessedPopulationWeek ?? gameYearToWeekIndex(parsed.clock.year);
+    parsed.clock = normalizeClock(parsed.clock);
     const homeStarIds = new Set(parsed.factions.map((faction) => faction.homeStarId));
     let homeStarbaseChanged = false;
     parsed.starbases = (parsed.starbases ?? []).map((starbase) => {
@@ -1321,6 +1366,9 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     clock: {
       year: state.clock.year,
       speedMultiplier: state.clock.speedMultiplier,
+      tickSizeDays: state.clock.tickSizeDays,
+      tickSpeedSeconds: state.clock.tickSpeedSeconds,
+      paused: state.clock.paused,
       syncedAtMs: state.clock.syncedAtMs,
     },
     hyperlanes,
@@ -3726,13 +3774,20 @@ function processPopulationWeeks(targetWeek: number): boolean {
 
 function advanceState(now: number): Set<ServerUpdateField> {
   const changed = new Set<ServerUpdateField>();
+  syncClockSpeedFields();
   const elapsedMs = Math.max(0, now - state.clock.lastUpdatedAt);
   if (elapsedMs <= 0) return changed;
+  if (state.clock.paused) {
+    state.clock.lastUpdatedAt = now;
+    state.clock.syncedAtMs = now;
+    return changed;
+  }
   const previousFleetSignature = fleetUpdateSignature();
   const arrivingFleets: GameFleet[] = [];
-  const scaledMs = elapsedMs * state.clock.speedMultiplier;
-  const elapsedGameHours = scaledMs / REAL_MS_PER_GAME_HOUR;
-  const elapsedGameDays = elapsedGameHours / 24;
+  const elapsedRealSeconds = elapsedMs / 1000;
+  const elapsedGameDays = elapsedRealSeconds * state.clock.tickSizeDays / Math.max(0.01, state.clock.tickSpeedSeconds);
+  const elapsedGameHours = elapsedGameDays * 24;
+  const scaledMs = elapsedGameHours * REAL_MS_PER_GAME_HOUR;
   state.clock.year += elapsedHoursToGameYear(elapsedGameHours);
   state.clock.lastUpdatedAt = now;
   state.clock.syncedAtMs = now;
@@ -3807,9 +3862,1247 @@ function advanceState(now: number): Set<ServerUpdateField> {
   return changed;
 }
 
+const SPEED_PRESETS: Record<string, { tickSizeDays: number; tickSpeedSeconds: number }> = {
+  "1": { tickSizeDays: 1 / 24, tickSpeedSeconds: 1 },
+  "2": { tickSizeDays: 0.25, tickSpeedSeconds: 1 },
+  "3": { tickSizeDays: 1, tickSpeedSeconds: 1 },
+  "4": { tickSizeDays: 3, tickSpeedSeconds: 1 },
+  "5": { tickSizeDays: 10, tickSpeedSeconds: 1 },
+  "6": { tickSizeDays: 30, tickSpeedSeconds: 1 },
+  "7": { tickSizeDays: 90, tickSpeedSeconds: 1 },
+  "8": { tickSizeDays: 180, tickSpeedSeconds: 1 },
+  "9": { tickSizeDays: 360, tickSpeedSeconds: 1 },
+};
+
+function adminResponse(
+  command: Extract<ClientCommand, { type: "adminCommand" }>,
+  parsed: ParsedAdminCommand | null,
+  ok: boolean,
+  message: string,
+  options: Partial<Omit<AdminCommandResult, "type" | "requestId" | "ok" | "message">> = {},
+): AdminCommandResult {
+  return {
+    type: "adminCommandResult",
+    requestId: command.requestId,
+    ok,
+    input: command.input,
+    command: parsed?.canonicalName ?? parsed?.name,
+    message,
+    ...options,
+  };
+}
+
+function sendAdminResponse(socket: WebSocket, result: AdminCommandResult): void {
+  sendEvent(socket, result);
+}
+
+function adminConfirmationRequired(
+  command: Extract<ClientCommand, { type: "adminCommand" }>,
+  parsed: ParsedAdminCommand,
+): AdminCommandResult | null {
+  if (!parsed.definition?.destructive || parsed.flags.has("confirm")) return null;
+  return adminResponse(command, parsed, false, `Command "${parsed.canonicalName}" is destructive. Re-run with --confirm.`, {
+    destructive: true,
+    requiresConfirmation: true,
+  });
+}
+
+function commandOption(parsed: ParsedAdminCommand, key: string): string | undefined {
+  const value = parsed.options[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberArg(value: string | undefined, label: string, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY): number {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < min || number > max) {
+    throw new Error(`Invalid ${label}.`);
+  }
+  return number;
+}
+
+function integerArg(value: string | undefined, label: string, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY): number {
+  const number = numberArg(value, label, min, max);
+  if (!Number.isInteger(number)) throw new Error(`Invalid ${label}.`);
+  return number;
+}
+
+function splitList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
+function resolvePerspectiveOwner(context: AdminCommandContext | undefined, perspective: GalaxyPerspective): number {
+  if (typeof context?.perspectiveOwnerId === "number") return context.perspectiveOwnerId;
+  return perspective.mode === "faction" ? perspective.factionId : 0;
+}
+
+function resolveOwnerToken(token: string | undefined, context: AdminCommandContext | undefined, perspective: GalaxyPerspective): number {
+  const value = token ?? "me";
+  if (value === "me" || value === "selected") return resolvePerspectiveOwner(context, perspective);
+  const ownerId = integerArg(value, "owner id", 0, state.factions.length - 1);
+  if (!state.factions.some((faction) => faction.id === ownerId)) throw new Error("Owner not found.");
+  return ownerId;
+}
+
+function resolveCurrentStarId(context: AdminCommandContext | undefined): number {
+  if (Number.isInteger(context?.currentStarId)) return context!.currentStarId!;
+  const selectedFleetId = context?.selectedFleetId ?? context?.selectedFleetIds?.[0];
+  const selectedFleet = selectedFleetId ? state.fleets.find((fleet) => fleet.id === selectedFleetId) : null;
+  if (selectedFleet) return selectedFleet.currentStarId;
+  return state.factions[0]?.homeStarId ?? 0;
+}
+
+function resolveSystemToken(token: string | undefined, context: AdminCommandContext | undefined): number {
+  const value = token ?? "current";
+  if (value === "current" || value === "selected") return resolveCurrentStarId(context);
+  const starId = integerArg(value, "system id", 0, state.stars.length - 1);
+  if (!state.stars[starId]) throw new Error("System not found.");
+  return starId;
+}
+
+function resolveFleetToken(token: string | undefined, context: AdminCommandContext | undefined): GameFleet {
+  const fleetId = token === "selected" || !token ? context?.selectedFleetId ?? context?.selectedFleetIds?.[0] : token;
+  const fleet = fleetId ? state.fleets.find((candidate) => candidate.id === fleetId) : null;
+  if (!fleet) throw new Error("Fleet not found.");
+  return fleet;
+}
+
+function resolveShipToken(token: string | undefined, context: AdminCommandContext | undefined): GameShip {
+  const shipId = token === "selected" || !token ? context?.selectedShipId : token;
+  const ship = shipId ? state.ships.find((candidate) => candidate.id === shipId) : null;
+  if (!ship) throw new Error("Ship not found.");
+  return ship;
+}
+
+function resolveStarbaseToken(token: string | undefined, context: AdminCommandContext | undefined): ServerStarbase {
+  const starbaseId = token === "selected" || !token ? context?.selectedStarbaseId : token;
+  const starbase = starbaseId ? state.starbases.find((candidate) => candidate.id === starbaseId) : null;
+  if (!starbase) throw new Error("Starbase not found.");
+  return starbase;
+}
+
+function resolvePlanetToken(token: string | undefined, context: AdminCommandContext | undefined): PlanetState {
+  const planetId = token === "selected" || !token ? context?.selectedPlanetId : token;
+  const planet = planetId ? state.planetStates.find((candidate) => candidate.id === planetId) : null;
+  if (!planet) throw new Error("Planet not found.");
+  return planet;
+}
+
+function parseSystemPosition(tokens: string[], startIndex: number, fallback: ReturnType<typeof systemCenterPosition>): {
+  position: ReturnType<typeof systemCenterPosition>;
+  nextIndex: number;
+} {
+  const token = tokens[startIndex];
+  if (!token) return { position: cloneSystemPosition(fallback), nextIndex: startIndex };
+  if (token.includes(",")) {
+    const [xRaw, zRaw] = token.split(",");
+    return {
+      position: { x: numberArg(xRaw, "x coordinate"), y: SYSTEM_FLEET_Y, z: numberArg(zRaw, "z coordinate") },
+      nextIndex: startIndex + 1,
+    };
+  }
+  const next = tokens[startIndex + 1];
+  if (next !== undefined && Number.isFinite(Number(token)) && Number.isFinite(Number(next))) {
+    return {
+      position: { x: Number(token), y: SYSTEM_FLEET_Y, z: Number(next) },
+      nextIndex: startIndex + 2,
+    };
+  }
+  return { position: cloneSystemPosition(fallback), nextIndex: startIndex };
+}
+
+function parseLayerValue(value: string, max: number): number {
+  if (value.endsWith("%")) {
+    return clamp((Number(value.slice(0, -1)) / 100) * max, 0, max);
+  }
+  return clamp(Number(value), 0, max);
+}
+
+type HealthLayer = "shield" | "armor" | "hull" | "all";
+
+function isHealthLayer(value: string): value is HealthLayer {
+  return value === "shield" || value === "armor" || value === "hull" || value === "all";
+}
+
+function damageShipLayer(ship: GameShip, layer: HealthLayer, amountToken: string): void {
+  const apply = (key: "shield" | "armor" | "hull", maxKey: "maxShield" | "maxArmor" | "maxHull") => {
+    const max = Math.max(0, ship[maxKey]);
+    const amount = amountToken.endsWith("%") ? (Number(amountToken.slice(0, -1)) / 100) * max : Number(amountToken);
+    ship[key] = clamp(ship[key] - Math.max(0, amount), 0, max);
+    if (key === "hull") ship.hp = ship.hull;
+  };
+  if (layer === "shield" || layer === "all") apply("shield", "maxShield");
+  if (layer === "armor" || layer === "all") apply("armor", "maxArmor");
+  if (layer === "hull" || layer === "all") apply("hull", "maxHull");
+}
+
+function repairShip(ship: GameShip): void {
+  ship.shield = ship.maxShield;
+  ship.armor = ship.maxArmor;
+  ship.hull = ship.maxHull;
+  ship.hp = ship.maxHp;
+  ship.weaponCooldowns = {};
+}
+
+function removeDestroyedShips(): boolean {
+  const destroyed = new Set(state.ships.filter((ship) => ship.hull <= 0).map((ship) => ship.id));
+  if (destroyed.size === 0) return false;
+  state.ships = state.ships.filter((ship) => !destroyed.has(ship.id));
+  syncFleetMembership(state);
+  return true;
+}
+
+function clearFleetMovementNow(fleet: GameFleet): void {
+  fleet.targetStarId = null;
+  fleet.route = [fleet.currentStarId];
+  fleet.routeIndex = 0;
+  fleet.orderType = null;
+  fleet.retreatState = null;
+  fleet.hyperlanePosition = null;
+  fleet.movementPlan = null;
+  fleet.mergeTargetFleetId = null;
+  fleet.currentTacticalOrder = null;
+  setFleetPhase(fleet, "idle");
+  fleet.phaseProgress = 0;
+  fleet.phaseElapsedMs = 0;
+}
+
+function createAdminStarbase(starId: number, ownerId: number, level: StarbaseLevel, position = getSystemStarbasePosition()): ServerStarbase {
+  const combat = STARBASE_LEVEL_DEFINITIONS[level].combat;
+  return normalizeStarbase({
+    id: createRuntimeId("starbase", [ownerId, starId]),
+    ownerId,
+    starId,
+    systemPosition: position,
+    status: "online",
+    buildProgress: 1,
+    shield: combat.maxShield,
+    maxShield: combat.maxShield,
+    armor: combat.maxArmor,
+    maxArmor: combat.maxArmor,
+    hull: combat.maxHull,
+    maxHull: combat.maxHull,
+    weaponCooldowns: {},
+    lastShieldDamageAtYear: null,
+    level,
+    economy: calculateStarbaseEconomy(level),
+    buildingSlots: createEmptyStarbaseSlots(),
+    constructionQueue: [],
+    shipQueue: [],
+  });
+}
+
+function createAdminFleetWithShips(
+  ownerId: number,
+  starId: number,
+  designId: string | undefined,
+  count: number,
+  position: ReturnType<typeof systemCenterPosition>,
+): GameFleet {
+  const design = resolveShipDesign(state.shipDesigns, ownerId, "corvette", designId === "default" ? undefined : designId);
+  const fleet = createFleet(ownerId, starId, [], createRuntimeId("fleet", [ownerId, starId]));
+  fleet.systemPosition = cloneSystemPosition(position);
+  clearFleetMovementNow(fleet);
+  const ships = Array.from({ length: Math.max(1, count) }, () => createShipFromDesign(ownerId, fleet.id, design));
+  fleet.shipIds = ships.map((ship) => ship.id);
+  fleet.tacticalRadius = getFleetTacticalRadius(fleet.shipIds.length);
+  fleet.speed = Math.min(...ships.map((ship) => ship.speed));
+  state.fleets.push(fleet);
+  state.ships.push(...ships);
+  return fleet;
+}
+
+function changedResult(
+  message: string,
+  changed: ServerUpdateField[],
+  rows?: AdminCommandResult["rows"],
+): { message: string; changed: ServerUpdateField[]; rows?: AdminCommandResult["rows"] } {
+  hasDirtyState = true;
+  return { message, changed: Array.from(new Set(changed)), rows };
+}
+
+function forceAdvanceGameDays(days: number): Set<ServerUpdateField> {
+  const originalPaused = state.clock.paused;
+  state.clock.paused = false;
+  syncClockSpeedFields();
+  const now = Date.now();
+  const realMs = (Math.max(0, days) * Math.max(0.01, state.clock.tickSpeedSeconds) / Math.max(0.000001, state.clock.tickSizeDays)) * 1000;
+  state.clock.lastUpdatedAt = now - realMs;
+  const changed = advanceState(now);
+  state.clock.paused = originalPaused;
+  syncClockSpeedFields();
+  state.clock.syncedAtMs = Date.now();
+  changed.add("clock");
+  return changed;
+}
+
+function adminRowsForFleets(fleets: GameFleet[]): AdminCommandRow[] {
+  return fleets.map((fleet) => ({
+    id: fleet.id,
+    owner: fleet.ownerId,
+    system: fleet.currentStarId,
+    ships: fleet.shipIds.length,
+    phase: fleet.phase,
+    stance: fleet.combatStance,
+    behavior: fleet.combatSettings.behavior,
+    status: fleet.combatStatus,
+  }));
+}
+
+function adminRowsForShips(ships: GameShip[]): AdminCommandRow[] {
+  return ships.map((ship) => ({
+    id: ship.id,
+    owner: ship.ownerId,
+    fleet: ship.fleetId,
+    design: ship.designId,
+    shield: Math.round(ship.shield),
+    armor: Math.round(ship.armor),
+    hull: Math.round(ship.hull),
+  }));
+}
+
+async function executeAdminCommand(
+  parsed: ParsedAdminCommand,
+  command: Extract<ClientCommand, { type: "adminCommand" }>,
+  perspective: GalaxyPerspective,
+): Promise<{ message: string; changed?: ServerUpdateField[]; rows?: AdminCommandResult["rows"] }> {
+  const context = command.context;
+  const name = parsed.canonicalName;
+
+  if (!parsed.definition) throw new Error(`Unknown admin command "${parsed.name}".`);
+  if (parsed.definition.localOnly) return { message: `"${name}" is a client-local command.` };
+
+  switch (name) {
+    case "help": {
+      const key = parsed.args[0];
+      if (!key) return { message: "Admin command help.", rows: ADMIN_COMMAND_DEFINITIONS.slice(0, 40).map(formatAdminCommandHelp) };
+      const definition = getAdminCommandDefinition(key);
+      if (definition) return { message: `Help for ${definition.name}.`, rows: [formatAdminCommandHelp(definition)] };
+      return {
+        message: `Commands in ${key}.`,
+        rows: ADMIN_COMMAND_DEFINITIONS.filter((definition) => definition.category === key).map(formatAdminCommandHelp),
+      };
+    }
+    case "commands": {
+      const category = parsed.args[0];
+      const definitions = category
+        ? ADMIN_COMMAND_DEFINITIONS.filter((definition) => definition.category === category)
+        : ADMIN_COMMAND_DEFINITIONS;
+      return { message: `${definitions.length} admin commands.`, rows: definitions.map(formatAdminCommandHelp) };
+    }
+    case "inspect": {
+      const kind = parsed.args[0];
+      const id = parsed.args[1];
+      if (kind === "fleet") return { message: "Fleet.", rows: adminRowsForFleets([resolveFleetToken(id, context)]) };
+      if (kind === "ship") return { message: "Ship.", rows: adminRowsForShips([resolveShipToken(id, context)]) };
+      if (kind === "starbase") {
+        const starbase = resolveStarbaseToken(id, context);
+        return { message: "Starbase.", rows: [{ id: starbase.id, owner: starbase.ownerId, system: starbase.starId, level: starbase.level, hull: Math.round(starbase.hull), status: starbase.status }] };
+      }
+      if (kind === "planet") {
+        const planet = resolvePlanetToken(id, context);
+        return { message: "Planet.", rows: [{ id: planet.id, system: planet.starId, index: planet.planetIndex, population: Math.round(planet.population), habitability: planet.habitability, stability: Math.round(planet.economy.stability) }] };
+      }
+      if (kind === "system") {
+        const starId = resolveSystemToken(id, context);
+        const star = state.stars[starId];
+        return { message: "System.", rows: [{ id: star.id, name: star.name, owner: state.starOwnership[starId] ?? -1, planets: star.system.planets.length, fleets: state.fleets.filter((fleet) => fleet.currentStarId === starId).length }] };
+      }
+      if (kind === "owner") {
+        const owner = resolveOwnerToken(id, context, perspective);
+        const faction = state.factions.find((candidate) => candidate.id === owner);
+        return { message: "Owner.", rows: [{ id: owner, name: faction?.name ?? "Unknown", homeSystem: faction?.homeStarId ?? null }] };
+      }
+      throw new Error("Inspect kind must be fleet, ship, starbase, planet, system, or owner.");
+    }
+    case "list_fleets": {
+      const owner = commandOption(parsed, "owner") ?? parsed.args[0];
+      const system = commandOption(parsed, "system");
+      const ownerFilter = owner && owner !== "all" ? resolveOwnerToken(owner, context, perspective) : null;
+      const systemFilter = system ? resolveSystemToken(system, context) : null;
+      const fleets = state.fleets.filter((fleet) => (
+        (ownerFilter === null || fleet.ownerId === ownerFilter)
+        && (systemFilter === null || fleet.currentStarId === systemFilter)
+      ));
+      return { message: `${fleets.length} fleets.`, rows: adminRowsForFleets(fleets) };
+    }
+    case "list_ships": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      return { message: `${fleet.shipIds.length} ships.`, rows: adminRowsForShips(state.ships.filter((ship) => ship.fleetId === fleet.id)) };
+    }
+    case "list_designs": {
+      const owner = commandOption(parsed, "owner") ?? parsed.args[0];
+      const ownerFilter = owner && owner !== "all" ? resolveOwnerToken(owner, context, perspective) : null;
+      const designs = state.shipDesigns.filter((design) => ownerFilter === null || design.ownerId === ownerFilter);
+      return { message: `${designs.length} designs.`, rows: designs.map((design) => ({ id: design.id, owner: design.ownerId, kind: design.shipKind, name: design.name, status: design.status })) };
+    }
+    case "list_starbases": {
+      const owner = commandOption(parsed, "owner");
+      const system = commandOption(parsed, "system") ?? parsed.args[0];
+      const ownerFilter = owner && owner !== "all" ? resolveOwnerToken(owner, context, perspective) : null;
+      const systemFilter = system ? resolveSystemToken(system, context) : null;
+      const starbases = state.starbases.filter((starbase) => (
+        (ownerFilter === null || starbase.ownerId === ownerFilter)
+        && (systemFilter === null || starbase.starId === systemFilter)
+      ));
+      return { message: `${starbases.length} starbases.`, rows: starbases.map((starbase) => ({ id: starbase.id, owner: starbase.ownerId, system: starbase.starId, level: starbase.level, status: starbase.status, hull: Math.round(starbase.hull) })) };
+    }
+    case "list_planets": {
+      const systemId = resolveSystemToken(commandOption(parsed, "system") ?? parsed.args[0], context);
+      return {
+        message: `Planets in system ${systemId}.`,
+        rows: state.planetStates
+          .filter((planet) => planet.starId === systemId)
+          .map((planet) => ({ id: planet.id, index: planet.planetIndex, habited: planet.isHabited, population: Math.round(planet.population), habitability: planet.habitability })),
+      };
+    }
+    case "where": {
+      const id = parsed.args[0];
+      const fleet = state.fleets.find((candidate) => candidate.id === id);
+      if (fleet) return { message: "Found fleet.", rows: adminRowsForFleets([fleet]) };
+      const ship = state.ships.find((candidate) => candidate.id === id);
+      if (ship) return { message: "Found ship.", rows: adminRowsForShips([ship]) };
+      const starbase = state.starbases.find((candidate) => candidate.id === id);
+      if (starbase) return { message: "Found starbase.", rows: [{ id: starbase.id, system: starbase.starId, owner: starbase.ownerId }] };
+      const planet = state.planetStates.find((candidate) => candidate.id === id);
+      if (planet) return { message: "Found planet.", rows: [{ id: planet.id, system: planet.starId, index: planet.planetIndex }] };
+      throw new Error("Entity not found.");
+    }
+    case "combat_status": {
+      const system = commandOption(parsed, "system") ?? parsed.args[0];
+      const systemId = system ? resolveSystemToken(system, context) : resolveCurrentStarId(context);
+      return {
+        message: `Combat status for system ${systemId}.`,
+        rows: [
+          ...adminRowsForFleets(state.fleets.filter((fleet) => fleet.currentStarId === systemId)),
+          ...state.starbases.filter((starbase) => starbase.starId === systemId).map((starbase) => ({ id: starbase.id, owner: starbase.ownerId, system: starbase.starId, level: starbase.level, hull: Math.round(starbase.hull), status: starbase.status })),
+        ],
+      };
+    }
+    case "economy_status": {
+      const ownerArg = parsed.args[0] ?? "me";
+      const economies = ownerArg === "all"
+        ? state.factionEconomies
+        : state.factionEconomies.filter((economy) => economy.factionId === resolveOwnerToken(ownerArg, context, perspective));
+      return { message: `${economies.length} economies.`, rows: economies.map((economy) => ({ owner: economy.factionId, ...economy.stockpiles })) };
+    }
+    case "state_summary":
+      return {
+        message: "State summary.",
+        rows: [{
+          year: state.clock.year.toFixed(3),
+          systems: state.stars.length,
+          factions: state.factions.length,
+          fleets: state.fleets.length,
+          ships: state.ships.length,
+          starbases: state.starbases.length,
+          combatContacts: state.recentCombatContacts.length,
+        }],
+      };
+    case "tick_size": {
+      state.clock.tickSizeDays = numberArg(parsed.args[0], "tick size days", 0.000001);
+      syncClockSpeedFields();
+      state.clock.syncedAtMs = Date.now();
+      return changedResult(`Tick size set to ${state.clock.tickSizeDays} game days.`, ["clock"]);
+    }
+    case "tick_speed": {
+      state.clock.tickSpeedSeconds = numberArg(parsed.args[0], "tick speed seconds", 0.01);
+      syncClockSpeedFields();
+      state.clock.syncedAtMs = Date.now();
+      return changedResult(`Tick speed set to ${state.clock.tickSpeedSeconds} real seconds.`, ["clock"]);
+    }
+    case "pause":
+      state.clock.paused = true;
+      syncClockSpeedFields();
+      state.clock.syncedAtMs = Date.now();
+      return changedResult("Simulation paused.", ["clock"]);
+    case "resume":
+      state.clock.paused = false;
+      syncClockSpeedFields();
+      state.clock.syncedAtMs = Date.now();
+      return changedResult("Simulation resumed.", ["clock"]);
+    case "step": {
+      const ticks = integerArg(parsed.args[0] ?? "1", "ticks", 1, 10000);
+      const changed = Array.from(forceAdvanceGameDays(state.clock.tickSizeDays * ticks));
+      return changedResult(`Advanced ${ticks} tick(s).`, changed);
+    }
+    case "advance_hours": {
+      const hours = numberArg(parsed.args[0], "hours", 0);
+      return changedResult(`Advanced ${hours} game hours.`, Array.from(forceAdvanceGameDays(hours / 24)));
+    }
+    case "advance_days": {
+      const days = numberArg(parsed.args[0], "days", 0);
+      return changedResult(`Advanced ${days} game days.`, Array.from(forceAdvanceGameDays(days)));
+    }
+    case "set_year": {
+      state.clock.year = numberArg(parsed.args[0], "year", 0);
+      state.clock.lastUpdatedAt = Date.now();
+      state.clock.syncedAtMs = state.clock.lastUpdatedAt;
+      state.clock.lastProcessedPopulationWeek = gameYearToWeekIndex(state.clock.year);
+      return changedResult(`Year set to ${state.clock.year}.`, ["clock"]);
+    }
+    case "speed_preset": {
+      const preset = SPEED_PRESETS[parsed.args[0] ?? ""];
+      if (!preset) throw new Error("Speed preset must be 1-9.");
+      state.clock.tickSizeDays = preset.tickSizeDays;
+      state.clock.tickSpeedSeconds = preset.tickSpeedSeconds;
+      state.clock.paused = false;
+      syncClockSpeedFields();
+      state.clock.syncedAtMs = Date.now();
+      return changedResult(`Speed preset ${parsed.args[0]} applied.`, ["clock"]);
+    }
+    case "save":
+      await saveState(state);
+      return { message: "Game state saved." };
+    case "reset_galaxy": {
+      state = createInitialState();
+      await saveState(state);
+      broadcastSnapshots();
+      return { message: "Galaxy reset.", changed: ["clock", "visibility", "planetStates", "factionEconomies", "ships", "shipDesigns", "fleets", "starbases", "combatContacts"] };
+    }
+    case "clear_recent_combat":
+      state.recentCombatContacts = [];
+      return changedResult("Recent combat contacts cleared.", ["combatContacts"]);
+    case "clear_orders": {
+      const token = parsed.args[0] ?? "selected";
+      const fleets = token === "all" ? state.fleets : [resolveFleetToken(token, context)];
+      for (const fleet of fleets) {
+        fleet.currentTacticalOrder = null;
+        fleet.currentTargetId = null;
+        fleet.currentTargetKind = null;
+        fleet.combatStatus = "idle";
+      }
+      return changedResult(`Cleared orders on ${fleets.length} fleet(s).`, ["fleets"]);
+    }
+    case "clear_fleet_movement": {
+      const token = parsed.args[0] ?? "selected";
+      const fleets = token === "all" ? state.fleets : [resolveFleetToken(token, context)];
+      for (const fleet of fleets) clearFleetMovementNow(fleet);
+      return changedResult(`Stopped ${fleets.length} fleet(s).`, ["fleets", "visibility"]);
+    }
+    case "clear_planet_queue": {
+      const token = parsed.args[0] ?? "selected";
+      const owner = resolvePerspectiveOwner(context, perspective);
+      const planets = token === "all_owned"
+        ? state.planetStates.filter((planet) => state.starOwnership[planet.starId] === owner)
+        : [resolvePlanetToken(token, context)];
+      for (const planet of planets) planet.constructionQueue = [];
+      refreshFactionEconomyDeltas();
+      return changedResult(`Cleared ${planets.length} planet queue(s).`, ["planetStates", "factionEconomies"]);
+    }
+    case "clear_starbase_queue": {
+      const token = parsed.args[0] ?? "selected";
+      const owner = resolvePerspectiveOwner(context, perspective);
+      const starbases = token === "all_owned"
+        ? state.starbases.filter((starbase) => starbase.ownerId === owner)
+        : [resolveStarbaseToken(token, context)];
+      for (const starbase of starbases) {
+        starbase.constructionQueue = [];
+        starbase.shipQueue = [];
+      }
+      refreshFactionEconomyDeltas();
+      return changedResult(`Cleared ${starbases.length} starbase queue(s).`, ["starbases", "factionEconomies"]);
+    }
+    case "discover": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      const target = parsed.args[1] ?? "current";
+      const jumps = integerArg(commandOption(parsed, "jumps") ?? parsed.args[2] ?? "0", "jumps", 0, state.stars.length);
+      const current = new Set(state.discoveredByFaction[String(owner)] ?? []);
+      const addSystem = (starId: number) => {
+        current.add(starId);
+        if (jumps > 0) {
+          for (const visible of computeVisibleStarIds(state.adjacency, starId, jumps)) current.add(visible);
+        }
+      };
+      if (target === "all") {
+        state.stars.forEach((_, starId) => current.add(starId));
+      } else {
+        addSystem(resolveSystemToken(target, context));
+      }
+      state.discoveredByFaction[String(owner)] = Array.from(current).sort((a, b) => a - b);
+      refreshDiscovery();
+      return changedResult("Discovery updated.", ["visibility"]);
+    }
+    case "forget": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      const target = parsed.args[1] ?? "current";
+      if (target === "all") {
+        state.discoveredByFaction[String(owner)] = [];
+      } else {
+        const starId = resolveSystemToken(target, context);
+        state.discoveredByFaction[String(owner)] = (state.discoveredByFaction[String(owner)] ?? []).filter((id) => id !== starId);
+      }
+      refreshDiscovery();
+      return changedResult("Discovery removed.", ["visibility"]);
+    }
+    case "reveal_all": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      state.discoveredByFaction[String(owner)] = state.stars.map((_, index) => index);
+      refreshDiscovery();
+      return changedResult("All systems revealed.", ["visibility"]);
+    }
+    case "reset_visibility": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      const faction = state.factions.find((candidate) => candidate.id === owner);
+      state.discoveredByFaction[String(owner)] = faction ? Array.from(computeVisibleStarIds(state.adjacency, faction.homeStarId, DISCOVERY_JUMPS)) : [];
+      refreshDiscovery();
+      return changedResult("Visibility reset.", ["visibility"]);
+    }
+    case "own_system": {
+      const starId = resolveSystemToken(parsed.args[0], context);
+      const ownerToken = parsed.args[1] ?? "me";
+      state.starOwnership[starId] = ownerToken === "none" ? -1 : resolveOwnerToken(ownerToken, context, perspective);
+      refreshDiscovery();
+      return changedResult(`System ${starId} ownership changed.`, ["visibility"]);
+    }
+    case "set_home_system": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      const starId = resolveSystemToken(parsed.args[1], context);
+      const faction = state.factions.find((candidate) => candidate.id === owner);
+      if (!faction) throw new Error("Faction not found.");
+      faction.homeStarId = starId;
+      refreshDiscovery();
+      return changedResult(`Faction ${owner} home system set to ${starId}.`, ["visibility"]);
+    }
+    case "add_resource":
+    case "set_resource": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      const resource = parsed.args[1] as ResourceKind | "all" | undefined;
+      const amount = numberArg(parsed.args[2], "amount");
+      const economy = state.factionEconomies.find((candidate) => candidate.factionId === owner);
+      if (!economy) throw new Error("Economy not found.");
+      const resources = resource === "all" ? RESOURCE_KINDS : [resource as ResourceKind];
+      for (const kind of resources) {
+        if (!RESOURCE_KINDS.includes(kind)) throw new Error("Invalid resource.");
+        economy.stockpiles[kind] = name === "add_resource" ? economy.stockpiles[kind] + amount : amount;
+      }
+      refreshFactionEconomyDeltas();
+      return changedResult("Resources updated.", ["factionEconomies"]);
+    }
+    case "complete_planet_queue": {
+      const token = parsed.args[0] ?? "selected";
+      const owner = resolvePerspectiveOwner(context, perspective);
+      const planets = token === "all_owned" ? state.planetStates.filter((planet) => state.starOwnership[planet.starId] === owner) : [resolvePlanetToken(token, context)];
+      for (const planet of planets) {
+        const result = progressPlanetConstructionQueue(planet, 1_000_000, getPlanetDistrictLimitsFromState(state, planet));
+        Object.assign(planet, result.state);
+      }
+      applyPlanetStatesToStars(state.stars, state.planetStates);
+      refreshFactionEconomyDeltas();
+      return changedResult(`Completed ${planets.length} planet queue(s).`, ["planetStates", "factionEconomies", "habitedPlanetSystems"]);
+    }
+    case "complete_starbase_queue": {
+      const token = parsed.args[0] ?? "selected";
+      const owner = resolvePerspectiveOwner(context, perspective);
+      const starbases = token === "all_owned" ? state.starbases.filter((starbase) => starbase.ownerId === owner) : [resolveStarbaseToken(token, context)];
+      for (const starbase of starbases) {
+        const result = progressStarbaseConstructionQueue(starbase, 1_000_000);
+        Object.assign(starbase, normalizeStarbase(result.starbase));
+        starbase.shipQueue = [];
+      }
+      refreshFactionEconomyDeltas();
+      return changedResult(`Completed ${starbases.length} starbase queue(s).`, ["starbases", "factionEconomies"]);
+    }
+    case "set_population":
+    case "add_population": {
+      const planet = resolvePlanetToken(parsed.args[0], context);
+      const amount = numberArg(parsed.args[1], "population", name === "set_population" ? 0 : Number.NEGATIVE_INFINITY);
+      planet.population = name === "add_population" ? Math.max(0, planet.population + amount) : amount;
+      planet.speciesPopulations = [{ speciesId: "human", population: planet.population }];
+      const recalculated = recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet));
+      Object.assign(planet, recalculated);
+      applyPlanetStatesToStars(state.stars, state.planetStates);
+      refreshFactionEconomyDeltas();
+      return changedResult("Population updated.", ["planetStates", "factionEconomies", "habitedPlanetSystems"]);
+    }
+    case "set_habitability": {
+      const planet = resolvePlanetToken(parsed.args[0], context);
+      planet.habitability = numberArg(parsed.args[1], "habitability", 0, 100);
+      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet)));
+      refreshFactionEconomyDeltas();
+      return changedResult("Habitability updated.", ["planetStates", "factionEconomies"]);
+    }
+    case "set_stability": {
+      const planet = resolvePlanetToken(parsed.args[0], context);
+      const value = numberArg(parsed.args[1], "stability", 0, 100);
+      planet.modifiers = [
+        ...planet.modifiers.filter((modifier) => modifier.id !== "admin-stability"),
+        { id: "admin-stability", label: "Admin Stability", source: "Admin", target: "stability", operation: "add", value: value - 50 },
+      ];
+      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet)));
+      refreshFactionEconomyDeltas();
+      return changedResult("Stability test modifier updated.", ["planetStates", "factionEconomies"]);
+    }
+    case "build_district_now": {
+      const planet = resolvePlanetToken(parsed.args[0], context);
+      const district = parsed.args[1] as DistrictKind;
+      if (!isDistrictKind(district)) throw new Error("Invalid district.");
+      planet.builtDistricts[district] += 1;
+      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet)));
+      applyPlanetStatesToStars(state.stars, state.planetStates);
+      refreshFactionEconomyDeltas();
+      return changedResult("District built.", ["planetStates", "factionEconomies"]);
+    }
+    case "build_planet_building_now": {
+      const planet = resolvePlanetToken(parsed.args[0], context);
+      const area = parsed.args[1] as BuildingSlotArea;
+      const slotIndex = integerArg(parsed.args[2], "slot index", 0);
+      const building = parsed.args[3] as BuildingKind;
+      if (!BUILDING_KINDS.includes(building)) throw new Error("Invalid building.");
+      if (area === "urbanSubDistrict") {
+        const subIndex = integerArg(parsed.args[4], "sub-district index", 0);
+        const sub = planet.urbanSubDistricts[subIndex];
+        if (!sub || !isValidSlotIndex(slotIndex, sub.buildings.length)) throw new Error("Invalid urban slot.");
+        sub.buildings[slotIndex] = building;
+      } else {
+        if (!isDistrictKind(area) || !isValidSlotIndex(slotIndex, planet.buildings[area].length)) throw new Error("Invalid building slot.");
+        planet.buildings[area][slotIndex] = building;
+      }
+      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet)));
+      refreshFactionEconomyDeltas();
+      return changedResult("Building built.", ["planetStates", "factionEconomies"]);
+    }
+    case "create_design":
+    case "set_design_modules": {
+      const isCreate = name === "create_design";
+      const owner = isCreate ? resolveOwnerToken(parsed.args[0], context, perspective) : 0;
+      const design = isCreate ? null : state.shipDesigns.find((candidate) => candidate.id === parsed.args[0]);
+      if (!isCreate && !design) throw new Error("Design not found.");
+      const shipKind = (isCreate ? parsed.args[1] : design!.shipKind) as StarbaseShipKind;
+      if (!isKnownShipKind(shipKind)) throw new Error("Invalid ship kind.");
+      const normalized = normalizeShipDesign({
+        id: design?.id ?? createRuntimeId("design", [owner, shipKind]),
+        ownerId: design?.ownerId ?? owner,
+        shipKind,
+        name: commandOption(parsed, "name") ?? design?.name ?? "Admin Design",
+        status: "active",
+        weaponModuleIds: splitList(commandOption(parsed, "weapons")),
+        defenseModuleIds: splitList(commandOption(parsed, "defenses")),
+        utilityModuleId: commandOption(parsed, "utility") === "null" ? null : commandOption(parsed, "utility") ?? null,
+        createdAtYear: design?.createdAtYear ?? state.clock.year,
+        updatedAtYear: state.clock.year,
+      }, design?.ownerId ?? owner, state.clock.year);
+      const hull = SHIP_HULL_DEFINITIONS[shipKind];
+      if (normalized.weaponModuleIds.length !== hull.weaponSlots || normalized.defenseModuleIds.length !== hull.defenseSlots) {
+        throw new Error("Design module counts do not match hull slots.");
+      }
+      if (design) state.shipDesigns = state.shipDesigns.map((candidate) => candidate.id === design.id ? normalized : candidate);
+      else state.shipDesigns.push(normalized);
+      const shipsChanged = syncShipsForDesign(state, normalized);
+      return changedResult("Ship design updated.", shipsChanged ? ["shipDesigns", "ships", "fleets"] : ["shipDesigns"], [{ id: normalized.id, owner: normalized.ownerId, name: normalized.name }]);
+    }
+    case "clone_design": {
+      const source = state.shipDesigns.find((design) => design.id === parsed.args[0]);
+      if (!source) throw new Error("Design not found.");
+      const owner = resolveOwnerToken(parsed.args[1], context, perspective);
+      const clone = normalizeShipDesign({
+        ...source,
+        id: createRuntimeId("design", [owner, source.shipKind]),
+        ownerId: owner,
+        name: commandOption(parsed, "name") ?? `${source.name} Copy`,
+        createdAtYear: state.clock.year,
+        updatedAtYear: state.clock.year,
+      }, owner, state.clock.year);
+      state.shipDesigns.push(clone);
+      return changedResult("Ship design cloned.", ["shipDesigns"], [{ id: clone.id, owner: clone.ownerId, name: clone.name }]);
+    }
+    case "delete_design": {
+      const designId = parsed.args[0];
+      const before = state.shipDesigns.length;
+      state.shipDesigns = state.shipDesigns.filter((design) => design.id !== designId);
+      if (state.shipDesigns.length === before) throw new Error("Design not found.");
+      return changedResult("Ship design deleted.", ["shipDesigns"]);
+    }
+    case "create_fleet": {
+      const starId = resolveSystemToken(parsed.args[0], context);
+      const owner = resolveOwnerToken(parsed.args[1], context, perspective);
+      const { position } = parseSystemPosition(parsed.args, 2, systemCenterPosition());
+      const fleet = createFleet(owner, starId, [], createRuntimeId("fleet", [owner, starId]));
+      fleet.systemPosition = position;
+      state.fleets.push(fleet);
+      return changedResult("Empty fleet created. Add ships to keep it after membership sync.", ["fleets", "visibility"], adminRowsForFleets([fleet]));
+    }
+    case "create_ship": {
+      const target = parsed.args[0] ?? "current";
+      const owner = resolveOwnerToken(parsed.args[1], context, perspective);
+      const designToken = parsed.args[2] ?? "default";
+      const count = integerArg(commandOption(parsed, "count") ?? "1", "count", 1, 1000);
+      let fleet = target === "selected" ? resolveFleetToken(target, context) : state.fleets.find((candidate) => candidate.id === target) ?? null;
+      let starId = fleet?.currentStarId ?? resolveSystemToken(target, context);
+      const { position } = parseSystemPosition(parsed.args, 3, fleet?.systemPosition ?? systemCenterPosition());
+      if (!fleet || fleet.ownerId !== owner) {
+        fleet = createFleet(owner, starId, [], createRuntimeId("fleet", [owner, starId]));
+        fleet.systemPosition = position;
+        state.fleets.push(fleet);
+      }
+      const design = resolveShipDesign(state.shipDesigns, owner, "corvette", designToken === "default" ? undefined : designToken);
+      const ships = Array.from({ length: count }, () => createShipFromDesign(owner, fleet!.id, design));
+      state.ships.push(...ships);
+      syncFleetMembership(state);
+      return changedResult(`Created ${count} ship(s).`, ["ships", "fleets", "visibility"], adminRowsForFleets([fleet]));
+    }
+    case "delete_ship": {
+      const ship = resolveShipToken(parsed.args[0], context);
+      state.ships = state.ships.filter((candidate) => candidate.id !== ship.id);
+      syncFleetMembership(state);
+      return changedResult("Ship deleted.", ["ships", "fleets", "visibility"]);
+    }
+    case "delete_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      state.ships = state.ships.filter((ship) => ship.fleetId !== fleet.id);
+      state.fleets = state.fleets.filter((candidate) => candidate.id !== fleet.id);
+      return changedResult("Fleet deleted.", ["ships", "fleets", "visibility"]);
+    }
+    case "kill_ship": {
+      const ship = resolveShipToken(parsed.args[0], context);
+      ship.shield = 0; ship.armor = 0; ship.hull = 0; ship.hp = 0;
+      removeDestroyedShips();
+      return changedResult("Ship killed.", ["ships", "fleets", "visibility"]);
+    }
+    case "kill_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      for (const ship of state.ships.filter((candidate) => candidate.fleetId === fleet.id)) {
+        ship.shield = 0; ship.armor = 0; ship.hull = 0; ship.hp = 0;
+      }
+      removeDestroyedShips();
+      return changedResult("Fleet killed.", ["ships", "fleets", "visibility"]);
+    }
+    case "repair_ship": {
+      repairShip(resolveShipToken(parsed.args[0], context));
+      return changedResult("Ship repaired.", ["ships", "fleets"]);
+    }
+    case "repair_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      for (const ship of state.ships.filter((candidate) => candidate.fleetId === fleet.id)) repairShip(ship);
+      return changedResult("Fleet repaired.", ["ships", "fleets"]);
+    }
+    case "damage_ship": {
+      const ship = resolveShipToken(parsed.args[0], context);
+      const layer = parsed.args[1];
+      if (!isHealthLayer(layer)) throw new Error("Invalid health layer.");
+      damageShipLayer(ship, layer, parsed.args[2] ?? "0");
+      removeDestroyedShips();
+      return changedResult("Ship damaged.", ["ships", "fleets", "visibility"]);
+    }
+    case "damage_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const layer = parsed.args[1];
+      if (!isHealthLayer(layer)) throw new Error("Invalid health layer.");
+      for (const ship of state.ships.filter((candidate) => candidate.fleetId === fleet.id)) damageShipLayer(ship, layer, parsed.args[2] ?? "0");
+      removeDestroyedShips();
+      return changedResult("Fleet damaged.", ["ships", "fleets", "visibility"]);
+    }
+    case "set_ship_health": {
+      const ship = resolveShipToken(parsed.args[0], context);
+      const shield = commandOption(parsed, "shield");
+      const armor = commandOption(parsed, "armor");
+      const hull = commandOption(parsed, "hull");
+      if (shield) ship.shield = parseLayerValue(shield, ship.maxShield);
+      if (armor) ship.armor = parseLayerValue(armor, ship.maxArmor);
+      if (hull) { ship.hull = parseLayerValue(hull, ship.maxHull); ship.hp = ship.hull; }
+      removeDestroyedShips();
+      return changedResult("Ship health set.", ["ships", "fleets", "visibility"]);
+    }
+    case "set_fleet_health": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      for (const ship of state.ships.filter((candidate) => candidate.fleetId === fleet.id)) {
+        const shield = commandOption(parsed, "shield");
+        const armor = commandOption(parsed, "armor");
+        const hull = commandOption(parsed, "hull");
+        if (shield) ship.shield = parseLayerValue(shield, ship.maxShield);
+        if (armor) ship.armor = parseLayerValue(armor, ship.maxArmor);
+        if (hull) { ship.hull = parseLayerValue(hull, ship.maxHull); ship.hp = ship.hull; }
+      }
+      removeDestroyedShips();
+      return changedResult("Fleet health set.", ["ships", "fleets", "visibility"]);
+    }
+    case "move_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const starId = resolveSystemToken(parsed.args[1], context);
+      const { position } = parseSystemPosition(parsed.args, 2, getDefaultMoveDestination(starId).position);
+      startMoveOrder(fleet, starId, position);
+      return changedResult("Fleet move order started.", ["clock", "fleets", "visibility"]);
+    }
+    case "teleport_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const starId = resolveSystemToken(parsed.args[1], context);
+      const { position } = parseSystemPosition(parsed.args, 2, systemCenterPosition());
+      clearFleetMovementNow(fleet);
+      fleet.currentStarId = starId;
+      fleet.route = [starId];
+      fleet.systemPosition = position;
+      refreshDiscovery();
+      return changedResult("Fleet teleported.", ["fleets", "visibility"]);
+    }
+    case "set_fleet_position": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const { position } = parseSystemPosition(parsed.args, 1, fleet.systemPosition);
+      clearFleetMovementNow(fleet);
+      fleet.systemPosition = position;
+      return changedResult("Fleet position set.", ["fleets"]);
+    }
+    case "set_fleet_owner": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const owner = resolveOwnerToken(parsed.args[1], context, perspective);
+      fleet.ownerId = owner;
+      for (const ship of state.ships.filter((candidate) => candidate.fleetId === fleet.id)) ship.ownerId = owner;
+      refreshDiscovery();
+      return changedResult("Fleet owner set.", ["ships", "fleets", "visibility"]);
+    }
+    case "split_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const spec = parsed.args[1];
+      const sourceShips = state.ships.filter((ship) => ship.fleetId === fleet.id);
+      const movingIds = spec?.includes(",")
+        ? new Set(splitList(spec))
+        : new Set(sourceShips.slice(0, integerArg(spec, "split count", 1, sourceShips.length - 1)).map((ship) => ship.id));
+      const newFleet = createFleet(fleet.ownerId, fleet.currentStarId, [], createRuntimeId("fleet", [fleet.ownerId, fleet.currentStarId]));
+      newFleet.systemPosition = { ...fleet.systemPosition, x: fleet.systemPosition.x + 2 };
+      state.fleets.push(newFleet);
+      for (const ship of sourceShips) if (movingIds.has(ship.id)) ship.fleetId = newFleet.id;
+      syncFleetMembership(state);
+      return changedResult("Fleet split.", ["ships", "fleets", "visibility"], adminRowsForFleets([fleet, newFleet]));
+    }
+    case "merge_fleets": {
+      const target = resolveFleetToken(parsed.args[0], context);
+      const sourceIds = splitList(parsed.args[1]);
+      for (const ship of state.ships) {
+        if (sourceIds.includes(ship.fleetId)) ship.fleetId = target.id;
+      }
+      state.fleets = state.fleets.filter((fleet) => !sourceIds.includes(fleet.id));
+      syncFleetMembership(state);
+      return changedResult("Fleets merged.", ["ships", "fleets", "visibility"]);
+    }
+    case "set_cooldowns": {
+      const id = parsed.args[0] === "selected" ? context?.selectedFleetId : parsed.args[0];
+      const value = parsed.args[1] === "ready" ? 0 : numberArg(parsed.args[1], "cooldown hours", 0);
+      const fleet = id ? state.fleets.find((candidate) => candidate.id === id) : null;
+      const ship = id ? state.ships.find((candidate) => candidate.id === id) : null;
+      const starbase = id ? state.starbases.find((candidate) => candidate.id === id) : null;
+      if (fleet) for (const fleetShip of state.ships.filter((candidate) => candidate.fleetId === fleet.id)) fleetShip.weaponCooldowns = Object.fromEntries(Object.keys(fleetShip.weaponCooldowns ?? {}).map((key) => [key, value]));
+      else if (ship) ship.weaponCooldowns = Object.fromEntries(Object.keys(ship.weaponCooldowns ?? {}).map((key) => [key, value]));
+      else if (starbase) starbase.weaponCooldowns = Object.fromEntries(Object.keys(starbase.weaponCooldowns ?? {}).map((key) => [key, value]));
+      else throw new Error("Cooldown target not found.");
+      return changedResult("Cooldowns updated.", ["ships", "starbases"]);
+    }
+    case "set_fleet_doctrine": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const stance = commandOption(parsed, "stance");
+      const behavior = commandOption(parsed, "behavior");
+      const chase = commandOption(parsed, "chase");
+      const retreat = commandOption(parsed, "retreat");
+      if (stance) fleet.combatStance = normalizeCombatStance(stance);
+      fleet.combatSettings = createDefaultFleetCombatSettings({
+        ...fleet.combatSettings,
+        behavior: isFleetBehavior(behavior) ? behavior : fleet.combatSettings.behavior,
+        chasePolicy: isFleetChasePolicy(chase) ? chase : fleet.combatSettings.chasePolicy,
+        retreatPolicy: isFleetRetreatPolicy(retreat) ? retreat : fleet.combatSettings.retreatPolicy,
+      });
+      return changedResult("Fleet doctrine updated.", ["fleets"]);
+    }
+    case "set_retreat_destination": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const kind = parsed.args[1];
+      if (kind === "nearest_friendly_starbase" || kind === "nearestFriendlyStarbase") {
+        fleet.combatSettings.retreatDestination = { kind: "nearestFriendlyStarbase" };
+      } else if (kind === "selected_system" || kind === "selectedSystem") {
+        fleet.combatSettings.retreatDestination = { kind: "selectedSystem", targetStarId: resolveSystemToken(parsed.args[2], context) };
+      } else {
+        throw new Error("Invalid retreat destination.");
+      }
+      return changedResult("Retreat destination updated.", ["fleets"]);
+    }
+    case "order_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const order = parsed.args[1];
+      if (order === "hold" || order === "retreat") {
+        fleet.currentTacticalOrder = { type: order, issuedAtYear: state.clock.year };
+      } else if (order === "attack") {
+        const targetId = parsed.args[2];
+        const targetKind = state.starbases.some((starbase) => starbase.id === targetId) ? "starbase" : "fleet";
+        fleet.currentTacticalOrder = { type: "attack", targetId, targetKind, issuedAtYear: state.clock.year };
+      } else if (order === "guard" || order === "move") {
+        const { position } = parseSystemPosition(parsed.args, 2, fleet.systemPosition);
+        fleet.currentTacticalOrder = order === "guard"
+          ? { type: "guard", guardPosition: position, issuedAtYear: state.clock.year }
+          : { type: "move", targetPosition: position, issuedAtYear: state.clock.year };
+      } else {
+        throw new Error("Invalid fleet order.");
+      }
+      return changedResult("Fleet order issued.", ["fleets"]);
+    }
+    case "clear_order": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      fleet.currentTacticalOrder = null;
+      fleet.currentTargetId = null;
+      fleet.currentTargetKind = null;
+      return changedResult("Fleet order cleared.", ["fleets"]);
+    }
+    case "start_duel": {
+      const starId = resolveSystemToken(parsed.args[0], context);
+      const ownerA = resolveOwnerToken(parsed.args[1], context, perspective);
+      const ownerB = resolveOwnerToken(parsed.args[2], context, perspective);
+      const distance = numberArg(commandOption(parsed, "distance") ?? "40", "distance", 1);
+      const countA = integerArg(commandOption(parsed, "countA") ?? "1", "countA", 1, 1000);
+      const countB = integerArg(commandOption(parsed, "countB") ?? "1", "countB", 1, 1000);
+      const center = systemCenterPosition();
+      const left = { x: center.x - distance / 2, y: SYSTEM_FLEET_Y, z: center.z };
+      const right = { x: center.x + distance / 2, y: SYSTEM_FLEET_Y, z: center.z };
+      const fleetA = createAdminFleetWithShips(ownerA, starId, commandOption(parsed, "designA"), countA, left);
+      const fleetB = createAdminFleetWithShips(ownerB, starId, commandOption(parsed, "designB"), countB, right);
+      fleetA.currentTacticalOrder = { type: "attack", targetId: fleetB.id, targetKind: "fleet", issuedAtYear: state.clock.year };
+      fleetB.currentTacticalOrder = { type: "attack", targetId: fleetA.id, targetKind: "fleet", issuedAtYear: state.clock.year };
+      refreshDiscovery();
+      return changedResult("Duel started.", ["ships", "fleets", "visibility"], adminRowsForFleets([fleetA, fleetB]));
+    }
+    case "spawn_encounter": {
+      const scenario = parsed.args[0];
+      const starId = resolveSystemToken(parsed.args[1], context);
+      const ownerA = resolvePerspectiveOwner(context, perspective);
+      const ownerB = (ownerA + 1) % Math.max(1, state.factions.length);
+      if (scenario === "artillery_vs_starbase") {
+        const fleet = createAdminFleetWithShips(ownerA, starId, undefined, 6, { x: -48, y: SYSTEM_FLEET_Y, z: 0 });
+        fleet.combatSettings.behavior = "artillery";
+        state.starbases = state.starbases.filter((starbase) => starbase.starId !== starId);
+        state.starbases.push(createAdminStarbase(starId, ownerB, "starbase", getSystemStarbasePosition()));
+      } else if (scenario === "swarm_vs_line") {
+        const a = createAdminFleetWithShips(ownerA, starId, undefined, 16, { x: -30, y: SYSTEM_FLEET_Y, z: 0 });
+        const b = createAdminFleetWithShips(ownerB, starId, undefined, 10, { x: 30, y: SYSTEM_FLEET_Y, z: 0 });
+        a.combatSettings.behavior = "swarm"; b.combatSettings.behavior = "line";
+      } else if (scenario === "retreat_test") {
+        const a = createAdminFleetWithShips(ownerA, starId, undefined, 4, { x: -22, y: SYSTEM_FLEET_Y, z: 0 });
+        const b = createAdminFleetWithShips(ownerB, starId, undefined, 12, { x: 22, y: SYSTEM_FLEET_Y, z: 0 });
+        a.combatSettings.retreatPolicy = "high"; b.combatSettings.behavior = "brawler";
+      } else if (scenario === "orbit_defense") {
+        state.starbases.push(createAdminStarbase(starId, ownerA, "starbase", getSystemStarbasePosition()));
+        createAdminFleetWithShips(ownerB, starId, undefined, 8, { x: 44, y: SYSTEM_FLEET_Y, z: 0 });
+      } else {
+        createAdminFleetWithShips(ownerA, starId, undefined, 5, { x: -26, y: SYSTEM_FLEET_Y, z: 0 });
+        createAdminFleetWithShips(ownerB, starId, undefined, 5, { x: 26, y: SYSTEM_FLEET_Y, z: 0 });
+      }
+      refreshDiscovery();
+      return changedResult(`Encounter ${scenario} spawned.`, ["ships", "fleets", "starbases", "visibility"]);
+    }
+    case "force_attack": {
+      const fleet = resolveFleetToken(parsed.args[0], context);
+      const targetId = parsed.args[1];
+      const targetKind = state.starbases.some((starbase) => starbase.id === targetId) ? "starbase" : "fleet";
+      fleet.currentTacticalOrder = { type: "attack", targetId, targetKind, issuedAtYear: state.clock.year };
+      return changedResult("Force attack order set.", ["fleets"]);
+    }
+    case "stop_combat": {
+      const token = parsed.args[0] ?? "selected";
+      const fleets = token === "all"
+        ? state.fleets
+        : token === "system"
+          ? state.fleets.filter((fleet) => fleet.currentStarId === resolveCurrentStarId(context))
+          : [resolveFleetToken(token, context)];
+      for (const fleet of fleets) {
+        fleet.currentTacticalOrder = null;
+        fleet.currentTargetId = null;
+        fleet.currentTargetKind = null;
+        fleet.combatStatus = "idle";
+      }
+      return changedResult("Combat state cleared.", ["fleets"]);
+    }
+    case "set_weapon_cooldown": {
+      const id = parsed.args[0];
+      const mount = parsed.args[1] ?? "all";
+      const value = parsed.args[2] === "ready" ? 0 : numberArg(parsed.args[2], "cooldown hours", 0);
+      const ship = state.ships.find((candidate) => candidate.id === id);
+      const starbase = state.starbases.find((candidate) => candidate.id === id);
+      if (ship) {
+        const mounts = calculateShipDesignStats(getShipDesignForShip(ship)).combat.weaponMounts;
+        const keys = mount === "all"
+          ? mounts.map((m, index) => `${index}:${getWeaponId(m)}`)
+          : (() => {
+            const mountIndex = integerArg(mount, "mount index", 0, mounts.length - 1);
+            return [`${mountIndex}:${getWeaponId(mounts[mountIndex])}`];
+          })();
+        ship.weaponCooldowns = { ...(ship.weaponCooldowns ?? {}) };
+        for (const key of keys) ship.weaponCooldowns[key] = value;
+      } else if (starbase) {
+        const mounts = getStarbaseWeaponMounts(starbase);
+        const keys = mount === "all"
+          ? mounts.map((m, index) => `${index}:${getWeaponId(m)}`)
+          : (() => {
+            const mountIndex = integerArg(mount, "mount index", 0, mounts.length - 1);
+            return [`${mountIndex}:${getWeaponId(mounts[mountIndex])}`];
+          })();
+        starbase.weaponCooldowns = { ...(starbase.weaponCooldowns ?? {}) };
+        for (const key of keys) starbase.weaponCooldowns[key] = value;
+      } else {
+        throw new Error("Weapon cooldown target not found.");
+      }
+      return changedResult("Weapon cooldown updated.", ["ships", "starbases"]);
+    }
+    case "effect_test":
+    case "fire_test_contact": {
+      const sourceId = name === "effect_test" ? parsed.args[1] : parsed.args[0];
+      const targetId = name === "effect_test" ? parsed.args[2] : parsed.args[1];
+      const sourceFleet = state.fleets.find((fleet) => fleet.id === sourceId);
+      const sourceStarbase = state.starbases.find((starbase) => starbase.id === sourceId);
+      const targetFleet = state.fleets.find((fleet) => fleet.id === targetId);
+      const targetStarbase = state.starbases.find((starbase) => starbase.id === targetId);
+      const sourcePosition = sourceFleet?.systemPosition ?? sourceStarbase?.systemPosition;
+      const targetPosition = targetFleet?.systemPosition ?? targetStarbase?.systemPosition;
+      if (!sourcePosition || !targetPosition) throw new Error("Source or target not found.");
+      const hitMode = name === "effect_test" ? "hit" : parsed.args[3] ?? "hit";
+      state.recentCombatContacts.push({
+        id: createRuntimeId("contact", [sourceId, targetId]),
+        year: state.clock.year,
+        sourceId,
+        sourceKind: sourceFleet ? "fleet" : "starbase",
+        sourceOwnerId: sourceFleet?.ownerId ?? sourceStarbase!.ownerId,
+        targetId,
+        targetKind: targetFleet ? "fleet" : "starbase",
+        targetOwnerId: targetFleet?.ownerId ?? targetStarbase!.ownerId,
+        weaponId: name === "effect_test" ? parsed.args[0] : parsed.args[2],
+        weaponName: name === "effect_test" ? parsed.args[0] : parsed.args[2],
+        hit: hitMode === "hit",
+        accuracyMiss: hitMode === "miss",
+        dodged: hitMode === "dodge",
+        shieldDamage: hitMode === "hit" ? 10 : 0,
+        armorDamage: 0,
+        hullDamage: 0,
+        targetDestroyed: false,
+        sourcePosition,
+        targetPosition,
+      });
+      state.recentCombatContacts = state.recentCombatContacts.slice(-RECENT_COMBAT_CONTACT_HISTORY);
+      return changedResult("Test contact added.", ["combatContacts"]);
+    }
+    case "create_starbase": {
+      const starId = resolveSystemToken(parsed.args[0], context);
+      const owner = resolveOwnerToken(parsed.args[1], context, perspective);
+      const level = (commandOption(parsed, "level") ?? parsed.args[2] ?? "outpost") as StarbaseLevel;
+      if (!STARBASE_LEVEL_DEFINITIONS[level]) throw new Error("Invalid starbase level.");
+      state.starbases = state.starbases.filter((starbase) => starbase.starId !== starId);
+      const starbase = createAdminStarbase(starId, owner, level);
+      state.starbases.push(starbase);
+      state.starOwnership[starId] = owner;
+      refreshDiscovery();
+      return changedResult("Starbase created.", ["starbases", "visibility"], [{ id: starbase.id, owner, system: starId, level }]);
+    }
+    case "delete_starbase": {
+      const starbase = resolveStarbaseToken(parsed.args[0], context);
+      state.starbases = state.starbases.filter((candidate) => candidate.id !== starbase.id);
+      return changedResult("Starbase deleted.", ["starbases", "visibility"]);
+    }
+    case "upgrade_starbase_now": {
+      const starbase = resolveStarbaseToken(parsed.args[0], context);
+      const level = (parsed.args[1] ?? STARBASE_LEVEL_DEFINITIONS[starbase.level].upgrade?.targetLevel ?? starbase.level) as StarbaseLevel;
+      if (!STARBASE_LEVEL_DEFINITIONS[level]) throw new Error("Invalid starbase level.");
+      Object.assign(starbase, syncStarbaseCombatHealth({ ...starbase, level, economy: calculateStarbaseEconomy(level, starbase.buildingSlots), constructionQueue: [] }));
+      return changedResult("Starbase upgraded.", ["starbases", "factionEconomies"]);
+    }
+    case "set_starbase_position": {
+      const starbase = resolveStarbaseToken(parsed.args[0], context);
+      const { position } = parseSystemPosition(parsed.args, 1, starbase.systemPosition);
+      starbase.systemPosition = position;
+      return changedResult("Starbase position set.", ["starbases"]);
+    }
+    case "repair_starbase": {
+      const starbase = resolveStarbaseToken(parsed.args[0], context);
+      starbase.shield = starbase.maxShield;
+      starbase.armor = starbase.maxArmor;
+      starbase.hull = starbase.maxHull;
+      starbase.weaponCooldowns = {};
+      return changedResult("Starbase repaired.", ["starbases"]);
+    }
+    case "damage_starbase": {
+      const starbase = resolveStarbaseToken(parsed.args[0], context);
+      const layer = parsed.args[1];
+      if (!isHealthLayer(layer)) throw new Error("Invalid health layer.");
+      const apply = (key: "shield" | "armor" | "hull", maxKey: "maxShield" | "maxArmor" | "maxHull") => {
+        const amount = (parsed.args[2] ?? "0").endsWith("%")
+          ? Number((parsed.args[2] ?? "0").slice(0, -1)) / 100 * starbase[maxKey]
+          : Number(parsed.args[2] ?? "0");
+        starbase[key] = clamp(starbase[key] - Math.max(0, amount), 0, starbase[maxKey]);
+      };
+      if (layer === "shield" || layer === "all") apply("shield", "maxShield");
+      if (layer === "armor" || layer === "all") apply("armor", "maxArmor");
+      if (layer === "hull" || layer === "all") apply("hull", "maxHull");
+      return changedResult("Starbase damaged.", ["starbases"]);
+    }
+    case "set_starbase_health": {
+      const starbase = resolveStarbaseToken(parsed.args[0], context);
+      const shield = commandOption(parsed, "shield");
+      const armor = commandOption(parsed, "armor");
+      const hull = commandOption(parsed, "hull");
+      if (shield) starbase.shield = parseLayerValue(shield, starbase.maxShield);
+      if (armor) starbase.armor = parseLayerValue(armor, starbase.maxArmor);
+      if (hull) starbase.hull = parseLayerValue(hull, starbase.maxHull);
+      return changedResult("Starbase health set.", ["starbases"]);
+    }
+    case "add_starbase_building": {
+      const starbase = resolveStarbaseToken(parsed.args[0], context);
+      const slotIndex = integerArg(parsed.args[1], "slot index", 0, starbase.buildingSlots.length - 1);
+      const building = parsed.args[2] as StarbaseBuildingKind;
+      if (!isStarbaseBuildingKind(building)) throw new Error("Invalid starbase building.");
+      starbase.buildingSlots[slotIndex] = building;
+      starbase.economy = calculateStarbaseEconomy(starbase.level, starbase.buildingSlots);
+      refreshFactionEconomyDeltas();
+      return changedResult("Starbase building added.", ["starbases", "factionEconomies"]);
+    }
+    case "remove_starbase_building": {
+      const starbase = resolveStarbaseToken(parsed.args[0], context);
+      const slotIndex = integerArg(parsed.args[1], "slot index", 0, starbase.buildingSlots.length - 1);
+      starbase.buildingSlots[slotIndex] = null;
+      starbase.economy = calculateStarbaseEconomy(starbase.level, starbase.buildingSlots);
+      refreshFactionEconomyDeltas();
+      return changedResult("Starbase building removed.", ["starbases", "factionEconomies"]);
+    }
+    default:
+      throw new Error(`Command "${name}" is registered but not implemented.`);
+  }
+}
+
+async function handleAdminCommand(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  command: Extract<ClientCommand, { type: "adminCommand" }>,
+): Promise<void> {
+  const parsed = parseAdminCommand(command.input);
+  if (!parsed) {
+    sendAdminResponse(socket, adminResponse(command, parsed, false, "Enter an admin command."));
+    return;
+  }
+  const confirmation = adminConfirmationRequired(command, parsed);
+  if (confirmation) {
+    sendAdminResponse(socket, confirmation);
+    return;
+  }
+  try {
+    const result = await executeAdminCommand(parsed, command, perspective);
+    const changed = result.changed ? Array.from(new Set(result.changed)) : [];
+    sendAdminResponse(socket, adminResponse(command, parsed, true, result.message, {
+      rows: result.rows,
+      changed,
+      destructive: parsed.definition?.destructive === true,
+    }));
+    if (changed.length > 0) {
+      broadcastUpdates(changed);
+      flushPlanetDetailRefreshes();
+    }
+  } catch (error) {
+    sendAdminResponse(socket, adminResponse(
+      command,
+      parsed,
+      false,
+      error instanceof Error ? error.message : "Admin command failed.",
+      { destructive: parsed.definition?.destructive === true },
+    ));
+  }
+}
+
 function handleCommand(session: ClientSession, command: ClientCommand): void {
   if (command.type === "join") {
     sendEvent(session.socket, createSnapshot(session.perspective));
+    return;
+  }
+  if (command.type === "adminCommand") {
+    void handleAdminCommand(session.socket, session.perspective, command);
     return;
   }
   if (command.type === "moveShip" || command.type === "moveFleet") {
@@ -3928,12 +5221,14 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "setSpeedMultiplier") {
-    const allowed = new Set([1, 2, 3, 4, 5, 50, 100, 200, 500]);
-    if (!allowed.has(command.multiplier)) return reject(session.socket, "Unsupported speed multiplier.");
-    state.clock.speedMultiplier = command.multiplier;
+    const multiplier = Math.max(0, Number(command.multiplier) || 0);
+    state.clock.tickSpeedSeconds = DEFAULT_TICK_SPEED_SECONDS;
+    state.clock.tickSizeDays = Math.max(0.000001, multiplier / 24);
+    state.clock.paused = multiplier <= 0;
+    syncClockSpeedFields();
     state.clock.syncedAtMs = Date.now();
     hasDirtyState = true;
-    accept(session.socket, `Speed set to ${command.multiplier}x.`);
+    accept(session.socket, `Speed set to ${state.clock.speedMultiplier}x.`);
     broadcastUpdates(["clock"]);
   }
 }

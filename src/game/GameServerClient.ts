@@ -1,4 +1,8 @@
 import type {
+  AdminCommandContext,
+  AdminCommandResult,
+} from "./AdminCommands";
+import type {
   ClientCommand,
   GameSnapshot,
   PlanetDetailsEvent,
@@ -10,6 +14,7 @@ import type {
 type SnapshotHandler = (snapshot: GameSnapshot, changed?: ServerUpdateField[]) => void;
 type MessageHandler = (message: string, ok: boolean) => void;
 type PlanetDetailsHandler = (event: PlanetDetailsEvent) => void;
+type AdminCommandHandler = (event: AdminCommandResult) => void;
 type PendingRequest<T> = {
   resolve: (event: T) => void;
   reject: (error: Error) => void;
@@ -40,8 +45,10 @@ export class GameServerClient {
   private snapshotHandlers = new Set<SnapshotHandler>();
   private messageHandlers = new Set<MessageHandler>();
   private planetDetailsHandlers = new Set<PlanetDetailsHandler>();
+  private adminCommandHandlers = new Set<AdminCommandHandler>();
   private systemDetailsRequests = new Map<number, PendingRequest<SystemDetailsEvent>>();
   private planetDetailsRequests = new Map<string, PendingRequest<PlanetDetailsEvent>>();
+  private adminCommandRequests = new Map<string, PendingRequest<AdminCommandResult>>();
 
   constructor(private readonly url = getWebSocketUrl()) {}
 
@@ -126,6 +133,18 @@ export class GameServerClient {
           if (!parsed.ok) {
             this.rejectOldestPendingRequest(new Error(parsed.message));
           }
+          return;
+        }
+
+        if (parsed.type === "adminCommandResult") {
+          if (parsed.requestId) {
+            const pending = this.adminCommandRequests.get(parsed.requestId);
+            if (pending) {
+              this.adminCommandRequests.delete(parsed.requestId);
+              pending.resolve(parsed);
+            }
+          }
+          for (const handler of this.adminCommandHandlers) handler(parsed);
         }
       });
 
@@ -155,6 +174,11 @@ export class GameServerClient {
     return () => this.planetDetailsHandlers.delete(handler);
   }
 
+  onAdminCommand(handler: AdminCommandHandler): () => void {
+    this.adminCommandHandlers.add(handler);
+    return () => this.adminCommandHandlers.delete(handler);
+  }
+
   send(command: ClientCommand): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify(command));
@@ -172,10 +196,21 @@ export class GameServerClient {
     return this.latestSnapshot;
   }
 
+  executeAdminCommand(input: string, context?: AdminCommandContext): Promise<AdminCommandResult> {
+    const requestId = `admin-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return this.requestDetails(this.adminCommandRequests, requestId, {
+      type: "adminCommand",
+      input,
+      context,
+      requestId,
+    });
+  }
+
   dispose(): void {
     this.snapshotHandlers.clear();
     this.messageHandlers.clear();
     this.planetDetailsHandlers.clear();
+    this.adminCommandHandlers.clear();
     this.rejectAllPendingRequests(new Error("Game server client disposed."));
     this.socket?.close();
     this.socket = null;
@@ -232,13 +267,21 @@ export class GameServerClient {
     if (!planetEntry.done) {
       this.planetDetailsRequests.delete(planetEntry.value[0]);
       planetEntry.value[1].reject(error);
+      return;
+    }
+    const adminEntry = this.adminCommandRequests.entries().next();
+    if (!adminEntry.done) {
+      this.adminCommandRequests.delete(adminEntry.value[0]);
+      adminEntry.value[1].reject(error);
     }
   }
 
   private rejectAllPendingRequests(error: Error): void {
     for (const [, pending] of this.systemDetailsRequests) pending.reject(error);
     for (const [, pending] of this.planetDetailsRequests) pending.reject(error);
+    for (const [, pending] of this.adminCommandRequests) pending.reject(error);
     this.systemDetailsRequests.clear();
     this.planetDetailsRequests.clear();
+    this.adminCommandRequests.clear();
   }
 }

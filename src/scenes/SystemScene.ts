@@ -4045,6 +4045,20 @@ export class SystemScene implements IGameScene {
     this.clockYear = year;
   }
 
+  selectFleetById(fleetId: string): boolean {
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId && candidate.currentStarId === this.star.id);
+    if (!fleet) return false;
+    this.selectFleetFromCard(fleet, false);
+    return true;
+  }
+
+  selectStarbaseById(starbaseId: string): boolean {
+    const starbase = this.starbases.find((candidate) => candidate.id === starbaseId && candidate.starId === this.star.id);
+    if (!starbase) return false;
+    this.openStarbasePanel(starbase);
+    return true;
+  }
+
   setServerShips(ships: ServerShip[]): void {
     this.serverShips = ships;
     this.refreshShipVisuals();

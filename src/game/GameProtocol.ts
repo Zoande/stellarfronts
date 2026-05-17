@@ -26,6 +26,7 @@ import type {
   FleetRetreatPolicy,
   FleetTacticalOrderType,
 } from "./CombatTypes";
+import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 
 export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat" | "retreatTo" | "emergencyRetreatTo";
 
@@ -45,6 +46,9 @@ export type ShipTransitPhase =
 export interface GameClock {
   year: number;
   speedMultiplier: number;
+  tickSizeDays: number;
+  tickSpeedSeconds: number;
+  paused: boolean;
   syncedAtMs: number;
 }
 
@@ -387,8 +391,16 @@ export interface JoinCommand {
   type: "join";
 }
 
+export interface AdminCommandCommand {
+  type: "adminCommand";
+  input: string;
+  context?: AdminCommandContext;
+  requestId?: string;
+}
+
 export type ClientCommand =
   | JoinCommand
+  | AdminCommandCommand
   | MoveCommand
   | BuildCommand
   | OrbitPlanetCommand
@@ -480,6 +492,7 @@ export type ServerEvent =
   | GameSnapshot
   | GameUpdate
   | CommandResultEvent
+  | AdminCommandResult
   | ServerInfoEvent
   | SystemDetailsEvent
   | PlanetDetailsEvent;

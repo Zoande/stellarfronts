@@ -2172,6 +2172,18 @@ export class GalaxyScene implements IGameScene {
     this.clockYear = year;
   }
 
+  selectFleetById(fleetId: string): boolean {
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet) return false;
+    this.selectedFleetIds = new Set([fleetId]);
+    this.selectedShip = true;
+    this.selectedCommandShipStarId = fleet.currentStarId;
+    this.selectedCommandShipId = fleet.id;
+    this.options.onSelectedFleetIdsChange?.([fleetId]);
+    this.renderSelectedFleetPanels();
+    return true;
+  }
+
   startFleetAction(fleetId: string, action: ShipAction): void {
     const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
     if (!fleet) return;

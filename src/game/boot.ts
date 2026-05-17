@@ -22,8 +22,11 @@ import { buildHyperlaneAdjacency } from "@/data/Hyperlanes";
 import { HudOverlay } from "@/ui/HudOverlay";
 import type { HudConnectedSystem, HudSidebarItemKey, HudVisualToggles } from "@/ui/HudOverlay";
 import { FleetManagerPanel } from "@/ui/FleetManagerPanel";
+import { AdminCommandPanel } from "@/ui/AdminCommandPanel";
 import { GameServerClient } from "./GameServerClient";
 import type { ClientCommand, GameSnapshot, ServerFleet, ServerUpdateField } from "./GameProtocol";
+import { isLocalAdminCommand, parseAdminCommand } from "./AdminCommands";
+import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY, estimateClockYear } from "./GameTime";
 import type { HyperlaneExitPoint, ShipAction } from "./GameplayTypes";
 
@@ -58,6 +61,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let currentSystemStar: StarData | null = null;
   let hud: HudOverlay | null = null;
   let fleetManagerPanel: FleetManagerPanel | null = null;
+  let adminCommandPanel: AdminCommandPanel | null = null;
   let selectedFleetIds = new Set<string>();
 
   const visualToggles: HudVisualToggles = {
@@ -102,6 +106,107 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const getPlayerFactionId = (): number | null => (
     snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : null
   );
+  const createAdminContext = (): AdminCommandContext => ({
+    currentStarId: currentSystemStar?.id ?? null,
+    selectedFleetId: selectedFleetIds.values().next().value ?? null,
+    selectedFleetIds: Array.from(selectedFleetIds),
+    perspectiveOwnerId: getPlayerFactionId(),
+  });
+  const adminResult = (input: string, ok: boolean, message: string, rows?: AdminCommandResult["rows"]): AdminCommandResult => ({
+    type: "adminCommandResult",
+    ok,
+    input,
+    message,
+    rows,
+  });
+  const executeLocalAdminCommand = async (input: string): Promise<AdminCommandResult> => {
+    const parsed = parseAdminCommand(input);
+    if (!parsed) return adminResult(input, false, "Enter an admin command.");
+    const args = parsed.args;
+    const currentContext = createAdminContext();
+    const resolveSystemId = (token?: string): number => {
+      const value = token ?? "current";
+      if (value === "current" || value === "selected") return currentContext.currentStarId ?? snapshot.factions[0]?.homeStarId ?? 0;
+      const id = Number(value);
+      if (!Number.isInteger(id) || !snapshot.stars[id]) throw new Error("System not found.");
+      return id;
+    };
+    const openFleetSystem = async (fleetId: string): Promise<ServerFleet> => {
+      const fleet = snapshot.fleets.find((candidate) => candidate.id === fleetId);
+      if (!fleet) throw new Error("Fleet not found.");
+      const star = snapshot.stars[fleet.currentStarId];
+      if (!star) throw new Error("Fleet system not found.");
+      await openSystemView(star);
+      activeSystemScene?.selectFleetById(fleet.id);
+      return fleet;
+    };
+    try {
+      if (parsed.canonicalName === "goto") {
+        const kind = args[0];
+        if (kind === "system") {
+          const star = snapshot.stars[resolveSystemId(args[1])];
+          await openSystemView(star);
+          return adminResult(input, true, `Opened ${star.name}.`);
+        }
+        if (kind === "fleet") {
+          const fleetId = args[1] === "selected" || !args[1] ? currentContext.selectedFleetId : args[1];
+          if (!fleetId) throw new Error("No fleet selected.");
+          const fleet = await openFleetSystem(fleetId);
+          return adminResult(input, true, `Opened fleet ${fleet.id}.`);
+        }
+        if (kind === "starbase") {
+          const starbaseId = args[1];
+          const starbase = snapshot.starbases.find((candidate) => candidate.id === starbaseId);
+          if (!starbase) throw new Error("Starbase not found.");
+          await openSystemView(snapshot.stars[starbase.starId]);
+          activeSystemScene?.selectStarbaseById(starbase.id);
+          return adminResult(input, true, `Opened starbase ${starbase.id}.`);
+        }
+      }
+      if (parsed.canonicalName === "select") {
+        const kind = args[0];
+        const id = args[1];
+        if (kind === "fleet") {
+          const fleetId = id === "selected" || !id ? currentContext.selectedFleetId : id;
+          if (!fleetId) throw new Error("No fleet selected.");
+          setSelectedFleetIds([fleetId]);
+          const selected = activeSystemScene?.selectFleetById(fleetId) || activeGalaxyScene?.selectFleetById(fleetId);
+          return adminResult(input, selected ? true : false, selected ? `Selected fleet ${fleetId}.` : "Fleet is not visible in the active view.");
+        }
+        if (kind === "starbase") {
+          const selected = id ? activeSystemScene?.selectStarbaseById(id) : false;
+          return adminResult(input, selected ? true : false, selected ? `Selected starbase ${id}.` : "Starbase is not visible in the active system.");
+        }
+      }
+      if (parsed.canonicalName === "render_debug"
+        || parsed.canonicalName === "show_ranges"
+        || parsed.canonicalName === "show_footprints"
+        || parsed.canonicalName === "show_labels") {
+        if (parsed.canonicalName === "show_labels") {
+          const enabled = (args[0] ?? "on") !== "off";
+          document.body.classList.toggle("admin-hide-system-labels", !enabled);
+          return adminResult(input, true, `System labels ${enabled ? "shown" : "hidden"}.`);
+        }
+        return adminResult(input, true, `${parsed.canonicalName} ${args[0] ?? "toggled"} recorded for this client session.`);
+      }
+      return adminResult(input, false, `"${parsed.canonicalName}" is not implemented as a local command.`);
+    } catch (error) {
+      return adminResult(input, false, error instanceof Error ? error.message : "Local command failed.");
+    }
+  };
+  const executeAdminCommand = async (input: string): Promise<AdminCommandResult> => {
+    const parsed = parseAdminCommand(input);
+    if (parsed && isLocalAdminCommand(parsed.canonicalName)) {
+      return executeLocalAdminCommand(input);
+    }
+    return server.executeAdminCommand(input, createAdminContext());
+  };
+  const openAdminCommandPanel = (): void => {
+    if (!adminCommandPanel) {
+      adminCommandPanel = new AdminCommandPanel({ onCommand: executeAdminCommand });
+    }
+    adminCommandPanel.toggle();
+  };
   const setSelectedFleetIds = (fleetIds: Iterable<string>): void => {
     selectedFleetIds = new Set(fleetIds);
   };
@@ -639,21 +744,19 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     onSidebarItem: handleSidebarItem,
   });
 
+  const pressedCodes = new Set<string>();
   const handleKeyDown = (ev: KeyboardEvent) => {
-    const speedByKey: Record<string, number> = {
-      "1": 1,
-      "2": 2,
-      "3": 3,
-      "4": 4,
-      "5": 5,
-      "6": 50,
-      "7": 100,
-      "8": 200,
-      "9": 500,
-    };
-    const multiplier = speedByKey[ev.key];
-    if (!multiplier) return;
-    server.send({ type: "setSpeedMultiplier", multiplier });
+    pressedCodes.add(ev.code);
+    if (ev.shiftKey && pressedCodes.has("KeyN") && pressedCodes.has("Digit2")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      pressedCodes.clear();
+      openAdminCommandPanel();
+    }
+  };
+  const handleKeyUp = (ev: KeyboardEvent) => {
+    pressedCodes.delete(ev.code);
+    if (ev.key === "Shift") pressedCodes.clear();
   };
 
   server.onSnapshot((nextSnapshot, changed) => {
@@ -675,6 +778,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   });
 
   window.addEventListener("keydown", handleKeyDown);
+  window.addEventListener("keyup", handleKeyUp);
 
   reportProgress(0.5, "Starting galaxy command sequence");
   applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
@@ -684,8 +788,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   return () => {
     window.removeEventListener("keydown", handleKeyDown);
+    window.removeEventListener("keyup", handleKeyUp);
     hud?.dispose();
     fleetManagerPanel?.dispose();
+    adminCommandPanel?.dispose();
     server.dispose();
     mgr.dispose();
   };
