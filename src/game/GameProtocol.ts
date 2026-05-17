@@ -24,7 +24,12 @@ import type {
   BattleGroupOrderType,
   BattleGroupRetreatDestinationKind,
   BattleGroupRetreatMode,
+  CombatTargetKind,
   CombatStance,
+  FleetBehavior,
+  FleetChasePolicy,
+  FleetRetreatPolicy,
+  FleetTacticalOrderType,
   RangeBand,
 } from "./CombatTypes";
 
@@ -59,7 +64,8 @@ export type ServerUpdateField =
   | "shipDesigns"
   | "fleets"
   | "starbases"
-  | "battles";
+  | "battles"
+  | "combatContacts";
 
 export interface ServerStar extends StarData {}
 
@@ -80,6 +86,7 @@ export interface ServerStarbase {
   maxArmor: number;
   hull: number;
   maxHull: number;
+  weaponCooldowns?: Record<string, number>;
   lastShieldDamageAtYear?: number | null;
   level: StarbaseLevel;
   economy: StarbaseEconomy;
@@ -191,11 +198,28 @@ export interface BattleGroupConfig {
 export type FleetRetreatOrder = "none" | "retreat";
 
 export interface FleetCombatSettings {
+  behavior: FleetBehavior;
+  chasePolicy: FleetChasePolicy;
+  retreatPolicy: FleetRetreatPolicy;
   retreatDestination?: BattleGroupRetreatDestination | null;
+  /** Deprecated battle-group compatibility. */
   retreatOrder: FleetRetreatOrder;
+  /** Deprecated battle-group compatibility. */
   defaultBehavior: BattleGroupBehavior;
+  /** Deprecated battle-group compatibility. */
   defaultChaseSetting: BattleGroupChaseSetting;
 }
+
+export interface FleetTacticalOrder {
+  type: FleetTacticalOrderType;
+  targetId?: string | null;
+  targetKind?: CombatTargetKind | null;
+  targetPosition?: ShipSystemPosition | null;
+  guardPosition?: ShipSystemPosition | null;
+  issuedAtYear?: number | null;
+}
+
+export type FleetCombatStatus = "idle" | "maneuvering" | "engaging" | "firing" | "evading" | "retreating" | "destroyed";
 
 export interface ServerShip {
   id: string;
@@ -212,6 +236,7 @@ export interface ServerShip {
   maxArmor: number;
   hull: number;
   maxHull: number;
+  weaponCooldowns?: Record<string, number>;
 }
 
 export interface ServerFleet {
@@ -238,9 +263,19 @@ export interface ServerFleet {
   orbitOffset: ShipSystemPosition | null;
   orbitTarget: FleetOrbitTarget | null;
   mergeTargetFleetId: string | null;
+  /** Deprecated save compatibility only; active combat is fleet-level. */
   battleGroups: BattleGroupConfig[];
-  combatSettings: FleetCombatSettings;
+  /** Deprecated save compatibility only; fleet stance/behavior now determines readiness. */
   alertMode: boolean;
+  combatSettings: FleetCombatSettings;
+  currentTacticalOrder?: FleetTacticalOrder | null;
+  tacticalRadius: number;
+  maxWeaponRange: number;
+  minWeaponRange: number;
+  currentTargetId?: string | null;
+  currentTargetKind?: CombatTargetKind | null;
+  combatStatus: FleetCombatStatus;
+  lastCombatAtYear?: number | null;
 }
 
 export type BattlePhase = "opening" | "engaged" | "retreating" | "resolved";
@@ -395,6 +430,28 @@ export interface ServerBattleWeaponEffect {
 export interface ServerBattleRound {
   round: number;
   actions: ServerBattleAction[];
+}
+
+export interface ServerCombatContact {
+  id: string;
+  year: number;
+  sourceId: string;
+  sourceKind: CombatTargetKind;
+  sourceOwnerId: number;
+  targetId: string;
+  targetKind: CombatTargetKind;
+  targetOwnerId: number;
+  weaponId?: string;
+  weaponName?: string;
+  hit: boolean;
+  accuracyMiss?: boolean;
+  dodged?: boolean;
+  shieldDamage: number;
+  armorDamage: number;
+  hullDamage: number;
+  targetDestroyed: boolean;
+  sourcePosition: ShipSystemPosition;
+  targetPosition: ShipSystemPosition;
 }
 
 export interface ServerBattleShipState {
@@ -652,12 +709,19 @@ export interface SetFleetCombatSettingsCommand {
   type: "setFleetCombatSettings";
   fleetId: string;
   combatSettings: Partial<FleetCombatSettings>;
+  combatStance?: CombatStance;
 }
 
 export interface SetFleetAlertModeCommand {
   type: "setFleetAlertMode";
   fleetId: string;
   alertMode: boolean;
+}
+
+export interface IssueFleetTacticalOrderCommand {
+  type: "issueFleetTacticalOrder";
+  fleetId: string;
+  order: FleetTacticalOrder;
 }
 
 export interface IssueBattleGroupOrderCommand {
@@ -714,6 +778,7 @@ export type ClientCommand =
   | SetBattleGroupRetreatDestinationCommand
   | SetFleetCombatSettingsCommand
   | SetFleetAlertModeCommand
+  | IssueFleetTacticalOrderCommand
   | IssueBattleGroupOrderCommand;
 
 export interface GameSnapshot {
@@ -734,6 +799,7 @@ export interface GameSnapshot {
   fleets: ServerFleet[];
   starbases: ServerStarbase[];
   battles: ServerBattle[];
+  recentCombatContacts: ServerCombatContact[];
 }
 
 export interface GameUpdate {
@@ -755,6 +821,7 @@ export interface GameUpdate {
   fleets?: ServerFleet[];
   starbases?: ServerStarbase[];
   battles?: ServerBattle[];
+  recentCombatContacts?: ServerCombatContact[];
 }
 
 export interface CommandResultEvent {

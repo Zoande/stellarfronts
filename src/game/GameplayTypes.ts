@@ -10,6 +10,7 @@ export type ShipAction =
   | "emergencyRetreatTo"
   | "orbit"
   | "hold"
+  | "guard"
   | "protect";
 
 export interface GalaxyShipTransit {

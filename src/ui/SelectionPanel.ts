@@ -497,6 +497,7 @@ export class SelectionPanel {
       emergencyRetreatTo: "Emergency Retreat",
       orbit: "Orbit",
       hold: "Hold",
+      guard: "Guard",
       protect: "Protect",
     };
     const actions = (data.actions && data.actions.length > 0)

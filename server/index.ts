@@ -88,6 +88,11 @@ import {
   type BattleGroupChaseSetting,
   type BattleGroupOrderType,
   type CombatStance,
+  type CombatTargetKind,
+  type FleetBehavior,
+  type FleetChasePolicy,
+  type FleetRetreatPolicy,
+  type FleetTacticalOrderType,
   type RangeBand,
 } from "../src/game/CombatTypes";
 import type {
@@ -114,15 +119,18 @@ import type {
   ServerBattleStarbaseState,
   ServerBattleWeaponEffect,
   ServerFleet,
+  FleetRetreatOrder,
   FleetMovementPlan,
   FleetMovementSegment,
   FleetOrbitTarget,
   FleetOrderType,
   FleetCombatSettings,
   FleetRetreatState,
+  FleetTacticalOrder,
   ServerEvent,
   ServerShip,
   ServerStarbase,
+  ServerCombatContact,
   ServerUpdateField,
   ShipTransitPhase,
 } from "../src/game/GameProtocol";
@@ -142,6 +150,7 @@ import {
   getPreferredRangeBand,
   getWeaponId,
   getWeaponName,
+  getWeaponCooldownRounds,
   getWeaponMaxSystemRange,
   getWeaponMinSystemRange,
   rangeBandForSystemDistance,
@@ -162,6 +171,7 @@ import {
   gameYearToMonthIndex,
   gameYearToWeekIndex,
 } from "../src/game/GameTime";
+import { getFleetTacticalRadius } from "../src/game/tacticalFormation";
 import type { AuthAccount } from "../src/auth/types";
 import { authStore, getPerspectiveFromAccount, parseSessionTokenFromCookie } from "./auth-store";
 
@@ -197,6 +207,17 @@ const DEFAULT_BATTLE_GROUP_LEASH_RADIUS = 42;
 const DEFENDER_BATTLE_GROUP_LEASH_RADIUS = 36;
 const RETREAT_ESCAPE_DISTANCE = 78;
 const SYSTEM_PLANET_ORBIT_DISTANCE = 3.4;
+const STARBASE_TACTICAL_RADIUS = 7;
+const RECENT_COMBAT_CONTACT_HISTORY = 160;
+const FLEET_GUARD_RADIUS = 72;
+const FLEET_EVADE_DISTANCE = 34;
+const FLEET_SOFT_SEPARATION_FACTOR = 0.35;
+const FLEET_RETREAT_THRESHOLDS: Record<FleetRetreatPolicy, number> = {
+  none: 0,
+  low: 0.25,
+  medium: 0.5,
+  high: 0.75,
+};
 
 interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
@@ -225,6 +246,7 @@ interface GameState {
   ships: GameShip[];
   fleets: GameFleet[];
   battles: GameBattle[];
+  recentCombatContacts: ServerCombatContact[];
   discoveredByFaction: Record<string, number[]>;
   lastKnownOwnershipByFaction: Record<string, number[]>;
   clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number };
@@ -245,7 +267,11 @@ let hasDirtyState = false;
 let runtimeIdCounter = 0;
 
 const FLEET_FORMATIONS: FleetFormation[] = ["line", "vanguard", "echelon", "defensive"];
-const COMBAT_STANCES: CombatStance[] = ["passive", "defensive", "aggressive", "evade", "holdPosition"];
+const COMBAT_STANCES: CombatStance[] = ["passive", "evade", "holdPosition", "guardArea", "defendSystem", "aggressive", "hunt"];
+const FLEET_BEHAVIORS: FleetBehavior[] = ["artillery", "line", "brawler", "swarm", "defender"];
+const FLEET_CHASE_POLICIES: FleetChasePolicy[] = ["none", "system", "friendlySystems", "neutralSystems", "enemySystems"];
+const FLEET_RETREAT_POLICIES: FleetRetreatPolicy[] = ["none", "low", "medium", "high"];
+const FLEET_TACTICAL_ORDER_TYPES: FleetTacticalOrderType[] = ["move", "attack", "hold", "guard", "retreat"];
 const BATTLE_GROUP_BEHAVIORS: BattleGroupBehavior[] = ["screen", "brawler", "line", "artillery", "defender"];
 const BATTLE_GROUP_CHASE_SETTINGS: BattleGroupChaseSetting[] = [
   "none",
@@ -262,6 +288,28 @@ function isFleetFormation(value: string | undefined): value is FleetFormation {
 
 function isCombatStance(value: string | undefined): value is CombatStance {
   return !!value && COMBAT_STANCES.includes(value as CombatStance);
+}
+
+function normalizeCombatStance(value: unknown): CombatStance {
+  if (value === "defensive") return "defendSystem";
+  if (typeof value === "string" && isCombatStance(value)) return value;
+  return "aggressive";
+}
+
+function isFleetBehavior(value: unknown): value is FleetBehavior {
+  return typeof value === "string" && FLEET_BEHAVIORS.includes(value as FleetBehavior);
+}
+
+function isFleetChasePolicy(value: unknown): value is FleetChasePolicy {
+  return typeof value === "string" && FLEET_CHASE_POLICIES.includes(value as FleetChasePolicy);
+}
+
+function isFleetRetreatPolicy(value: unknown): value is FleetRetreatPolicy {
+  return typeof value === "string" && FLEET_RETREAT_POLICIES.includes(value as FleetRetreatPolicy);
+}
+
+function isFleetTacticalOrderType(value: unknown): value is FleetTacticalOrderType {
+  return typeof value === "string" && FLEET_TACTICAL_ORDER_TYPES.includes(value as FleetTacticalOrderType);
 }
 
 function isBattleGroupBehavior(value: unknown): value is BattleGroupBehavior {
@@ -384,6 +432,9 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
     maxArmor,
     hull: Math.max(0, Math.min(maxHull, Number.isFinite(hullValue) ? hullValue : maxHull)),
     maxHull,
+    weaponCooldowns: typeof starbase.weaponCooldowns === "object" && starbase.weaponCooldowns
+      ? Object.fromEntries(Object.entries(starbase.weaponCooldowns).map(([key, value]) => [key, Math.max(0, Number(value) || 0)]))
+      : {},
     lastShieldDamageAtYear: starbase.lastShieldDamageAtYear ?? null,
     level,
     economy: calculateStarbaseEconomy(level, buildingSlots),
@@ -477,6 +528,7 @@ function createShipFromDesign(
     maxArmor: combat.maxArmor,
     hull: combat.maxHull,
     maxHull: combat.maxHull,
+    weaponCooldowns: {},
   };
 }
 
@@ -523,8 +575,16 @@ function createFleet(
     orbitTarget: null,
     mergeTargetFleetId: null,
     battleGroups: [],
-    combatSettings: createDefaultFleetCombatSettings(),
     alertMode: false,
+    combatSettings: createDefaultFleetCombatSettings(),
+    currentTacticalOrder: null,
+    tacticalRadius: getFleetTacticalRadius(shipIds.length),
+    maxWeaponRange: 0,
+    minWeaponRange: 0,
+    currentTargetId: null,
+    currentTargetKind: null,
+    combatStatus: "idle",
+    lastCombatAtYear: null,
   };
 }
 
@@ -639,11 +699,45 @@ function normalizeBattleGroupOrder(
 function createDefaultFleetCombatSettings(
   overrides: Partial<FleetCombatSettings> | null | undefined = null,
 ): FleetCombatSettings {
+  const legacy = overrides as Partial<FleetCombatSettings> & {
+    defaultBehavior?: BattleGroupBehavior;
+    defaultChaseSetting?: BattleGroupChaseSetting;
+    retreatOrder?: FleetRetreatOrder;
+  } | null | undefined;
+  const legacyBehavior: BattleGroupBehavior = legacy?.defaultBehavior === "artillery"
+    ? "artillery"
+    : legacy?.defaultBehavior === "brawler"
+      ? "brawler"
+      : legacy?.defaultBehavior === "defender"
+        ? "defender"
+        : "line";
   return {
+    behavior: isFleetBehavior(overrides?.behavior) ? overrides!.behavior! : legacyBehavior,
+    chasePolicy: isFleetChasePolicy(overrides?.chasePolicy)
+      ? overrides!.chasePolicy!
+      : (isFleetChasePolicy(legacy?.defaultChaseSetting) ? legacy!.defaultChaseSetting! : "system"),
+    retreatPolicy: legacy?.retreatOrder === "retreat"
+      ? "medium"
+      : (isFleetRetreatPolicy(overrides?.retreatPolicy) ? overrides!.retreatPolicy! : "medium"),
     retreatDestination: normalizeBattleGroupRetreatDestination(overrides?.retreatDestination),
-    retreatOrder: overrides?.retreatOrder === "retreat" ? "retreat" : "none",
-    defaultBehavior: isBattleGroupBehavior(overrides?.defaultBehavior) ? overrides!.defaultBehavior! : "line",
-    defaultChaseSetting: isBattleGroupChaseSetting(overrides?.defaultChaseSetting) ? overrides!.defaultChaseSetting! : "system",
+    retreatOrder: "none",
+    defaultBehavior: legacyBehavior,
+    defaultChaseSetting: isFleetChasePolicy(overrides?.chasePolicy)
+      ? overrides!.chasePolicy!
+      : (isFleetChasePolicy(legacy?.defaultChaseSetting) ? legacy!.defaultChaseSetting! : "system"),
+  };
+}
+
+function normalizeFleetTacticalOrder(order: Partial<FleetTacticalOrder> | null | undefined): FleetTacticalOrder | null {
+  if (!order || !isFleetTacticalOrderType(order.type)) return null;
+  const targetKind = order.targetKind === "fleet" || order.targetKind === "starbase" ? order.targetKind : null;
+  return {
+    type: order.type,
+    targetId: typeof order.targetId === "string" ? order.targetId : null,
+    targetKind,
+    targetPosition: normalizeSystemPositionValue(order.targetPosition),
+    guardPosition: normalizeSystemPositionValue(order.guardPosition),
+    issuedAtYear: Number.isFinite(order.issuedAtYear) ? Number(order.issuedAtYear) : null,
   };
 }
 
@@ -734,6 +828,9 @@ function normalizeShip(
     maxArmor,
     hull,
     maxHull,
+    weaponCooldowns: typeof ship.weaponCooldowns === "object" && ship.weaponCooldowns
+      ? Object.fromEntries(Object.entries(ship.weaponCooldowns).map(([key, value]) => [key, Math.max(0, Number(value) || 0)]))
+      : {},
   };
 }
 
@@ -753,7 +850,6 @@ function normalizeFleet(
     ? fleet.orderType
     : null;
   const shipIds = Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [];
-  const validShipIds = new Set(shipIds);
   const combatSettings = createDefaultFleetCombatSettings(fleet.combatSettings);
   const systemPosition = fleet.systemPosition ?? systemCenterPosition();
   return {
@@ -772,7 +868,7 @@ function normalizeFleet(
     phaseElapsedMs: fleet.phaseElapsedMs ?? Math.round((fleet.phaseProgress ?? 0) * phaseDuration(phase)),
     orderType,
     speed: Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
-    combatStance: isCombatStance(fleet.combatStance) ? fleet.combatStance : "aggressive",
+    combatStance: normalizeCombatStance(fleet.combatStance),
     retreatState: normalizeFleetRetreatState(fleet.retreatState),
     systemPosition,
     hyperlanePosition: fleet.hyperlanePosition ?? null,
@@ -781,18 +877,24 @@ function normalizeFleet(
     orbitOffset: fleet.orbitOffset ?? null,
     orbitTarget: fleet.orbitTarget ?? null,
     mergeTargetFleetId: typeof fleet.mergeTargetFleetId === "string" ? fleet.mergeTargetFleetId : null,
-    battleGroups: Array.isArray(fleet.battleGroups)
-      ? fleet.battleGroups.map((group, index) => normalizeBattleGroupConfig(
-        group,
-        { id: fleet.id, systemPosition, combatSettings },
-        `bg-${fleet.id}-${index}`,
-        `Battle Group ${index + 1}`,
-        combatSettings.defaultBehavior,
-        validShipIds,
-      ))
-      : [],
+    battleGroups: [],
+    alertMode: false,
     combatSettings,
-    alertMode: fleet.alertMode === true,
+    currentTacticalOrder: normalizeFleetTacticalOrder(fleet.currentTacticalOrder),
+    tacticalRadius: getFleetTacticalRadius(shipIds.length),
+    maxWeaponRange: Math.max(0, Number(fleet.maxWeaponRange) || 0),
+    minWeaponRange: Math.max(0, Number(fleet.minWeaponRange) || 0),
+    currentTargetId: typeof fleet.currentTargetId === "string" ? fleet.currentTargetId : null,
+    currentTargetKind: fleet.currentTargetKind === "fleet" || fleet.currentTargetKind === "starbase" ? fleet.currentTargetKind : null,
+    combatStatus: fleet.combatStatus === "maneuvering"
+      || fleet.combatStatus === "engaging"
+      || fleet.combatStatus === "firing"
+      || fleet.combatStatus === "evading"
+      || fleet.combatStatus === "retreating"
+      || fleet.combatStatus === "destroyed"
+      ? fleet.combatStatus
+      : "idle",
+    lastCombatAtYear: Number.isFinite(fleet.lastCombatAtYear) ? Number(fleet.lastCombatAtYear) : null,
   };
 }
 
@@ -1036,7 +1138,8 @@ function syncFleetMembership(nextState: GameState): boolean {
       fleet.speed = nextSpeed;
       changed = true;
     }
-    if (syncFleetBattleGroups(nextState, fleet, ships)) {
+    if ((fleet.battleGroups ?? []).length > 0) {
+      fleet.battleGroups = [];
       changed = true;
     }
     return true;
@@ -1203,6 +1306,7 @@ function createInitialState(): GameState {
     ships,
     fleets,
     battles: [],
+    recentCombatContacts: [],
     discoveredByFaction: {},
     lastKnownOwnershipByFaction: {},
     clock: {
@@ -1227,7 +1331,8 @@ async function loadState(): Promise<GameState> {
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
-    parsed.battles = Array.isArray(parsed.battles) ? parsed.battles : [];
+    parsed.battles = [];
+    parsed.recentCombatContacts = [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
     parsed.clock.lastUpdatedAt = parsed.clock.lastUpdatedAt ?? Date.now();
     parsed.clock.syncedAtMs = parsed.clock.syncedAtMs ?? parsed.clock.lastUpdatedAt;
@@ -1530,6 +1635,9 @@ function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField
   if (changed.includes("battles") || changed.includes("visibility")) {
     update.battles = visibleState.battles;
   }
+  if (changed.includes("combatContacts") || changed.includes("visibility")) {
+    update.recentCombatContacts = visibleState.recentCombatContacts;
+  }
   return update;
 }
 
@@ -1569,6 +1677,17 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     ? state.factionEconomies.filter((economy) => economy.factionId === perspective.factionId)
     : [];
   const battles = createVisibleBattles(visibleSet);
+  const recentCombatContacts = visibleSet
+    ? state.recentCombatContacts.filter((contact) => {
+      const sourceStarId = contact.sourceKind === "fleet"
+        ? state.fleets.find((fleet) => fleet.id === contact.sourceId)?.currentStarId
+        : state.starbases.find((starbase) => starbase.id === contact.sourceId)?.starId;
+      const targetStarId = contact.targetKind === "fleet"
+        ? state.fleets.find((fleet) => fleet.id === contact.targetId)?.currentStarId
+        : state.starbases.find((starbase) => starbase.id === contact.targetId)?.starId;
+      return (sourceStarId !== undefined && visibleSet.has(sourceStarId)) || (targetStarId !== undefined && visibleSet.has(targetStarId));
+    })
+    : state.recentCombatContacts;
 
   return {
     clock: {
@@ -1586,6 +1705,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     fleets,
     starbases,
     battles,
+    recentCombatContacts,
     planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
     factionEconomies,
     habitedPlanetSystemIds: createHabitedPlanetSystemIds(knownSet),
@@ -2302,9 +2422,6 @@ function handleRetreatFleetTo(
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
   if (!validateRetreatTarget(socket, perspective, fleet, targetStarId, true)) return;
 
-  const battle = getActiveBattleForFleetId(fleetId);
-  if (!battle) return reject(socket, "Fleet is not engaged in battle.");
-
   fleet.retreatState = {
     mode: "system",
     status: "escaping",
@@ -2321,13 +2438,12 @@ function handleRetreatFleetTo(
       targetSystemPosition: targetSystemPosition ?? null,
     },
   };
-  if (!battle.retreatingFleetIds.includes(fleetId)) {
-    battle.retreatingFleetIds.push(fleetId);
-    battle.phase = "retreating";
-  }
+  fleet.currentTacticalOrder = { type: "retreat", issuedAtYear: state.clock.year };
+  fleet.combatStatus = "retreating";
+  startFleetRetreat(fleet);
   hasDirtyState = true;
   accept(socket, "Fleet ordered to retreat to target system.");
-  broadcastUpdates(["battles", "fleets"]);
+  broadcastUpdates(["fleets"]);
 }
 
 function estimateEmergencyMiaDays(fleet: GameFleet, targetStarId: number): number {
@@ -2431,7 +2547,6 @@ function handleAttackTarget(
   const fleet = state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (fleet.combatStance === "passive" || fleet.combatStance === "evade") return reject(socket, "Fleet stance prevents initiating combat.");
   const targetOwnerId = targetKind === "fleet"
     ? state.fleets.find((candidate) => candidate.id === targetId)?.ownerId
     : state.starbases.find((candidate) => candidate.id === targetId)?.ownerId;
@@ -2441,14 +2556,20 @@ function handleAttackTarget(
   if (targetOwnerId === undefined || targetStarId === undefined) return reject(socket, "Target not found.");
   if (targetStarId !== fleet.currentStarId) return reject(socket, "Target is not in the same system.");
   if (!isHostileOwner(fleet.ownerId, targetOwnerId)) return reject(socket, "Target is not hostile.");
-
-  const result = processBattles([fleet]);
-  if (!result.battlesChanged) return reject(socket, "No battle could be started.");
+  fleet.currentTacticalOrder = {
+    type: "attack",
+    targetId,
+    targetKind,
+    issuedAtYear: state.clock.year,
+  };
+  fleet.currentTargetId = targetId;
+  fleet.currentTargetKind = targetKind;
+  if (fleet.combatStance === "passive" || fleet.combatStance === "evade") {
+    fleet.combatStance = "aggressive";
+  }
+  hasDirtyState = true;
   accept(socket, "Attack order accepted.");
-  const changed: ServerUpdateField[] = ["battles", "fleets"];
-  if (result.shipsChanged) changed.push("ships");
-  if (result.starbasesChanged) changed.push("starbases");
-  broadcastUpdates(changed);
+  broadcastUpdates(["fleets"]);
 }
 
 function getOwnedFleetForCombatCommand(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): GameFleet | null {
@@ -2508,6 +2629,12 @@ function commitBattleGroupChange(socket: WebSocket, message: string, fleet: Game
   hasDirtyState = true;
   accept(socket, message);
   broadcastUpdates(["fleets", "battles"]);
+}
+
+function commitFleetDoctrineChange(socket: WebSocket, message: string): void {
+  hasDirtyState = true;
+  accept(socket, message);
+  broadcastUpdates(["fleets"]);
 }
 
 function removeShipsFromBattleGroups(fleet: GameFleet, shipIds: Set<string>): void {
@@ -2710,30 +2837,51 @@ function handleSetFleetCombatSettings(
   perspective: GalaxyPerspective,
   fleetId: string,
   combatSettings: Partial<FleetCombatSettings>,
+  combatStance?: CombatStance,
 ): void {
   const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
   if (!fleet) return;
+  if (combatStance !== undefined) {
+    fleet.combatStance = normalizeCombatStance(combatStance);
+  }
   fleet.combatSettings = createDefaultFleetCombatSettings({
     ...fleet.combatSettings,
     ...combatSettings,
   });
-  if (fleet.combatSettings.retreatOrder === "retreat") {
-    const battle = getActiveBattleForFleetId(fleet.id);
-    if (battle && !battle.retreatingFleetIds.includes(fleet.id)) {
-      battle.retreatingFleetIds.push(fleet.id);
-      battle.phase = "retreating";
-    }
-  }
-  commitBattleGroupChange(socket, "Fleet combat settings updated.", fleet);
+  commitFleetDoctrineChange(socket, "Fleet doctrine updated.");
 }
 
 function handleSetFleetAlertMode(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, alertMode: boolean): void {
   const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
   if (!fleet) return;
-  if (isFleetInBattle(fleet.id)) return reject(socket, "Fleet is engaged in battle.");
-  fleet.alertMode = alertMode === true;
-  if (fleet.alertMode) deployFleetBattleGroups(fleet, true);
-  commitBattleGroupChange(socket, fleet.alertMode ? "Fleet entered alert mode." : "Fleet stood down from alert mode.", fleet);
+  fleet.alertMode = false;
+  commitFleetDoctrineChange(socket, "Alert mode is retired; fleet doctrine now controls readiness.");
+}
+
+function handleIssueFleetTacticalOrder(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  command: Extract<ClientCommand, { type: "issueFleetTacticalOrder" }>,
+): void {
+  const fleet = getOwnedFleetForCombatCommand(socket, perspective, command.fleetId);
+  if (!fleet) return;
+  const order = normalizeFleetTacticalOrder({
+    ...command.order,
+    issuedAtYear: state.clock.year,
+  });
+  if (!order) return reject(socket, "Invalid fleet tactical order.");
+  if (order.type === "move" && !order.targetPosition) return reject(socket, "Move orders require a system position.");
+  if (order.type === "attack" && (!order.targetId || !order.targetKind)) return reject(socket, "Attack orders require a target.");
+  if (order.type === "guard" && !order.targetPosition && !order.guardPosition) return reject(socket, "Guard orders require a position.");
+  fleet.currentTacticalOrder = order;
+  if (order.type === "hold") fleet.combatStance = "holdPosition";
+  if (order.type === "guard") fleet.combatStance = "guardArea";
+  if (order.type === "retreat") {
+    retreatFleetByDoctrine(fleet);
+  }
+  hasDirtyState = true;
+  accept(socket, "Fleet tactical order accepted.");
+  broadcastUpdates(["fleets"]);
 }
 
 function handleIssueBattleGroupOrder(
@@ -3661,7 +3809,11 @@ function engagementProfilesCanInteract(
 }
 
 function canFleetInitiateCombat(fleet: GameFleet): boolean {
-  return fleet.combatStance === "aggressive" || fleet.combatStance === "defensive" || fleet.combatStance === "holdPosition";
+  return fleet.combatStance === "aggressive"
+    || fleet.combatStance === "hunt"
+    || fleet.combatStance === "defendSystem"
+    || fleet.combatStance === "guardArea"
+    || fleet.combatStance === "holdPosition";
 }
 
 function canFleetStartCombat(fleet: GameFleet): boolean {
@@ -3880,7 +4032,7 @@ function syncBattleParticipants(
       sourceId: starbaseEntity.id,
       sourceType: "starbase",
       ownerId: starbaseEntity.ownerId,
-      stance: "defensive",
+      stance: "holdPosition",
       canInitiateCombat: true,
       canBeTargeted: true,
       canMove: false,
@@ -4604,6 +4756,531 @@ function startFleetRetreat(fleet: GameFleet): void {
   const firstSegment = fleet.movementPlan.segments[0];
   setFleetPhase(fleet, firstSegment?.kind === "hyperlane" ? "jumpingHyperlane" : "movingSystem");
   fleet.hyperlanePosition = null;
+}
+
+type ContinuousCombatActor =
+  | {
+    kind: "fleet";
+    id: string;
+    ownerId: number;
+    starId: number;
+    position: ReturnType<typeof systemCenterPosition>;
+    radius: number;
+    minWeaponRange: number;
+    maxWeaponRange: number;
+    fleet: GameFleet;
+  }
+  | {
+    kind: "starbase";
+    id: string;
+    ownerId: number;
+    starId: number;
+    position: ReturnType<typeof systemCenterPosition>;
+    radius: number;
+    minWeaponRange: number;
+    maxWeaponRange: number;
+    starbase: ServerStarbase;
+  };
+
+function getFleetLivingShips(fleet: GameFleet, shipsById: Map<string, GameShip>): GameShip[] {
+  return fleet.shipIds
+    .map((shipId) => shipsById.get(shipId))
+    .filter((ship): ship is GameShip => !!ship && ship.hull > 0);
+}
+
+function getFleetHealthRatio(fleet: GameFleet, shipsById: Map<string, GameShip>): number {
+  const ships = getFleetLivingShips(fleet, shipsById);
+  const maxTotal = ships.reduce((total, ship) => total + ship.maxShield + ship.maxArmor + ship.maxHull, 0);
+  if (maxTotal <= 0) return 0;
+  const current = ships.reduce((total, ship) => total + ship.shield + ship.armor + ship.hull, 0);
+  return current / maxTotal;
+}
+
+function getMountRangeSummary(mounts: WeaponMountDefinition[]): { min: number; max: number } {
+  if (mounts.length === 0) return { min: 0, max: 0 };
+  const min = mounts.reduce((lowest, mount) => Math.min(lowest, getWeaponMinSystemRange(mount)), Number.POSITIVE_INFINITY);
+  const max = mounts.reduce((highest, mount) => Math.max(highest, getWeaponMaxSystemRange(mount)), 0);
+  return { min: Number.isFinite(min) ? min : 0, max };
+}
+
+function updateFleetTacticalProfile(fleet: GameFleet, shipsById: Map<string, GameShip>): boolean {
+  const ships = getFleetLivingShips(fleet, shipsById);
+  const mounts = ships.flatMap((ship) => calculateShipDesignStats(getShipDesignForShip(ship)).combat.weaponMounts);
+  const range = getMountRangeSummary(mounts);
+  const nextRadius = getFleetTacticalRadius(Math.max(1, ships.length));
+  const nextStatus = ships.length === 0 ? "destroyed" : fleet.combatStatus;
+  const changed = fleet.tacticalRadius !== nextRadius
+    || fleet.minWeaponRange !== range.min
+    || fleet.maxWeaponRange !== range.max
+    || fleet.combatStatus !== nextStatus;
+  fleet.tacticalRadius = nextRadius;
+  fleet.minWeaponRange = range.min;
+  fleet.maxWeaponRange = range.max;
+  fleet.combatStatus = nextStatus;
+  if (ships.length === 0) {
+    fleet.currentTargetId = null;
+    fleet.currentTargetKind = null;
+  }
+  return changed;
+}
+
+function effectiveActorDistance(a: ContinuousCombatActor, b: ContinuousCombatActor): number {
+  const centerDistance = Math.hypot(a.position.x - b.position.x, a.position.z - b.position.z);
+  return Math.max(0, centerDistance - a.radius - b.radius);
+}
+
+function getActorValue(actor: ContinuousCombatActor, shipsById: Map<string, GameShip>): number {
+  if (actor.kind === "starbase") return actor.starbase.maxShield + actor.starbase.maxArmor + actor.starbase.maxHull;
+  return getFleetLivingShips(actor.fleet, shipsById)
+    .reduce((total, ship) => total + ship.maxShield + ship.maxArmor + ship.maxHull, 0);
+}
+
+function isFleetAvailableForContinuousCombat(fleet: GameFleet, shipsById: Map<string, GameShip>): boolean {
+  if (fleet.phase === "jumpingHyperlane" || fleet.phase === "missingInAction" || fleet.phase === "buildingStarbase") return false;
+  return getFleetLivingShips(fleet, shipsById).length > 0 && fleet.maxWeaponRange > 0;
+}
+
+function buildContinuousCombatActors(shipsById: Map<string, GameShip>): ContinuousCombatActor[] {
+  const actors: ContinuousCombatActor[] = [];
+  for (const fleet of state.fleets) {
+    updateFleetTacticalProfile(fleet, shipsById);
+    if (!isFleetAvailableForContinuousCombat(fleet, shipsById)) continue;
+    actors.push({
+      kind: "fleet",
+      id: fleet.id,
+      ownerId: fleet.ownerId,
+      starId: fleet.currentStarId,
+      position: getFleetAuthoritativeSystemPosition(fleet),
+      radius: fleet.tacticalRadius,
+      minWeaponRange: fleet.minWeaponRange,
+      maxWeaponRange: fleet.maxWeaponRange,
+      fleet,
+    });
+  }
+  for (const starbase of state.starbases) {
+    const mounts = getStarbaseWeaponMounts(starbase);
+    const range = getMountRangeSummary(mounts);
+    if (starbase.status !== "online" || starbase.hull <= 0 || range.max <= 0) continue;
+    actors.push({
+      kind: "starbase",
+      id: starbase.id,
+      ownerId: starbase.ownerId,
+      starId: starbase.starId,
+      position: cloneSystemPosition(starbase.systemPosition ?? getSystemStarbasePosition()),
+      radius: STARBASE_TACTICAL_RADIUS,
+      minWeaponRange: range.min,
+      maxWeaponRange: range.max,
+      starbase,
+    });
+  }
+  return actors;
+}
+
+function actorIsInFleetWeaponRange(source: ContinuousCombatActor, target: ContinuousCombatActor): boolean {
+  const distance = effectiveActorDistance(source, target);
+  return distance >= source.minWeaponRange && distance <= source.maxWeaponRange;
+}
+
+function selectFleetCombatTarget(
+  actor: Extract<ContinuousCombatActor, { kind: "fleet" }>,
+  actors: ContinuousCombatActor[],
+  shipsById: Map<string, GameShip>,
+): ContinuousCombatActor | null {
+  const fleet = actor.fleet;
+  const order = fleet.currentTacticalOrder;
+  const hostiles = actors.filter((target) => (
+    target.id !== actor.id
+    && target.starId === actor.starId
+    && isHostileOwner(actor.ownerId, target.ownerId)
+  ));
+  if (order?.type === "attack" && order.targetId && order.targetKind) {
+    return hostiles.find((target) => target.id === order.targetId && target.kind === order.targetKind) ?? null;
+  }
+  if (fleet.combatStance === "passive") return null;
+  const guardPosition = order?.type === "guard"
+    ? order.guardPosition ?? order.targetPosition ?? actor.position
+    : actor.position;
+  const candidates = hostiles.filter((target) => {
+    if (fleet.combatStance === "holdPosition") return actorIsInFleetWeaponRange(actor, target);
+    if (fleet.combatStance === "guardArea" || fleet.combatSettings.behavior === "defender") {
+      return Math.hypot(target.position.x - guardPosition.x, target.position.z - guardPosition.z) <= FLEET_GUARD_RADIUS + target.radius;
+    }
+    return true;
+  });
+  return candidates
+    .map((target) => {
+      const distance = effectiveActorDistance(actor, target);
+      const targetHp = target.kind === "fleet" ? getFleetHealthRatio(target.fleet, shipsById) : (target.starbase.hull / Math.max(1, target.starbase.maxHull));
+      let score = Math.max(0, 120 - distance) + (1 - targetHp) * 45 + getActorValue(target, shipsById) * 0.01;
+      if (target.kind === "starbase") score += fleet.combatSettings.behavior === "artillery" ? 35 : 12;
+      if (fleet.combatStance === "hunt" && target.kind === "fleet" && target.fleet.retreatState) score += 70;
+      if (fleet.combatSettings.behavior === "swarm") score += Math.max(0, 80 - distance * 1.4);
+      if (actorIsInFleetWeaponRange(actor, target)) score += 35;
+      return { target, score };
+    })
+    .sort((a, b) => b.score - a.score)[0]?.target ?? null;
+}
+
+function selectStarbaseCombatTarget(
+  actor: Extract<ContinuousCombatActor, { kind: "starbase" }>,
+  actors: ContinuousCombatActor[],
+  shipsById: Map<string, GameShip>,
+): ContinuousCombatActor | null {
+  return actors
+    .filter((target) => target.kind === "fleet" && target.starId === actor.starId && isHostileOwner(actor.ownerId, target.ownerId))
+    .filter((target) => actorIsInFleetWeaponRange(actor, target))
+    .map((target) => ({
+      target,
+      score: Math.max(0, 140 - effectiveActorDistance(actor, target)) + getActorValue(target, shipsById) * 0.01,
+    }))
+    .sort((a, b) => b.score - a.score)[0]?.target ?? null;
+}
+
+function desiredEffectiveRangeForFleet(fleet: GameFleet): number {
+  const maxRange = Math.max(0, fleet.maxWeaponRange);
+  if (fleet.combatSettings.behavior === "artillery") return Math.max(fleet.minWeaponRange, maxRange * 0.9);
+  if (fleet.combatSettings.behavior === "line") return Math.max(fleet.minWeaponRange, maxRange * 0.62);
+  if (fleet.combatSettings.behavior === "defender") return Math.max(fleet.minWeaponRange, maxRange * 0.55);
+  if (fleet.combatSettings.behavior === "brawler") return Math.min(maxRange, 8);
+  return 0;
+}
+
+function positionAtEffectiveRangeFromTarget(
+  source: ContinuousCombatActor,
+  target: ContinuousCombatActor,
+  desiredEffectiveDistance: number,
+): ReturnType<typeof systemCenterPosition> {
+  return positionAtRangeFromTarget(source.position, target.position, desiredEffectiveDistance + source.radius + target.radius);
+}
+
+function retreatFleetByDoctrine(fleet: GameFleet): boolean {
+  if (fleet.retreatState) return false;
+  const destination = resolveBattleGroupRetreatDestinationForFleet(fleet, null);
+  fleet.retreatState = {
+    mode: "system",
+    status: "escaping",
+    targetStarId: destination.targetStarId,
+    targetSystemPosition: destination.targetSystemPosition ?? null,
+    startedAtYear: state.clock.year,
+  };
+  fleet.currentTacticalOrder = { type: "retreat", issuedAtYear: state.clock.year };
+  fleet.combatStatus = "retreating";
+  startFleetRetreat(fleet);
+  return true;
+}
+
+function updateFleetCombatMovement(
+  actor: Extract<ContinuousCombatActor, { kind: "fleet" }>,
+  target: ContinuousCombatActor | null,
+  elapsedDays: number,
+  shipsById: Map<string, GameShip>,
+): boolean {
+  const fleet = actor.fleet;
+  const threshold = FLEET_RETREAT_THRESHOLDS[fleet.combatSettings.retreatPolicy] ?? 0;
+  if (threshold > 0 && getFleetHealthRatio(fleet, shipsById) <= threshold) {
+    return retreatFleetByDoctrine(fleet);
+  }
+  const order = fleet.currentTacticalOrder;
+  if (order?.type === "retreat") return retreatFleetByDoctrine(fleet);
+  const step = Math.max(0, elapsedDays) * SYSTEM_FLEET_SPEED_UNITS_PER_DAY * Math.max(0.15, fleet.speed);
+  if (step <= 0) return false;
+  let destination: ReturnType<typeof systemCenterPosition> | null = null;
+  if ((order?.type === "move" || order?.type === "guard") && order.targetPosition) {
+    destination = cloneSystemPosition(order.targetPosition);
+  } else if (fleet.combatStance === "evade" && target) {
+    destination = positionAtRangeFromTarget(target.position, actor.position, FLEET_EVADE_DISTANCE + actor.radius + target.radius);
+  } else if (target && fleet.combatStance !== "holdPosition" && fleet.combatStance !== "passive") {
+    const effectiveDistance = effectiveActorDistance(actor, target);
+    const desired = desiredEffectiveRangeForFleet(fleet);
+    if (fleet.combatSettings.behavior === "artillery" && effectiveDistance < desired * 0.75) {
+      destination = positionAtEffectiveRangeFromTarget(actor, target, desired);
+    } else if (effectiveDistance < fleet.minWeaponRange || effectiveDistance > fleet.maxWeaponRange * 0.92) {
+      destination = positionAtEffectiveRangeFromTarget(actor, target, desired);
+    }
+  }
+  if (!destination) {
+    fleet.combatStatus = target && actorIsInFleetWeaponRange(actor, target) ? "firing" : "idle";
+    return false;
+  }
+  const next = movePointToward(actor.position, destination, step);
+  if (isSameSystemPosition(actor.position, next)) {
+    if (order?.type === "move") fleet.currentTacticalOrder = null;
+    return false;
+  }
+  clearFleetOrbit(fleet);
+  fleet.movementPlan = null;
+  fleet.route = [fleet.currentStarId];
+  fleet.targetStarId = null;
+  fleet.orderType = "move";
+  fleet.systemPosition = next;
+  fleet.combatStatus = "maneuvering";
+  return true;
+}
+
+function applyFleetSoftSeparation(shipsById: Map<string, GameShip>): boolean {
+  let changed = false;
+  const fleets = state.fleets.filter((fleet) => isFleetAvailableForContinuousCombat(fleet, shipsById));
+  for (let i = 0; i < fleets.length; i += 1) {
+    for (let j = i + 1; j < fleets.length; j += 1) {
+      const left = fleets[i];
+      const right = fleets[j];
+      if (left.currentStarId !== right.currentStarId) continue;
+      const leftPos = getFleetAuthoritativeSystemPosition(left);
+      const rightPos = getFleetAuthoritativeSystemPosition(right);
+      const dx = rightPos.x - leftPos.x;
+      const dz = rightPos.z - leftPos.z;
+      const distance = Math.hypot(dx, dz);
+      const minimum = (left.tacticalRadius + right.tacticalRadius) * 0.78;
+      if (distance <= 0.001 || distance >= minimum) continue;
+      const push = ((minimum - distance) * FLEET_SOFT_SEPARATION_FACTOR) / 2;
+      const ux = dx / distance;
+      const uz = dz / distance;
+      left.systemPosition = { x: left.systemPosition.x - ux * push, y: SYSTEM_FLEET_Y, z: left.systemPosition.z - uz * push };
+      right.systemPosition = { x: right.systemPosition.x + ux * push, y: SYSTEM_FLEET_Y, z: right.systemPosition.z + uz * push };
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function getShipEvasionForFleetCombat(ship: GameShip, fleet: GameFleet): number {
+  const stats = calculateShipDesignStats(getShipDesignForShip(ship));
+  const bonus = FORMATION_EVASION_BONUS[fleet.formation] ?? 0;
+  return clamp(stats.combat.evasion + bonus, 0, 0.9);
+}
+
+function chooseTargetShip(targetFleet: GameFleet, shipsById: Map<string, GameShip>): GameShip | null {
+  return getFleetLivingShips(targetFleet, shipsById)
+    .sort((a, b) => {
+      const aRatio = (a.shield + a.armor + a.hull) / Math.max(1, a.maxShield + a.maxArmor + a.maxHull);
+      const bRatio = (b.shield + b.armor + b.hull) / Math.max(1, b.maxShield + b.maxArmor + b.maxHull);
+      if (Math.abs(aRatio - bRatio) > 0.001) return aRatio - bRatio;
+      return a.id.localeCompare(b.id);
+    })[0] ?? null;
+}
+
+function decrementWeaponCooldowns(elapsedGameHours: number): void {
+  for (const ship of state.ships) {
+    if (!ship.weaponCooldowns) continue;
+    for (const key of Object.keys(ship.weaponCooldowns)) {
+      ship.weaponCooldowns[key] = Math.max(0, (ship.weaponCooldowns[key] ?? 0) - elapsedGameHours);
+    }
+  }
+  for (const starbase of state.starbases) {
+    if (!starbase.weaponCooldowns) continue;
+    for (const key of Object.keys(starbase.weaponCooldowns)) {
+      starbase.weaponCooldowns[key] = Math.max(0, (starbase.weaponCooldowns[key] ?? 0) - elapsedGameHours);
+    }
+  }
+}
+
+function recordContinuousCombatContact(contact: Omit<ServerCombatContact, "id" | "year">): void {
+  state.recentCombatContacts.push({
+    id: createRuntimeId("contact", [contact.sourceId, contact.targetId]),
+    year: state.clock.year,
+    ...contact,
+  });
+  state.recentCombatContacts = state.recentCombatContacts.slice(-RECENT_COMBAT_CONTACT_HISTORY);
+}
+
+function fireFleetWeaponsAtTarget(
+  actor: Extract<ContinuousCombatActor, { kind: "fleet" }>,
+  target: ContinuousCombatActor,
+  shipsById: Map<string, GameShip>,
+): { shipsChanged: boolean; starbasesChanged: boolean; contactsChanged: boolean } {
+  let shipsChanged = false;
+  let starbasesChanged = false;
+  let contactsChanged = false;
+  const distance = effectiveActorDistance(actor, target);
+  for (const ship of getFleetLivingShips(actor.fleet, shipsById)) {
+    const mounts = calculateShipDesignStats(getShipDesignForShip(ship)).combat.weaponMounts;
+    ship.weaponCooldowns ??= {};
+    for (let index = 0; index < mounts.length; index += 1) {
+      const mount = mounts[index];
+      const cooldownKey = `${index}:${getWeaponId(mount)}`;
+      if ((ship.weaponCooldowns[cooldownKey] ?? 0) > 0) continue;
+      if (!weaponCanFireAtDistance(mount, distance)) continue;
+      ship.weaponCooldowns[cooldownKey] = getWeaponCooldownRounds(mount);
+      let targetShip: GameShip | null = null;
+      let targetLayer: GameShip | ServerStarbase | null = null;
+      let targetEvasion = 0;
+      if (target.kind === "fleet") {
+        targetShip = chooseTargetShip(target.fleet, shipsById);
+        targetLayer = targetShip;
+        targetEvasion = targetShip ? getShipEvasionForFleetCombat(targetShip, target.fleet) : 0;
+      } else {
+        targetLayer = target.starbase;
+        targetEvasion = STARBASE_LEVEL_DEFINITIONS[target.starbase.level]?.combat.evasion ?? 0;
+      }
+      if (!targetLayer) continue;
+      const roll = rollWeaponShot(mount, targetEvasion);
+      let shieldDamage = 0;
+      let armorDamage = 0;
+      let hullDamage = 0;
+      let destroyed = false;
+      if (roll.hit) {
+        const result = applyWeaponHit(mount, targetLayer);
+        shieldDamage = result.shieldDamage;
+        armorDamage = result.armorDamage;
+        hullDamage = result.hullDamage;
+        destroyed = result.destroyed;
+        if (targetShip) {
+          targetShip.hp = targetShip.hull;
+          shipsChanged = true;
+        } else if (target.kind === "starbase") {
+          target.starbase.lastShieldDamageAtYear = state.clock.year;
+          starbasesChanged = true;
+        }
+      }
+      recordContinuousCombatContact({
+        sourceId: actor.id,
+        sourceKind: "fleet",
+        sourceOwnerId: actor.ownerId,
+        targetId: target.id,
+        targetKind: target.kind,
+        targetOwnerId: target.ownerId,
+        weaponId: getWeaponId(mount),
+        weaponName: getWeaponName(mount),
+        hit: roll.hit,
+        accuracyMiss: roll.accuracyMiss,
+        dodged: roll.dodged,
+        shieldDamage,
+        armorDamage,
+        hullDamage,
+        targetDestroyed: destroyed,
+        sourcePosition: cloneSystemPosition(actor.position),
+        targetPosition: cloneSystemPosition(target.position),
+      });
+      contactsChanged = true;
+    }
+  }
+  return { shipsChanged, starbasesChanged, contactsChanged };
+}
+
+function fireStarbaseWeaponsAtTarget(
+  actor: Extract<ContinuousCombatActor, { kind: "starbase" }>,
+  target: ContinuousCombatActor,
+  shipsById: Map<string, GameShip>,
+): { shipsChanged: boolean; contactsChanged: boolean } {
+  let shipsChanged = false;
+  let contactsChanged = false;
+  if (target.kind !== "fleet") return { shipsChanged, contactsChanged };
+  const distance = effectiveActorDistance(actor, target);
+  const mounts = getStarbaseWeaponMounts(actor.starbase);
+  actor.starbase.weaponCooldowns ??= {};
+  for (let index = 0; index < mounts.length; index += 1) {
+    const mount = mounts[index];
+    const cooldownKey = `${index}:${getWeaponId(mount)}`;
+    if ((actor.starbase.weaponCooldowns[cooldownKey] ?? 0) > 0) continue;
+    if (!weaponCanFireAtDistance(mount, distance)) continue;
+    const targetShip = chooseTargetShip(target.fleet, shipsById);
+    if (!targetShip) continue;
+    actor.starbase.weaponCooldowns[cooldownKey] = getWeaponCooldownRounds(mount);
+    const roll = rollWeaponShot(mount, getShipEvasionForFleetCombat(targetShip, target.fleet));
+    let shieldDamage = 0;
+    let armorDamage = 0;
+    let hullDamage = 0;
+    let destroyed = false;
+    if (roll.hit) {
+      const result = applyWeaponHit(mount, targetShip);
+      shieldDamage = result.shieldDamage;
+      armorDamage = result.armorDamage;
+      hullDamage = result.hullDamage;
+      destroyed = result.destroyed;
+      targetShip.hp = targetShip.hull;
+      shipsChanged = true;
+    }
+    recordContinuousCombatContact({
+      sourceId: actor.id,
+      sourceKind: "starbase",
+      sourceOwnerId: actor.ownerId,
+      targetId: target.id,
+      targetKind: "fleet",
+      targetOwnerId: target.ownerId,
+      weaponId: getWeaponId(mount),
+      weaponName: getWeaponName(mount),
+      hit: roll.hit,
+      accuracyMiss: roll.accuracyMiss,
+      dodged: roll.dodged,
+      shieldDamage,
+      armorDamage,
+      hullDamage,
+      targetDestroyed: destroyed,
+      sourcePosition: cloneSystemPosition(actor.position),
+      targetPosition: cloneSystemPosition(target.position),
+    });
+    contactsChanged = true;
+  }
+  return { shipsChanged, contactsChanged };
+}
+
+function processContinuousFleetCombat(elapsedGameHours: number, elapsedGameDays: number): {
+  combatContactsChanged: boolean;
+  shipsChanged: boolean;
+  fleetsChanged: boolean;
+  starbasesChanged: boolean;
+  visibilityChanged: boolean;
+} {
+  let combatContactsChanged = false;
+  let shipsChanged = false;
+  let fleetsChanged = false;
+  let starbasesChanged = false;
+  let visibilityChanged = false;
+  const shipsById = new Map(state.ships.map((ship) => [ship.id, ship]));
+  decrementWeaponCooldowns(elapsedGameHours);
+  for (const fleet of state.fleets) {
+    if (updateFleetTacticalProfile(fleet, shipsById)) fleetsChanged = true;
+  }
+  let actors = buildContinuousCombatActors(shipsById);
+  for (const actor of actors.filter((candidate): candidate is Extract<ContinuousCombatActor, { kind: "fleet" }> => candidate.kind === "fleet")) {
+    const target = selectFleetCombatTarget(actor, actors, shipsById);
+    actor.fleet.currentTargetId = target?.id ?? null;
+    actor.fleet.currentTargetKind = target?.kind ?? null;
+    if (target) actor.fleet.lastCombatAtYear = state.clock.year;
+    if (updateFleetCombatMovement(actor, target, elapsedGameDays, shipsById)) fleetsChanged = true;
+  }
+  if (applyFleetSoftSeparation(shipsById)) fleetsChanged = true;
+  actors = buildContinuousCombatActors(shipsById);
+  const targetByFleetId = new Map<string, ContinuousCombatActor | null>();
+  for (const actor of actors.filter((candidate): candidate is Extract<ContinuousCombatActor, { kind: "fleet" }> => candidate.kind === "fleet")) {
+    targetByFleetId.set(actor.id, selectFleetCombatTarget(actor, actors, shipsById));
+  }
+  for (const actor of actors) {
+    if (actor.kind === "fleet") {
+      const target = targetByFleetId.get(actor.id) ?? null;
+      actor.fleet.currentTargetId = target?.id ?? null;
+      actor.fleet.currentTargetKind = target?.kind ?? null;
+      if (!target || !actorIsInFleetWeaponRange(actor, target)) continue;
+      const result = fireFleetWeaponsAtTarget(actor, target, shipsById);
+      shipsChanged ||= result.shipsChanged;
+      starbasesChanged ||= result.starbasesChanged;
+      combatContactsChanged ||= result.contactsChanged;
+      if (result.contactsChanged) {
+        actor.fleet.combatStatus = "firing";
+        actor.fleet.lastCombatAtYear = state.clock.year;
+      }
+      continue;
+    }
+    const target = selectStarbaseCombatTarget(actor, actors, shipsById);
+    if (!target) continue;
+    const result = fireStarbaseWeaponsAtTarget(actor, target, shipsById);
+    shipsChanged ||= result.shipsChanged;
+    combatContactsChanged ||= result.contactsChanged;
+  }
+  const destroyedShipIds = new Set(state.ships.filter((ship) => ship.hull <= 0).map((ship) => ship.id));
+  if (destroyedShipIds.size > 0) {
+    state.ships = state.ships.filter((ship) => !destroyedShipIds.has(ship.id));
+    if (syncFleetMembership(state)) fleetsChanged = true;
+    shipsChanged = true;
+  }
+  if (starbasesChanged) {
+    refreshDiscovery();
+    visibilityChanged = true;
+  }
+  if (combatContactsChanged || shipsChanged || fleetsChanged || starbasesChanged) {
+    hasDirtyState = true;
+  }
+  return { combatContactsChanged, shipsChanged, fleetsChanged, starbasesChanged, visibilityChanged };
 }
 
 function processBattles(arrivingFleets: GameFleet[]): {
@@ -5366,9 +6043,15 @@ function fleetUpdateSignature(): string {
     orbitOffset: fleet.orbitOffset,
     orbitTarget: fleet.orbitTarget,
     mergeTargetFleetId: fleet.mergeTargetFleetId,
-    battleGroups: fleet.battleGroups,
     combatSettings: fleet.combatSettings,
-    alertMode: fleet.alertMode,
+    currentTacticalOrder: fleet.currentTacticalOrder,
+    tacticalRadius: fleet.tacticalRadius,
+    maxWeaponRange: fleet.maxWeaponRange,
+    minWeaponRange: fleet.minWeaponRange,
+    currentTargetId: fleet.currentTargetId,
+    currentTargetKind: fleet.currentTargetKind,
+    combatStatus: fleet.combatStatus,
+    lastCombatAtYear: fleet.lastCombatAtYear,
   })));
 }
 
@@ -5598,19 +6281,12 @@ function advanceState(now: number): Set<ServerUpdateField> {
   if (movingBefore || movingAfter) {
     refreshDiscovery();
   }
-  if (processAlertBattleGroups(elapsedGameDays)) {
-    changed.add("fleets");
-  }
-
-  const battleResult = processBattles(arrivingFleets);
-  if (battleResult.battlesChanged) changed.add("battles");
-  if (battleResult.shipsChanged) changed.add("ships");
-  if (battleResult.fleetsChanged) changed.add("fleets");
-  if (battleResult.starbasesChanged) changed.add("starbases");
-  if (battleResult.ownershipChanged) {
-    changed.add("visibility");
-  }
-  if (battleResult.visibilityChanged) {
+  const combatResult = processContinuousFleetCombat(elapsedGameHours, elapsedGameDays);
+  if (combatResult.combatContactsChanged) changed.add("combatContacts");
+  if (combatResult.shipsChanged) changed.add("ships");
+  if (combatResult.fleetsChanged) changed.add("fleets");
+  if (combatResult.starbasesChanged) changed.add("starbases");
+  if (combatResult.visibilityChanged) {
     changed.add("visibility");
   }
 
@@ -5773,55 +6449,59 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "createBattleGroup") {
-    handleCreateBattleGroup(session.socket, session.perspective, command);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "deleteBattleGroup") {
-    handleDeleteBattleGroup(session.socket, session.perspective, command.fleetId, command.battleGroupId);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "renameBattleGroup") {
-    handleRenameBattleGroup(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.name);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "moveShipsToBattleGroup") {
-    handleMoveShipsToBattleGroup(session.socket, session.perspective, command);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "splitBattleGroup") {
-    handleSplitBattleGroup(session.socket, session.perspective, command);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "mergeBattleGroups") {
-    handleMergeBattleGroups(session.socket, session.perspective, command);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "setBattleGroupBehavior") {
-    handleSetBattleGroupBehavior(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.behavior);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "setBattleGroupRetreatPolicy") {
-    handleSetBattleGroupRetreatPolicy(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.retreatPolicy);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "setBattleGroupChaseSetting") {
-    handleSetBattleGroupChaseSetting(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.chaseSetting);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "setBattleGroupRetreatDestination") {
-    handleSetBattleGroupRetreatDestination(session.socket, session.perspective, command.fleetId, command.battleGroupId, command.retreatDestination);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "setFleetCombatSettings") {
-    handleSetFleetCombatSettings(session.socket, session.perspective, command.fleetId, command.combatSettings);
+    handleSetFleetCombatSettings(session.socket, session.perspective, command.fleetId, command.combatSettings, command.combatStance);
     return;
   }
   if (command.type === "setFleetAlertMode") {
     handleSetFleetAlertMode(session.socket, session.perspective, command.fleetId, command.alertMode);
     return;
   }
+  if (command.type === "issueFleetTacticalOrder") {
+    handleIssueFleetTacticalOrder(session.socket, session.perspective, command);
+    return;
+  }
   if (command.type === "issueBattleGroupOrder") {
-    handleIssueBattleGroupOrder(session.socket, session.perspective, command);
+    reject(session.socket, "Battle groups have been retired; use fleet doctrine instead.");
     return;
   }
   if (command.type === "setSpeedMultiplier") {

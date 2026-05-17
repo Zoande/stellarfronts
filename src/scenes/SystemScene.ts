@@ -62,10 +62,10 @@ import { calculateShipDesignStats } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
-import type { BattleLayerDamage, BattleZone, ClientCommand, CombatGroup, FleetOrbitTarget, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { BattleLayerDamage, BattleZone, ClientCommand, CombatGroup, FleetOrbitTarget, ServerBattle, ServerCombatContact, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 import type { RangeBand } from "../game/CombatTypes";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
-import { getTacticalFormationPosition } from "../game/tacticalFormation";
+import { getFleetTacticalRadius, getLayeredFleetFormationPosition } from "../game/tacticalFormation";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { SelectionPanel } from "../ui/SelectionPanel";
 import type { BattleSelectionParticipant, SelectionData } from "../ui/SelectionPanel";
@@ -119,6 +119,8 @@ interface TacticalFleetView {
   position: SystemPosition;
   status: string;
   hpRatio: number;
+  tacticalRadius: number;
+  maxWeaponRange: number;
 }
 
 export interface SystemSceneOptions {
@@ -130,6 +132,7 @@ export interface SystemSceneOptions {
   serverShips?: ServerShip[];
   shipDesigns?: ShipDesign[];
   battles?: ServerBattle[];
+  recentCombatContacts?: ServerCombatContact[];
   starbaseSystemIds?: number[];
   starbases?: ServerStarbase[];
   factions?: FactionInfo[];
@@ -227,6 +230,7 @@ export class SystemScene implements IGameScene {
   private serverShips: ServerShip[];
   private shipDesigns: ShipDesign[];
   private battles: ServerBattle[];
+  private recentCombatContacts: ServerCombatContact[];
   private starbaseSystemIds: Set<number>;
   private starbases: ServerStarbase[];
   private factions: FactionInfo[];
@@ -277,6 +281,7 @@ export class SystemScene implements IGameScene {
   private battleBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
   private battleProjectiles: Array<{ mesh: Mesh; material: StandardMaterial; velocity: Vector3; ttl: number; maxTtl: number }> = [];
   private battleRoundSeen = new Map<string, number>();
+  private combatContactSeen = new Set<string>();
 
   private starbaseRoot: TransformNode | null = null;
   private starbaseLight: PointLight | null = null;
@@ -373,6 +378,7 @@ export class SystemScene implements IGameScene {
     this.serverShips = options.serverShips ?? [];
     this.shipDesigns = options.shipDesigns ?? [];
     this.battles = options.battles ?? [];
+    this.recentCombatContacts = options.recentCombatContacts ?? [];
     this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
     this.starbases = options.starbases ?? [];
     this.factions = options.factions ?? [];
@@ -1009,7 +1015,31 @@ export class SystemScene implements IGameScene {
       return;
     }
     if (action === "retreat") {
-      this.options.onFleetCommand?.({ type: "retreatFleet", fleetId });
+      this.options.onFleetCommand?.({
+        type: "issueFleetTacticalOrder",
+        fleetId,
+        order: { type: "retreat", issuedAtYear: this.clockYear },
+      });
+      this.clearFleetAction();
+      return;
+    }
+    if (action === "hold") {
+      this.options.onFleetCommand?.({
+        type: "issueFleetTacticalOrder",
+        fleetId,
+        order: { type: "hold", issuedAtYear: this.clockYear },
+      });
+      this.clearFleetAction();
+      return;
+    }
+    if (action === "guard") {
+      const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+      const position = fleet ? this.getFleetRenderPosition(fleet) : undefined;
+      this.options.onFleetCommand?.({
+        type: "issueFleetTacticalOrder",
+        fleetId,
+        order: { type: "guard", guardPosition: position, issuedAtYear: this.clockYear },
+      });
       this.clearFleetAction();
       return;
     }
@@ -1584,6 +1614,8 @@ export class SystemScene implements IGameScene {
           position: this.getFleetRenderPosition(fleet),
           status: this.formatFleetStatus(fleet),
           hpRatio: max > 0 ? current / max : 0,
+          tacticalRadius: fleet.tacticalRadius ?? getFleetTacticalRadius(fleet.shipIds.length),
+          maxWeaponRange: fleet.maxWeaponRange ?? 0,
         };
       });
   }
@@ -1666,10 +1698,10 @@ export class SystemScene implements IGameScene {
     const ships = this.getShipsForFleet(fleet.id);
     const shipCount = fleet.shipIds.length || ships.length || 1;
     const defense = this.getFleetDefense(fleet.id);
-    const battle = this.getBattleForFleet(fleet.id);
-    const actions: ShipAction[] = battle
-      ? ["retreatTo", "emergencyRetreatTo"]
-      : ["move", "build", "attack", "merge"];
+    const actions: ShipAction[] = ["move", "attack", "hold", "guard", "retreat", "retreatTo", "emergencyRetreatTo", "build", "merge"];
+    const doctrine = fleet.combatSettings
+      ? `${fleet.combatStance} | ${fleet.combatSettings.behavior} | retreat ${fleet.combatSettings.retreatPolicy}`
+      : this.formatFleetNavigationDetail(fleet);
     return {
       type: "fleet",
       id: fleet.id,
@@ -1683,15 +1715,14 @@ export class SystemScene implements IGameScene {
       hull: defense.hull,
       maxHull: defense.maxHull,
       class: shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
-      status: battle ? "Engaged" : this.formatFleetStatus(fleet),
+      status: fleet.combatStatus && fleet.combatStatus !== "idle" ? fleet.combatStatus : this.formatFleetStatus(fleet),
       detail: fleet.ownerId === this.playerFactionId
-        ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : this.formatFleetNavigationDetail(fleet))
+        ? doctrine
         : "Foreign fleet. Tactical details are limited.",
       ownerName: owner?.name ?? "Unknown",
       ownerColor: owner?.color,
       canCommand: fleet.ownerId === this.playerFactionId,
       actions: fleet.ownerId === this.playerFactionId ? actions : undefined,
-      battle: battle ? this.createBattleSelectionData(battle, `fleet:${fleet.id}`) : undefined,
     };
   }
 
@@ -3107,11 +3138,10 @@ export class SystemScene implements IGameScene {
     return this.getGroupShipFormationPosition(group.id, group.position, group.shipIds, shipId);
   }
 
-  private getGroupShipFormationPosition(groupId: string, position: SystemPosition, shipIds: string[], shipId: string): Vector3 {
-    const formed = getTacticalFormationPosition(
+  private getGroupShipFormationPosition(_groupId: string, position: SystemPosition, shipIds: string[], shipId: string): Vector3 {
+    const formed = getLayeredFleetFormationPosition(
       position,
       SYSTEM_FLEET_Y + BATTLE_GROUP_SHIP_Y_OFFSET,
-      groupId,
       shipIds,
       shipId,
     );
@@ -3194,46 +3224,7 @@ export class SystemScene implements IGameScene {
   }
 
   private getVisibleBattleGroupViews(): TacticalBattleGroupView[] {
-    const battleViews = this.battles
-      .filter((battle) => battle.starId === this.star.id && battle.phase !== "resolved")
-      .flatMap((battle) => (battle.combatGroups ?? [])
-        .filter((group) => group.role !== "station" && group.status !== "destroyed")
-        .map((group) => this.createBattleGroupViewFromCombatGroup(group)));
-
-    const activeBattleFleetIds = new Set(battleViews.map((view) => view.fleetId).filter((id): id is string => !!id));
-    const alertViews = this.serverFleets
-      .filter((fleet) => (
-        fleet.currentStarId === this.star.id
-        && fleet.alertMode
-        && !activeBattleFleetIds.has(fleet.id)
-      ))
-      .flatMap((fleet) => (fleet.battleGroups ?? [])
-        .filter((group) => group.shipIds.length > 0 && group.deployedPosition)
-        .map((group) => {
-          const defense = this.getFleetGroupDefense(group.shipIds);
-          const hpRatio = defense.maxTotal > 0 ? defense.total / defense.maxTotal : 0;
-          return {
-            id: group.id,
-            fleetId: fleet.id,
-            ownerId: fleet.ownerId,
-            name: group.name,
-            shipIds: [...group.shipIds],
-            behavior: group.behavior,
-            count: group.shipIds.length,
-            position: group.deployedPosition!,
-            originPosition: group.originPosition ?? group.deployedPosition!,
-            leashRadius: group.leashRadius ?? 42,
-            status: "alert",
-            hpRatio,
-            order: group.currentOrder?.type ?? "behavior",
-            targetGroupId: group.currentOrder?.targetGroupId ?? null,
-            destination: group.currentOrder?.targetPosition ?? null,
-            maxWeaponRange: this.getFleetGroupMaxWeaponRange(group.shipIds),
-            chaseSetting: group.chaseSetting,
-            retreatText: this.formatRetreatPolicy(group.retreatPolicy),
-          };
-        }));
-    return [...battleViews, ...alertViews];
+    return [];
   }
 
   private createBattleGroupViewFromCombatGroup(group: CombatGroup): TacticalBattleGroupView {
@@ -3481,7 +3472,10 @@ export class SystemScene implements IGameScene {
       const selected = view.id === this.selectedFleetId || this.selectedFleetIds.has(view.id);
       root.scaling.setAll(selected ? 1.08 : 1);
       const ring = root.getChildMeshes().find((mesh) => mesh.name.startsWith("fleetMarkerRing-"));
-      ring?.setEnabled(selected && this.starsVisible);
+      if (ring) {
+        ring.setEnabled(selected && this.starsVisible);
+        ring.scaling.set(Math.max(1, view.tacticalRadius), 1, Math.max(1, view.tacticalRadius));
+      }
       root.metadata = { fleetId: view.id, view };
     }
   }
@@ -3509,7 +3503,7 @@ export class SystemScene implements IGameScene {
     core.metadata = { fleetId: view.id };
 
     const ring = MeshBuilder.CreateTorus(`fleetMarkerRing-${view.id}`, {
-      diameter: Math.max(2.4, Math.min(5.8, 2.3 + view.shipIds.length * 0.08)),
+      diameter: BATTLE_GROUP_RING_BASE_DIAMETER,
       thickness: 0.045,
       tessellation: 48,
     }, this.scene);
@@ -3709,16 +3703,57 @@ export class SystemScene implements IGameScene {
       }
 
       this.queueBattleRoundBeams(battlesInSystem);
+      this.queueRecentCombatContactEffects();
     });
   }
 
   private getBattleEntityPosition(entityId: string): Vector3 | null {
     const shipRoot = this.battleShipRoots.get(entityId);
     if (shipRoot) return shipRoot.position.clone();
+    const fleetRoot = this.fleetRoots.get(entityId);
+    if (fleetRoot) return fleetRoot.position.clone();
+    for (const root of this.battleShipRoots.values()) {
+      const metadata = root.metadata as { fleetId?: string | null } | null;
+      if (metadata?.fleetId === entityId) return root.position.clone();
+    }
     if (this.starbaseRoot && this.starbaseRoot.isEnabled() && this.starbases.some((sb) => sb.id === entityId)) {
       return this.starbaseRoot.position.clone();
     }
     return null;
+  }
+
+  private queueRecentCombatContactEffects(): void {
+    let effectsQueued = 0;
+    const maxEffects = 80;
+    for (const contact of this.recentCombatContacts) {
+      if (this.combatContactSeen.has(contact.id)) continue;
+      this.combatContactSeen.add(contact.id);
+      if (effectsQueued >= maxEffects) continue;
+      const from = this.getBattleEntityPosition(contact.sourceId)
+        ?? new Vector3(contact.sourcePosition.x, SYSTEM_FLEET_Y + 0.4, contact.sourcePosition.z);
+      const to = this.getBattleEntityPosition(contact.targetId)
+        ?? new Vector3(contact.targetPosition.x, SYSTEM_FLEET_Y + 0.4, contact.targetPosition.z);
+      const weaponId = contact.weaponId?.toLowerCase() ?? "";
+      if (weaponId.includes("missile") || weaponId.includes("torpedo")) {
+        this.queueBattleProjectile(`fleetMissile-${contact.id}`, from, to, new Color3(1, 0.52, 0.12), 0.8, 0.24);
+      } else if (weaponId.includes("point") || weaponId.includes("pd") || weaponId.includes("flak")) {
+        for (let i = 0; i < 3; i += 1) {
+          const offset = new Vector3((i - 1) * 0.12, i * 0.04, 0);
+          this.queueBattleProjectile(`fleetPd-${contact.id}-${i}`, from.add(offset), to, new Color3(0.5, 0.9, 1), 0.32, 0.1);
+        }
+      } else {
+        const beam = MeshBuilder.CreateLines(`fleetBeam-${contact.id}`, { points: [from, to] }, this.scene);
+        beam.color = contact.hit ? new Color3(0.3, 0.84, 1) : new Color3(0.7, 0.72, 0.78);
+        beam.alpha = contact.hit ? 0.85 : 0.38;
+        beam.isPickable = false;
+        this.glowLayer.addIncludedOnlyMesh(beam);
+        this.battleBeams.push({ mesh: beam, ttl: BATTLE_BEAM_TTL, maxTtl: BATTLE_BEAM_TTL });
+      }
+      effectsQueued += 1;
+    }
+    if (this.combatContactSeen.size > 320) {
+      this.combatContactSeen = new Set(Array.from(this.combatContactSeen).slice(-160));
+    }
   }
 
   private queueBattleRoundBeams(battles: ServerBattle[]): void {
@@ -4860,6 +4895,11 @@ export class SystemScene implements IGameScene {
     this.refreshBattleShips();
     this.refreshSelectedBattleGroupSelection();
     this.refreshSystemEntityCards();
+  }
+
+  setRecentCombatContacts(contacts: ServerCombatContact[]): void {
+    this.recentCombatContacts = contacts;
+    this.queueRecentCombatContactEffects();
   }
 
   setStarbaseSystemIds(starIds: Iterable<number>): void {

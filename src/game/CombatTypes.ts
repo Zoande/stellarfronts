@@ -1,4 +1,26 @@
-export type CombatStance = "passive" | "defensive" | "aggressive" | "evade" | "holdPosition";
+export type CombatStance =
+  | "passive"
+  | "evade"
+  | "holdPosition"
+  | "guardArea"
+  | "defendSystem"
+  | "aggressive"
+  | "hunt";
+
+export type FleetBehavior = "artillery" | "line" | "brawler" | "swarm" | "defender";
+
+export type FleetChasePolicy =
+  | "none"
+  | "system"
+  | "friendlySystems"
+  | "neutralSystems"
+  | "enemySystems";
+
+export type FleetRetreatPolicy = "none" | "low" | "medium" | "high";
+
+export type FleetTacticalOrderType = "move" | "attack" | "hold" | "guard" | "retreat";
+
+export type CombatTargetKind = "fleet" | "starbase";
 
 export type RangeBand = "pointBlank" | "close" | "medium" | "long" | "extreme" | "outOfRange";
 
