@@ -34,6 +34,11 @@ export interface WeaponShotRoll {
   dodged: boolean;
 }
 
+export interface CombatEngagementProfile {
+  position: { x: number; z: number };
+  range: number;
+}
+
 export function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -147,6 +152,20 @@ export function rangeBandForSystemDistance(distance: number): RangeBand {
   if (normalized <= RANGE_BAND_SYSTEM_DISTANCE.long) return "long";
   if (normalized <= RANGE_BAND_SYSTEM_DISTANCE.extreme) return "extreme";
   return "outOfRange";
+}
+
+export function combatEngagementProfilesCanInteract(
+  a: CombatEngagementProfile[],
+  b: CombatEngagementProfile[],
+): boolean {
+  for (const left of a) {
+    for (const right of b) {
+      const dx = left.position.x - right.position.x;
+      const dz = left.position.z - right.position.z;
+      if (Math.hypot(dx, dz) <= Math.max(left.range, right.range)) return true;
+    }
+  }
+  return false;
 }
 
 export function getLegacyWeaponRange(mount: WeaponMountDefinition): number {

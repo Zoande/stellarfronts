@@ -129,6 +129,7 @@ import type {
 import {
   addLayerDamage,
   applyWeaponDamage,
+  combatEngagementProfilesCanInteract,
   createEmptyBattleStats,
   createEmptyLayerDamage,
   createEmptyParticipantStats,
@@ -3507,6 +3508,23 @@ function getActiveBattleForStar(starId: number): GameBattle | null {
   return state.battles.find((battle) => battle.starId === starId && battle.phase !== "resolved") ?? null;
 }
 
+const SYSTEM_COMBAT_FLEET_PHASES = new Set<ShipTransitPhase>([
+  "idle",
+  "buildingStarbase",
+  "movingSystem",
+  "departingSystem",
+  "arrivingSystem",
+  "orbiting",
+  "orbitingPlanet",
+]);
+
+function isFleetEligibleForSystemCombat(fleet: GameFleet, starId = fleet.currentStarId): boolean {
+  return fleet.currentStarId === starId
+    && SYSTEM_COMBAT_FLEET_PHASES.has(fleet.phase)
+    && fleet.shipIds.length > 0
+    && !isFleetInBattle(fleet.id);
+}
+
 function isFleetInBattle(fleetId: string): boolean {
   return state.battles.some((battle) => (
     battle.phase !== "resolved"
@@ -3639,21 +3657,20 @@ function engagementProfilesCanInteract(
   a: Array<{ position: ReturnType<typeof systemCenterPosition>; range: number }>,
   b: Array<{ position: ReturnType<typeof systemCenterPosition>; range: number }>,
 ): boolean {
-  for (const left of a) {
-    for (const right of b) {
-      if (distance3(left.position, right.position) <= Math.max(left.range, right.range)) return true;
-    }
-  }
-  return false;
+  return combatEngagementProfilesCanInteract(a, b);
 }
 
 function canFleetInitiateCombat(fleet: GameFleet): boolean {
   return fleet.combatStance === "aggressive" || fleet.combatStance === "defensive" || fleet.combatStance === "holdPosition";
 }
 
+function canFleetStartCombat(fleet: GameFleet): boolean {
+  return canFleetInitiateCombat(fleet) || fleet.alertMode;
+}
+
 function canFleetEngageFleet(fleet: GameFleet, target: GameFleet, shipsById: Map<string, GameShip>): boolean {
   if (!isHostileOwner(fleet.ownerId, target.ownerId)) return false;
-  if (!canFleetInitiateCombat(fleet) && !canFleetInitiateCombat(target)) return false;
+  if (!canFleetStartCombat(fleet) && !canFleetStartCombat(target)) return false;
   return engagementProfilesCanInteract(
     getFleetEngagementProfiles(fleet, shipsById),
     getFleetEngagementProfiles(target, shipsById),
@@ -3668,6 +3685,58 @@ function canFleetEngageStarbase(fleet: GameFleet, starbase: ServerStarbase, ship
     getFleetEngagementProfiles(fleet, shipsById),
     [{ position: starbase.systemPosition, range: starbaseRange }],
   );
+}
+
+function findInitialFleetEngagement(
+  fleetsAtStar: GameFleet[],
+  shipsById: Map<string, GameShip>,
+): { attacker: GameFleet; defender: GameFleet } | null {
+  for (let i = 0; i < fleetsAtStar.length; i += 1) {
+    const left = fleetsAtStar[i];
+    for (let j = i + 1; j < fleetsAtStar.length; j += 1) {
+      const right = fleetsAtStar[j];
+      if (!isHostileOwner(left.ownerId, right.ownerId)) continue;
+      if (!canFleetEngageFleet(left, right, shipsById)) continue;
+      if (canFleetStartCombat(left) && !canFleetStartCombat(right)) return { attacker: left, defender: right };
+      if (canFleetStartCombat(right) && !canFleetStartCombat(left)) return { attacker: right, defender: left };
+      return { attacker: left, defender: right };
+    }
+  }
+  return null;
+}
+
+function findInitialStarbaseEngagement(
+  starId: number,
+  fleetsAtStar: GameFleet[],
+  shipsById: Map<string, GameShip>,
+): { fleet: GameFleet; starbase: ServerStarbase } | null {
+  const starbase = state.starbases.find((candidate) => candidate.starId === starId && candidate.status === "online") ?? null;
+  if (!starbase) return null;
+  for (const fleet of fleetsAtStar) {
+    if (canFleetEngageStarbase(fleet, starbase, shipsById)) return { fleet, starbase };
+  }
+  return null;
+}
+
+function canFleetJoinExistingBattle(
+  battle: GameBattle,
+  fleet: GameFleet,
+  shipsById: Map<string, GameShip>,
+  fleetsById: Map<string, GameFleet>,
+): boolean {
+  if (!fleet.shipIds.some((shipId) => shipsById.has(shipId))) return false;
+  return battle.participants.some((participant) => {
+    if (!isHostileOwner(participant.ownerId, fleet.ownerId)) return false;
+    if (participant.sourceType === "fleet") {
+      const participantFleet = fleetsById.get(participant.sourceId);
+      return !!participantFleet && canFleetEngageFleet(fleet, participantFleet, shipsById);
+    }
+    if (participant.sourceType === "starbase") {
+      const starbase = state.starbases.find((candidate) => candidate.id === participant.sourceId) ?? null;
+      return !!starbase && canFleetEngageStarbase(fleet, starbase, shipsById);
+    }
+    return false;
+  });
 }
 
 function createBattleParticipantStatsRecord(battle: GameBattle, participantId: string, ownerId: number): void {
@@ -4564,38 +4633,39 @@ function processBattles(arrivingFleets: GameFleet[]): {
 
   const candidateStarIds = new Set<number>(arrivalsByStar.keys());
   for (const fleet of state.fleets) {
-    if (fleet.phase !== "idle" && fleet.phase !== "buildingStarbase" && fleet.phase !== "orbiting" && fleet.phase !== "orbitingPlanet") continue;
-    if (fleet.shipIds.length === 0) continue;
-    if (isFleetInBattle(fleet.id)) continue;
-    candidateStarIds.add(fleet.currentStarId);
+    if (isFleetEligibleForSystemCombat(fleet)) candidateStarIds.add(fleet.currentStarId);
+  }
+  for (const starbase of state.starbases) {
+    if (starbase.status === "online") candidateStarIds.add(starbase.starId);
   }
 
   for (const starId of candidateStarIds) {
-    const arrivals = arrivalsByStar.get(starId) ?? [];
     const existingBattle = getActiveBattleForStar(starId);
     if (existingBattle) {
       normalizeBattleRuntimeFields(existingBattle);
+      const starbase = state.starbases.find((candidate) => candidate.starId === starId && candidate.status === "online") ?? null;
+      if (existingBattle.participants.length === 0) {
+        syncBattleParticipants(existingBattle, fleetsById, starbase);
+      }
       const fleetsAtStar = state.fleets.filter((fleet) => (
-        fleet.currentStarId === starId
-        && (fleet.phase === "idle" || fleet.phase === "buildingStarbase" || fleet.phase === "orbiting" || fleet.phase === "orbitingPlanet")
-        && !existingBattle.attackerFleetIds.includes(fleet.id)
+        isFleetEligibleForSystemCombat(fleet, starId)
         && !existingBattle.defenderFleetIds.includes(fleet.id)
+        && !existingBattle.attackerFleetIds.includes(fleet.id)
       ));
-      for (const fleet of [...arrivals, ...fleetsAtStar]) {
-        if (!fleet.shipIds.some((shipId) => shipsById.has(shipId))) continue;
-        const canJoin = existingBattle.participants.some((participant) => (
-          isHostileOwner(participant.ownerId, fleet.ownerId)
-          && (participant.sourceType !== "fleet"
-            || canFleetEngageFleet(fleet, fleetsById.get(participant.sourceId) ?? fleet, shipsById))
-        ));
-        if (!canJoin && arrivals.length === 0) continue;
+      for (const fleet of fleetsAtStar) {
+        const canJoin = canFleetJoinExistingBattle(existingBattle, fleet, shipsById, fleetsById);
+        if (!canJoin) continue;
         const side = getBattleSideForFleet(existingBattle, fleet);
         addFleetToBattle(existingBattle, fleet, side, shipsById);
         resetFleetForBattle(fleet);
         fleetsChanged = true;
       }
-      const starbase = state.starbases.find((candidate) => candidate.starId === starId && candidate.status === "online") ?? null;
-      if (starbase && !existingBattle.starbase && existingBattle.participants.some((participant) => isHostileOwner(participant.ownerId, starbase.ownerId))) {
+      if (starbase && !existingBattle.starbase && existingBattle.participants.some((participant) => {
+        if (!isHostileOwner(participant.ownerId, starbase.ownerId)) return false;
+        if (participant.sourceType !== "fleet") return false;
+        const fleet = fleetsById.get(participant.sourceId);
+        return !!fleet && canFleetEngageStarbase(fleet, starbase, shipsById);
+      })) {
         existingBattle.starbaseId = starbase.id;
         existingBattle.starbase = buildBattleStarbaseState(starbase);
       }
@@ -4604,38 +4674,38 @@ function processBattles(arrivingFleets: GameFleet[]): {
     }
 
     const fleetsAtStar = state.fleets.filter((fleet) => (
-      fleet.currentStarId === starId
-      && (fleet.phase === "idle" || fleet.phase === "buildingStarbase" || fleet.phase === "orbiting" || fleet.phase === "orbitingPlanet")
+      isFleetEligibleForSystemCombat(fleet, starId)
     ));
-    const candidateInitiators = arrivals.length > 0
-      ? arrivals
-      : fleetsAtStar.filter((fleet) => canFleetInitiateCombat(fleet) || fleet.alertMode);
-    const arrivalFactions = Array.from(new Set(candidateInitiators.map((fleet) => fleet.ownerId)));
-    if (arrivalFactions.length === 0) continue;
-    const attackerFactionId = arrivalFactions[0];
-    const starbase = state.starbases.find((candidate) => candidate.starId === starId) ?? null;
-    const enemyFleets = fleetsAtStar.filter((fleet) => (
-      fleet.ownerId !== attackerFactionId
-      && arrivals.some((arrival) => canFleetEngageFleet(arrival, fleet, shipsById))
-    ));
-    const hasEnemyStarbase = !!starbase && starbase.ownerId !== attackerFactionId;
-    const canEngageEnemyStarbase = !!starbase && arrivals.some((arrival) => canFleetEngageStarbase(arrival, starbase, shipsById));
-    const hasEnemyArrivals = arrivalFactions.some((factionId) => factionId !== attackerFactionId);
-    const neutralSystem = (state.starOwnership[starId] ?? -1) === -1 && !starbase;
+    const fleetEngagement = findInitialFleetEngagement(fleetsAtStar, shipsById);
+    const starbaseEngagement = findInitialStarbaseEngagement(starId, fleetsAtStar, shipsById);
+    if (!fleetEngagement && !starbaseEngagement) continue;
 
-    if (!(hasEnemyStarbase && canEngageEnemyStarbase) && enemyFleets.length === 0 && !(neutralSystem && hasEnemyArrivals)) {
-      continue;
-    }
+    const attackerFactionId = fleetEngagement?.attacker.ownerId ?? starbaseEngagement!.fleet.ownerId;
+    const defenderFactionId = fleetEngagement?.defender.ownerId ?? starbaseEngagement!.starbase.ownerId;
+    if (attackerFactionId === defenderFactionId) continue;
 
-    const defenderFactionId = hasEnemyStarbase && canEngageEnemyStarbase
-      ? starbase!.ownerId
-      : (enemyFleets[0]?.ownerId ?? arrivalFactions.find((factionId) => factionId !== attackerFactionId) ?? attackerFactionId);
-
-    const attackerFleets = fleetsAtStar.filter((fleet) => fleet.ownerId === attackerFactionId);
+    let attackerFleets = fleetsAtStar.filter((fleet) => fleet.ownerId === attackerFactionId);
+    const initialDefenderFleets = fleetsAtStar.filter((fleet) => fleet.ownerId === defenderFactionId);
     const defenderFleets = fleetsAtStar.filter((fleet) => (
       fleet.ownerId === defenderFactionId
       && attackerFleets.some((attacker) => canFleetEngageFleet(attacker, fleet, shipsById))
     ));
+    const defendingStarbase = state.starbases.find((candidate) => (
+      candidate.starId === starId
+      && candidate.status === "online"
+      && candidate.ownerId === defenderFactionId
+      && attackerFleets.some((attacker) => canFleetEngageStarbase(attacker, candidate, shipsById))
+    )) ?? null;
+    attackerFleets = attackerFleets.filter((fleet) => (
+      defenderFleets.some((defender) => canFleetEngageFleet(fleet, defender, shipsById))
+      || (!!defendingStarbase && canFleetEngageStarbase(fleet, defendingStarbase, shipsById))
+      || fleet.id === fleetEngagement?.attacker.id
+      || fleet.id === starbaseEngagement?.fleet.id
+    ));
+    const participatingDefenders = defenderFleets.length > 0
+      ? defenderFleets
+      : initialDefenderFleets.filter((fleet) => fleet.id === fleetEngagement?.defender.id);
+    if (attackerFleets.length === 0 || (participatingDefenders.length === 0 && !defendingStarbase)) continue;
 
     const battle: GameBattle = {
       id: createRuntimeId("battle", [starId, attackerFactionId, defenderFactionId]),
@@ -4646,9 +4716,9 @@ function processBattles(arrivingFleets: GameFleet[]): {
       defenderFactionId,
       attackerFleetIds: [],
       defenderFleetIds: [],
-      starbaseId: hasEnemyStarbase && canEngageEnemyStarbase ? starbase?.id ?? null : null,
+      starbaseId: defendingStarbase?.id ?? null,
       ships: [],
-      starbase: starbase && starbase.ownerId === defenderFactionId && canEngageEnemyStarbase ? buildBattleStarbaseState(starbase) : null,
+      starbase: defendingStarbase ? buildBattleStarbaseState(defendingStarbase) : null,
       participants: [],
       combatGroups: [],
       hostility: [],
@@ -4665,7 +4735,7 @@ function processBattles(arrivingFleets: GameFleet[]): {
       addFleetToBattle(battle, fleet, "attacker", shipsById);
       resetFleetForBattle(fleet);
     }
-    for (const fleet of defenderFleets) {
+    for (const fleet of participatingDefenders) {
       addFleetToBattle(battle, fleet, "defender", shipsById);
       resetFleetForBattle(fleet);
     }

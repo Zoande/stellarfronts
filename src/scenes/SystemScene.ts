@@ -57,6 +57,7 @@ import {
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type { PlanetState } from "../data/Economy";
 import type { FactionInfo } from "../data/Factions";
+import { STARBASE_LEVEL_DEFINITIONS } from "../data/Starbase";
 import { calculateShipDesignStats } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { OrbitSystem } from "../systems/OrbitSystem";
@@ -64,6 +65,7 @@ import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/
 import type { BattleLayerDamage, BattleZone, ClientCommand, CombatGroup, FleetOrbitTarget, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 import type { RangeBand } from "../game/CombatTypes";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
+import { getTacticalFormationPosition } from "../game/tacticalFormation";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { SelectionPanel } from "../ui/SelectionPanel";
 import type { BattleSelectionParticipant, SelectionData } from "../ui/SelectionPanel";
@@ -103,16 +105,27 @@ interface TacticalBattleGroupView {
   hpRatio: number;
   order: string;
   targetGroupId?: string | null;
+  destination?: SystemPosition | null;
   maxWeaponRange: number;
   chaseSetting: string;
   retreatText: string;
+}
+
+interface TacticalFleetView {
+  id: string;
+  ownerId: number;
+  name: string;
+  shipIds: string[];
+  position: SystemPosition;
+  status: string;
+  hpRatio: number;
 }
 
 export interface SystemSceneOptions {
   homeSystemStarIds?: number[];
   playerShipStarId?: number;
   playerShipSystemIds?: number[];
-  fleetSystemPositions?: Record<number, { x: number; y: number; z: number }>;
+  fleetSystemPositions?: Record<string, { x: number; y: number; z: number }>;
   serverFleets?: ServerFleet[];
   serverShips?: ServerShip[];
   shipDesigns?: ShipDesign[];
@@ -167,9 +180,11 @@ const STAR_BANNER_DIR = "/textures/planet-banners";
 const BATTLE_SHIP_TARGET_SIZE = 0.65;
 const BATTLE_BEAM_TTL = 0.45;
 const BATTLE_ZONE_SPREAD = 3.6;
-const BATTLE_GROUP_MARKER_Y_OFFSET = 0.35;
+const BATTLE_GROUP_MARKER_Y_OFFSET = 0.06;
 const BATTLE_GROUP_SHIP_Y_OFFSET = 0.25;
 const BATTLE_GROUP_RING_BASE_DIAMETER = 2;
+const FLEET_MARKER_Y_OFFSET = 0.04;
+const TACTICAL_RING_SEGMENTS = 144;
 const BATTLE_RANGE_DISTANCE_BY_BAND: Record<RangeBand, number> = {
   pointBlank: 6,
   close: 16,
@@ -207,7 +222,7 @@ export class SystemScene implements IGameScene {
   private homeSystemStarIds: Set<number>;
   private playerShipStarId: number;
   private playerShipSystemIds: Set<number>;
-  private fleetSystemPositions: Record<number, { x: number; y: number; z: number }>;
+  private fleetSystemPositions: Record<string, { x: number; y: number; z: number }>;
   private serverFleets: ServerFleet[];
   private serverShips: ServerShip[];
   private shipDesigns: ShipDesign[];
@@ -246,11 +261,15 @@ export class SystemScene implements IGameScene {
   private playerShipLastTrailPosition: Vector3 | null = null;
   private playerShipTrailSegments: Array<{ mesh: Mesh; material: StandardMaterial; age: number; ttl: number }> = [];
   private selectedFleetRouteLine: LinesMesh | null = null;
+  private selectedBattleGroupOrderLine: LinesMesh | null = null;
 
   private battleShipTemplate: TransformNode | null = null;
   private battleShipTemplatePromise: Promise<void> | null = null;
   private battleShipRoots = new Map<string, TransformNode>();
   private battleShipTargets = new Map<string, Vector3>();
+  private fleetRoots = new Map<string, TransformNode>();
+  private fleetTargets = new Map<string, Vector3>();
+  private fleetMaterials = new Map<string, StandardMaterial>();
   private battleGroupRoots = new Map<string, TransformNode>();
   private battleGroupTargets = new Map<string, Vector3>();
   private battleGroupMaterials = new Map<string, StandardMaterial>();
@@ -261,8 +280,8 @@ export class SystemScene implements IGameScene {
 
   private starbaseRoot: TransformNode | null = null;
   private starbaseLight: PointLight | null = null;
-  private starbaseRangeRing: Mesh | null = null;
-  private starbaseRangeMaterial: StandardMaterial | null = null;
+  private starbaseRangeRing: LinesMesh | null = null;
+  private starbaseRangeSignature: string | null = null;
   private hyperlaneExitMeshes: Mesh[] = [];
   private hyperlaneExitMaterial: StandardMaterial | null = null;
 
@@ -373,7 +392,7 @@ export class SystemScene implements IGameScene {
   }
 
   private hasPlayerShipPresence(): boolean {
-    if (this.fleetSystemPositions[this.star.id]) return true;
+    if (this.serverFleets.some((fleet) => fleet.currentStarId === this.star.id && fleet.ownerId === this.playerFactionId)) return true;
     if (this.playerShipSystemIds.has(this.star.id)) return true;
     if (this.playerShipStarId === this.star.id) return true;
     return !!this.shipTransit
@@ -606,6 +625,7 @@ export class SystemScene implements IGameScene {
     }
     this.updatePlayerShipTrailFades(dt);
     this.updateSelectedFleetRouteLine();
+    this.updateSelectedBattleGroupOrderLine();
     this.updateSystemActionTargetMarkers();
 
     if (this.battleShipRoots.size > 0) {
@@ -631,6 +651,19 @@ export class SystemScene implements IGameScene {
         const commandRing = root.getChildMeshes().find((mesh) => mesh.name.startsWith("battleGroupCommandRing-"));
         if (commandRing) commandRing.rotation.z += dt * 0.32;
         this.updateBattleGroupMarkerOriginOffset(root);
+      }
+    }
+
+    if (this.fleetRoots.size > 0) {
+      const moveT = Math.min(1, dt * 3.8);
+      for (const [fleetId, root] of this.fleetRoots) {
+        const target = this.fleetTargets.get(fleetId);
+        if (!target) continue;
+        root.position.x = root.position.x + (target.x - root.position.x) * moveT;
+        root.position.y = root.position.y + (target.y - root.position.y) * moveT;
+        root.position.z = root.position.z + (target.z - root.position.z) * moveT;
+        const ring = root.getChildMeshes().find((mesh) => mesh.name.startsWith("fleetMarkerRing-"));
+        if (ring) ring.rotation.z += dt * 0.22;
       }
     }
 
@@ -920,6 +953,43 @@ export class SystemScene implements IGameScene {
     this.glowLayer.removeIncludedOnlyMesh(this.selectedFleetRouteLine);
     this.selectedFleetRouteLine.dispose();
     this.selectedFleetRouteLine = null;
+  }
+
+  private updateSelectedBattleGroupOrderLine(): void {
+    if (!this.selectedBattleGroupId) {
+      this.disposeSelectedBattleGroupOrderLine();
+      return;
+    }
+    const view = this.getVisibleBattleGroupViews().find((candidate) => candidate.id === this.selectedBattleGroupId);
+    if (!view) {
+      this.disposeSelectedBattleGroupOrderLine();
+      return;
+    }
+    const targetView = view.targetGroupId
+      ? this.getVisibleBattleGroupViews().find((candidate) => candidate.id === view.targetGroupId)
+      : null;
+    const to = targetView?.position ?? view.destination ?? null;
+    if (!to) {
+      this.disposeSelectedBattleGroupOrderLine();
+      return;
+    }
+    const points = [
+      new Vector3(view.position.x, SYSTEM_FLEET_Y + 0.18, view.position.z),
+      new Vector3(to.x, SYSTEM_FLEET_Y + 0.18, to.z),
+    ];
+    this.disposeSelectedBattleGroupOrderLine();
+    this.selectedBattleGroupOrderLine = MeshBuilder.CreateLines("selectedBattleGroupOrderLine", { points }, this.scene);
+    this.selectedBattleGroupOrderLine.color = targetView ? new Color3(1, 0.34, 0.18) : new Color3(0.26, 1, 0.82);
+    this.selectedBattleGroupOrderLine.alpha = 0.72;
+    this.selectedBattleGroupOrderLine.isPickable = false;
+    this.glowLayer.addIncludedOnlyMesh(this.selectedBattleGroupOrderLine);
+  }
+
+  private disposeSelectedBattleGroupOrderLine(): void {
+    if (!this.selectedBattleGroupOrderLine) return;
+    this.glowLayer.removeIncludedOnlyMesh(this.selectedBattleGroupOrderLine);
+    this.selectedBattleGroupOrderLine.dispose();
+    this.selectedBattleGroupOrderLine = null;
   }
 
   private beginFleetAction(action: ShipAction): void {
@@ -1352,9 +1422,12 @@ export class SystemScene implements IGameScene {
     this.entityCardLayer?.remove();
     this.entityCardLayer = null;
 
-    const fleets = this.getFleetsInCurrentSystem();
+    const allFleets = this.getFleetsInCurrentSystem();
     const starbases = this.getStarbasesInCurrentSystem();
-    if (fleets.length === 0 && starbases.length === 0) return;
+    const battleGroups = this.getVisibleBattleGroupViews();
+    const groupedFleetIds = new Set(battleGroups.map((group) => group.fleetId).filter((id): id is string => !!id));
+    const fleets = allFleets.filter((fleet) => !groupedFleetIds.has(fleet.id));
+    if (fleets.length === 0 && starbases.length === 0 && battleGroups.length === 0) return;
 
     this.injectSystemEntityCardStyles();
     const root = document.getElementById("spaceHudRoot") ?? document.body;
@@ -1383,6 +1456,31 @@ export class SystemScene implements IGameScene {
         ev.preventDefault();
         ev.stopPropagation();
         this.selectFleetFromCard(fleet, ev.shiftKey);
+      });
+      layer.appendChild(card);
+    });
+
+    battleGroups.forEach((group, index) => {
+      const owner = this.getFaction(group.ownerId);
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "systemEntityCard battleGroup";
+      card.dataset.entityKind = "battleGroup";
+      card.dataset.entityId = group.id;
+      card.dataset.offsetY = String(-24 - index * 22);
+      card.style.setProperty("--entity-accent", this.factionColorCss(owner, "rgba(108, 236, 255, 0.95)"));
+      card.innerHTML = `
+        <span class="systemEntityFlag">${this.getFactionFlagSvg(group.ownerId)}</span>
+        <span class="systemEntityCopy">
+          <strong>${this.escapeHtml(group.name)}</strong>
+          <small>${this.escapeHtml(`${group.behavior} | ${group.count} | ${group.order}`)}</small>
+        </span>
+        <span class="systemEntityIcon">BG</span>
+      `;
+      card.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.selectBattleGroup(group, ev.shiftKey);
       });
       layer.appendChild(card);
     });
@@ -1418,21 +1516,36 @@ export class SystemScene implements IGameScene {
 
   private updateSystemEntityCards(): void {
     if (!this.entityCardLayer) return;
+    const visibleCards: Array<{ card: HTMLElement; x: number; y: number }> = [];
     for (const card of Array.from(this.entityCardLayer.querySelectorAll<HTMLElement>(".systemEntityCard"))) {
       const kind = card.dataset.entityKind;
       const id = card.dataset.entityId;
       const offsetY = Number(card.dataset.offsetY ?? "0");
       const anchor = kind === "fleet"
         ? this.getFleetCardAnchor(id)
-        : this.getStarbaseCardAnchor(id);
+        : kind === "battleGroup"
+          ? this.getBattleGroupCardAnchor(id)
+          : this.getStarbaseCardAnchor(id);
       const projected = anchor ? this.projectToScreen(anchor) : null;
       if (!projected) {
         card.style.display = "none";
         continue;
       }
       card.style.display = "grid";
-      card.style.left = `${projected.x}px`;
-      card.style.top = `${projected.y + offsetY}px`;
+      visibleCards.push({ card, x: projected.x, y: projected.y + offsetY });
+    }
+    visibleCards.sort((a, b) => a.y - b.y || a.x - b.x);
+    const placed: Array<{ x: number; y: number }> = [];
+    for (const item of visibleCards) {
+      let y = item.y;
+      for (let guard = 0; guard < 12; guard += 1) {
+        const collision = placed.find((other) => Math.abs(other.x - item.x) < 150 && Math.abs(other.y - y) < 34);
+        if (!collision) break;
+        y = collision.y + 34;
+      }
+      placed.push({ x: item.x, y });
+      item.card.style.left = `${item.x}px`;
+      item.card.style.top = `${y}px`;
     }
   }
 
@@ -1440,6 +1553,39 @@ export class SystemScene implements IGameScene {
     return this.serverFleets.filter((fleet) => (
       fleet.currentStarId === this.star.id && fleet.phase !== "jumpingHyperlane"
     ));
+  }
+
+  private getFleetRenderPosition(fleet: ServerFleet): SystemPosition {
+    const keyedPosition = this.fleetSystemPositions[fleet.id];
+    if (keyedPosition) return keyedPosition;
+    return fleet.systemPosition ?? { x: PLAYER_SHIP_BASE_POSITION.x, y: SYSTEM_FLEET_Y, z: PLAYER_SHIP_BASE_POSITION.z };
+  }
+
+  private getActiveBattleFleetIds(): Set<string> {
+    return new Set(this.battles
+      .filter((battle) => battle.starId === this.star.id && battle.phase !== "resolved")
+      .flatMap((battle) => [...battle.attackerFleetIds, ...battle.defenderFleetIds]));
+  }
+
+  private getVisibleFleetViews(): TacticalFleetView[] {
+    const activeBattleFleetIds = this.getActiveBattleFleetIds();
+    return this.getFleetsInCurrentSystem()
+      .filter((fleet) => !activeBattleFleetIds.has(fleet.id) && !fleet.alertMode && fleet.shipIds.length > 0)
+      .map((fleet) => {
+        const defense = this.getFleetDefense(fleet.id);
+        const current = defense.shield + defense.armor + defense.hull;
+        const max = defense.maxShield + defense.maxArmor + defense.maxHull;
+        const owner = this.getFaction(fleet.ownerId);
+        return {
+          id: fleet.id,
+          ownerId: fleet.ownerId,
+          name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+          shipIds: [...fleet.shipIds],
+          position: this.getFleetRenderPosition(fleet),
+          status: this.formatFleetStatus(fleet),
+          hpRatio: max > 0 ? current / max : 0,
+        };
+      });
   }
 
   private getStarbasesInCurrentSystem(): ServerStarbase[] {
@@ -1450,11 +1596,32 @@ export class SystemScene implements IGameScene {
     if (!fleetId) return null;
     const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
     if (!fleet || fleet.currentStarId !== this.star.id || fleet.phase === "jumpingHyperlane") return null;
-    if (this.playerShipRoot?.isEnabled()) {
+    const fleetRoot = this.fleetRoots.get(fleet.id);
+    if (fleetRoot?.isEnabled()) {
+      return fleetRoot.position.add(new Vector3(0, 2.6, 0));
+    }
+    const groupRoots = Array.from(this.battleGroupRoots.entries())
+      .filter(([groupId]) => (fleet.battleGroups ?? []).some((group) => group.id === groupId))
+      .map(([, root]) => root)
+      .filter((root) => root.isEnabled());
+    if (groupRoots.length > 0) {
+      const center = groupRoots.reduce((total, root) => total.add(root.position), Vector3.Zero()).scale(1 / groupRoots.length);
+      return center.add(new Vector3(0, 3.0, 0));
+    }
+    if (this.playerShipRoot?.isEnabled() && fleet.ownerId === this.playerFactionId) {
       return this.playerShipRoot.position.add(new Vector3(0, 2.6, 0));
     }
-    const position = this.fleetSystemPositions[this.star.id] ?? this.playerShipTargetPosition;
+    const position = this.getFleetRenderPosition(fleet);
     return new Vector3(position.x, position.y + 2.6, position.z);
+  }
+
+  private getBattleGroupCardAnchor(groupId?: string): Vector3 | null {
+    if (!groupId) return null;
+    const root = this.battleGroupRoots.get(groupId);
+    if (root?.isEnabled()) return root.position.add(new Vector3(0, 2.4, 0));
+    const view = this.getVisibleBattleGroupViews().find((candidate) => candidate.id === groupId);
+    if (!view) return null;
+    return new Vector3(view.position.x, SYSTEM_FLEET_Y + 2.8, view.position.z);
   }
 
   private getStarbaseCardAnchor(starbaseId?: string): Vector3 | null {
@@ -1491,6 +1658,7 @@ export class SystemScene implements IGameScene {
     this.selectedFleetId = fleet.id;
     this.notifyFleetSelectionChanged();
     this.selectionPanel.select(this.createFleetSelectionData(fleet), shiftKey);
+    this.refreshFleetMarkers();
   }
 
   private createFleetSelectionData(fleet: ServerFleet): SelectionData {
@@ -1555,6 +1723,7 @@ export class SystemScene implements IGameScene {
     this.selectedBattleGroupId = null;
     this.selectionPanel?.clear();
     this.disposeSelectedFleetRouteLine();
+    this.disposeSelectedBattleGroupOrderLine();
     this.clearFleetAction();
     this.notifyFleetSelectionChanged();
   }
@@ -1935,6 +2104,12 @@ export class SystemScene implements IGameScene {
 
 .systemEntityCard.starbase {
   border-color: rgba(255, 212, 116, 0.74);
+}
+
+.systemEntityCard.battleGroup {
+  min-width: 146px;
+  height: 32px;
+  opacity: 0.92;
 }
 
 .systemEntityFlag {
@@ -2637,7 +2812,10 @@ export class SystemScene implements IGameScene {
 
     this.playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
     this.playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
-    const serverPosition = this.fleetSystemPositions[this.star.id];
+    const primaryFleet = this.serverFleets.find((fleet) => (
+      fleet.currentStarId === this.star.id && fleet.ownerId === this.playerFactionId
+    ));
+    const serverPosition = primaryFleet ? this.getFleetRenderPosition(primaryFleet) : null;
     if (serverPosition) {
       this.playerShipBasePosition.set(serverPosition.x, serverPosition.y, serverPosition.z);
       this.playerShipTargetPosition.copyFrom(this.playerShipBasePosition);
@@ -2930,25 +3108,14 @@ export class SystemScene implements IGameScene {
   }
 
   private getGroupShipFormationPosition(groupId: string, position: SystemPosition, shipIds: string[], shipId: string): Vector3 {
-    const hash = this.hashString(`${groupId}:${shipId}`);
-    const indexInGroup = shipIds.indexOf(shipId);
-    let slotIndex = indexInGroup >= 0 ? indexInGroup : hash;
-    let ring = 0;
-    let ringCapacity = 1;
-    while (slotIndex >= ringCapacity) {
-      slotIndex -= ringCapacity;
-      ring += 1;
-      ringCapacity = 6 + ring * 4;
-    }
-    const radius = ring === 0 ? 0.7 : 1.85 + ring * 1.05;
-    const angleStep = (Math.PI * 2) / Math.max(1, ringCapacity);
-    const angle = slotIndex * angleStep + ring * 0.31 + (hash % 31) * 0.003;
-    const jitter = ring === 0 ? 0 : (((hash >> 12) & 0xff) / 255 - 0.5) * 0.22;
-    return new Vector3(
-      position.x + Math.cos(angle) * (radius + jitter),
-      SYSTEM_FLEET_Y + BATTLE_GROUP_SHIP_Y_OFFSET + (((hash >> 20) & 0xff) / 255 - 0.5) * 0.35,
-      position.z + Math.sin(angle) * (radius + jitter),
+    const formed = getTacticalFormationPosition(
+      position,
+      SYSTEM_FLEET_Y + BATTLE_GROUP_SHIP_Y_OFFSET,
+      groupId,
+      shipIds,
+      shipId,
     );
+    return new Vector3(formed.x, formed.y, formed.z);
   }
 
   private async ensureBattleShipTemplate(): Promise<void> {
@@ -3008,11 +3175,22 @@ export class SystemScene implements IGameScene {
     if (!clone) return null;
     clone.setEnabled(this.starsVisible);
     for (const mesh of clone.getChildMeshes()) {
-      mesh.isPickable = false;
+      mesh.isPickable = true;
     }
     this.battleShipRoots.set(shipId, clone);
     this.battleShipTargets.set(shipId, clone.position.clone());
     return clone;
+  }
+
+  private setShipVisualMetadata(
+    root: TransformNode,
+    metadata: { shipId: string; fleetId?: string | null; battleGroupId?: string | null },
+  ): void {
+    root.metadata = metadata;
+    for (const mesh of root.getChildMeshes()) {
+      mesh.metadata = metadata;
+      mesh.isPickable = true;
+    }
   }
 
   private getVisibleBattleGroupViews(): TacticalBattleGroupView[] {
@@ -3049,6 +3227,7 @@ export class SystemScene implements IGameScene {
             hpRatio,
             order: group.currentOrder?.type ?? "behavior",
             targetGroupId: group.currentOrder?.targetGroupId ?? null,
+            destination: group.currentOrder?.targetPosition ?? null,
             maxWeaponRange: this.getFleetGroupMaxWeaponRange(group.shipIds),
             chaseSetting: group.chaseSetting,
             retreatText: this.formatRetreatPolicy(group.retreatPolicy),
@@ -3075,6 +3254,7 @@ export class SystemScene implements IGameScene {
       hpRatio: group.hpRatio,
       order: group.currentOrder?.type ?? "behavior",
       targetGroupId: group.targetGroupId ?? null,
+      destination: group.destination ?? group.currentOrder?.targetPosition ?? null,
       maxWeaponRange: group.maxWeaponRange,
       chaseSetting: group.chaseSetting,
       retreatText: group.retreatPolicy ? this.formatRetreatPolicy(group.retreatPolicy) : "No retreat",
@@ -3153,10 +3333,10 @@ export class SystemScene implements IGameScene {
       ? new Color3(owner.color[0], owner.color[1], owner.color[2])
       : new Color3(0.42, 0.88, 1);
     const material = new StandardMaterial(`battleGroupMat-${view.id}`, this.scene);
-    material.diffuseColor = color.scale(0.35);
-    material.emissiveColor = color.scale(0.8);
+    material.diffuseColor = color.scale(0.22);
+    material.emissiveColor = color.scale(0.34);
     material.specularColor = Color3.Black();
-    material.alpha = 0.72;
+    material.alpha = 0.38;
     material.disableLighting = true;
     this.battleGroupMaterials.set(view.id, material);
 
@@ -3176,12 +3356,12 @@ export class SystemScene implements IGameScene {
     leashMaterial.disableLighting = true;
     this.battleGroupMaterials.set(`${view.id}:leash`, leashMaterial);
 
-    const core = MeshBuilder.CreateSphere(`battleGroupCore-${view.id}`, { diameter: 1.45, segments: 16 }, this.scene);
+    const core = MeshBuilder.CreateSphere(`battleGroupCore-${view.id}`, { diameter: 0.46, segments: 12 }, this.scene);
     core.parent = root;
+    core.position.y = -0.18;
     core.material = material;
     core.isPickable = true;
     core.metadata = { battleGroupId: view.id };
-    this.glowLayer.addIncludedOnlyMesh(core);
 
     const ring = MeshBuilder.CreateTorus(`battleGroupCommandRing-${view.id}`, {
       diameter: Math.max(3.2, Math.min(8, 2.8 + view.count * 0.12)),
@@ -3189,11 +3369,11 @@ export class SystemScene implements IGameScene {
       tessellation: 48,
     }, this.scene);
     ring.parent = root;
-    ring.rotation.x = Math.PI / 2;
+    ring.position.y = -0.18;
     ring.material = material;
     ring.isPickable = true;
     ring.metadata = { battleGroupId: view.id };
-    this.glowLayer.addIncludedOnlyMesh(ring);
+    ring.setEnabled(false);
 
     const rangeRing = MeshBuilder.CreateTorus(`battleGroupRangeRing-${view.id}`, {
       diameter: BATTLE_GROUP_RING_BASE_DIAMETER,
@@ -3201,10 +3381,9 @@ export class SystemScene implements IGameScene {
       tessellation: 96,
     }, this.scene);
     rangeRing.parent = root;
-    rangeRing.rotation.x = Math.PI / 2;
     rangeRing.material = rangeMaterial;
     rangeRing.isPickable = false;
-    this.glowLayer.addIncludedOnlyMesh(rangeRing);
+    rangeRing.setEnabled(false);
 
     const leashRing = MeshBuilder.CreateTorus(`battleGroupLeashRing-${view.id}`, {
       diameter: BATTLE_GROUP_RING_BASE_DIAMETER,
@@ -3212,16 +3391,15 @@ export class SystemScene implements IGameScene {
       tessellation: 96,
     }, this.scene);
     leashRing.parent = root;
-    leashRing.rotation.x = Math.PI / 2;
     leashRing.material = leashMaterial;
     leashRing.isPickable = false;
-    this.glowLayer.addIncludedOnlyMesh(leashRing);
+    leashRing.setEnabled(false);
 
     const origin = MeshBuilder.CreateSphere(`battleGroupOrigin-${view.id}`, { diameter: 0.42, segments: 10 }, this.scene);
     origin.parent = root;
     origin.material = leashMaterial;
     origin.isPickable = false;
-    this.glowLayer.addIncludedOnlyMesh(origin);
+    origin.setEnabled(false);
 
     this.battleGroupRoots.set(view.id, root);
     this.updateBattleGroupMarkerVisuals(root, view);
@@ -3241,18 +3419,19 @@ export class SystemScene implements IGameScene {
     const emphasis = selected ? 1.22 : 1;
     core?.scaling.setAll(emphasis);
     commandRing?.scaling.setAll(emphasis);
+    commandRing?.setEnabled(selected && this.starsVisible);
     const weaponRadius = Math.max(0, view.maxWeaponRange);
     if (rangeRing) {
-      rangeRing.setEnabled(weaponRadius > 0 && this.starsVisible);
-      rangeRing.scaling.set(weaponRadius, weaponRadius, 1);
+      rangeRing.setEnabled(selected && weaponRadius > 0 && this.starsVisible);
+      rangeRing.scaling.set(weaponRadius, 1, weaponRadius);
     }
     const leashRadius = Math.max(0, view.leashRadius);
     if (leashRing) {
-      leashRing.setEnabled(leashRadius > 0 && this.starsVisible);
-      leashRing.scaling.set(leashRadius, leashRadius, 1);
+      leashRing.setEnabled(selected && leashRadius > 0 && this.starsVisible);
+      leashRing.scaling.set(leashRadius, 1, leashRadius);
     }
     if (origin) {
-      origin.setEnabled(leashRadius > 0 && this.starsVisible);
+      origin.setEnabled(selected && leashRadius > 0 && this.starsVisible);
     }
     this.updateBattleGroupMarkerOriginOffset(root);
   }
@@ -3280,36 +3459,141 @@ export class SystemScene implements IGameScene {
     }
   }
 
+  private refreshFleetMarkers(views = this.getVisibleFleetViews()): void {
+    const viewById = new Map(views.map((view) => [view.id, view]));
+    for (const [fleetId, root] of Array.from(this.fleetRoots.entries())) {
+      if (!viewById.has(fleetId)) {
+        root.dispose();
+        this.fleetRoots.delete(fleetId);
+        this.fleetTargets.delete(fleetId);
+        const material = this.fleetMaterials.get(fleetId);
+        material?.dispose();
+        this.fleetMaterials.delete(fleetId);
+      }
+    }
+    for (const view of views) {
+      const existingRoot = this.fleetRoots.get(view.id);
+      const root = existingRoot ?? this.createFleetMarker(view);
+      const target = new Vector3(view.position.x, SYSTEM_FLEET_Y + FLEET_MARKER_Y_OFFSET, view.position.z);
+      if (!existingRoot) root.position.copyFrom(target);
+      this.fleetTargets.set(view.id, target);
+      root.setEnabled(this.starsVisible);
+      const selected = view.id === this.selectedFleetId || this.selectedFleetIds.has(view.id);
+      root.scaling.setAll(selected ? 1.08 : 1);
+      const ring = root.getChildMeshes().find((mesh) => mesh.name.startsWith("fleetMarkerRing-"));
+      ring?.setEnabled(selected && this.starsVisible);
+      root.metadata = { fleetId: view.id, view };
+    }
+  }
+
+  private createFleetMarker(view: TacticalFleetView): TransformNode {
+    const root = new TransformNode(`fleetMarker-${view.id}`, this.scene);
+    root.metadata = { fleetId: view.id, view };
+    const owner = this.getFaction(view.ownerId);
+    const color = owner?.color
+      ? new Color3(owner.color[0], owner.color[1], owner.color[2])
+      : new Color3(0.55, 0.84, 1);
+    const material = new StandardMaterial(`fleetMarkerMat-${view.id}`, this.scene);
+    material.diffuseColor = color.scale(0.18);
+    material.emissiveColor = color.scale(0.24);
+    material.specularColor = Color3.Black();
+    material.alpha = 0.3;
+    material.disableLighting = true;
+    this.fleetMaterials.set(view.id, material);
+
+    const core = MeshBuilder.CreateSphere(`fleetMarkerCore-${view.id}`, { diameter: 0.32, segments: 10 }, this.scene);
+    core.parent = root;
+    core.position.y = -0.14;
+    core.material = material;
+    core.isPickable = true;
+    core.metadata = { fleetId: view.id };
+
+    const ring = MeshBuilder.CreateTorus(`fleetMarkerRing-${view.id}`, {
+      diameter: Math.max(2.4, Math.min(5.8, 2.3 + view.shipIds.length * 0.08)),
+      thickness: 0.045,
+      tessellation: 48,
+    }, this.scene);
+    ring.parent = root;
+    ring.position.y = -0.14;
+    ring.material = material;
+    ring.isPickable = true;
+    ring.metadata = { fleetId: view.id };
+    ring.setEnabled(false);
+
+    this.fleetRoots.set(view.id, root);
+    return root;
+  }
+
+  private createSystemPlaneCircleLine(
+    name: string,
+    position: SystemPosition,
+    radius: number,
+    y: number,
+    color: Color3,
+    alpha: number,
+  ): LinesMesh {
+    const points: Vector3[] = [];
+    for (let index = 0; index <= TACTICAL_RING_SEGMENTS; index += 1) {
+      const theta = (index / TACTICAL_RING_SEGMENTS) * Math.PI * 2;
+      points.push(new Vector3(
+        position.x + Math.cos(theta) * radius,
+        y,
+        position.z + Math.sin(theta) * radius,
+      ));
+    }
+    const ring = MeshBuilder.CreateLines(name, { points }, this.scene);
+    ring.color = color;
+    ring.alpha = alpha;
+    ring.isPickable = false;
+    ring.alwaysSelectAsActiveMesh = true;
+    return ring;
+  }
+
+  private disposeStarbaseCombatRangeRing(): void {
+    this.starbaseRangeRing?.dispose();
+    this.starbaseRangeRing = null;
+    this.starbaseRangeSignature = null;
+  }
+
   private refreshStarbaseCombatRangeRing(): void {
     const stationGroup = this.battles
       .filter((battle) => battle.starId === this.star.id && battle.phase !== "resolved")
       .flatMap((battle) => battle.combatGroups ?? [])
       .find((group) => group.role === "station" && group.status !== "destroyed" && group.maxWeaponRange > 0);
-    if (!stationGroup) {
-      this.starbaseRangeRing?.setEnabled(false);
+    const starbase = this.getStarbasesInCurrentSystem().find((candidate) => candidate.status === "online") ?? null;
+    const position = stationGroup?.position ?? starbase?.systemPosition ?? null;
+    const range = stationGroup?.maxWeaponRange ?? (starbase ? this.getStarbaseMaxWeaponRange(starbase) : 0);
+    if (!position || range <= 0) {
+      this.disposeStarbaseCombatRangeRing();
       return;
     }
-    if (!this.starbaseRangeRing) {
-      this.starbaseRangeMaterial = new StandardMaterial("starbaseCombatRangeMat", this.scene);
-      this.starbaseRangeMaterial.diffuseColor = new Color3(0.18, 0.52, 0.95);
-      this.starbaseRangeMaterial.emissiveColor = new Color3(0.2, 0.72, 1.0);
-      this.starbaseRangeMaterial.specularColor = Color3.Black();
-      this.starbaseRangeMaterial.alpha = 0.14;
-      this.starbaseRangeMaterial.disableLighting = true;
-      this.starbaseRangeRing = MeshBuilder.CreateTorus("starbaseCombatRangeRing", {
-        diameter: BATTLE_GROUP_RING_BASE_DIAMETER,
-        thickness: 0.035,
-        tessellation: 96,
-      }, this.scene);
-      this.starbaseRangeRing.rotation.x = Math.PI / 2;
-      this.starbaseRangeRing.material = this.starbaseRangeMaterial;
-      this.starbaseRangeRing.isPickable = false;
-      this.glowLayer.addIncludedOnlyMesh(this.starbaseRangeRing);
+    const signature = [
+      position.x.toFixed(2),
+      position.z.toFixed(2),
+      range.toFixed(2),
+    ].join(":");
+    if (this.starbaseRangeSignature !== signature) {
+      this.disposeStarbaseCombatRangeRing();
+      this.starbaseRangeRing = this.createSystemPlaneCircleLine(
+        "starbaseCombatRangeRing",
+        position,
+        range,
+        SYSTEM_FLEET_Y + 0.07,
+        new Color3(0.28, 0.72, 1.0),
+        0.32,
+      );
+      this.starbaseRangeSignature = signature;
     }
-    const range = Math.max(0, stationGroup.maxWeaponRange);
-    this.starbaseRangeRing.position.set(stationGroup.position.x, SYSTEM_FLEET_Y + 0.05, stationGroup.position.z);
-    this.starbaseRangeRing.scaling.set(range, range, 1);
-    this.starbaseRangeRing.setEnabled(this.starsVisible && range > 0);
+    this.starbaseRangeRing?.setEnabled(this.starsVisible && range > 0);
+  }
+
+  private getStarbaseMaxWeaponRange(starbase: ServerStarbase): number {
+    const mounts = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.combat.weaponMounts ?? [];
+    return mounts.reduce((max, mount) => {
+      const rangeBand = mount.maxRangeBand ?? "close";
+      const range = BATTLE_RANGE_DISTANCE_BY_BAND[rangeBand] ?? BATTLE_RANGE_DISTANCE_BY_BAND.close;
+      return Math.max(max, Number.isFinite(range) ? range : 0);
+    }, 0);
   }
 
   private refreshBattleShips(): void {
@@ -3320,8 +3604,10 @@ export class SystemScene implements IGameScene {
     const groupById = new Map(battlesInSystem.flatMap((battle) => battle.combatGroups ?? []).map((group) => [group.id, group]));
     const battleShipIds = new Set(shipStates.map((ship) => ship.shipId));
     const visibleGroupViews = this.getVisibleBattleGroupViews();
+    const visibleFleetViews = this.getVisibleFleetViews();
     const liveServerShipIds = new Set(this.serverShips.map((ship) => ship.id));
     const alertGroupByShipId = new Map<string, TacticalBattleGroupView>();
+    const fleetViewByShipId = new Map<string, TacticalFleetView>();
     for (const group of visibleGroupViews) {
       if (group.status !== "alert") continue;
       for (const shipId of group.shipIds) {
@@ -3330,11 +3616,20 @@ export class SystemScene implements IGameScene {
         }
       }
     }
+    for (const fleet of visibleFleetViews) {
+      for (const shipId of fleet.shipIds) {
+        if (!battleShipIds.has(shipId) && !alertGroupByShipId.has(shipId) && liveServerShipIds.has(shipId)) {
+          fleetViewByShipId.set(shipId, fleet);
+        }
+      }
+    }
     const shipIds = new Set([
       ...battleShipIds,
       ...alertGroupByShipId.keys(),
+      ...fleetViewByShipId.keys(),
     ]);
     this.refreshBattleGroupMarkers(visibleGroupViews);
+    this.refreshFleetMarkers(visibleFleetViews);
 
     if (shipIds.size === 0) {
       for (const [, root] of this.battleShipRoots) {
@@ -3344,6 +3639,7 @@ export class SystemScene implements IGameScene {
       this.battleShipTargets.clear();
       this.battleRoundSeen.clear();
       this.refreshBattleGroupMarkers();
+      this.refreshFleetMarkers([]);
       if (this.playerShipRoot) {
         this.playerShipRoot.setEnabled(this.starsVisible);
       }
@@ -3368,6 +3664,11 @@ export class SystemScene implements IGameScene {
         if (!existingRoot) {
           root.position.copyFrom(target);
         }
+        this.setShipVisualMetadata(root, {
+          shipId: shipState.shipId,
+          fleetId: shipState.fleetId,
+          battleGroupId: shipState.groupId ?? null,
+        });
         this.battleShipTargets.set(shipState.shipId, target);
       }
 
@@ -3379,6 +3680,27 @@ export class SystemScene implements IGameScene {
         if (!existingRoot) {
           root.position.copyFrom(target);
         }
+        this.setShipVisualMetadata(root, {
+          shipId,
+          fleetId: group.fleetId,
+          battleGroupId: group.id,
+        });
+        this.battleShipTargets.set(shipId, target);
+      }
+
+      for (const [shipId, fleet] of fleetViewByShipId) {
+        const existingRoot = this.battleShipRoots.get(shipId);
+        const root = existingRoot ?? this.createBattleShipInstance(shipId);
+        if (!root) continue;
+        const target = this.getGroupShipFormationPosition(`fleet:${fleet.id}`, fleet.position, fleet.shipIds, shipId);
+        if (!existingRoot) {
+          root.position.copyFrom(target);
+        }
+        this.setShipVisualMetadata(root, {
+          shipId,
+          fleetId: fleet.id,
+          battleGroupId: null,
+        });
         this.battleShipTargets.set(shipId, target);
       }
 
@@ -3406,6 +3728,8 @@ export class SystemScene implements IGameScene {
       const lastSeen = this.battleRoundSeen.get(battle.id) ?? -1;
       if (latestRound.round <= lastSeen) continue;
       this.battleRoundSeen.set(battle.id, latestRound.round);
+      let effectsQueued = 0;
+      const maxEffectsPerRound = 90;
 
       for (const action of latestRound.actions) {
         if (!action.fired) continue;
@@ -3413,9 +3737,11 @@ export class SystemScene implements IGameScene {
         if (!from) continue;
         const effects = action.fired.weaponEffects?.length ? action.fired.weaponEffects : [action.fired];
         for (let effectIndex = 0; effectIndex < effects.length; effectIndex += 1) {
+          if (effectsQueued >= maxEffectsPerRound) break;
           const effect = effects[effectIndex];
           const to = this.getBattleEntityPosition(effect.targetId);
           if (!to) continue;
+          effectsQueued += 1;
           const salvoOffset = new Vector3((effectIndex - (effects.length - 1) / 2) * 0.18, 0.02 * effectIndex, 0);
           const effectFrom = from.add(salvoOffset);
           const weaponId = effect.weaponId?.toLowerCase() ?? action.fired.weaponId?.toLowerCase() ?? "";
@@ -4161,6 +4487,10 @@ export class SystemScene implements IGameScene {
         ev.preventDefault();
         return;
       }
+      if (this.trySelectFleetMarkerAtPointer(ev) || this.trySelectShipVisualAtPointer(ev)) {
+        ev.preventDefault();
+        return;
+      }
       if (this.tryOpenObjectPanelAtPointer(ev)) {
         ev.preventDefault();
         return;
@@ -4187,6 +4517,58 @@ export class SystemScene implements IGameScene {
     if (!view) return false;
     this.selectBattleGroup(view, ev.shiftKey);
     return true;
+  }
+
+  private trySelectFleetMarkerAtPointer(ev: PointerEvent): boolean {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas || this.fleetRoots.size === 0) return false;
+    const rect = canvas.getBoundingClientRect();
+    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const fleetMeshes = new Set<Mesh>();
+    for (const root of this.fleetRoots.values()) {
+      for (const mesh of root.getChildMeshes()) fleetMeshes.add(mesh as Mesh);
+    }
+    const pick = this.scene.pick(canvasX, canvasY, (mesh) => fleetMeshes.has(mesh as Mesh));
+    if (!pick?.hit || !pick.pickedMesh) return false;
+    const fleetId = (pick.pickedMesh.metadata as { fleetId?: string } | null)?.fleetId;
+    if (!fleetId) return false;
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet) return false;
+    this.selectFleetFromCard(fleet, ev.shiftKey);
+    this.refreshFleetMarkers();
+    return true;
+  }
+
+  private trySelectShipVisualAtPointer(ev: PointerEvent): boolean {
+    const canvas = this.engine.getRenderingCanvas();
+    if (!canvas || this.battleShipRoots.size === 0) return false;
+    const rect = canvas.getBoundingClientRect();
+    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
+    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    const shipMeshes = new Set<Mesh>();
+    for (const root of this.battleShipRoots.values()) {
+      for (const mesh of root.getChildMeshes()) shipMeshes.add(mesh as Mesh);
+    }
+    const pick = this.scene.pick(canvasX, canvasY, (mesh) => shipMeshes.has(mesh as Mesh));
+    if (!pick?.hit || !pick.pickedMesh) return false;
+    const metadata = pick.pickedMesh.metadata as { fleetId?: string | null; battleGroupId?: string | null } | null;
+    if (metadata?.battleGroupId) {
+      const view = this.getVisibleBattleGroupViews().find((candidate) => candidate.id === metadata.battleGroupId);
+      if (view) {
+        this.selectBattleGroup(view, ev.shiftKey);
+        return true;
+      }
+    }
+    if (metadata?.fleetId) {
+      const fleet = this.serverFleets.find((candidate) => candidate.id === metadata.fleetId);
+      if (fleet) {
+        this.selectFleetFromCard(fleet, ev.shiftKey);
+        this.refreshFleetMarkers();
+        return true;
+      }
+    }
+    return false;
   }
 
   private selectBattleGroup(view: TacticalBattleGroupView, shiftKey: boolean): void {
@@ -4395,7 +4777,8 @@ export class SystemScene implements IGameScene {
       this.starMesh.setEnabled(visible);
     }
     if (this.playerShipRoot) {
-      this.playerShipRoot.setEnabled(visible);
+      const hasTacticalFleetVisuals = this.battleShipRoots.size > 0 || this.fleetRoots.size > 0 || this.battleGroupRoots.size > 0;
+      this.playerShipRoot.setEnabled(visible && !hasTacticalFleetVisuals);
     }
     for (const marker of this.hyperlaneExitMeshes) {
       marker.setEnabled(visible);
@@ -4404,6 +4787,9 @@ export class SystemScene implements IGameScene {
       root.setEnabled(visible);
     }
     for (const [, root] of this.battleGroupRoots) {
+      root.setEnabled(visible);
+    }
+    for (const [, root] of this.fleetRoots) {
       root.setEnabled(visible);
     }
     this.refreshStarbaseCombatRangeRing();
@@ -4417,33 +4803,13 @@ export class SystemScene implements IGameScene {
   }
 
   setFleetSystemPositions(
-    positions: Record<number, { x: number; y: number; z: number }>,
+    positions: Record<string, { x: number; y: number; z: number }>,
     options: { refreshCards?: boolean } = {},
   ): void {
     const refreshCards = options.refreshCards ?? true;
     this.fleetSystemPositions = positions;
-    const position = positions[this.star.id];
-    if (!position) {
-      this.playerShipRoot?.setEnabled(false);
-      if (refreshCards) this.refreshSystemEntityCards();
-      return;
-    }
-
-    this.playerShipTargetPosition.set(position.x, position.y, position.z);
-    if (this.hasActiveBattleInSystem()) {
-      this.playerShipRoot?.setEnabled(false);
-      if (refreshCards) this.refreshSystemEntityCards();
-      return;
-    }
-    if (!this.playerShipRoot) {
-      this.playerShipBasePosition.copyFrom(this.playerShipTargetPosition);
-      void this.createPlayerShipIfPresent().then(() => {
-        this.playerShipRoot?.setEnabled(this.starsVisible);
-      });
-      return;
-    }
-
-    this.playerShipRoot.setEnabled(this.starsVisible);
+    this.playerShipRoot?.setEnabled(false);
+    this.refreshBattleShips();
     if (refreshCards) this.refreshSystemEntityCards();
   }
 
@@ -4466,7 +4832,7 @@ export class SystemScene implements IGameScene {
     } else if (this.selectedFleetIds.size > 0) {
       this.renderSelectedFleetPanels();
     }
-    this.refreshBattleGroupMarkers();
+    this.refreshBattleShips();
     this.refreshSelectedBattleGroupSelection();
     this.refreshSystemEntityCards();
   }
@@ -4477,14 +4843,14 @@ export class SystemScene implements IGameScene {
 
   setServerShips(ships: ServerShip[]): void {
     this.serverShips = ships;
-    this.refreshBattleGroupMarkers();
+    this.refreshBattleShips();
     this.refreshSelectedBattleGroupSelection();
     this.refreshSystemEntityCards();
   }
 
   setShipDesigns(shipDesigns: ShipDesign[]): void {
     this.shipDesigns = shipDesigns;
-    this.refreshBattleGroupMarkers();
+    this.refreshBattleShips();
     this.refreshSelectedBattleGroupSelection();
     this.refreshSystemEntityCards();
   }
@@ -4501,15 +4867,19 @@ export class SystemScene implements IGameScene {
     if (this.starbaseSystemIds.has(this.star.id)) {
       if (this.starbaseRoot) {
         this.starbaseRoot.setEnabled(true);
+        this.refreshStarbaseCombatRangeRing();
         this.refreshSystemEntityCards();
         return;
       }
-      void this.createStarbaseIfPresent().then(() => this.refreshSystemEntityCards());
+      void this.createStarbaseIfPresent().then(() => {
+        this.refreshStarbaseCombatRangeRing();
+        this.refreshSystemEntityCards();
+      });
       return;
     }
 
     this.starbaseRoot?.setEnabled(false);
-    this.starbaseRangeRing?.setEnabled(false);
+    this.disposeStarbaseCombatRangeRing();
     this.refreshSystemEntityCards();
   }
 
@@ -4518,6 +4888,7 @@ export class SystemScene implements IGameScene {
     for (const starbase of starbases) {
       this.starbasePanel?.refreshStarbase(starbase);
     }
+    this.refreshStarbaseCombatRangeRing();
     this.refreshSystemEntityCards();
   }
 
@@ -4584,15 +4955,21 @@ export class SystemScene implements IGameScene {
       root.dispose();
     }
     this.battleGroupRoots.clear();
+    for (const [, root] of this.fleetRoots) {
+      root.dispose();
+    }
+    this.fleetRoots.clear();
+    this.fleetTargets.clear();
+    for (const [, material] of this.fleetMaterials) {
+      material.dispose();
+    }
+    this.fleetMaterials.clear();
     for (const [, material] of this.battleGroupMaterials) {
       material.dispose();
     }
     this.battleGroupMaterials.clear();
     this.battleGroupTargets.clear();
-    this.starbaseRangeRing?.dispose();
-    this.starbaseRangeRing = null;
-    this.starbaseRangeMaterial?.dispose();
-    this.starbaseRangeMaterial = null;
+    this.disposeStarbaseCombatRangeRing();
     for (const beam of this.battleBeams) {
       beam.mesh.dispose();
     }
@@ -4604,6 +4981,7 @@ export class SystemScene implements IGameScene {
     this.battleProjectiles = [];
     this.disposePlayerShipTrail();
     this.disposeSelectedFleetRouteLine();
+    this.disposeSelectedBattleGroupOrderLine();
     this.disposeSystemActionTargetMarkers();
     this.systemActionMarkerMaterial?.dispose();
     this.systemActionMarkerMaterial = null;

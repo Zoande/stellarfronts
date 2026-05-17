@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   applyWeaponDamage,
+  combatEngagementProfilesCanInteract,
   getCombatGroupMinSize,
   getCombatGroupMaxSize,
   getCombatGroupSizeRules,
@@ -130,4 +131,14 @@ test("real system distance gates weapon fire with minimum range", () => {
   assert.equal(weaponCanFireAtDistance(pointDefense, 30), false);
   assert.equal(rangeBandForSystemDistance(5), "pointBlank");
   assert.equal(rangeBandForSystemDistance(47), "extreme");
+});
+
+test("combat engagement profiles use real system distance", () => {
+  const left = [{ position: { x: 0, z: 0 }, range: 30 }];
+  const close = [{ position: { x: 24, z: 0 }, range: 16 }];
+  const far = [{ position: { x: 80, z: 0 }, range: 64 }];
+
+  assert.equal(combatEngagementProfilesCanInteract(left, close), true);
+  assert.equal(combatEngagementProfilesCanInteract(left, far), false);
+  assert.equal(combatEngagementProfilesCanInteract(far, [{ position: { x: 20, z: 0 }, range: 64 }]), true);
 });

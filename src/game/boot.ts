@@ -258,10 +258,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     return getSystemFleetStagingPosition();
   };
 
-  const getFleetSystemPositions = (year = getRenderClockYear()): Record<number, { x: number; y: number; z: number }> => (
+  const getFleetSystemPositions = (year = getRenderClockYear()): Record<string, { x: number; y: number; z: number }> => (
     Object.fromEntries(snapshot.fleets
       .filter((fleet) => !getFleetHyperlanePosition(fleet, year))
-      .map((fleet) => [getFleetSystemStarId(fleet, year), getFleetSystemPosition(fleet, year)]))
+      .map((fleet) => [fleet.id, getFleetSystemPosition(fleet, year)]))
   );
 
   const getFleetSystemStarId = (fleet: ServerFleet, year = getRenderClockYear()): number => {
