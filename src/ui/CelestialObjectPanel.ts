@@ -78,73 +78,73 @@ const DISTRICT_LABELS: Record<DistrictKind, string> = {
 };
 
 const DISTRICT_ICON_BY_KIND: Record<DistrictKind, string> = {
-  city: `${DISTRICT_ICON_DIR}/City.png`,
-  generator: `${DISTRICT_ICON_DIR}/Generator.png`,
-  mining: `${DISTRICT_ICON_DIR}/Mining.png`,
-  agriculture: `${DISTRICT_ICON_DIR}/Agriculture.png`,
+  city: `${DISTRICT_ICON_DIR}/City.webp`,
+  generator: `${DISTRICT_ICON_DIR}/Generator.webp`,
+  mining: `${DISTRICT_ICON_DIR}/Mining.webp`,
+  agriculture: `${DISTRICT_ICON_DIR}/Agriculture.webp`,
 };
 
 const BUILDING_ICON_BY_KIND: Record<BuildingKind, string> = {
-  housingComplex: `${BUILDING_ICON_DIR}/Housing_Complex.png`,
-  administrativeComplex: `${BUILDING_ICON_DIR}/Administrative_Complex.png`,
-  researchLabs: `${BUILDING_ICON_DIR}/Research_Labs.png`,
-  civilianFabricators: `${BUILDING_ICON_DIR}/Civilian_Fabricators.png`,
-  alloyFoundries: `${BUILDING_ICON_DIR}/Alloy_Foundries.png`,
-  commercialForum: `${BUILDING_ICON_DIR}/Commercial_Forum.png`,
-  foodProcessingPlant: `${BUILDING_ICON_DIR}/Food_Processing_Plant.png`,
-  agroIndustrialKitchens: `${BUILDING_ICON_DIR}/Agro-Industrial_Kitchens.png`,
-  mineralPurificationPlant: `${BUILDING_ICON_DIR}/Mineral_Purification_Plant.png`,
-  oreSmelter: `${BUILDING_ICON_DIR}/Ore_Smelter.png`,
-  energyGrid: `${BUILDING_ICON_DIR}/Energy_Grid.png`,
-  capacitorWorkshops: `${BUILDING_ICON_DIR}/Capacitor_Workshops.png`,
-  entertainmentForum: `${BUILDING_ICON_DIR}/Entertainment_Forum.png`,
-  securityOffice: `${BUILDING_ICON_DIR}/Security_Office.png`,
+  housingComplex: `${BUILDING_ICON_DIR}/Housing_Complex.webp`,
+  administrativeComplex: `${BUILDING_ICON_DIR}/Administrative_Complex.webp`,
+  researchLabs: `${BUILDING_ICON_DIR}/Research_Labs.webp`,
+  civilianFabricators: `${BUILDING_ICON_DIR}/Civilian_Fabricators.webp`,
+  alloyFoundries: `${BUILDING_ICON_DIR}/Alloy_Foundries.webp`,
+  commercialForum: `${BUILDING_ICON_DIR}/Commercial_Forum.webp`,
+  foodProcessingPlant: `${BUILDING_ICON_DIR}/Food_Processing_Plant.webp`,
+  agroIndustrialKitchens: `${BUILDING_ICON_DIR}/Agro-Industrial_Kitchens.webp`,
+  mineralPurificationPlant: `${BUILDING_ICON_DIR}/Mineral_Purification_Plant.webp`,
+  oreSmelter: `${BUILDING_ICON_DIR}/Ore_Smelter.webp`,
+  energyGrid: `${BUILDING_ICON_DIR}/Energy_Grid.webp`,
+  capacitorWorkshops: `${BUILDING_ICON_DIR}/Capacitor_Workshops.webp`,
+  entertainmentForum: `${BUILDING_ICON_DIR}/Entertainment_Forum.webp`,
+  securityOffice: `${BUILDING_ICON_DIR}/Security_Office.webp`,
 };
 
 const HABITED_PLANET_BANNERS: Partial<Record<PlanetType, string>> = {
-  Barren: `${PLANET_BANNER_DIR}/Barren_banner.png`,
-  Gaseous: `${PLANET_BANNER_DIR}/Gaseous_banner.png`,
-  Snowy: `${PLANET_BANNER_DIR}/Snowy_banner_city.png`,
-  Arid: `${PLANET_BANNER_DIR}/Arid_banner_city.png`,
-  Dusty: `${PLANET_BANNER_DIR}/Dusty_banner_city.png`,
-  Grassland: `${PLANET_BANNER_DIR}/Grassland_banner_city.png`,
-  Jungle: `${PLANET_BANNER_DIR}/Jungle_banner_city.png`,
-  Marshy: `${PLANET_BANNER_DIR}/Marsh_banner_city.png`,
-  Martian: `${PLANET_BANNER_DIR}/Martian_banner_city.png`,
-  Methane: `${PLANET_BANNER_DIR}/Methane_banner_city.png`,
-  Sandy: `${PLANET_BANNER_DIR}/Sandy_banner_city.png`,
-  Tundra: `${PLANET_BANNER_DIR}/Tundra_banner_city.png`,
+  Barren: `${PLANET_BANNER_DIR}/Barren_banner.webp`,
+  Gaseous: `${PLANET_BANNER_DIR}/Gaseous_banner.webp`,
+  Snowy: `${PLANET_BANNER_DIR}/Snowy_banner_city.webp`,
+  Arid: `${PLANET_BANNER_DIR}/Arid_banner_city.webp`,
+  Dusty: `${PLANET_BANNER_DIR}/Dusty_banner_city.webp`,
+  Grassland: `${PLANET_BANNER_DIR}/Grassland_banner_city.webp`,
+  Jungle: `${PLANET_BANNER_DIR}/Jungle_banner_city.webp`,
+  Marshy: `${PLANET_BANNER_DIR}/Marsh_banner_city.webp`,
+  Martian: `${PLANET_BANNER_DIR}/Martian_banner_city.webp`,
+  Methane: `${PLANET_BANNER_DIR}/Methane_banner_city.webp`,
+  Sandy: `${PLANET_BANNER_DIR}/Sandy_banner_city.webp`,
+  Tundra: `${PLANET_BANNER_DIR}/Tundra_banner_city.webp`,
 };
 
 const PLANET_NO_CITY_BANNERS: Record<PlanetType, string> = {
-  Barren: `${PLANET_BANNER_DIR}/Barren_banner.png`,
-  Gaseous: `${PLANET_BANNER_DIR}/Gaseous_banner.png`,
-  Snowy: `${PLANET_BANNER_DIR}/Snowy_banner.png`,
-  Arid: `${PLANET_BANNER_DIR}/Arid_banner.png`,
-  Dusty: `${PLANET_BANNER_DIR}/Dusty_banner.png`,
-  Grassland: `${PLANET_BANNER_DIR}/Grassland_banner.png`,
-  Jungle: `${PLANET_BANNER_DIR}/Jungle_banner.png`,
-  Marshy: `${PLANET_BANNER_DIR}/Marsh_banner.png`,
-  Martian: `${PLANET_BANNER_DIR}/Martian_banner.png`,
-  Methane: `${PLANET_BANNER_DIR}/Methane_banner.png`,
-  Sandy: `${PLANET_BANNER_DIR}/Sandy_banner.png`,
-  Tundra: `${PLANET_BANNER_DIR}/Tundra_banner.png`,
+  Barren: `${PLANET_BANNER_DIR}/Barren_banner.webp`,
+  Gaseous: `${PLANET_BANNER_DIR}/Gaseous_banner.webp`,
+  Snowy: `${PLANET_BANNER_DIR}/Snowy_banner.webp`,
+  Arid: `${PLANET_BANNER_DIR}/Arid_banner.webp`,
+  Dusty: `${PLANET_BANNER_DIR}/Dusty_banner.webp`,
+  Grassland: `${PLANET_BANNER_DIR}/Grassland_banner.webp`,
+  Jungle: `${PLANET_BANNER_DIR}/Jungle_banner.webp`,
+  Marshy: `${PLANET_BANNER_DIR}/Marsh_banner.webp`,
+  Martian: `${PLANET_BANNER_DIR}/Martian_banner.webp`,
+  Methane: `${PLANET_BANNER_DIR}/Methane_banner.webp`,
+  Sandy: `${PLANET_BANNER_DIR}/Sandy_banner.webp`,
+  Tundra: `${PLANET_BANNER_DIR}/Tundra_banner.webp`,
 };
 
 const STAR_BANNER_DIR = PLANET_BANNER_DIR;
 
 const STAR_BANNERS: Record<StarType, string> = {
-  B: `${STAR_BANNER_DIR}/Star_B_banner.png`,
-  A: `${STAR_BANNER_DIR}/Star_A_banner.png`,
-  F: `${STAR_BANNER_DIR}/Star_F_banner.png`,
-  G: `${STAR_BANNER_DIR}/Star_G_banner.png`,
-  K: `${STAR_BANNER_DIR}/Star_K_banner.png`,
-  M: `${STAR_BANNER_DIR}/Star_M_banner.png`,
-  ["M Red Giant"]: `${STAR_BANNER_DIR}/Star_M_Red_Giant_banner.png`,
-  ["T Brown Dwarf"]: `${STAR_BANNER_DIR}/Star_T_Brown_Dwarf_banner.png`,
-  ["Neutron Star"]: `${STAR_BANNER_DIR}/Star_Neutron_Star_banner.png`,
-  Pulsar: `${STAR_BANNER_DIR}/Star_Pulsar_banner.png`,
-  ["Black Hole"]: `${STAR_BANNER_DIR}/Star_Black_Hole_banner.png`,
+  B: `${STAR_BANNER_DIR}/Star_B_banner.webp`,
+  A: `${STAR_BANNER_DIR}/Star_A_banner.webp`,
+  F: `${STAR_BANNER_DIR}/Star_F_banner.webp`,
+  G: `${STAR_BANNER_DIR}/Star_G_banner.webp`,
+  K: `${STAR_BANNER_DIR}/Star_K_banner.webp`,
+  M: `${STAR_BANNER_DIR}/Star_M_banner.webp`,
+  ["M Red Giant"]: `${STAR_BANNER_DIR}/Star_M_Red_Giant_banner.webp`,
+  ["T Brown Dwarf"]: `${STAR_BANNER_DIR}/Star_T_Brown_Dwarf_banner.webp`,
+  ["Neutron Star"]: `${STAR_BANNER_DIR}/Star_Neutron_Star_banner.webp`,
+  Pulsar: `${STAR_BANNER_DIR}/Star_Pulsar_banner.webp`,
+  ["Black Hole"]: `${STAR_BANNER_DIR}/Star_Black_Hole_banner.webp`,
 };
 
 export class CelestialObjectPanel {
@@ -216,11 +216,11 @@ export class CelestialObjectPanel {
 
   private getBuildingIconCandidates(definition: BuildingDefinition): string[] {
     const mapped = BUILDING_ICON_BY_KIND[definition.kind];
-    const spaced = `${BUILDING_ICON_DIR}/${definition.label}.png`;
-    const underscored = `${BUILDING_ICON_DIR}/${definition.label.replace(/\s+/g, "_")}.png`;
-    const kindName = `${BUILDING_ICON_DIR}/${definition.kind}.png`;
+    const spaced = `${BUILDING_ICON_DIR}/${definition.label}.webp`;
+    const underscored = `${BUILDING_ICON_DIR}/${definition.label.replace(/\s+/g, "_")}.webp`;
+    const kindName = `${BUILDING_ICON_DIR}/${definition.kind}.webp`;
     const spellingFallback = definition.kind === "entertainmentForum"
-      ? `${BUILDING_ICON_DIR}/Entretainment_Forum.png`
+      ? `${BUILDING_ICON_DIR}/Entretainment_Forum.webp`
       : "";
     return Array.from(new Set([mapped, spaced, underscored, spellingFallback, kindName].filter(Boolean).map((path) => encodeURI(path))));
   }
@@ -232,9 +232,9 @@ export class CelestialObjectPanel {
   private getDistrictIconCandidates(kind: DistrictKind): string[] {
     const label = DISTRICT_LABELS[kind];
     const mapped = DISTRICT_ICON_BY_KIND[kind];
-    const spaced = `${DISTRICT_ICON_DIR}/${label}.png`;
-    const underscored = `${DISTRICT_ICON_DIR}/${label.replace(/\s+/g, "_")}.png`;
-    const kindName = `${DISTRICT_ICON_DIR}/${kind}.png`;
+    const spaced = `${DISTRICT_ICON_DIR}/${label}.webp`;
+    const underscored = `${DISTRICT_ICON_DIR}/${label.replace(/\s+/g, "_")}.webp`;
+    const kindName = `${DISTRICT_ICON_DIR}/${kind}.webp`;
     return Array.from(new Set([mapped, spaced, underscored, kindName].map((path) => encodeURI(path))));
   }
 

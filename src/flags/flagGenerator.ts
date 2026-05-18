@@ -173,5 +173,5 @@ export function listFlagCatalog() {
 }
 
 export function flagAssetFileName(name: string): string {
-  return `${name.trim().replace(/\s+/g, "_")}.png`;
+  return `${name.trim().replace(/\s+/g, "_")}.webp`;
 }

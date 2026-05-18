@@ -375,7 +375,7 @@ export class StarFieldRenderer {
 
     this.playerShipIconManager = new SpriteManager(
       "playerShipIconSprites",
-      "/textures/own_ship_icon.png",
+      "/textures/own_ship_icon.webp",
       Math.max(1, stars.length),
       {
         width: PLAYER_SHIP_ICON_TEXTURE_SIZE,
@@ -394,7 +394,7 @@ export class StarFieldRenderer {
 
     this.starbaseIconManager = new SpriteManager(
       "starbaseIconSprites",
-      new URL("../../own_starbase_icon.png", import.meta.url).toString(),
+      new URL("../../own_starbase_icon.webp", import.meta.url).toString(),
       Math.max(1, stars.length),
       {
         width: STARBASE_ICON_TEXTURE_SIZE,

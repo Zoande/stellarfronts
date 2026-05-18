@@ -560,7 +560,7 @@ export class StarbasePanel {
   overflow: hidden;
   background:
     linear-gradient(90deg, rgba(1, 10, 15, 0.1), rgba(2, 13, 18, 0.74)),
-    url("/textures/starbase/Starbase_banner.png") center / cover no-repeat,
+    url("/textures/starbase/Starbase_banner.webp") center / cover no-repeat,
     radial-gradient(circle at 54% 38%, rgba(132, 234, 255, 0.38), transparent 12rem),
     linear-gradient(135deg, rgba(17, 65, 88, 0.96), rgba(6, 23, 48, 0.96) 42%, rgba(7, 44, 54, 0.92));
 }
