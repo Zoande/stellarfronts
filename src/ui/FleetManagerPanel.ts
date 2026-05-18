@@ -1,3 +1,22 @@
+import {
+  ArcRotateCamera,
+  Color3,
+  Color4,
+  Engine,
+  HemisphericLight,
+  Material,
+  MeshBuilder,
+  MultiMaterial,
+  PointLight,
+  Scene,
+  SceneLoader,
+  StandardMaterial,
+  Texture,
+  TransformNode,
+  Vector3,
+} from "@babylonjs/core";
+import type { AbstractMesh } from "@babylonjs/core";
+import "@babylonjs/loaders/OBJ/objFileLoader";
 import type { FactionInfo } from "../data/Factions";
 import {
   STARBASE_SHIP_DEFINITIONS,
@@ -25,6 +44,11 @@ import type {
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { computeCombatPowerFromStats, computeFleetPower } from "../game/combatPower";
 import { getFleetTacticalRadius } from "../game/tacticalFormation";
+import {
+  captureScrollState,
+  hasFocusedFormControl,
+  restoreScrollStateSoon,
+} from "./panelDomState";
 
 export interface FleetManagerPanelData {
   fleets: ServerFleet[];
@@ -39,6 +63,19 @@ export interface FleetManagerPanelData {
 }
 
 const STYLE_ID = "fleet-manager-panel-style";
+const SHIP_PREVIEW_MODEL_ROOT = "/ships/fighter_01/";
+const SHIP_PREVIEW_MODEL_FILE = "Fighter_01.obj";
+const SHIP_PREVIEW_TARGET_SIZE = 3.8;
+const FLEET_MANAGER_SCROLL_SELECTORS = [
+  ".fmFleetList",
+  ".fmCompositionList",
+  ".fmBuildShipList",
+  ".fmDesignListPane",
+  ".fmDesignStatsPane",
+  ".fmPaletteList",
+  ".fmBody",
+  ".fmDesignerBody",
+] as const;
 
 type FleetManagerTab = "fleetManager" | "shipDesigner";
 type DesignerSlotKind = "weapon" | "defense" | "utility";
@@ -56,6 +93,15 @@ export class FleetManagerPanel {
   private position = { x: 62, y: 82 };
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
+  private pendingRefreshData: FleetManagerPanelData | null = null;
+  private pendingRefreshTimer: number | null = null;
+  private shipPreviewCanvas: HTMLCanvasElement | null = null;
+  private shipPreviewEngine: Engine | null = null;
+  private shipPreviewScene: Scene | null = null;
+  private shipPreviewRoot: TransformNode | null = null;
+  private shipPreviewLoadPromise: Promise<void> | null = null;
+  private shipPreviewResizeObserver: ResizeObserver | null = null;
+  private shipPreviewHost: HTMLElement | null = null;
 
   private readonly onPointerMove = (ev: PointerEvent): void => {
     if (!this.isDragging || !this.panelElement) return;
@@ -86,6 +132,7 @@ export class FleetManagerPanel {
     this.currentData = data;
     this.ensureSelectedFleet(data);
     if (this.activeTab === "shipDesigner") this.ensureDesignerDraft(data);
+    const scrollState = captureScrollState(this.panelElement, FLEET_MANAGER_SCROLL_SELECTORS);
     if (!this.panelElement) {
       this.panelElement = document.createElement("div");
       this.panelElement.className = "fleetManagerPanel";
@@ -99,15 +146,29 @@ export class FleetManagerPanel {
     this.panelElement.innerHTML = this.render(data);
     this.applyPosition();
     this.bindEvents(data);
+    if (this.activeTab === "shipDesigner") {
+      this.mountShipPreview();
+    } else {
+      this.disposeShipPreview();
+    }
+    restoreScrollStateSoon(this.panelElement, scrollState);
   }
 
   public refresh(data: FleetManagerPanelData): void {
     if (!this.panelElement) return;
+    this.currentData = data;
+    if (this.shouldDeferRefresh()) {
+      this.pendingRefreshData = data;
+      this.schedulePendingRefresh();
+      return;
+    }
     this.show(data);
   }
 
   public close(): void {
     this.onPointerUp();
+    this.clearPendingRefresh();
+    this.disposeShipPreview();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
@@ -119,6 +180,294 @@ export class FleetManagerPanel {
 
   public dispose(): void {
     this.close();
+  }
+
+  private shouldDeferRefresh(): boolean {
+    return this.isDragging || hasFocusedFormControl(this.panelElement);
+  }
+
+  private schedulePendingRefresh(delayMs = 120): void {
+    if (this.pendingRefreshTimer !== null) return;
+    this.pendingRefreshTimer = window.setTimeout(() => {
+      this.pendingRefreshTimer = null;
+      if (!this.pendingRefreshData || !this.panelElement) return;
+      if (this.shouldDeferRefresh()) {
+        this.schedulePendingRefresh();
+        return;
+      }
+      const data = this.pendingRefreshData;
+      this.pendingRefreshData = null;
+      this.show(data);
+    }, delayMs);
+  }
+
+  private clearPendingRefresh(): void {
+    if (this.pendingRefreshTimer !== null) {
+      window.clearTimeout(this.pendingRefreshTimer);
+      this.pendingRefreshTimer = null;
+    }
+    this.pendingRefreshData = null;
+  }
+
+  private mountShipPreview(): void {
+    const host = this.panelElement?.querySelector<HTMLElement>("[data-fm-ship-preview]");
+    if (!host) return;
+
+    if (!this.shipPreviewCanvas) {
+      this.shipPreviewCanvas = document.createElement("canvas");
+      this.shipPreviewCanvas.className = "fmShipPreviewCanvas";
+      this.shipPreviewCanvas.setAttribute("aria-hidden", "true");
+    }
+    if (this.shipPreviewCanvas.parentElement !== host) {
+      host.prepend(this.shipPreviewCanvas);
+    }
+
+    if (this.shipPreviewHost !== host) {
+      this.shipPreviewResizeObserver?.disconnect();
+      this.shipPreviewResizeObserver = null;
+      this.shipPreviewHost = host;
+      if (typeof ResizeObserver !== "undefined") {
+        this.shipPreviewResizeObserver = new ResizeObserver(() => this.shipPreviewEngine?.resize());
+        this.shipPreviewResizeObserver.observe(host);
+      }
+    }
+
+    if (!this.shipPreviewEngine || !this.shipPreviewScene) {
+      this.createShipPreviewScene();
+    }
+    this.shipPreviewEngine?.resize();
+  }
+
+  private createShipPreviewScene(): void {
+    if (!this.shipPreviewCanvas) return;
+
+    const engine = new Engine(this.shipPreviewCanvas, true, {
+      antialias: true,
+      preserveDrawingBuffer: true,
+      stencil: true,
+    }, true);
+    const scene = new Scene(engine);
+    scene.clearColor = new Color4(0, 0, 0, 1);
+
+    const camera = new ArcRotateCamera(
+      "fleetManagerShipPreviewCamera",
+      -Math.PI * 0.46,
+      Math.PI * 0.58,
+      6.2,
+      new Vector3(0, 0.08, 0),
+      scene,
+    );
+    camera.lowerRadiusLimit = 4.2;
+    camera.upperRadiusLimit = 8.5;
+    camera.wheelPrecision = 72;
+    camera.panningSensibility = 0;
+    camera.attachControl(this.shipPreviewCanvas, true);
+    scene.activeCamera = camera;
+
+    const fill = new HemisphericLight("fleetManagerShipPreviewFill", new Vector3(0.2, 1, 0.35), scene);
+    fill.intensity = 0.85;
+    fill.diffuse = new Color3(0.66, 0.78, 0.92);
+    fill.groundColor = new Color3(0.08, 0.12, 0.16);
+
+    const key = new PointLight("fleetManagerShipPreviewKey", new Vector3(-3.4, 3.2, -4.2), scene);
+    key.intensity = 18;
+    key.range = 18;
+    key.diffuse = new Color3(0.76, 0.88, 1.0);
+    key.specular = new Color3(0.95, 0.98, 1.0);
+
+    const rim = new PointLight("fleetManagerShipPreviewRim", new Vector3(3.6, 1.7, 3.2), scene);
+    rim.intensity = 7;
+    rim.range = 18;
+    rim.diffuse = new Color3(0.38, 1.0, 0.82);
+
+    this.shipPreviewEngine = engine;
+    this.shipPreviewScene = scene;
+    engine.runRenderLoop(() => {
+      if (!this.shipPreviewScene || this.shipPreviewScene.isDisposed) return;
+      if (this.shipPreviewRoot) {
+        this.shipPreviewRoot.rotation.y += (engine.getDeltaTime() / 1000) * 0.13;
+      }
+      scene.render();
+    });
+
+    void this.loadShipPreviewModel();
+  }
+
+  private async loadShipPreviewModel(): Promise<void> {
+    if (!this.shipPreviewScene || this.shipPreviewRoot || this.shipPreviewLoadPromise) {
+      return this.shipPreviewLoadPromise ?? Promise.resolve();
+    }
+
+    const scene = this.shipPreviewScene;
+    this.shipPreviewLoadPromise = (async () => {
+      try {
+        const result = await SceneLoader.ImportMeshAsync(
+          "",
+          SHIP_PREVIEW_MODEL_ROOT,
+          SHIP_PREVIEW_MODEL_FILE,
+          scene,
+        );
+        if (this.shipPreviewScene !== scene || scene.isDisposed) {
+          result.meshes.forEach((mesh) => mesh.dispose());
+          return;
+        }
+
+        const meshes = result.meshes.filter((mesh) => (
+          typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
+        ));
+        if (meshes.length === 0) throw new Error("Ship preview model did not produce renderable meshes.");
+
+        const bounds = this.computeMeshBounds(meshes);
+        const maxDimension = Math.max(
+          0.001,
+          bounds.max.x - bounds.min.x,
+          bounds.max.y - bounds.min.y,
+          bounds.max.z - bounds.min.z,
+        );
+
+        const root = new TransformNode("fleetManagerShipPreviewRoot", scene);
+        root.rotation.set(0.2, -0.55, -0.06);
+        root.scaling.setAll(SHIP_PREVIEW_TARGET_SIZE / maxDimension);
+
+        const assetRoot = new TransformNode("fleetManagerShipPreviewAssetRoot", scene);
+        assetRoot.parent = root;
+        assetRoot.position = bounds.center.scale(-1);
+
+        for (const mesh of meshes) {
+          mesh.parent = assetRoot;
+          mesh.isPickable = false;
+          mesh.alwaysSelectAsActiveMesh = true;
+          this.applyShipPreviewMaterialStyle(mesh.material, scene);
+        }
+
+        this.shipPreviewRoot = root;
+      } catch (error) {
+        console.warn("[FleetManagerPanel] Failed to load ship preview model.", error);
+        if (!scene.isDisposed && this.shipPreviewScene === scene) {
+          this.createFallbackShipPreview(scene);
+        }
+      }
+    })().finally(() => {
+      this.shipPreviewLoadPromise = null;
+    });
+
+    return this.shipPreviewLoadPromise;
+  }
+
+  private createFallbackShipPreview(scene: Scene): void {
+    if (this.shipPreviewRoot) return;
+    const root = new TransformNode("fleetManagerShipPreviewFallbackRoot", scene);
+    root.rotation.set(0.2, -0.55, -0.06);
+    this.shipPreviewRoot = root;
+
+    const material = new StandardMaterial("fleetManagerShipPreviewFallbackMat", scene);
+    material.diffuseColor = new Color3(0.58, 0.68, 0.76);
+    material.emissiveColor = new Color3(0.03, 0.05, 0.06);
+    material.specularColor = new Color3(0.86, 0.94, 1.0);
+
+    const body = MeshBuilder.CreateBox("fleetManagerShipPreviewFallbackBody", { width: 2.9, height: 0.34, depth: 0.9 }, scene);
+    body.parent = root;
+    body.material = material;
+    const wing = MeshBuilder.CreateBox("fleetManagerShipPreviewFallbackWing", { width: 1.15, height: 0.08, depth: 2.0 }, scene);
+    wing.parent = root;
+    wing.position.z = 0.08;
+    wing.material = material;
+  }
+
+  private disposeShipPreview(): void {
+    this.shipPreviewResizeObserver?.disconnect();
+    this.shipPreviewResizeObserver = null;
+    this.shipPreviewHost = null;
+    this.shipPreviewCanvas?.remove();
+    this.shipPreviewScene?.dispose();
+    this.shipPreviewEngine?.dispose();
+    this.shipPreviewCanvas = null;
+    this.shipPreviewEngine = null;
+    this.shipPreviewScene = null;
+    this.shipPreviewRoot = null;
+    this.shipPreviewLoadPromise = null;
+  }
+
+  private computeMeshBounds(meshes: AbstractMesh[]): { min: Vector3; max: Vector3; center: Vector3 } {
+    const min = new Vector3(Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY);
+    const max = new Vector3(Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY);
+
+    for (const mesh of meshes) {
+      mesh.computeWorldMatrix(true);
+      const corners = mesh.getBoundingInfo().boundingBox.vectorsWorld;
+      for (const corner of corners) {
+        min.minimizeInPlace(corner);
+        max.maximizeInPlace(corner);
+      }
+    }
+
+    if (!Number.isFinite(min.x) || !Number.isFinite(max.x)) {
+      return { min: new Vector3(-1, -1, -1), max: new Vector3(1, 1, 1), center: Vector3.Zero() };
+    }
+    return { min, max, center: min.add(max).scale(0.5) };
+  }
+
+  private applyShipPreviewMaterialStyle(material: Material | null, scene: Scene): void {
+    if (!material) return;
+
+    if (material instanceof MultiMaterial) {
+      for (const subMaterial of material.subMaterials) {
+        this.applyShipPreviewMaterialStyle(subMaterial, scene);
+      }
+      return;
+    }
+
+    if (!(material instanceof StandardMaterial)) return;
+
+    const name = material.name.toLowerCase();
+    material.disableLighting = false;
+    material.diffuseColor = new Color3(0.92, 0.96, 1.0);
+    material.ambientColor = new Color3(0.34, 0.38, 0.44);
+    material.specularColor = new Color3(0.82, 0.86, 0.9);
+    material.emissiveColor = new Color3(0.014, 0.016, 0.019);
+
+    if (name.includes("body")) {
+      material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Body_BaseColor.png`, scene);
+      material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Body_Normal.png`, scene);
+      material.diffuseColor = new Color3(1.02, 1.04, 1.06);
+      material.emissiveColor = new Color3(0.026, 0.028, 0.033);
+      material.specularPower = 110;
+      return;
+    }
+
+    if (name.includes("front")) {
+      material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Front_BaseColor.png`, scene);
+      material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Front_Normal.png`, scene);
+      material.emissiveTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Front_Emissive.png`, scene);
+      material.diffuseColor = new Color3(0.96, 1.0, 1.04);
+      material.emissiveColor = new Color3(0.018, 0.032, 0.052);
+      material.specularPower = 160;
+      return;
+    }
+
+    if (name.includes("rear")) {
+      material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Rear_BaseColor.png`, scene);
+      material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Rear_Normal.png`, scene);
+      material.emissiveTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Rear_Emissive.png`, scene);
+      material.diffuseColor = new Color3(0.96, 0.98, 1.0);
+      material.emissiveColor = new Color3(0.055, 0.02, 0.012);
+      material.specularPower = 150;
+      return;
+    }
+
+    if (name.includes("windows")) {
+      material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Windows_BaseColor.png`, scene);
+      material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Windows_Normal.png`, scene);
+      material.diffuseColor = new Color3(0.95, 1.0, 1.05);
+      material.emissiveColor = new Color3(0.035, 0.08, 0.095);
+      material.specularPower = 180;
+    }
+  }
+
+  private createShipPreviewTexture(url: string, scene: Scene, level = 1.35): Texture {
+    const texture = new Texture(url, scene);
+    texture.level = level;
+    return texture;
   }
 
   private bindEvents(data: FleetManagerPanelData): void {
@@ -632,29 +981,32 @@ export class FleetManagerPanel {
             <input type="text" value="${this.escapeAttribute(draft.name)}" maxlength="40" data-fm-design-name aria-label="Design name">
             <span>${this.escapeHtml(SHIP_HULL_DEFINITIONS[draft.shipKind]?.label ?? draft.shipKind)}</span>
           </div>
-          <div class="fmCoreSection">
-            <div class="fmSectionTitle">Corvette Core</div>
-            <div class="fmSlotRow fmWeaponSlots">
-              ${draft.weaponModuleIds.map((moduleId, index) => this.renderDesignSlot("weapon", index, moduleId)).join("")}
-            </div>
-          </div>
-          <div class="fmDesignViewport" aria-label="Ship preview"></div>
-          <div class="fmLowerSections">
-            <div>
-              <div class="fmSectionTitle">Defense</div>
-              <div class="fmSlotRow fmDefenseSlots">
-                ${draft.defenseModuleIds.map((moduleId, index) => this.renderDesignSlot("defense", index, moduleId)).join("")}
+          <div class="fmDesignViewport" data-fm-ship-preview aria-label="Ship preview">
+            <div class="fmPreviewOverlay">
+              <div class="fmPreviewSlots">
+                <div class="fmPreviewSlotGroup">
+                  <div class="fmPreviewSlotTitle">Weapons</div>
+                  <div class="fmSlotRow fmWeaponSlots">
+                    ${draft.weaponModuleIds.map((moduleId, index) => this.renderDesignSlot("weapon", index, moduleId)).join("")}
+                  </div>
+                </div>
+                <div class="fmPreviewSlotGroup">
+                  <div class="fmPreviewSlotTitle">Defense</div>
+                  <div class="fmSlotRow fmDefenseSlots">
+                    ${draft.defenseModuleIds.map((moduleId, index) => this.renderDesignSlot("defense", index, moduleId)).join("")}
+                  </div>
+                </div>
+                <div class="fmPreviewSlotGroup compact">
+                  <div class="fmPreviewSlotTitle">Extra</div>
+                  <div class="fmSlotRow">
+                    ${this.renderDesignSlot("utility", 0, draft.utilityModuleId)}
+                  </div>
+                </div>
+              </div>
+              <div class="fmModulePalette fmPreviewPalette">
+                ${this.renderModulePalette()}
               </div>
             </div>
-            <div>
-              <div class="fmSectionTitle">Extra</div>
-              <div class="fmSlotRow">
-                ${this.renderDesignSlot("utility", 0, draft.utilityModuleId)}
-              </div>
-            </div>
-          </div>
-          <div class="fmModulePalette">
-            ${this.renderModulePalette()}
           </div>
         </main>
         <aside class="fmDesignStatsPane">
@@ -1676,7 +2028,7 @@ export class FleetManagerPanel {
 .fmDesignerBody {
   min-height: 0;
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 248px;
+  grid-template-columns: 208px minmax(430px, 1fr) 232px;
   gap: 8px;
   padding: 8px;
 }
@@ -1774,7 +2126,7 @@ export class FleetManagerPanel {
 
 .fmDesignWorkbench {
   display: grid;
-  grid-template-rows: 36px auto minmax(180px, 1fr) auto 114px;
+  grid-template-rows: 36px minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -1851,10 +2203,105 @@ export class FleetManagerPanel {
 }
 
 .fmDesignViewport {
-  min-height: 180px;
+  position: relative;
+  min-height: 430px;
   border: 1px solid rgba(103, 255, 221, 0.2);
   background: #000;
+  overflow: hidden;
   box-shadow: inset 0 0 28px rgba(103, 255, 221, 0.08);
+  isolation: isolate;
+}
+
+.fmDesignViewport::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 56% 44%, rgba(103, 255, 221, 0.12), transparent 18rem),
+    linear-gradient(180deg, rgba(103, 255, 221, 0.05), transparent 24%, transparent 76%, rgba(0, 0, 0, 0.42));
+}
+
+.fmShipPreviewCanvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+  outline: none;
+  touch-action: none;
+}
+
+.fmPreviewOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.fmPreviewSlots {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  width: min(292px, calc(100% - 20px));
+  display: grid;
+  gap: 7px;
+  pointer-events: auto;
+}
+
+.fmPreviewSlotGroup {
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: rgba(1, 10, 13, 0.72);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  padding: 7px;
+}
+
+.fmPreviewSlotGroup.compact {
+  width: max-content;
+  max-width: 100%;
+}
+
+.fmPreviewSlotTitle {
+  margin-bottom: 6px;
+  color: rgba(206, 232, 226, 0.72);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.fmPreviewSlotGroup .fmSlotRow {
+  gap: 5px;
+}
+
+.fmPreviewSlotGroup .fmDesignSlot {
+  width: 86px;
+  height: 50px;
+  grid-template-columns: 24px minmax(0, 1fr);
+}
+
+.fmPreviewSlotGroup .fmDesignSlot span {
+  width: 22px;
+  height: 22px;
+}
+
+.fmPreviewSlotGroup .fmDesignSlot strong {
+  font-size: 9px;
+}
+
+.fmPreviewPalette {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 3;
+  pointer-events: auto;
+  border-color: rgba(103, 255, 221, 0.28);
+  background: rgba(1, 10, 13, 0.78);
+  box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.34), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 
 .fmLowerSections {

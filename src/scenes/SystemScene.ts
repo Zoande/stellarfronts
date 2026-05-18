@@ -252,6 +252,7 @@ export class SystemScene implements IGameScene {
   private selectionPanel!: SelectionPanel;
   private starbasePanel!: StarbasePanel;
   private entityCardLayer: HTMLDivElement | null = null;
+  private entityCardNodes = new Map<string, HTMLButtonElement>();
   private selectedFleetId: string | null = null;
   private selectedFleetIds = new Set<string>();
   private activeFleetAction: ShipAction | null = null;
@@ -1334,29 +1335,44 @@ export class SystemScene implements IGameScene {
   }
 
   private refreshSystemEntityCards(): void {
-    this.entityCardLayer?.remove();
-    this.entityCardLayer = null;
-
     const fleets = this.getFleetsInCurrentSystem();
     const starbases = this.getStarbasesInCurrentSystem();
-    if (fleets.length === 0 && starbases.length === 0) return;
+    if (fleets.length === 0 && starbases.length === 0) {
+      this.entityCardLayer?.remove();
+      this.entityCardLayer = null;
+      this.entityCardNodes.clear();
+      return;
+    }
 
     this.injectSystemEntityCardStyles();
     const root = document.getElementById("spaceHudRoot") ?? document.body;
-    const layer = document.createElement("div");
+    const layer = this.entityCardLayer ?? document.createElement("div");
     layer.className = "systemEntityCardLayer";
+    if (!this.entityCardLayer || layer.parentElement !== root) {
+      root.appendChild(layer);
+    }
     this.entityCardLayer = layer;
+    const liveKeys = new Set<string>();
 
     fleets.forEach((fleet, index) => {
       const owner = this.getFaction(fleet.ownerId);
-      const card = document.createElement("button");
+      const key = `fleet:${fleet.id}`;
+      liveKeys.add(key);
+      let card = this.entityCardNodes.get(key);
+      if (!card) {
+        card = document.createElement("button");
+        this.entityCardNodes.set(key, card);
+        layer.appendChild(card);
+      }
       card.type = "button";
       card.className = "systemEntityCard fleet";
+      card.dataset.entityKey = key;
       card.dataset.entityKind = "fleet";
       card.dataset.entityId = fleet.id;
       card.dataset.offsetY = String(-28 - index * 36);
       card.style.setProperty("--entity-accent", this.factionColorCss(owner, "rgba(88, 211, 255, 0.95)"));
-      card.innerHTML = `
+      const renderSignature = `${fleet.ownerId}|${this.formatFleetPower(fleet, index)}|${this.formatFleetStatus(fleet)}`;
+      const html = `
         <span class="systemEntityFlag">${this.getFactionFlagSvg(fleet.ownerId)}</span>
         <span class="systemEntityCopy">
           <strong>${this.escapeHtml(this.formatFleetPower(fleet, index))}</strong>
@@ -1364,24 +1380,36 @@ export class SystemScene implements IGameScene {
         </span>
         <span class="systemEntityIcon">F</span>
       `;
-      card.addEventListener("click", (ev) => {
+      if (card.dataset.renderSignature !== renderSignature) {
+        card.innerHTML = html;
+        card.dataset.renderSignature = renderSignature;
+      }
+      card.onclick = (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
         this.selectFleetFromCard(fleet, ev.shiftKey);
-      });
-      layer.appendChild(card);
+      };
     });
 
     starbases.forEach((starbase, index) => {
       const owner = this.getFaction(starbase.ownerId);
-      const card = document.createElement("button");
+      const key = `starbase:${starbase.id}`;
+      liveKeys.add(key);
+      let card = this.entityCardNodes.get(key);
+      if (!card) {
+        card = document.createElement("button");
+        this.entityCardNodes.set(key, card);
+        layer.appendChild(card);
+      }
       card.type = "button";
       card.className = "systemEntityCard starbase";
+      card.dataset.entityKey = key;
       card.dataset.entityKind = "starbase";
       card.dataset.entityId = starbase.id;
       card.dataset.offsetY = String(-16 - index * 34);
       card.style.setProperty("--entity-accent", this.factionColorCss(owner, "rgba(255, 207, 115, 0.95)"));
-      card.innerHTML = `
+      const renderSignature = `${starbase.ownerId}|${this.formatStarbasePower(starbase)}|${starbase.status}`;
+      const html = `
         <span class="systemEntityFlag">${this.getFactionFlagSvg(starbase.ownerId)}</span>
         <span class="systemEntityCopy">
           <strong>${this.escapeHtml(this.formatStarbasePower(starbase))}</strong>
@@ -1389,15 +1417,22 @@ export class SystemScene implements IGameScene {
         </span>
         <span class="systemEntityIcon">SB</span>
       `;
-      card.addEventListener("click", (ev) => {
+      if (card.dataset.renderSignature !== renderSignature) {
+        card.innerHTML = html;
+        card.dataset.renderSignature = renderSignature;
+      }
+      card.onclick = (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
         this.openStarbasePanel(starbase);
-      });
-      layer.appendChild(card);
+      };
     });
 
-    root.appendChild(layer);
+    for (const [key, card] of Array.from(this.entityCardNodes.entries())) {
+      if (liveKeys.has(key)) continue;
+      card.remove();
+      this.entityCardNodes.delete(key);
+    }
     this.updateSystemEntityCards();
   }
 
@@ -1733,12 +1768,13 @@ export class SystemScene implements IGameScene {
   cursor: pointer;
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.42), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   transform: translate(-50%, -50%);
-  transition: transform 0.12s ease, filter 0.12s ease;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
 }
 
 .systemEntityCard:hover {
   filter: brightness(1.16);
-  transform: translate(-50%, -50%) scale(1.04);
+  border-color: color-mix(in srgb, var(--entity-accent) 88%, white);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.46), 0 0 18px color-mix(in srgb, var(--entity-accent) 28%, transparent), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
 .systemEntityCard.starbase {
@@ -4193,6 +4229,7 @@ export class SystemScene implements IGameScene {
     this.tacticalShipTemplate = null;
     this.entityCardLayer?.remove();
     this.entityCardLayer = null;
+    this.entityCardNodes.clear();
     this.orbitSystem.dispose();
     this.camera?.detachControl();
     this.scene.dispose();

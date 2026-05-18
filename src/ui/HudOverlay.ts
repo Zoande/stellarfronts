@@ -698,6 +698,9 @@ export class HudOverlay {
   private readonly toggleButtons: Record<HudToggleKey, HTMLButtonElement>;
   private currentClock: GameClock | null = null;
   private clockFrame: number | null = null;
+  private clockShellVisible = false;
+  private connectedSignature: string | null = null;
+  private resourceSignature = "";
 
   constructor(callbacks: HudCallbacks) {
     this.callbacks = callbacks;
@@ -795,62 +798,84 @@ export class HudOverlay {
     this.titleEl.textContent = state.title;
     if (state.clock) {
       this.currentClock = state.clock;
-      this.clockEl.innerHTML = `
-        <div class="spaceHudClockGrid">
-          <span class="spaceHudClockLabel">Galactic Standard</span>
-          <span class="spaceHudClockValue" data-clock-date></span>
-          <span class="spaceHudClockTime" data-clock-time></span>
-        </div>
-      `;
+      if (!this.clockShellVisible) {
+        this.clockEl.innerHTML = `
+          <div class="spaceHudClockGrid">
+            <span class="spaceHudClockLabel">Galactic Standard</span>
+            <span class="spaceHudClockValue" data-clock-date></span>
+            <span class="spaceHudClockTime" data-clock-time></span>
+          </div>
+        `;
+        this.clockShellVisible = true;
+      }
       this.renderClock();
       this.ensureClockAnimation();
     } else {
       this.currentClock = null;
       this.stopClockAnimation();
-      this.clockEl.innerHTML = "";
+      if (this.clockShellVisible) {
+        this.clockEl.innerHTML = "";
+        this.clockShellVisible = false;
+      }
     }
     if (state.economy) {
-      const flag = `<div class="spaceHudFactionFlag">${this.factionFlagSvg}</div>`;
-      const resources = RESOURCE_KINDS.map((resource) => {
-        const stockpile = state.economy?.stockpiles[resource] ?? 0;
-        const delta = (state.economy?.monthlyDelta[resource] ?? 0) / GAME_HOURS_PER_MONTH;
-        return `
-          <div class="spaceHudResourceItem">
-            <span class="spaceHudResourceIcon ${resource}">${RESOURCE_ICON_LABELS[resource]}</span>
-            <span class="spaceHudResourceText">
-              <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
-              <span class="spaceHudResourceValue">${formatCompactNumber(stockpile)}</span>
-              <span class="spaceHudResourceDelta ${delta < 0 ? "negative" : ""}">${formatDelta(delta)}</span>
-            </span>
-          </div>
-        `;
-      }).join("");
-      this.resourceEl.innerHTML = `${flag}${resources}`;
+      const nextResourceSignature = JSON.stringify({
+        stockpiles: state.economy.stockpiles,
+        monthlyDelta: state.economy.monthlyDelta,
+      });
+      if (this.resourceSignature !== nextResourceSignature) {
+        const flag = `<div class="spaceHudFactionFlag">${this.factionFlagSvg}</div>`;
+        const resources = RESOURCE_KINDS.map((resource) => {
+          const stockpile = state.economy?.stockpiles[resource] ?? 0;
+          const delta = (state.economy?.monthlyDelta[resource] ?? 0) / GAME_HOURS_PER_MONTH;
+          return `
+            <div class="spaceHudResourceItem">
+              <span class="spaceHudResourceIcon ${resource}">${RESOURCE_ICON_LABELS[resource]}</span>
+              <span class="spaceHudResourceText">
+                <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
+                <span class="spaceHudResourceValue">${formatCompactNumber(stockpile)}</span>
+                <span class="spaceHudResourceDelta ${delta < 0 ? "negative" : ""}">${formatDelta(delta)}</span>
+              </span>
+            </div>
+          `;
+        }).join("");
+        this.resourceEl.innerHTML = `${flag}${resources}`;
+        this.resourceSignature = nextResourceSignature;
+      }
     } else {
-      this.resourceEl.innerHTML = "";
+      if (this.resourceSignature) {
+        this.resourceEl.innerHTML = "";
+        this.resourceSignature = "";
+      }
     }
     this.exitButton.disabled = !state.canExitSystem;
 
-    this.connectedContainer.innerHTML = "";
-    if (state.connectedSystems.length === 0) {
-      const none = document.createElement("button");
-      none.type = "button";
-      none.className = "spaceHudConnectedBtn";
-      none.textContent = "No Linked Systems";
-      none.disabled = true;
-      this.connectedContainer.appendChild(none);
-    } else {
-      for (const target of state.connectedSystems) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "spaceHudConnectedBtn";
-        btn.textContent = `> ${truncateLabel(target.name)}`;
-        btn.title = target.name;
-        btn.addEventListener("click", () => {
-          this.callbacks.onNavigateConnectedSystem(target.id);
-        });
-        this.connectedContainer.appendChild(btn);
+    const nextConnectedSignature = state.connectedSystems
+      .map((system) => `${system.id}:${system.name}`)
+      .join("|");
+    if (this.connectedSignature !== nextConnectedSignature) {
+      this.connectedContainer.innerHTML = "";
+      if (state.connectedSystems.length === 0) {
+        const none = document.createElement("button");
+        none.type = "button";
+        none.className = "spaceHudConnectedBtn";
+        none.textContent = "No Linked Systems";
+        none.disabled = true;
+        this.connectedContainer.appendChild(none);
+      } else {
+        for (const target of state.connectedSystems) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "spaceHudConnectedBtn";
+          btn.textContent = `> ${truncateLabel(target.name)}`;
+          btn.title = target.name;
+          btn.addEventListener("click", () => {
+            this.callbacks.onNavigateConnectedSystem(target.id);
+          });
+          this.connectedContainer.appendChild(btn);
+        }
       }
+      this.connectedSignature = nextConnectedSignature;
     }
 
     const toggleOrder: HudToggleKey[] = ["hyperlanes", "bloom", "centerCloud", "stars", "ownership"];

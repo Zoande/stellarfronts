@@ -34,6 +34,7 @@ import type {
   UrbanSubDistrictKind,
 } from "../data/Economy";
 import type { ClientCommand } from "../game/GameProtocol";
+import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 
 export type CelestialObjectKind = "planet" | "star";
 
@@ -52,6 +53,12 @@ export interface CelestialObjectPanelData {
 }
 
 const STYLE_ID = "celestial-object-panel-style";
+const CELESTIAL_SCROLL_SELECTORS = [
+  ".coBuildList",
+  ".coQueueList",
+  ".coFeatureList",
+  ".coPopGroupList",
+] as const;
 const PLANET_BANNER_DIR = "/textures/planet-banners";
 const BUILDING_ICON_DIR = "/textures/buildings";
 const DISTRICT_ICON_DIR = "/textures/districts";
@@ -256,6 +263,7 @@ export class CelestialObjectPanel {
     if (this.buildingPickerTarget) {
       this.buildingPickerTarget = this.resolveBuildingPickerTarget(data, this.buildingPickerTarget);
     }
+    const scrollState = captureScrollState(this.panelElement, CELESTIAL_SCROLL_SELECTORS);
     if (!this.panelElement) {
       this.panelElement = document.createElement("div");
       this.panelElement.className = "celestialObjectPanel";
@@ -267,6 +275,7 @@ export class CelestialObjectPanel {
     this.panelElement.innerHTML = this.render(data);
     this.applyPosition();
     this.bindPanelEvents(data);
+    restoreScrollStateSoon(this.panelElement, scrollState);
   }
 
   public refreshPlanetState(

@@ -563,7 +563,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         activeSystemScene.setRecentCombatContacts(snapshot.recentCombatContacts);
       }
       if (isFull || has("clock") || has("fleets")) {
-        activeSystemScene.setFleetSystemPositions(getFleetSystemPositions());
+        activeSystemScene.setFleetSystemPositions(getFleetSystemPositions(), { refreshCards: false });
+      }
+      if (isFull || has("fleets")) {
         activeSystemScene.setServerFleets(snapshot.fleets);
       }
       if (isFull || has("ships")) {
@@ -582,7 +584,16 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
 
     updateHud();
-    refreshFleetManager();
+    if (
+      isFull
+      || has("fleets")
+      || has("ships")
+      || has("shipDesigns")
+      || has("starbases")
+      || has("visibility")
+    ) {
+      refreshFleetManager();
+    }
   }
 
   async function switchScene(factory: () => IGameScene): Promise<void> {

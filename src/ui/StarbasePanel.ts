@@ -12,6 +12,7 @@ import {
 import type { ResourceCounts } from "../data/Economy";
 import type { StarbaseBuildingKind } from "../data/Starbase";
 import type { ClientCommand, ServerStarbase } from "../game/GameProtocol";
+import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 
 export interface StarbasePanelData {
   id: string;
@@ -26,6 +27,13 @@ export interface StarbasePanelData {
 }
 
 const STYLE_ID = "starbase-panel-style";
+const STARBASE_SCROLL_SELECTORS = [
+  ".sbBuildingList",
+  ".sbQueueList",
+  ".sbOrbitList",
+  ".sbShipQueueList",
+  ".sbAvailableShipList",
+] as const;
 
 type StarbaseTab = "starbase" | "defenses" | "shipyard";
 
@@ -70,6 +78,7 @@ export class StarbasePanel {
       this.buildingPickerSlotIndex = null;
     }
     this.currentData = data;
+    const scrollState = captureScrollState(this.panelElement, STARBASE_SCROLL_SELECTORS);
     if (!this.panelElement) {
       this.panelElement = document.createElement("div");
       this.panelElement.className = "starbasePanel";
@@ -83,6 +92,7 @@ export class StarbasePanel {
     this.panelElement.innerHTML = this.render(data);
     this.applyPosition();
     this.bindEvents(data);
+    restoreScrollStateSoon(this.panelElement, scrollState);
   }
 
   public close(): void {
