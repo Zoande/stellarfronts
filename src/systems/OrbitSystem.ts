@@ -1,10 +1,9 @@
 import type { Mesh } from "@babylonjs/core";
+import type { SystemPosition } from "../data/SystemCoordinates";
 
 export interface OrbitalBody {
   mesh: Mesh;
-  orbitRadius: number;
-  orbitSpeed: number;         // radians per second
-  currentAngle: number;       // current orbital angle in radians
+  getSystemPosition: (nowMs: number) => SystemPosition;
   axialRotationSpeed: number; // radians per second
 }
 
@@ -21,15 +20,12 @@ export class OrbitSystem {
   }
 
   /** Call once per frame with delta time in seconds. */
-  update(deltaTime: number): void {
+  update(deltaTime: number, nowMs = Date.now()): void {
     for (const body of this.bodies) {
-      // Advance orbit angle
-      body.currentAngle += body.orbitSpeed * deltaTime;
-
-      // Update world position (XZ plane orbit, Y=0)
-      body.mesh.position.x = Math.cos(body.currentAngle) * body.orbitRadius;
-      body.mesh.position.z = Math.sin(body.currentAngle) * body.orbitRadius;
-      body.mesh.position.y = 0;
+      const position = body.getSystemPosition(nowMs);
+      body.mesh.position.x = position.x;
+      body.mesh.position.y = position.y;
+      body.mesh.position.z = position.z;
 
       // Axial rotation
       body.mesh.rotation.y += body.axialRotationSpeed * deltaTime;

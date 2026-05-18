@@ -239,6 +239,7 @@ export interface FactionEconomyState {
   stockpiles: ResourceCounts;
   monthlyDelta: ResourceCounts;
   lastProcessedMonth: number;
+  lastProcessedHour: number;
 }
 
 export interface PlanetEconomySeed {
@@ -1519,6 +1520,23 @@ export function applyPopulationGrowth(
   return next;
 }
 
+export function applyPopulationGrowthFraction(
+  state: PlanetState,
+  districtLimits: DistrictCounts | undefined,
+  quarterFraction: number,
+): PlanetState {
+  const next = recalculatePlanetStateEconomy(state, districtLimits);
+  if (!next.isHabited || quarterFraction <= 0) return next;
+
+  const growth = Math.round(next.economy.populationGrowth.netPerQuarter * quarterFraction);
+  const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth);
+  return recalculatePlanetStateEconomy({
+    ...next,
+    population: sumSpeciesPopulation(speciesPopulations),
+    speciesPopulations,
+  }, districtLimits);
+}
+
 function applyPopulationDeltaToSpecies(populations: SpeciesPopulation[], delta: number): SpeciesPopulation[] {
   if (delta === 0 || populations.length === 0) return populations.map((entry) => cloneSpeciesPopulation(entry));
   const total = sumSpeciesPopulation(populations);
@@ -1768,9 +1786,6 @@ export function createInitialFactionEconomyState(factionId: number, currentMonth
     stockpiles: cloneResourceCounts(STARTING_RESOURCE_STOCKPILES),
     monthlyDelta: createEmptyResourceCounts(),
     lastProcessedMonth: currentMonth,
+    lastProcessedHour: currentMonth * 30 * 24,
   };
-}
-
-export function gameYearToMonthIndex(year: number): number {
-  return Math.floor(year * 12);
 }

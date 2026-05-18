@@ -15,9 +15,20 @@ import type {
   StarbaseShipKind,
   StarbaseShipQueueItem,
 } from "../data/Starbase";
+import type { ShipDesign } from "../data/ShipDesigns";
 import type { PlanetConfig, StarData } from "../data/StarMap";
+import type { SystemPosition } from "../data/SystemCoordinates";
+import type {
+  CombatTargetKind,
+  CombatStance,
+  FleetBehavior,
+  FleetChasePolicy,
+  FleetRetreatPolicy,
+  FleetTacticalOrderType,
+} from "./CombatTypes";
+import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 
-export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat";
+export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat" | "retreatTo" | "emergencyRetreatTo";
 
 export type FleetFormation = "line" | "vanguard" | "echelon" | "defensive";
 
@@ -26,11 +37,19 @@ export type ShipTransitPhase =
   | "departingSystem"
   | "jumpingHyperlane"
   | "arrivingSystem"
-  | "buildingStarbase";
+  | "buildingStarbase"
+  | "movingSystem"
+  | "orbitingPlanet"
+  | "orbiting"
+  | "missingInAction";
 
 export interface GameClock {
   year: number;
   speedMultiplier: number;
+  tickSizeDays: number;
+  tickSpeedSeconds: number;
+  paused: boolean;
+  syncedAtMs: number;
 }
 
 export type ServerUpdateField =
@@ -40,9 +59,10 @@ export type ServerUpdateField =
   | "habitedPlanetSystems"
   | "factionEconomies"
   | "ships"
+  | "shipDesigns"
   | "fleets"
   | "starbases"
-  | "battles";
+  | "combatContacts";
 
 export interface ServerStar extends StarData {}
 
@@ -54,8 +74,17 @@ export interface ServerStarbase {
   id: string;
   ownerId: number;
   starId: number;
+  systemPosition: ShipSystemPosition;
   status: "online" | "building";
   buildProgress: number;
+  shield: number;
+  maxShield: number;
+  armor: number;
+  maxArmor: number;
+  hull: number;
+  maxHull: number;
+  weaponCooldowns?: Record<string, number>;
+  lastShieldDamageAtYear?: number | null;
   level: StarbaseLevel;
   economy: StarbaseEconomy;
   buildingSlots: Array<StarbaseBuildingKind | null>;
@@ -63,11 +92,7 @@ export interface ServerStarbase {
   shipQueue: StarbaseShipQueueItem[];
 }
 
-export interface ShipSystemPosition {
-  x: number;
-  y: number;
-  z: number;
-}
+export type ShipSystemPosition = SystemPosition;
 
 export interface ShipHyperlanePosition {
   fromStarId: number;
@@ -75,11 +100,87 @@ export interface ShipHyperlanePosition {
   progress: number;
 }
 
+export type FleetOrderType = "move" | "build" | "orbit" | "merge" | "retreat" | null;
+
+export type FleetOrbitTargetKind = "star" | "planet" | "starbase" | "hyperlane" | "fleet";
+
+export interface FleetOrbitTarget {
+  kind: FleetOrbitTargetKind;
+  starId: number;
+  position: ShipSystemPosition;
+  planetId?: string | null;
+  starbaseId?: string | null;
+  connectedStarId?: number | null;
+  targetFleetId?: string | null;
+}
+
+export type FleetMovementSegmentKind = "system" | "hyperlane" | "orbit";
+
+export interface FleetMovementSegment {
+  kind: FleetMovementSegmentKind;
+  fromStarId: number;
+  toStarId: number;
+  startYear: number;
+  endYear: number;
+  from: ShipSystemPosition;
+  to: ShipSystemPosition;
+  targetPlanetId?: string | null;
+}
+
+export interface FleetMovementPlan {
+  destinationStarId: number;
+  destinationPlanetId?: string | null;
+  destinationPosition?: ShipSystemPosition | null;
+  destinationOrbitTarget?: FleetOrbitTarget | null;
+  startedAtYear: number;
+  endsAtYear: number;
+  totalDays: number;
+  segments: FleetMovementSegment[];
+}
+
+export type FleetRetreatMode = "system" | "emergencyFtl";
+export type FleetRetreatStatus = "ordered" | "escaping" | "mia" | "completed";
+
+export interface FleetRetreatState {
+  mode: FleetRetreatMode;
+  status: FleetRetreatStatus;
+  targetStarId: number;
+  targetSystemPosition?: ShipSystemPosition | null;
+  startedAtYear: number;
+  miaUntilYear?: number | null;
+  riskApplied?: boolean;
+}
+
+export interface FleetRetreatDestination {
+  kind: "nearestFriendlyStarbase" | "selectedSystem";
+  targetStarId?: number | null;
+  targetSystemPosition?: ShipSystemPosition | null;
+}
+
+export interface FleetCombatSettings {
+  behavior: FleetBehavior;
+  chasePolicy: FleetChasePolicy;
+  retreatPolicy: FleetRetreatPolicy;
+  retreatDestination?: FleetRetreatDestination | null;
+}
+
+export interface FleetTacticalOrder {
+  type: FleetTacticalOrderType;
+  targetId?: string | null;
+  targetKind?: CombatTargetKind | null;
+  targetPosition?: ShipSystemPosition | null;
+  guardPosition?: ShipSystemPosition | null;
+  issuedAtYear?: number | null;
+}
+
+export type FleetCombatStatus = "idle" | "maneuvering" | "engaging" | "firing" | "evading" | "retreating" | "destroyed";
+
 export interface ServerShip {
   id: string;
   ownerId: number;
   fleetId: string;
   shipKind: StarbaseShipKind;
+  designId?: string;
   speed: number;
   hp: number;
   maxHp: number;
@@ -89,6 +190,7 @@ export interface ServerShip {
   maxArmor: number;
   hull: number;
   maxHull: number;
+  weaponCooldowns?: Record<string, number>;
 }
 
 export interface ServerFleet {
@@ -104,85 +206,48 @@ export interface ServerFleet {
   route: number[];
   routeIndex: number;
   phaseProgress: number;
-  orderType: "move" | "build" | null;
+  orderType: FleetOrderType;
   speed: number;
+  combatStance: CombatStance;
+  retreatState: FleetRetreatState | null;
   systemPosition: ShipSystemPosition;
   hyperlanePosition: ShipHyperlanePosition | null;
+  movementPlan: FleetMovementPlan | null;
+  orbitTargetPlanetId: string | null;
+  orbitOffset: ShipSystemPosition | null;
+  orbitTarget: FleetOrbitTarget | null;
+  mergeTargetFleetId: string | null;
+  combatSettings: FleetCombatSettings;
+  currentTacticalOrder?: FleetTacticalOrder | null;
+  tacticalRadius: number;
+  maxWeaponRange: number;
+  minWeaponRange: number;
+  currentTargetId?: string | null;
+  currentTargetKind?: CombatTargetKind | null;
+  combatStatus: FleetCombatStatus;
+  lastCombatAtYear?: number | null;
 }
 
-export type BattlePhase = "opening" | "engaged" | "retreating" | "resolved";
-export type BattleSide = "attacker" | "defender";
-export type BattleZone = 0 | 1 | 2 | 3;
-
-export interface ServerBattleAction {
-  actorId: string;
-  movedToZone?: BattleZone;
-  fired?: {
-    targetId: string;
-    hit: boolean;
-    shieldDamage: number;
-    armorDamage: number;
-    hullDamage: number;
-    targetDestroyed: boolean;
-  };
-}
-
-export interface ServerBattleRound {
-  round: number;
-  actions: ServerBattleAction[];
-}
-
-export interface ServerBattleShipState {
-  shipId: string;
-  fleetId: string;
-  ownerId: number;
-  side: BattleSide;
-  zone: BattleZone;
-  targetId?: string | null;
-  shield: number;
-  maxShield: number;
-  armor: number;
-  maxArmor: number;
-  hull: number;
-  maxHull: number;
-  destroyed: boolean;
-  lastHitRound: number;
-}
-
-export interface ServerBattleStarbaseState {
-  starbaseId: string;
-  ownerId: number;
-  zone: BattleZone;
-  shield: number;
-  maxShield: number;
-  armor: number;
-  maxArmor: number;
-  hull: number;
-  maxHull: number;
-  destroyed: boolean;
-  lastHitRound: number;
-}
-
-export interface ServerBattleResult {
-  winnerFactionId: number;
-  survivingShipIds: string[];
-  capturedStarbase: boolean;
-}
-
-export interface ServerBattle {
+export interface ServerCombatContact {
   id: string;
-  starId: number;
-  attackerFactionId: number;
-  defenderFactionId: number;
-  attackerFleetIds: string[];
-  defenderFleetIds: string[];
-  starbaseId?: string | null;
-  ships: ServerBattleShipState[];
-  starbase?: ServerBattleStarbaseState | null;
-  round: number;
-  phase: BattlePhase;
-  recentRounds: ServerBattleRound[];
-  result?: ServerBattleResult;
+  year: number;
+  sourceId: string;
+  sourceKind: CombatTargetKind;
+  sourceOwnerId: number;
+  targetId: string;
+  targetKind: CombatTargetKind;
+  targetOwnerId: number;
+  weaponId?: string;
+  weaponName?: string;
+  hit: boolean;
+  accuracyMiss?: boolean;
+  dodged?: boolean;
+  shieldDamage: number;
+  armorDamage: number;
+  hullDamage: number;
+  targetDestroyed: boolean;
+  sourcePosition: ShipSystemPosition;
+  targetPosition: ShipSystemPosition;
 }
 
 export interface MoveCommand {
@@ -190,6 +255,8 @@ export interface MoveCommand {
   fleetId?: string;
   shipId?: string;
   targetStarId: number;
+  targetSystemPosition?: ShipSystemPosition;
+  orbitTarget?: FleetOrbitTarget | null;
 }
 
 export interface BuildCommand {
@@ -197,6 +264,12 @@ export interface BuildCommand {
   fleetId?: string;
   shipId?: string;
   targetStarId: number;
+}
+
+export interface OrbitPlanetCommand {
+  type: "orbitPlanet";
+  fleetId: string;
+  planetId: string;
 }
 
 export interface MergeFleetsCommand {
@@ -248,11 +321,60 @@ export interface BuildStarbaseShipCommand {
   type: "buildStarbaseShip";
   starbaseId: string;
   shipKind: StarbaseShipKind;
+  designId?: string;
+}
+
+export interface SaveShipDesignCommand {
+  type: "saveShipDesign";
+  designId?: string;
+  shipKind: StarbaseShipKind;
+  name: string;
+  weaponModuleIds: string[];
+  defenseModuleIds: string[];
+  utilityModuleId?: string | null;
+}
+
+export interface DecommissionShipDesignCommand {
+  type: "decommissionShipDesign";
+  designId: string;
 }
 
 export interface RetreatFleetCommand {
   type: "retreatFleet";
   fleetId: string;
+}
+
+export interface RetreatFleetToCommand {
+  type: "retreatFleetTo";
+  fleetId: string;
+  targetStarId: number;
+  targetSystemPosition?: ShipSystemPosition;
+}
+
+export interface EmergencyRetreatFleetToCommand {
+  type: "emergencyRetreatFleetTo";
+  fleetId: string;
+  targetStarId: number;
+}
+
+export interface AttackTargetCommand {
+  type: "attackTarget";
+  fleetId: string;
+  targetId: string;
+  targetKind: "fleet" | "starbase";
+}
+
+export interface SetFleetCombatSettingsCommand {
+  type: "setFleetCombatSettings";
+  fleetId: string;
+  combatSettings: Partial<FleetCombatSettings>;
+  combatStance?: CombatStance;
+}
+
+export interface IssueFleetTacticalOrderCommand {
+  type: "issueFleetTacticalOrder";
+  fleetId: string;
+  order: FleetTacticalOrder;
 }
 
 export interface RequestSystemDetailsCommand {
@@ -269,10 +391,19 @@ export interface JoinCommand {
   type: "join";
 }
 
+export interface AdminCommandCommand {
+  type: "adminCommand";
+  input: string;
+  context?: AdminCommandContext;
+  requestId?: string;
+}
+
 export type ClientCommand =
   | JoinCommand
+  | AdminCommandCommand
   | MoveCommand
   | BuildCommand
+  | OrbitPlanetCommand
   | MergeFleetsCommand
   | SetSpeedCommand
   | BuildDistrictCommand
@@ -280,10 +411,17 @@ export type ClientCommand =
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
   | BuildStarbaseShipCommand
+  | SaveShipDesignCommand
+  | DecommissionShipDesignCommand
   | SetUrbanSubDistrictCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand
-  | RetreatFleetCommand;
+  | RetreatFleetCommand
+  | RetreatFleetToCommand
+  | EmergencyRetreatFleetToCommand
+  | AttackTargetCommand
+  | SetFleetCombatSettingsCommand
+  | IssueFleetTacticalOrderCommand;
 
 export interface GameSnapshot {
   type: "snapshot";
@@ -299,9 +437,10 @@ export interface GameSnapshot {
   visibleStarIds: number[] | null;
   knownStarIds: number[] | null;
   ships: ServerShip[];
+  shipDesigns: ShipDesign[];
   fleets: ServerFleet[];
   starbases: ServerStarbase[];
-  battles: ServerBattle[];
+  recentCombatContacts: ServerCombatContact[];
 }
 
 export interface GameUpdate {
@@ -319,9 +458,10 @@ export interface GameUpdate {
   visibleStarIds?: number[] | null;
   knownStarIds?: number[] | null;
   ships?: ServerShip[];
+  shipDesigns?: ShipDesign[];
   fleets?: ServerFleet[];
   starbases?: ServerStarbase[];
-  battles?: ServerBattle[];
+  recentCombatContacts?: ServerCombatContact[];
 }
 
 export interface CommandResultEvent {
@@ -352,6 +492,7 @@ export type ServerEvent =
   | GameSnapshot
   | GameUpdate
   | CommandResultEvent
+  | AdminCommandResult
   | ServerInfoEvent
   | SystemDetailsEvent
   | PlanetDetailsEvent;

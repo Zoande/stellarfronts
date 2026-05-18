@@ -43,13 +43,13 @@ const eventCards = [
     header: 'Current Event',
     name: 'Nebula Frontline',
     meta: 'Sign-up ends in 02:13:34:58',
-    image: '/textures/planets/Methane/Methane_04-1024x512.png',
+    image: '/textures/planets/Methane/Methane_04-1024x512.webp',
   },
   {
     header: 'Scenario Rotation',
     name: 'Outer Rim Siege',
     meta: 'Available until 02:13:34:58',
-    image: '/textures/planets/Martian/Martian_03-1024x512.png',
+    image: '/textures/planets/Martian/Martian_03-1024x512.webp',
   },
 ];
 
@@ -194,7 +194,7 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
 
             <div className="home-server-row">
               <div className="home-server-art" aria-hidden="true">
-                <img src="/textures/planets/Gaseous/Gaseous_12-1024x512.png" alt="" />
+                <img src="/textures/planets/Gaseous/Gaseous_12-1024x512.webp" alt="" />
               </div>
               <div className="home-server-copy">
                 <div className="home-server-name">EU-Cygnus Prime</div>

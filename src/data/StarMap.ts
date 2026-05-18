@@ -6,6 +6,10 @@
 
 import { createPlanetStateFromSeed } from "./Economy";
 import type { PlanetFeatureKind, PlanetState } from "./Economy";
+import {
+  normalizePlanetOrbitFields,
+  withPlanetOrbitFields,
+} from "./SystemCoordinates";
 
 export type { PlanetState } from "./Economy";
 
@@ -638,7 +642,7 @@ function createHomeworldPlanet(star: StarData, planetIndex: number): PlanetConfi
   const diameter = (cfg.diameterMin + cfg.diameterMax) / 2;
   const lastOrbit = star.system.planets.reduce((max, planet) => Math.max(max, planet.orbitRadius), 4);
   const name = `${star.name} Homeworld`;
-  return withPlanetObjectDetails({
+  return withPlanetObjectDetails(withPlanetOrbitFields({
     id: createPlanetId(star.id, planetIndex),
     type: PlanetType.Grassland,
     textureVariation: star.id % cfg.variations,
@@ -647,7 +651,7 @@ function createHomeworldPlanet(star: StarData, planetIndex: number): PlanetConfi
     orbitSpeed: 0.24 * cfg.orbitSpeedMultiplier,
     name,
     isHabited: true,
-  }, `${star.id}:${planetIndex}:${name}:homeworld`);
+  }, star.id, planetIndex), `${star.id}:${planetIndex}:${name}:homeworld`);
 }
 
 export function ensureHabitedHomePlanets(stars: StarData[], homeStarIds: Iterable<number>): boolean {
@@ -685,6 +689,7 @@ export function normalizeCelestialObjectDetails(stars: StarData[]): boolean {
         planet.id = expectedId;
         changed = true;
       }
+      changed = normalizePlanetOrbitFields(planet, star.id, i) || changed;
       if (!planet.objectDetails) {
         planet.objectDetails = createPlanetObjectDetails(planet, `${star.id}:${i}:${planet.name}`);
         changed = true;
@@ -817,6 +822,8 @@ export interface PlanetConfig {
   diameter: number;
   orbitRadius: number;
   orbitSpeed: number;
+  orbitPhaseAtEpoch: number;
+  orbitEpochMs: number;
   name: string;
   isHabited?: boolean;
   objectDetails: CelestialObjectDetails;
@@ -1026,7 +1033,7 @@ export function generateStarMap(
       const romanNumerals = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'];
       const planetName = `${starName} ${romanNumerals[i] || i + 1}`;
 
-      planets.push(withPlanetObjectDetails({
+      planets.push(withPlanetObjectDetails(withPlanetOrbitFields({
         id: createPlanetId(starId, i),
         type: planetType,
         textureVariation: textureVar,
@@ -1034,7 +1041,7 @@ export function generateStarMap(
         orbitRadius: baseOrbit + i * orbitSpacing + rng() * (orbitSpacing * 0.8),
         orbitSpeed,
         name: planetName,
-      }, `${starId}:${i}:${planetName}`));
+      }, starId, i), `${starId}:${i}:${planetName}`));
     }
 
     return planets;

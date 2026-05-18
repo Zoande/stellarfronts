@@ -32,11 +32,16 @@ import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
 import type { GalaxyIconClickType, ShipIconStyle } from "../systems/StarFieldRenderer";
 import { SelectionPanel } from "../ui/SelectionPanel";
+import type { FleetPolicyControl, FleetPolicyValue, SelectionData, SelectionShipData } from "../ui/SelectionPanel";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
+import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
+import type { ShipDesign } from "../data/ShipDesigns";
 import { computeStarbasePower } from "../game/combatPower";
+import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
-import type { ClientCommand, ServerBattle, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
 
@@ -62,17 +67,20 @@ export interface GalaxySceneOptions {
   playerShipStarId?: number;
   playerShipSystemIds?: Iterable<number>;
   playerShipTransit?: GalaxyShipTransit | null;
+  clockYear?: number;
   serverFleets?: ServerFleet[];
   serverShips?: ServerShip[];
-  battles?: ServerBattle[];
+  shipDesigns?: ShipDesign[];
   starbaseSystemIds?: Iterable<number>;
   promotedStarbaseSystemIds?: Iterable<number>;
   starbases?: ServerStarbase[];
   planetStates?: PlanetState[];
   habitedPlanetSystemIds?: Iterable<number>;
+  selectedFleetIds?: Iterable<string>;
   onGameplayFrame?: (deltaTime: number) => void;
   onShipCommand?: (action: ShipAction, targetStarId: number, shipId?: string) => void;
   onFleetCommand?: (command: ClientCommand) => void;
+  onSelectedFleetIdsChange?: (fleetIds: string[]) => void;
   onPlanetCommand?: (command: ClientCommand) => void;
   onOpenHabitedPlanet?: (starId: number) => void | Promise<void>;
 }
@@ -875,9 +883,10 @@ export class GalaxyScene implements IGameScene {
   private playerShipStarId = -1;
   private playerShipSystemIds = new Set<number>();
   private playerShipTransit: GalaxyShipTransit | null = null;
+  private clockYear = 2100;
   private serverFleets: ServerFleet[] = [];
   private serverShips: ServerShip[] = [];
-  private battles: ServerBattle[] = [];
+  private shipDesigns: ShipDesign[] = [];
   private starbases: ServerStarbase[] = [];
   private planetStates: PlanetState[] = [];
   private hasExplicitHabitedPlanetSystemIds = false;
@@ -886,6 +895,7 @@ export class GalaxyScene implements IGameScene {
   private selectedShip = false;
   private selectedCommandShipStarId = -1;
   private selectedCommandShipId: string | null = null;
+  private selectedFleetIds = new Set<string>();
   private activeShipAction: ShipAction | null = null;
   private targetableStarIds = new Set<number>();
   private actionMenuElement: HTMLDivElement | null = null;
@@ -967,9 +977,11 @@ export class GalaxyScene implements IGameScene {
       this.playerShipSystemIds.add(this.playerShipStarId);
     }
     this.playerShipTransit = this.options.playerShipTransit ?? null;
+    this.clockYear = this.options.clockYear ?? 2100;
     this.serverFleets = this.options.serverFleets ?? [];
     this.serverShips = this.options.serverShips ?? [];
-    this.battles = this.options.battles ?? [];
+    this.shipDesigns = this.options.shipDesigns ?? [];
+    this.selectedFleetIds = new Set(this.options.selectedFleetIds ?? []);
     this.starbases = this.options.starbases ?? [];
     this.starbaseSystemIds = new Set(
       this.options.starbaseSystemIds
@@ -1034,7 +1046,7 @@ export class GalaxyScene implements IGameScene {
       this.scene,
     );
     const bgMat = new StandardMaterial("galaxyBackgroundMat", this.scene);
-    bgMat.emissiveTexture = new Texture("/textures/galaxy_bg.png", this.scene);
+    bgMat.emissiveTexture = new Texture("/textures/galaxy_bg.webp", this.scene);
     bgMat.disableLighting = true;
     bgMat.backFaceCulling = false;
     bgSphere.material = bgMat;
@@ -1062,8 +1074,10 @@ export class GalaxyScene implements IGameScene {
     this.starField.setPlayerShipState(this.playerShipStarId, this.playerShipTransit);
 
     this.selectionPanel = new SelectionPanel(this.canvas, {
-      onShipAction: (action) => this.beginShipAction(action),
+      onShipAction: (action, selection) => this.beginShipAction(action, selection),
+      onFleetPolicyChange: (control, value, selection) => this.setFleetPolicy(control, value, selection),
     });
+    this.renderSelectedFleetPanels();
     this.objectPanel = new CelestialObjectPanel();
     this.starbasePanel = new StarbasePanel();
     this.starField.setIconClickCallback((type, shiftKey, starId) => {
@@ -1100,8 +1114,11 @@ export class GalaxyScene implements IGameScene {
       if (this.starField.checkIconClick(canvasX, canvasY, {width: this.canvas.width, height: this.canvas.height}, ev.shiftKey)) {
         return;
       }
-      
-      this.tryEnterSystemAtPointer();
+
+      if (this.tryEnterSystemAtPointer()) {
+        return;
+      }
+      if (!ev.shiftKey) this.clearFleetSelection();
     });
 
     await this.scene.whenReadyAsync();
@@ -1477,14 +1494,6 @@ export class GalaxyScene implements IGameScene {
     return this.serverShips.filter((ship) => ship.fleetId === fleetId);
   }
 
-  private getBattleForFleet(fleetId: string | null): ServerBattle | null {
-    if (!fleetId) return null;
-    return this.battles.find((battle) => (
-      battle.phase !== "resolved"
-      && (battle.attackerFleetIds.includes(fleetId) || battle.defenderFleetIds.includes(fleetId))
-    )) ?? null;
-  }
-
   private getFleetDefense(fleetId: string | null): {
     shield: number;
     maxShield: number;
@@ -1532,6 +1541,14 @@ export class GalaxyScene implements IGameScene {
   private getReachableStarIds(action: ShipAction): Set<number> {
     const reachable = new Set<number>();
     if (action === "attack") return reachable;
+    if (action === "emergencyRetreatTo") {
+      if (this.knownStarIds === null) {
+        this.stars.forEach((star) => reachable.add(star.id));
+      } else {
+        for (const starId of this.knownStarIds) reachable.add(starId);
+      }
+      return reachable;
+    }
 
     const start = this.getCurrentCommandOriginStarId();
     if (start < 0 || start >= this.hyperlaneAdjacency.length) return reachable;
@@ -1548,15 +1565,17 @@ export class GalaxyScene implements IGameScene {
         if (reachable.has(neighbor)) continue;
         if (!this.isStarKnownToPerspective(neighbor)) continue;
 
-        const owner = this.starOwnership[neighbor] ?? -1;
-        if (owner >= 0 && owner !== this.playerFactionId) continue;
+        if (action !== "retreatTo") {
+          const owner = this.starOwnership[neighbor] ?? -1;
+          if (owner >= 0 && owner !== this.playerFactionId) continue;
+        }
 
         reachable.add(neighbor);
         queue.push(neighbor);
       }
     }
 
-    if (action === "move") {
+    if (action === "move" || action === "retreatTo") {
       reachable.delete(start);
       return reachable;
     }
@@ -1570,14 +1589,23 @@ export class GalaxyScene implements IGameScene {
     return reachable;
   }
 
-  private beginShipAction(action: ShipAction): void {
+  private beginShipAction(action: ShipAction, selection?: SelectionData): void {
+    if (selection?.id) {
+      const selectedFleet = this.serverFleets.find((fleet) => fleet.id === selection.id);
+      if (selectedFleet && this.selectedFleetIds.has(selectedFleet.id)) {
+        this.selectedShip = true;
+        this.selectedCommandShipStarId = selectedFleet.currentStarId;
+        this.selectedCommandShipId = selectedFleet.id;
+      }
+    }
+
     if (!this.selectedShip || this.selectedCommandShipStarId < 0) {
       this.clearShipAction();
       return;
     }
 
     if (action === "merge") {
-      this.mergeSelectedFleetWithLocalFleets();
+      this.mergeSelectedFleetWithSelectedFleets();
       return;
     }
 
@@ -1590,7 +1618,7 @@ export class GalaxyScene implements IGameScene {
     }
 
     if (action === "attack") {
-      console.info("Attack command is a placeholder.");
+      if (this.selectedCommandShipId) this.issueBasicAttack(this.selectedCommandShipId);
       this.clearShipAction();
       return;
     }
@@ -1606,31 +1634,104 @@ export class GalaxyScene implements IGameScene {
     this.selectionPanel.setActiveShipAction(action);
   }
 
-  private mergeSelectedFleetWithLocalFleets(): void {
+  private setFleetPolicy(control: FleetPolicyControl, value: FleetPolicyValue, selection?: SelectionData): void {
+    const fleetId = selection?.id ?? this.selectedCommandShipId;
+    if (!fleetId) return;
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet || !this.isOwnShipOwner(fleet.ownerId)) return;
+
+    if (control === "stance") {
+      const options: CombatStance[] = ["passive", "evade", "holdPosition", "guardArea", "defendSystem", "aggressive", "hunt"];
+      if (!options.includes(value as CombatStance)) return;
+      this.options.onFleetCommand?.({
+        type: "setFleetCombatSettings",
+        fleetId,
+        combatSettings: {},
+        combatStance: value as CombatStance,
+      });
+      return;
+    }
+
+    if (control === "behavior") {
+      const options: FleetBehavior[] = ["artillery", "line", "brawler", "swarm", "defender"];
+      if (!options.includes(value as FleetBehavior)) return;
+      this.options.onFleetCommand?.({
+        type: "setFleetCombatSettings",
+        fleetId,
+        combatSettings: { behavior: value as FleetBehavior },
+      });
+      return;
+    }
+
+    if (control === "chase") {
+      const options: FleetChasePolicy[] = ["none", "system", "friendlySystems", "neutralSystems", "enemySystems"];
+      if (!options.includes(value as FleetChasePolicy)) return;
+      this.options.onFleetCommand?.({
+        type: "setFleetCombatSettings",
+        fleetId,
+        combatSettings: { chasePolicy: value as FleetChasePolicy },
+      });
+      return;
+    }
+
+    const options: FleetRetreatPolicy[] = ["none", "low", "medium", "high"];
+    if (!options.includes(value as FleetRetreatPolicy)) return;
+    this.options.onFleetCommand?.({
+      type: "setFleetCombatSettings",
+      fleetId,
+      combatSettings: { retreatPolicy: value as FleetRetreatPolicy },
+    });
+  }
+
+  private mergeSelectedFleetWithSelectedFleets(): void {
     const targetFleetId = this.selectedCommandShipId;
     if (!targetFleetId) {
       this.clearShipAction();
       return;
     }
     const targetFleet = this.serverFleets.find((fleet) => fleet.id === targetFleetId);
-    if (!targetFleet || targetFleet.ownerId !== this.playerFactionId || targetFleet.phase !== "idle") {
+    if (!targetFleet || targetFleet.ownerId !== this.playerFactionId) {
       this.clearShipAction();
       return;
     }
-    const sourceFleetIds = this.serverFleets
-      .filter((fleet) => (
-        fleet.id !== targetFleet.id
-        && fleet.ownerId === targetFleet.ownerId
-        && fleet.currentStarId === targetFleet.currentStarId
-        && fleet.phase === "idle"
-      ))
-      .map((fleet) => fleet.id);
+    const sourceFleetIds = Array.from(this.selectedFleetIds).filter((fleetId) => fleetId !== targetFleet.id);
     if (sourceFleetIds.length === 0) {
       this.clearShipAction();
       return;
     }
     this.options.onFleetCommand?.({ type: "mergeFleets", targetFleetId: targetFleet.id, sourceFleetIds });
     this.clearShipAction();
+  }
+
+  private issueBasicAttack(fleetId: string): void {
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet) return;
+    const hostileFleet = this.serverFleets.find((candidate) => (
+      candidate.id !== fleet.id
+      && candidate.currentStarId === fleet.currentStarId
+      && candidate.ownerId !== fleet.ownerId
+    ));
+    if (hostileFleet) {
+      this.options.onFleetCommand?.({
+        type: "attackTarget",
+        fleetId,
+        targetKind: "fleet",
+        targetId: hostileFleet.id,
+      });
+      return;
+    }
+    const hostileStarbase = this.starbases.find((candidate) => (
+      candidate.starId === fleet.currentStarId
+      && candidate.ownerId !== fleet.ownerId
+    ));
+    if (hostileStarbase) {
+      this.options.onFleetCommand?.({
+        type: "attackTarget",
+        fleetId,
+        targetKind: "starbase",
+        targetId: hostileStarbase.id,
+      });
+    }
   }
 
   private clearShipAction(): void {
@@ -1753,10 +1854,170 @@ export class GalaxyScene implements IGameScene {
     this.hoveredStarId = hovered ? hovered.id : -1;
   }
 
-  private tryEnterSystemAtPointer(): void {
+  private tryEnterSystemAtPointer(): boolean {
     const nearestStar = this.findNearestStarAtPointer();
-    if (!nearestStar) return;
+    if (!nearestStar) return false;
     this.requestEnterSystem(nearestStar);
+    return true;
+  }
+
+  private updateSelectedFleetIds(fleetId: string | null, shiftKey: boolean): void {
+    if (!shiftKey) this.selectedFleetIds.clear();
+    if (fleetId) this.selectedFleetIds.add(fleetId);
+    this.options.onSelectedFleetIdsChange?.(Array.from(this.selectedFleetIds));
+  }
+
+  private clearFleetSelection(clearPanel = true): void {
+    this.selectedFleetIds.clear();
+    this.selectedShip = false;
+    this.selectedCommandShipStarId = -1;
+    this.selectedCommandShipId = null;
+    this.clearShipAction();
+    if (clearPanel) this.selectionPanel?.clear();
+    this.options.onSelectedFleetIdsChange?.([]);
+  }
+
+  private renderSelectedFleetPanels(): void {
+    if (!this.selectionPanel || this.selectedFleetIds.size === 0) return;
+    this.selectionPanel.clear();
+    let append = false;
+    for (const fleetId of this.selectedFleetIds) {
+      const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+      if (!fleet) continue;
+      this.selectionPanel.select(this.createFleetSelectionData(fleet), append);
+      append = true;
+      if (!this.selectedCommandShipId) {
+        this.selectedShip = true;
+        this.selectedCommandShipStarId = fleet.currentStarId;
+        this.selectedCommandShipId = fleet.id;
+      }
+    }
+    if (!append) {
+      this.clearFleetSelection(false);
+    }
+  }
+
+  private createFleetSelectionData(fleet: ServerFleet): SelectionData {
+    const owner = this.factions.find((faction) => faction.id === fleet.ownerId) ?? null;
+    const canCommand = this.isOwnShipOwner(owner?.id ?? null);
+    const fleetShips = this.getShipsForFleet(fleet.id);
+    const fleetSize = fleet.shipIds.length || fleetShips.length || 1;
+    const defense = this.getFleetDefense(fleet.id);
+    const engaged = fleet.combatStatus === "engaging" || fleet.combatStatus === "firing" || fleet.combatStatus === "retreating";
+    const actions: ShipAction[] = ["move", "attack", "merge", "retreat", "retreatTo", "emergencyRetreatTo"];
+    return {
+      type: "fleet",
+      id: fleet.id,
+      readoutId: this.formatFleetReadoutId(fleet),
+      name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+      hp: defense.hull,
+      maxHp: defense.maxHull,
+      shield: defense.shield,
+      maxShield: defense.maxShield,
+      armor: defense.armor,
+      maxArmor: defense.maxArmor,
+      hull: defense.hull,
+      maxHull: defense.maxHull,
+      shipCount: fleetSize,
+      ships: this.createSelectionShipRows(fleet, owner),
+      class: fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
+      status: engaged ? fleet.combatStatus : this.formatSelectionFleetStatus(fleet),
+      detail: canCommand
+        ? this.formatFleetNavigationDetail(fleet)
+        : "Foreign fleet. Command controls unavailable.",
+      ownerName: owner?.name ?? "Unknown",
+      ownerColor: owner?.color,
+      canCommand,
+      actions: canCommand ? actions : undefined,
+      combatStance: fleet.combatStance,
+      combatBehavior: fleet.combatSettings.behavior,
+      chasePolicy: fleet.combatSettings.chasePolicy,
+      retreatPolicy: fleet.combatSettings.retreatPolicy,
+    };
+  }
+
+  private createSelectionShipRows(fleet: ServerFleet, owner: FactionInfo | null): SelectionShipData[] {
+    const order = new Map(fleet.shipIds.map((shipId, index) => [shipId, index]));
+    return this.getShipsForFleet(fleet.id)
+      .slice()
+      .sort((a, b) => (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER))
+      .map((ship, index) => {
+        const hull = SHIP_HULL_DEFINITIONS[ship.shipKind];
+        const design = ship.designId
+          ? this.shipDesigns.find((candidate) => candidate.id === ship.designId && candidate.ownerId === ship.ownerId)
+          : undefined;
+        const shipCode = `${this.formatFactionShipPrefix(owner, ship.ownerId)}S-${String(index + 1).padStart(2, "0")}`;
+        return {
+          id: ship.id,
+          name: `${shipCode} ${this.formatShipDisplayName(design, hull?.baseClassName ?? hull?.label ?? ship.shipKind)}`,
+          designName: design?.name ?? `${hull?.baseClassName ?? hull?.label ?? ship.shipKind}-class`,
+          className: hull?.label ?? this.formatPolicyLikeValue(ship.shipKind),
+          shield: ship.shield,
+          maxShield: ship.maxShield,
+          armor: ship.armor,
+          maxArmor: ship.maxArmor,
+          hull: ship.hull,
+          maxHull: ship.maxHull,
+          ownerColor: owner?.color,
+        };
+      });
+  }
+
+  private formatFleetReadoutId(fleet: ServerFleet): string {
+    return `CF-${String(fleet.ownerId + 1).padStart(3, "0")}`;
+  }
+
+  private formatFactionShipPrefix(owner: FactionInfo | null, ownerId: number): string {
+    const colorMatch = owner?.name.match(/^Color\s+(\d+)$/i);
+    if (colorMatch) return `C${colorMatch[1]}`;
+    if (owner?.name) {
+      const initials = owner.name
+        .split(/\s+/)
+        .map((part) => part[0])
+        .join("")
+        .replace(/[^a-z0-9]/gi, "")
+        .slice(0, 2)
+        .toUpperCase();
+      if (initials) return initials;
+    }
+    return `F${ownerId + 1}`;
+  }
+
+  private formatShipDisplayName(design: ShipDesign | undefined, fallback: string): string {
+    const raw = design?.name ?? fallback;
+    const withoutClass = raw
+      .replace(/-class\s+.*/i, "")
+      .replace(/\s+class\s+.*/i, "")
+      .trim();
+    return withoutClass || raw;
+  }
+
+  private formatSelectionFleetStatus(fleet: ServerFleet): string {
+    if (fleet.retreatState) return fleet.retreatState.status;
+    switch (fleet.phase) {
+      case "departingSystem":
+        return "departing";
+      case "arrivingSystem":
+        return "arriving";
+      case "buildingStarbase":
+        return "building";
+      case "jumpingHyperlane":
+        return "in transit";
+      case "movingSystem":
+        return fleet.orderType === "merge" ? "merging" : "maneuvering";
+      case "orbiting":
+      case "orbitingPlanet":
+        return "orbiting";
+      case "idle":
+      default:
+        return fleet.orbitTarget || fleet.orbitTargetPlanetId ? "orbiting" : "operational";
+    }
+  }
+
+  private formatPolicyLikeValue(value: string): string {
+    return value
+      .replace(/([A-Z])/g, " $1")
+      .replace(/^./, (char) => char.toUpperCase());
   }
 
   private requestEnterSystem(star: StarData): void {
@@ -1781,26 +2042,29 @@ export class GalaxyScene implements IGameScene {
       const fleetShips = this.getShipsForFleet(serverFleet?.id ?? null);
       const fleetSize = serverFleet?.shipIds.length ?? (fleetShips.length || 1);
       const defense = this.getFleetDefense(serverFleet?.id ?? null);
-      const battle = this.getBattleForFleet(serverFleet?.id ?? null);
-      const actions: ShipAction[] = battle
-        ? ["retreat"]
-        : ["move", "build", "attack", "merge"];
+      const engaged = serverFleet?.combatStatus === "engaging"
+        || serverFleet?.combatStatus === "firing"
+        || serverFleet?.combatStatus === "retreating";
+      const actions: ShipAction[] = ["move", "attack", "merge", "retreat", "retreatTo", "emergencyRetreatTo"];
 
       if (canCommand) {
         this.selectedShip = true;
         this.selectedCommandShipStarId = shipStarId;
         this.selectedCommandShipId = serverFleet?.id ?? null;
+        this.updateSelectedFleetIds(serverFleet?.id ?? null, shiftKey);
       } else if (!shiftKey) {
         this.selectedShip = false;
         this.selectedCommandShipStarId = -1;
         this.selectedCommandShipId = null;
         this.clearShipAction();
+        this.updateSelectedFleetIds(null, false);
       }
 
       this.selectionPanel.select(
         {
           type: "fleet",
           id: serverFleet?.id ?? String(shipStarId),
+          readoutId: serverFleet ? this.formatFleetReadoutId(serverFleet) : `SYS-${String(shipStarId).padStart(3, "0")}`,
           name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
           hp: defense.hull,
           maxHp: defense.maxHull,
@@ -1810,19 +2074,25 @@ export class GalaxyScene implements IGameScene {
           maxArmor: defense.maxArmor,
           hull: defense.hull,
           maxHull: defense.maxHull,
+          shipCount: fleetSize,
+          ships: serverFleet ? this.createSelectionShipRows(serverFleet, owner) : [],
           class: fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
-          status: battle
-            ? "Engaged"
-            : serverFleet && serverFleet.phase !== "idle"
-              ? serverFleet.phase
+          status: engaged
+            ? serverFleet?.combatStatus ?? "engaged"
+            : serverFleet
+              ? this.formatSelectionFleetStatus(serverFleet)
               : this.playerShipTransit && shipStarId === this.playerShipStarId ? "Moving" : "Operational",
           detail: canCommand
-            ? (battle ? "Fleet is engaged. Issue retreat orders when ready." : "Select a command, then choose a highlighted system.")
+            ? this.formatFleetNavigationDetail(serverFleet)
             : "Foreign fleet. Command controls unavailable.",
           ownerName: owner?.name ?? "Unknown",
           ownerColor: owner?.color,
           canCommand,
           actions: canCommand ? actions : undefined,
+          combatStance: serverFleet?.combatStance,
+          combatBehavior: serverFleet?.combatSettings.behavior,
+          chasePolicy: serverFleet?.combatSettings.chasePolicy,
+          retreatPolicy: serverFleet?.combatSettings.retreatPolicy,
         },
         shiftKey,
       );
@@ -1831,10 +2101,7 @@ export class GalaxyScene implements IGameScene {
 
     if (type === "starbase") {
       if (!shiftKey) {
-        this.selectedShip = false;
-        this.selectedCommandShipStarId = -1;
-        this.selectedCommandShipId = null;
-        this.clearShipAction();
+        this.clearFleetSelection(false);
       }
       if (starId !== undefined) {
         this.openStarbasePanelForStar(starId);
@@ -1843,6 +2110,7 @@ export class GalaxyScene implements IGameScene {
     }
 
     if (type === "habitedPlanet" && starId !== undefined) {
+      if (!shiftKey) this.clearFleetSelection();
       if (this.options.onOpenHabitedPlanet) {
         void Promise.resolve(this.options.onOpenHabitedPlanet(starId))
           .catch((error) => console.error("Failed to open habited planet details", error));
@@ -1853,6 +2121,7 @@ export class GalaxyScene implements IGameScene {
   }
 
   private showFirstHabitedPlanet(starId: number): void {
+    this.clearFleetSelection();
     const star = this.stars[starId];
     const planet = star?.system.planets.find((candidate) => candidate.isHabited === true);
     if (!star || !planet) return;
@@ -1872,13 +2141,13 @@ export class GalaxyScene implements IGameScene {
   }
 
   private openStarbasePanelForStar(starId: number): void {
+    this.clearFleetSelection();
     const star = this.stars[starId];
     if (!star) return;
     const starbase = this.starbases.find((candidate) => candidate.starId === starId);
     const ownerId = starbase?.ownerId ?? this.starOwnership[starId] ?? -1;
     const owner = this.factions.find((faction) => faction.id === ownerId) ?? null;
 
-    this.selectionPanel?.clear();
     this.starbasePanel.show({
       id: starbase?.id ?? `starbase-${starId}`,
       name: `${star.name} Station`,
@@ -1902,10 +2171,32 @@ export class GalaxyScene implements IGameScene {
     return this.planetStates.find((planetState) => planetState.id === planetId);
   }
 
+  private formatFleetNavigationDetail(fleet: ServerFleet | null): string {
+    if (!fleet?.movementPlan) return "Select a command, then choose a highlighted system.";
+    const destination = fleet.movementPlan.destinationPlanetId
+      ? this.findPlanetName(fleet.movementPlan.destinationPlanetId)
+      : this.stars[fleet.movementPlan.destinationStarId]?.name ?? `Star ${fleet.movementPlan.destinationStarId}`;
+    const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - this.getClockYearEstimate()) * GAME_DAYS_PER_YEAR);
+    const remainingMinutes = remainingDays * REAL_MS_PER_GAME_DAY / 60_000;
+    return `Destination: ${destination}. Time remaining: ${remainingDays.toFixed(1)} days (${remainingMinutes.toFixed(1)} minutes).`;
+  }
+
+  private getClockYearEstimate(): number {
+    return this.clockYear;
+  }
+
+  private findPlanetName(planetId: string): string {
+    for (const star of this.stars) {
+      const planet = star.system.planets.find((candidate) => candidate.id === planetId);
+      if (planet) return planet.name;
+    }
+    return planetId;
+  }
+
   private getPlanetTextureUrl(planet: PlanetConfig): string {
     const cfg = PLANET_TYPES[planet.type];
     const variation = String(planet.textureVariation + 1).padStart(2, "0");
-    return `${cfg.texturePrefix}_${variation}-1024x512.png`;
+    return `${cfg.texturePrefix}_${variation}-1024x512.webp`;
   }
 
   getStars(): StarData[] {
@@ -2000,10 +2291,12 @@ export class GalaxyScene implements IGameScene {
   setServerShips(ships: ServerShip[]): void {
     this.serverShips = ships;
     this.starField?.setShipIconStyles(this.getShipIconStyles());
+    if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
-  setBattles(battles: ServerBattle[]): void {
-    this.battles = battles;
+  setShipDesigns(shipDesigns: ShipDesign[]): void {
+    this.shipDesigns = shipDesigns;
+    if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
   setServerFleets(fleets: ServerFleet[]): void {
@@ -2022,8 +2315,51 @@ export class GalaxyScene implements IGameScene {
       this.selectedCommandShipId = null;
       this.clearShipAction();
     }
+    let selectionChanged = false;
+    for (const fleetId of Array.from(this.selectedFleetIds)) {
+      if (!fleets.some((fleet) => fleet.id === fleetId)) {
+        this.selectedFleetIds.delete(fleetId);
+        selectionChanged = true;
+      }
+    }
+    if (selectionChanged) {
+      this.options.onSelectedFleetIdsChange?.(Array.from(this.selectedFleetIds));
+    }
+    if (this.selectedFleetIds.size > 0) {
+      this.renderSelectedFleetPanels();
+    } else if (selectionChanged) {
+      this.selectionPanel?.clear();
+    }
     this.starField?.setPlayerShipSystemIds(this.playerShipSystemIds);
     this.starField?.setShipIconStyles(this.getShipIconStyles());
+  }
+
+  setClockYear(year: number): void {
+    this.clockYear = year;
+  }
+
+  selectFleetById(fleetId: string): boolean {
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet) return false;
+    this.selectedFleetIds = new Set([fleetId]);
+    this.selectedShip = true;
+    this.selectedCommandShipStarId = fleet.currentStarId;
+    this.selectedCommandShipId = fleet.id;
+    this.options.onSelectedFleetIdsChange?.([fleetId]);
+    this.renderSelectedFleetPanels();
+    return true;
+  }
+
+  startFleetAction(fleetId: string, action: ShipAction): void {
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet) return;
+    this.selectedFleetIds = new Set([fleetId]);
+    this.selectedShip = true;
+    this.selectedCommandShipStarId = fleet.currentStarId;
+    this.selectedCommandShipId = fleet.id;
+    this.options.onSelectedFleetIdsChange?.([fleetId]);
+    this.renderSelectedFleetPanels();
+    this.beginShipAction(action);
   }
 
   setPlanetStates(planetStates: PlanetState[]): void {

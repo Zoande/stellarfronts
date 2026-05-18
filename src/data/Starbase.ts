@@ -1,5 +1,6 @@
 import { createEmptyResourceCounts } from "./Economy";
 import type { ResourceCounts } from "./Economy";
+import type { RangeBand } from "../game/CombatTypes";
 
 export type StarbaseLevel = "outpost" | "starbase" | "starhold" | "starFortress";
 export type StarbaseBuildingKind =
@@ -12,15 +13,21 @@ export type StarbaseBuildingKind =
   | "logisticsDepot";
 export type StarbaseShipKind = "corvette";
 
-export type WeaponKind = "laser";
+export type WeaponKind = "laser" | "missile" | "pointDefense";
 
 export interface WeaponMountDefinition {
+  id?: string;
   kind: WeaponKind;
+  label?: string;
   barrels: number;
   damage: number;
   shieldPenetration: number;
   armorPenetration: number;
   accuracy: number;
+  minRangeBand?: RangeBand;
+  maxRangeBand?: RangeBand;
+  optimalRangeBand?: RangeBand;
+  cooldownRounds?: number;
 }
 
 export interface CombatStats {
@@ -32,8 +39,34 @@ export interface CombatStats {
   weaponMounts: WeaponMountDefinition[];
 }
 
-export const WEAPON_KIND_DEFINITIONS: Record<WeaponKind, { range: number }> = {
-  laser: { range: 2 },
+export const WEAPON_KIND_DEFINITIONS: Record<WeaponKind, {
+  range: number;
+  minRangeBand: RangeBand;
+  maxRangeBand: RangeBand;
+  optimalRangeBand: RangeBand;
+  cooldownRounds: number;
+}> = {
+  laser: {
+    range: 2,
+    minRangeBand: "close",
+    maxRangeBand: "medium",
+    optimalRangeBand: "medium",
+    cooldownRounds: 1,
+  },
+  missile: {
+    range: 4,
+    minRangeBand: "medium",
+    maxRangeBand: "long",
+    optimalRangeBand: "long",
+    cooldownRounds: 2,
+  },
+  pointDefense: {
+    range: 1,
+    minRangeBand: "pointBlank",
+    maxRangeBand: "close",
+    optimalRangeBand: "close",
+    cooldownRounds: 1,
+  },
 };
 
 export interface StarbaseEconomy {
@@ -75,6 +108,7 @@ export interface StarbaseConstructionQueueItem {
 export interface StarbaseShipQueueItem {
   id: string;
   shipKind: StarbaseShipKind;
+  designId?: string | null;
   label: string;
   totalDays: number;
   remainingDays: number;
@@ -119,12 +153,18 @@ function createConstructionId(prefix: string, parts: Array<string | number | und
 
 function createLaserMount(overrides: Partial<WeaponMountDefinition> = {}): WeaponMountDefinition {
   return {
+    id: "laser",
     kind: "laser",
+    label: "Laser Battery",
     barrels: 2,
     damage: 12,
     shieldPenetration: 0.12,
     armorPenetration: 0.35,
     accuracy: 0.82,
+    minRangeBand: WEAPON_KIND_DEFINITIONS.laser.minRangeBand,
+    maxRangeBand: WEAPON_KIND_DEFINITIONS.laser.maxRangeBand,
+    optimalRangeBand: WEAPON_KIND_DEFINITIONS.laser.optimalRangeBand,
+    cooldownRounds: WEAPON_KIND_DEFINITIONS.laser.cooldownRounds,
     ...overrides,
   };
 }
@@ -392,17 +432,19 @@ export function countStarbaseShipyards(buildingSlots: Array<StarbaseBuildingKind
 
 export function createStarbaseShipQueueItem(
   shipKind: StarbaseShipKind,
+  overrides: Partial<Omit<StarbaseShipQueueItem, "id" | "shipKind">> = {},
   id = createConstructionId("starbase-ship", [shipKind]),
 ): StarbaseShipQueueItem {
   const definition = STARBASE_SHIP_DEFINITIONS[shipKind];
   return {
     id,
     shipKind,
-    label: definition.label,
-    totalDays: definition.buildDays,
-    remainingDays: definition.buildDays,
-    alloyUpkeepPerDay: definition.alloyUpkeepPerDay,
-    crewDemand: definition.crewDemand,
+    designId: overrides.designId ?? null,
+    label: overrides.label ?? definition.label,
+    totalDays: overrides.totalDays ?? definition.buildDays,
+    remainingDays: overrides.remainingDays ?? overrides.totalDays ?? definition.buildDays,
+    alloyUpkeepPerDay: overrides.alloyUpkeepPerDay ?? definition.alloyUpkeepPerDay,
+    crewDemand: overrides.crewDemand ?? definition.crewDemand,
   };
 }
 

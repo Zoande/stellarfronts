@@ -1,6 +1,11 @@
 import type { GameClock } from "../game/GameProtocol";
 import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
 import type { FactionEconomyState } from "../data/Economy";
+import {
+  GAME_HOURS_PER_MONTH,
+  gameYearToDateTime,
+  estimateClockYear,
+} from "../game/GameTime";
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
 
@@ -40,8 +45,6 @@ export interface HudCallbacks {
 }
 
 const STYLE_ID = "space-rts-hud-style";
-const GAME_DAYS_PER_YEAR = 360;
-
 const RESOURCE_ICON_LABELS: Record<string, string> = {
   food: "FD",
   minerals: "MN",
@@ -368,40 +371,23 @@ const HUD_STYLE = `
   right: 0;
   transform: scale(1.3);
   transform-origin: top right;
-  min-width: 252px;
+  min-width: 286px;
   min-height: 39px;
   border-left: 1px solid rgba(94, 173, 142, 0.72);
   border-bottom: 1px solid rgba(94, 173, 142, 0.48);
   background:
     linear-gradient(180deg, rgba(9, 34, 25, 0.96), rgba(4, 13, 12, 0.98)),
     radial-gradient(circle at 12% 0%, rgba(246, 170, 77, 0.16), transparent 9rem);
-  padding: 4px 12px 7px 42px;
+  padding: 5px 12px 7px;
   pointer-events: none;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.34), inset 0 -1px 0 rgba(117, 255, 208, 0.08);
 }
 
-#spaceHudClock::before {
-  content: "II";
-  position: absolute;
-  left: 12px;
-  top: 7px;
-  width: 22px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border: 1px solid rgba(235, 142, 61, 0.84);
-  color: #f2a34c;
-  background: rgba(77, 39, 14, 0.62);
-  font-size: 11px;
-  font-weight: 900;
-}
-
 .spaceHudClockGrid {
   display: grid;
-  grid-template-columns: 82px minmax(0, 1fr);
-  grid-template-rows: auto auto 5px;
-  align-items: end;
-  gap: 0 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
 }
 
 #spaceHudResources {
@@ -513,7 +499,7 @@ const HUD_STYLE = `
 
 .spaceHudClockLabel {
   display: block;
-  grid-column: 2;
+  grid-column: 1 / span 2;
   grid-row: 1;
   color: rgba(175, 208, 197, 0.72);
   font-size: 7px;
@@ -524,7 +510,7 @@ const HUD_STYLE = `
 
 .spaceHudClockValue {
   display: block;
-  grid-column: 2;
+  grid-column: 1;
   grid-row: 2;
   color: #edf4ff;
   font-size: 11px;
@@ -534,50 +520,15 @@ const HUD_STYLE = `
   text-align: right;
 }
 
-.spaceHudClockSpeed {
-  display: grid;
-  grid-column: 1;
-  grid-row: 1 / span 2;
-  align-self: center;
-  min-height: 24px;
-  place-items: center;
-  padding: 0 6px;
-  border: 1px solid rgba(235, 142, 61, 0.56);
-  background: rgba(77, 39, 14, 0.34);
-  color: rgba(246, 170, 77, 0.95);
-  font-size: 8px;
-  line-height: 1.1;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  text-align: center;
-}
-
-.spaceHudClockProgress {
-  grid-column: 1 / span 2;
-  grid-row: 3;
-  height: 6px;
-  margin-top: 7px;
-  border: 1px solid rgba(94, 173, 142, 0.36);
-  background: rgba(1, 10, 10, 0.7);
-  overflow: hidden;
-}
-
-.spaceHudClockProgressFill {
+.spaceHudClockTime {
   display: block;
-  height: 100%;
-  width: 100%;
-  transform-origin: left center;
-  background:
-    linear-gradient(90deg, rgba(235, 142, 61, 0.9), rgba(247, 209, 92, 0.98)),
-    radial-gradient(circle at 100% 50%, rgba(255, 255, 255, 0.9), transparent 1.2rem);
-  box-shadow: 0 0 10px rgba(246, 170, 77, 0.36);
-  animation: spaceHudDayProgress var(--clock-day-duration, 30s) linear infinite;
-  animation-delay: var(--clock-day-delay, 0s);
-}
-
-@keyframes spaceHudDayProgress {
-  from { transform: scaleX(0); }
-  to { transform: scaleX(1); }
+  grid-column: 2;
+  grid-row: 2;
+  color: rgba(246, 170, 77, 0.95);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-align: right;
 }
 
 .spaceHudToggleBtn {
@@ -731,23 +682,7 @@ function formatCompactNumber(value: number): string {
 
 function formatDelta(value: number): string {
   const sign = value >= 0 ? "+" : "";
-  return `${sign}${formatCompactNumber(value)}/mo`;
-}
-
-function formatGameDate(yearValue: number): { year: number; month: number; day: number } {
-  const year = Math.floor(yearValue);
-  const dayOfYear = Math.max(0, Math.min(GAME_DAYS_PER_YEAR - 1, Math.floor((yearValue - year) * GAME_DAYS_PER_YEAR)));
-  return {
-    year,
-    month: Math.floor(dayOfYear / 30) + 1,
-    day: (dayOfYear % 30) + 1,
-  };
-}
-
-function getDayProgress(yearValue: number): number {
-  const year = Math.floor(yearValue);
-  const exactDayOfYear = Math.max(0, Math.min(GAME_DAYS_PER_YEAR, (yearValue - year) * GAME_DAYS_PER_YEAR));
-  return exactDayOfYear - Math.floor(exactDayOfYear);
+  return `${sign}${formatCompactNumber(value)}/hr`;
 }
 
 export class HudOverlay {
@@ -761,6 +696,11 @@ export class HudOverlay {
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
   private readonly toggleButtons: Record<HudToggleKey, HTMLButtonElement>;
+  private currentClock: GameClock | null = null;
+  private clockFrame: number | null = null;
+  private clockShellVisible = false;
+  private connectedSignature: string | null = null;
+  private resourceSignature = "";
 
   constructor(callbacks: HudCallbacks) {
     this.callbacks = callbacks;
@@ -857,64 +797,85 @@ export class HudOverlay {
   update(state: HudState): void {
     this.titleEl.textContent = state.title;
     if (state.clock) {
-      const date = formatGameDate(state.clock.year);
-      const daysPerThirtySeconds = state.clock.speedMultiplier;
-      const dayProgress = getDayProgress(state.clock.year);
-      const dayDuration = 30 / Math.max(0.01, daysPerThirtySeconds);
-      const delay = -dayProgress * dayDuration;
-      this.clockEl.innerHTML = `
-        <div class="spaceHudClockGrid" style="--clock-day-duration: ${dayDuration}s; --clock-day-delay: ${delay}s;">
-          <span class="spaceHudClockSpeed">${daysPerThirtySeconds} ${daysPerThirtySeconds === 1 ? "day" : "days"}<br>/ 30 sec</span>
-          <span class="spaceHudClockLabel">Galactic Standard</span>
-          <span class="spaceHudClockValue">${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")}</span>
-          <span class="spaceHudClockProgress" aria-hidden="true"><span class="spaceHudClockProgressFill"></span></span>
-        </div>
-      `;
-    } else {
-      this.clockEl.innerHTML = "";
-    }
-    if (state.economy) {
-      const flag = `<div class="spaceHudFactionFlag">${this.factionFlagSvg}</div>`;
-      const resources = RESOURCE_KINDS.map((resource) => {
-        const stockpile = state.economy?.stockpiles[resource] ?? 0;
-        const delta = state.economy?.monthlyDelta[resource] ?? 0;
-        return `
-          <div class="spaceHudResourceItem">
-            <span class="spaceHudResourceIcon ${resource}">${RESOURCE_ICON_LABELS[resource]}</span>
-            <span class="spaceHudResourceText">
-              <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
-              <span class="spaceHudResourceValue">${formatCompactNumber(stockpile)}</span>
-              <span class="spaceHudResourceDelta ${delta < 0 ? "negative" : ""}">${formatDelta(delta)}</span>
-            </span>
+      this.currentClock = state.clock;
+      if (!this.clockShellVisible) {
+        this.clockEl.innerHTML = `
+          <div class="spaceHudClockGrid">
+            <span class="spaceHudClockLabel">Galactic Standard</span>
+            <span class="spaceHudClockValue" data-clock-date></span>
+            <span class="spaceHudClockTime" data-clock-time></span>
           </div>
         `;
-      }).join("");
-      this.resourceEl.innerHTML = `${flag}${resources}`;
+        this.clockShellVisible = true;
+      }
+      this.renderClock();
+      this.ensureClockAnimation();
     } else {
-      this.resourceEl.innerHTML = "";
+      this.currentClock = null;
+      this.stopClockAnimation();
+      if (this.clockShellVisible) {
+        this.clockEl.innerHTML = "";
+        this.clockShellVisible = false;
+      }
+    }
+    if (state.economy) {
+      const nextResourceSignature = JSON.stringify({
+        stockpiles: state.economy.stockpiles,
+        monthlyDelta: state.economy.monthlyDelta,
+      });
+      if (this.resourceSignature !== nextResourceSignature) {
+        const flag = `<div class="spaceHudFactionFlag">${this.factionFlagSvg}</div>`;
+        const resources = RESOURCE_KINDS.map((resource) => {
+          const stockpile = state.economy?.stockpiles[resource] ?? 0;
+          const delta = (state.economy?.monthlyDelta[resource] ?? 0) / GAME_HOURS_PER_MONTH;
+          return `
+            <div class="spaceHudResourceItem">
+              <span class="spaceHudResourceIcon ${resource}">${RESOURCE_ICON_LABELS[resource]}</span>
+              <span class="spaceHudResourceText">
+                <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
+                <span class="spaceHudResourceValue">${formatCompactNumber(stockpile)}</span>
+                <span class="spaceHudResourceDelta ${delta < 0 ? "negative" : ""}">${formatDelta(delta)}</span>
+              </span>
+            </div>
+          `;
+        }).join("");
+        this.resourceEl.innerHTML = `${flag}${resources}`;
+        this.resourceSignature = nextResourceSignature;
+      }
+    } else {
+      if (this.resourceSignature) {
+        this.resourceEl.innerHTML = "";
+        this.resourceSignature = "";
+      }
     }
     this.exitButton.disabled = !state.canExitSystem;
 
-    this.connectedContainer.innerHTML = "";
-    if (state.connectedSystems.length === 0) {
-      const none = document.createElement("button");
-      none.type = "button";
-      none.className = "spaceHudConnectedBtn";
-      none.textContent = "No Linked Systems";
-      none.disabled = true;
-      this.connectedContainer.appendChild(none);
-    } else {
-      for (const target of state.connectedSystems) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "spaceHudConnectedBtn";
-        btn.textContent = `> ${truncateLabel(target.name)}`;
-        btn.title = target.name;
-        btn.addEventListener("click", () => {
-          this.callbacks.onNavigateConnectedSystem(target.id);
-        });
-        this.connectedContainer.appendChild(btn);
+    const nextConnectedSignature = state.connectedSystems
+      .map((system) => `${system.id}:${system.name}`)
+      .join("|");
+    if (this.connectedSignature !== nextConnectedSignature) {
+      this.connectedContainer.innerHTML = "";
+      if (state.connectedSystems.length === 0) {
+        const none = document.createElement("button");
+        none.type = "button";
+        none.className = "spaceHudConnectedBtn";
+        none.textContent = "No Linked Systems";
+        none.disabled = true;
+        this.connectedContainer.appendChild(none);
+      } else {
+        for (const target of state.connectedSystems) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "spaceHudConnectedBtn";
+          btn.textContent = `> ${truncateLabel(target.name)}`;
+          btn.title = target.name;
+          btn.addEventListener("click", () => {
+            this.callbacks.onNavigateConnectedSystem(target.id);
+          });
+          this.connectedContainer.appendChild(btn);
+        }
       }
+      this.connectedSignature = nextConnectedSignature;
     }
 
     const toggleOrder: HudToggleKey[] = ["hyperlanes", "bloom", "centerCloud", "stars", "ownership"];
@@ -927,6 +888,40 @@ export class HudOverlay {
   }
 
   dispose(): void {
+    this.stopClockAnimation();
     this.root.remove();
+  }
+
+  private ensureClockAnimation(): void {
+    if (this.clockFrame !== null) return;
+    const tick = (): void => {
+      this.renderClock();
+      this.clockFrame = window.requestAnimationFrame(tick);
+    };
+    this.clockFrame = window.requestAnimationFrame(tick);
+  }
+
+  private stopClockAnimation(): void {
+    if (this.clockFrame === null) return;
+    window.cancelAnimationFrame(this.clockFrame);
+    this.clockFrame = null;
+  }
+
+  private renderClock(): void {
+    if (!this.currentClock) return;
+    const estimatedYear = estimateClockYear(
+      this.currentClock.year,
+      this.currentClock.syncedAtMs,
+      this.currentClock.speedMultiplier,
+    );
+    const date = gameYearToDateTime(estimatedYear);
+    const dateEl = this.clockEl.querySelector<HTMLElement>("[data-clock-date]");
+    const timeEl = this.clockEl.querySelector<HTMLElement>("[data-clock-time]");
+    if (dateEl) {
+      dateEl.textContent = `${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")}`;
+    }
+    if (timeEl) {
+      timeEl.textContent = `${String(date.hour).padStart(2, "0")}:${String(date.minute).padStart(2, "0")}:${String(date.second).padStart(2, "0")}`;
+    }
   }
 }

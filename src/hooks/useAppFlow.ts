@@ -40,15 +40,15 @@ export interface UseAppFlowResult {
 }
 
 const homeVisualAssets = [
-  '/textures/galaxy_bg.png',
-  '/textures/planets/Methane/Methane_03-1024x512.png',
-  '/textures/planets/Snowy/Snowy_02-1024x512.png',
-  '/textures/planets/Gaseous/Gaseous_08-1024x512.png',
-  '/textures/planets/Arid/Arid_04-1024x512.png',
-  '/textures/planets/Tundra/Tundra_04-1024x512.png',
-  '/textures/planets/Methane/Methane_04-1024x512.png',
-  '/textures/planets/Martian/Martian_03-1024x512.png',
-  '/textures/planets/Gaseous/Gaseous_12-1024x512.png',
+  '/textures/galaxy_bg.webp',
+  '/textures/planets/Methane/Methane_03-1024x512.webp',
+  '/textures/planets/Snowy/Snowy_02-1024x512.webp',
+  '/textures/planets/Gaseous/Gaseous_08-1024x512.webp',
+  '/textures/planets/Arid/Arid_04-1024x512.webp',
+  '/textures/planets/Tundra/Tundra_04-1024x512.webp',
+  '/textures/planets/Methane/Methane_04-1024x512.webp',
+  '/textures/planets/Martian/Martian_03-1024x512.webp',
+  '/textures/planets/Gaseous/Gaseous_12-1024x512.webp',
 ];
 
 function preloadImage(src: string): Promise<void> {

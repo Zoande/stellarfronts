@@ -1,5 +1,7 @@
 import { STARBASE_LEVEL_DEFINITIONS, STARBASE_SHIP_DEFINITIONS } from "../data/Starbase";
 import type { CombatStats, WeaponMountDefinition } from "../data/Starbase";
+import { calculateShipDesignStats } from "../data/ShipDesigns";
+import type { ShipDesign } from "../data/ShipDesigns";
 import type { ServerShip, ServerStarbase } from "./GameProtocol";
 
 export const DEFAULT_ROUNDS_TO_KILL_ESTIMATE = 4;
@@ -23,13 +25,19 @@ export function computeCombatPowerFromStats(
 export function computeShipPower(
   ship: ServerShip,
   roundsToKillEstimate = DEFAULT_ROUNDS_TO_KILL_ESTIMATE,
+  shipDesigns: ShipDesign[] = [],
 ): number {
-  const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind] ?? STARBASE_SHIP_DEFINITIONS.corvette;
+  const design = ship.designId
+    ? shipDesigns.find((candidate) => candidate.id === ship.designId && candidate.ownerId === ship.ownerId)
+    : null;
+  const weaponMounts = design
+    ? calculateShipDesignStats(design).combat.weaponMounts
+    : (STARBASE_SHIP_DEFINITIONS[ship.shipKind] ?? STARBASE_SHIP_DEFINITIONS.corvette).combat.weaponMounts;
   return (
     ship.maxShield * 0.5
     + ship.maxArmor * 0.8
     + ship.maxHull * 1.0
-    + computeWeaponDamage(definition.combat.weaponMounts) * roundsToKillEstimate
+    + computeWeaponDamage(weaponMounts) * roundsToKillEstimate
   );
 }
 
@@ -37,6 +45,7 @@ export function computeFleetPower(
   ships: ServerShip[],
   shipCountFallback = 0,
   roundsToKillEstimate = DEFAULT_ROUNDS_TO_KILL_ESTIMATE,
+  shipDesigns: ShipDesign[] = [],
 ): number {
   if (ships.length === 0) {
     if (shipCountFallback <= 0) return 0;
@@ -44,7 +53,7 @@ export function computeFleetPower(
       * shipCountFallback;
   }
   return ships.reduce(
-    (total, ship) => total + computeShipPower(ship, roundsToKillEstimate),
+    (total, ship) => total + computeShipPower(ship, roundsToKillEstimate, shipDesigns),
     0,
   );
 }
