@@ -1811,15 +1811,25 @@ function completeMergeSourceFleet(sourceFleet: GameFleet): boolean {
   const targetFleetId = sourceFleet.mergeTargetFleetId;
   if (!targetFleetId) return false;
   const targetFleet = state.fleets.find((fleet) => fleet.id === targetFleetId);
-  if (!targetFleet || targetFleet.id === sourceFleet.id || targetFleet.currentStarId !== sourceFleet.currentStarId) {
-    sourceFleet.orderType = null;
-    sourceFleet.mergeTargetFleetId = null;
-    setFleetPhase(sourceFleet, "idle");
+  if (!targetFleet || targetFleet.id === sourceFleet.id) {
+    cancelMergeSourceOrder(sourceFleet);
+    return false;
+  }
+  if (targetFleet.currentStarId !== sourceFleet.currentStarId) return false;
+
+  const sourcePosition = getFleetAuthoritativeSystemPosition(sourceFleet);
+  const targetPosition = getFleetAuthoritativeSystemPosition(targetFleet);
+  if (!isSameSystemPosition(sourcePosition, targetPosition)) {
     return false;
   }
 
   for (const shipId of sourceFleet.shipIds) {
     if (!targetFleet.shipIds.includes(shipId)) targetFleet.shipIds.push(shipId);
+  }
+  for (const fleet of state.fleets) {
+    if (fleet.mergeTargetFleetId === sourceFleet.id) {
+      fleet.mergeTargetFleetId = targetFleet.id;
+    }
   }
   state.ships = state.ships.map((ship) => (
     ship.fleetId === sourceFleet.id ? { ...ship, fleetId: targetFleet.id } : ship
@@ -1829,8 +1839,22 @@ function completeMergeSourceFleet(sourceFleet: GameFleet): boolean {
   return true;
 }
 
+function cancelMergeSourceOrder(sourceFleet: GameFleet): void {
+  sourceFleet.targetStarId = null;
+  sourceFleet.orderType = null;
+  sourceFleet.route = [sourceFleet.currentStarId];
+  sourceFleet.routeIndex = 0;
+  sourceFleet.movementPlan = null;
+  sourceFleet.mergeTargetFleetId = null;
+  sourceFleet.hyperlanePosition = null;
+  applyFleetOrbitTarget(sourceFleet, null);
+  setFleetPhase(sourceFleet, "idle");
+}
+
 function startMergeSourceOrder(sourceFleet: GameFleet, targetFleet: GameFleet): void {
   sourceFleet.mergeTargetFleetId = targetFleet.id;
+  if (completeMergeSourceFleet(sourceFleet)) return;
+
   const targetPosition = getFleetAuthoritativeSystemPosition(targetFleet);
   const orbitTarget: FleetOrbitTarget = {
     kind: "fleet",
@@ -1838,8 +1862,62 @@ function startMergeSourceOrder(sourceFleet: GameFleet, targetFleet: GameFleet): 
     targetFleetId: targetFleet.id,
     position: targetPosition,
   };
-  startPositionOrder(sourceFleet, targetFleet.currentStarId, "merge", targetPosition, orbitTarget, [sourceFleet.currentStarId]);
+  const routeOverride = sourceFleet.currentStarId === targetFleet.currentStarId ? [sourceFleet.currentStarId] : null;
+  startPositionOrder(sourceFleet, targetFleet.currentStarId, "merge", targetPosition, orbitTarget, routeOverride);
   sourceFleet.mergeTargetFleetId = targetFleet.id;
+}
+
+function isMergeSourceEligible(fleet: GameFleet): boolean {
+  return fleet.phase !== "missingInAction" && fleet.phase !== "buildingStarbase" && fleet.retreatState === null;
+}
+
+function advanceMergeSourceFleet(sourceFleet: GameFleet, scaledMs: number): boolean {
+  if (sourceFleet.orderType !== "merge" || !sourceFleet.mergeTargetFleetId) return false;
+  const targetFleet = state.fleets.find((fleet) => fleet.id === sourceFleet.mergeTargetFleetId);
+  if (!targetFleet || targetFleet.id === sourceFleet.id || targetFleet.ownerId !== sourceFleet.ownerId) {
+    cancelMergeSourceOrder(sourceFleet);
+    return true;
+  }
+
+  if (completeMergeSourceFleet(sourceFleet)) return true;
+
+  const targetPosition = getFleetAuthoritativeSystemPosition(targetFleet);
+  const sourcePosition = getFleetAuthoritativeSystemPosition(sourceFleet);
+  if (sourceFleet.currentStarId === targetFleet.currentStarId && !sourceFleet.hyperlanePosition) {
+    const elapsedDays = Math.max(0, scaledMs / REAL_MS_PER_GAME_DAY);
+    const maxDistance = elapsedDays * SYSTEM_FLEET_SPEED_UNITS_PER_DAY * Math.max(0.15, sourceFleet.speed);
+    const nextPosition = movePointToward(sourcePosition, targetPosition, maxDistance);
+    sourceFleet.targetStarId = targetFleet.currentStarId;
+    sourceFleet.route = [targetFleet.currentStarId];
+    sourceFleet.routeIndex = 0;
+    sourceFleet.movementPlan = null;
+    sourceFleet.hyperlanePosition = null;
+    sourceFleet.systemPosition = nextPosition;
+    sourceFleet.orbitTarget = {
+      kind: "fleet",
+      starId: targetFleet.currentStarId,
+      targetFleetId: targetFleet.id,
+      position: cloneSystemPosition(targetPosition),
+    };
+    sourceFleet.orbitTargetPlanetId = null;
+    sourceFleet.orbitOffset = null;
+    sourceFleet.phase = "movingSystem";
+    sourceFleet.phaseStartedAtYear = state.clock.year;
+    sourceFleet.phaseDurationDays = Math.max(0.1, systemTravelDays(nextPosition, targetPosition, sourceFleet));
+    sourceFleet.phaseProgress = isSameSystemPosition(nextPosition, targetPosition) ? 1 : 0;
+    if (completeMergeSourceFleet(sourceFleet)) return true;
+    return false;
+  }
+
+  const plan = sourceFleet.movementPlan;
+  const finalDestination = plan?.destinationPosition ?? null;
+  const destinationMoved = sourceFleet.currentStarId === targetFleet.currentStarId
+    && finalDestination
+    && !isSameSystemPosition(finalDestination, targetPosition);
+  if (!plan || plan.destinationStarId !== targetFleet.currentStarId || destinationMoved) {
+    startMergeSourceOrder(sourceFleet, targetFleet);
+  }
+  return false;
 }
 
 function validateCommandPerspective(perspective: GalaxyPerspective): number | null {
@@ -1933,7 +2011,6 @@ function handleMergeFleets(
   const targetFleet = state.fleets.find((fleet) => fleet.id === targetFleetId);
   if (!targetFleet) return reject(socket, "Target fleet not found.");
   if (targetFleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!isFleetAvailableForOrders(targetFleet)) return reject(socket, "Target fleet is busy.");
 
   const uniqueSourceIds = Array.from(new Set(sourceFleetIds)).filter((id) => id !== targetFleetId);
   if (uniqueSourceIds.length === 0) return reject(socket, "No fleets selected to merge.");
@@ -1945,40 +2022,25 @@ function handleMergeFleets(
   if (sourceFleets.length !== uniqueSourceIds.length) return reject(socket, "A source fleet was not found.");
   for (const fleet of sourceFleets) {
     if (fleet.ownerId !== factionId) return reject(socket, "You do not own all selected fleets.");
-    if (!isFleetAvailableForOrders(fleet)) return reject(socket, "All fleets must be idle or orbiting to merge.");
-    if (fleet.currentStarId !== targetFleet.currentStarId) {
-      return reject(socket, "Fleets must be in the same system to merge.");
+    if (!isMergeSourceEligible(fleet)) return reject(socket, "A selected fleet cannot currently merge.");
+    if (fleet.currentStarId !== targetFleet.currentStarId && !findRoute(fleet, targetFleet.currentStarId)) {
+      return reject(socket, "No discovered safe route to the target fleet.");
     }
   }
 
-  const immediateSourceFleets: GameFleet[] = [];
-  const movingSourceFleets: GameFleet[] = [];
-  const targetPosition = getFleetAuthoritativeSystemPosition(targetFleet);
+  let mergedCount = 0;
+  let movingCount = 0;
   for (const fleet of sourceFleets) {
-    if (isSameSystemPosition(getFleetAuthoritativeSystemPosition(fleet), targetPosition)) {
-      immediateSourceFleets.push(fleet);
+    startMergeSourceOrder(fleet, targetFleet);
+    if (state.fleets.some((candidate) => candidate.id === fleet.id)) {
+      movingCount += 1;
     } else {
-      movingSourceFleets.push(fleet);
-      startMergeSourceOrder(fleet, targetFleet);
+      mergedCount += 1;
     }
-  }
-
-  if (immediateSourceFleets.length > 0) {
-    const removedFleetIds = new Set(immediateSourceFleets.map((fleet) => fleet.id));
-    for (const fleet of immediateSourceFleets) {
-      for (const shipId of fleet.shipIds) {
-        if (!targetFleet.shipIds.includes(shipId)) targetFleet.shipIds.push(shipId);
-      }
-    }
-    state.ships = state.ships.map((ship) => (
-      removedFleetIds.has(ship.fleetId) ? { ...ship, fleetId: targetFleet.id } : ship
-    ));
-    state.fleets = state.fleets.filter((fleet) => !removedFleetIds.has(fleet.id));
-    syncFleetMembership(state);
   }
 
   hasDirtyState = true;
-  accept(socket, movingSourceFleets.length > 0 ? "Merge rendezvous ordered." : "Fleets merged.");
+  accept(socket, movingCount > 0 ? `Merge rendezvous ordered for ${movingCount} fleet(s).` : `Merged ${mergedCount} fleet(s).`);
   broadcastUpdates(["clock", "ships", "fleets", "visibility"]);
 }
 
@@ -2709,6 +2771,11 @@ function advanceFleet(fleet: GameFleet, scaledMs: number): boolean {
   if (fleet.phase === "missingInAction") {
     return false;
   }
+  if (fleet.orderType === "merge" && fleet.mergeTargetFleetId) {
+    const mergeChanged = advanceMergeSourceFleet(fleet, scaledMs);
+    if (mergeChanged || !state.fleets.includes(fleet)) return true;
+    if (!fleet.movementPlan) return false;
+  }
   if (fleet.movementPlan && fleet.phase !== "idle" && fleet.phase !== "buildingStarbase" && fleet.phase !== "orbitingPlanet" && fleet.phase !== "orbiting") {
     const plan = fleet.movementPlan;
     const nextYear = state.clock.year;
@@ -2743,7 +2810,16 @@ function advanceFleet(fleet: GameFleet, scaledMs: number): boolean {
     fleet.movementPlan = null;
 
     if (fleet.orderType === "merge") {
-      completeMergeSourceFleet(fleet);
+      if (!completeMergeSourceFleet(fleet)) {
+        const targetFleet = fleet.mergeTargetFleetId
+          ? state.fleets.find((candidate) => candidate.id === fleet.mergeTargetFleetId)
+          : null;
+        if (targetFleet) {
+          startMergeSourceOrder(fleet, targetFleet);
+        } else {
+          cancelMergeSourceOrder(fleet);
+        }
+      }
       return true;
     }
 

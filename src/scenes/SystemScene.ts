@@ -58,6 +58,7 @@ import type { SystemPosition } from "../data/SystemCoordinates";
 import type { PlanetState } from "../data/Economy";
 import type { FactionInfo } from "../data/Factions";
 import { STARBASE_LEVEL_DEFINITIONS } from "../data/Starbase";
+import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
@@ -66,9 +67,10 @@ import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { getFleetTacticalRadius, getLayeredFleetFormationPosition } from "../game/tacticalFormation";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { SelectionPanel } from "../ui/SelectionPanel";
-import type { SelectionData } from "../ui/SelectionPanel";
+import type { FleetPolicyControl, FleetPolicyValue, SelectionData, SelectionShipData } from "../ui/SelectionPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
 import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
+import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
@@ -532,6 +534,7 @@ export class SystemScene implements IGameScene {
     this.objectPanel = new CelestialObjectPanel();
     this.selectionPanel = new SelectionPanel(canvas, {
       onShipAction: (action, selection) => this.handleSelectedFleetAction(action, selection),
+      onFleetPolicyChange: (control, value, selection) => this.setFleetPolicy(control, value, selection),
     });
     this.renderSelectedFleetPanels();
     this.starbasePanel = new StarbasePanel();
@@ -961,6 +964,55 @@ export class SystemScene implements IGameScene {
     this.activeFleetAction = null;
     this.selectionPanel?.setActiveShipAction(null);
     this.disposeSystemActionTargetMarkers();
+  }
+
+  private setFleetPolicy(control: FleetPolicyControl, value: FleetPolicyValue, selection?: SelectionData): void {
+    const fleetId = selection?.id ?? this.getPrimarySelectedFleetId();
+    if (!fleetId) return;
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet || fleet.ownerId !== this.playerFactionId) return;
+
+    if (control === "stance") {
+      const options: CombatStance[] = ["passive", "evade", "holdPosition", "guardArea", "defendSystem", "aggressive", "hunt"];
+      if (!options.includes(value as CombatStance)) return;
+      this.options.onFleetCommand?.({
+        type: "setFleetCombatSettings",
+        fleetId,
+        combatSettings: {},
+        combatStance: value as CombatStance,
+      });
+      return;
+    }
+
+    if (control === "behavior") {
+      const options: FleetBehavior[] = ["artillery", "line", "brawler", "swarm", "defender"];
+      if (!options.includes(value as FleetBehavior)) return;
+      this.options.onFleetCommand?.({
+        type: "setFleetCombatSettings",
+        fleetId,
+        combatSettings: { behavior: value as FleetBehavior },
+      });
+      return;
+    }
+
+    if (control === "chase") {
+      const options: FleetChasePolicy[] = ["none", "system", "friendlySystems", "neutralSystems", "enemySystems"];
+      if (!options.includes(value as FleetChasePolicy)) return;
+      this.options.onFleetCommand?.({
+        type: "setFleetCombatSettings",
+        fleetId,
+        combatSettings: { chasePolicy: value as FleetChasePolicy },
+      });
+      return;
+    }
+
+    const options: FleetRetreatPolicy[] = ["none", "low", "medium", "high"];
+    if (!options.includes(value as FleetRetreatPolicy)) return;
+    this.options.onFleetCommand?.({
+      type: "setFleetCombatSettings",
+      fleetId,
+      combatSettings: { retreatPolicy: value as FleetRetreatPolicy },
+    });
   }
 
   private mergeSelectedFleets(): void {
@@ -1570,6 +1622,7 @@ export class SystemScene implements IGameScene {
     return {
       type: "fleet",
       id: fleet.id,
+      readoutId: this.formatFleetReadoutId(fleet),
       name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
       hp: defense.hull,
       maxHp: defense.maxHull,
@@ -1579,6 +1632,8 @@ export class SystemScene implements IGameScene {
       maxArmor: defense.maxArmor,
       hull: defense.hull,
       maxHull: defense.maxHull,
+      shipCount,
+      ships: this.createSelectionShipRows(fleet, owner),
       class: shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
       status: fleet.combatStatus && fleet.combatStatus !== "idle" ? fleet.combatStatus : this.formatFleetStatus(fleet),
       detail: fleet.ownerId === this.playerFactionId
@@ -1588,7 +1643,73 @@ export class SystemScene implements IGameScene {
       ownerColor: owner?.color,
       canCommand: fleet.ownerId === this.playerFactionId,
       actions: fleet.ownerId === this.playerFactionId ? actions : undefined,
+      combatStance: fleet.combatStance,
+      combatBehavior: fleet.combatSettings.behavior,
+      chasePolicy: fleet.combatSettings.chasePolicy,
+      retreatPolicy: fleet.combatSettings.retreatPolicy,
     };
+  }
+
+  private createSelectionShipRows(fleet: ServerFleet, owner: FactionInfo | null): SelectionShipData[] {
+    const order = new Map(fleet.shipIds.map((shipId, index) => [shipId, index]));
+    return this.getShipsForFleet(fleet.id)
+      .slice()
+      .sort((a, b) => (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER))
+      .map((ship, index) => {
+        const hull = SHIP_HULL_DEFINITIONS[ship.shipKind];
+        const design = ship.designId
+          ? this.shipDesigns.find((candidate) => candidate.id === ship.designId && candidate.ownerId === ship.ownerId)
+          : undefined;
+        const shipCode = `${this.formatFactionShipPrefix(owner, ship.ownerId)}S-${String(index + 1).padStart(2, "0")}`;
+        return {
+          id: ship.id,
+          name: `${shipCode} ${this.formatShipDisplayName(design, hull?.baseClassName ?? hull?.label ?? ship.shipKind)}`,
+          designName: design?.name ?? `${hull?.baseClassName ?? hull?.label ?? ship.shipKind}-class`,
+          className: hull?.label ?? this.formatPolicyLikeValue(ship.shipKind),
+          shield: ship.shield,
+          maxShield: ship.maxShield,
+          armor: ship.armor,
+          maxArmor: ship.maxArmor,
+          hull: ship.hull,
+          maxHull: ship.maxHull,
+          ownerColor: owner?.color,
+        };
+      });
+  }
+
+  private formatFleetReadoutId(fleet: ServerFleet): string {
+    return `CF-${String(fleet.ownerId + 1).padStart(3, "0")}`;
+  }
+
+  private formatFactionShipPrefix(owner: FactionInfo | null, ownerId: number): string {
+    const colorMatch = owner?.name.match(/^Color\s+(\d+)$/i);
+    if (colorMatch) return `C${colorMatch[1]}`;
+    if (owner?.name) {
+      const initials = owner.name
+        .split(/\s+/)
+        .map((part) => part[0])
+        .join("")
+        .replace(/[^a-z0-9]/gi, "")
+        .slice(0, 2)
+        .toUpperCase();
+      if (initials) return initials;
+    }
+    return `F${ownerId + 1}`;
+  }
+
+  private formatShipDisplayName(design: ShipDesign | undefined, fallback: string): string {
+    const raw = design?.name ?? fallback;
+    const withoutClass = raw
+      .replace(/-class\s+.*/i, "")
+      .replace(/\s+class\s+.*/i, "")
+      .trim();
+    return withoutClass || raw;
+  }
+
+  private formatPolicyLikeValue(value: string): string {
+    return value
+      .replace(/([A-Z])/g, " $1")
+      .replace(/^./, (char) => char.toUpperCase());
   }
 
   private renderSelectedFleetPanels(): void {

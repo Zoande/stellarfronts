@@ -545,6 +545,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       if (isFull || has("ships")) {
         activeGalaxyScene.setServerShips(snapshot.ships);
       }
+      if (isFull || has("shipDesigns")) {
+        activeGalaxyScene.setShipDesigns(snapshot.shipDesigns);
+      }
       if (isFull || has("fleets")) {
         activeGalaxyScene.setServerFleets(snapshot.fleets);
       }
@@ -621,6 +624,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       playerShipSystemIds: getFleetSystemIds(),
       serverFleets: snapshot.fleets,
       serverShips: snapshot.ships,
+      shipDesigns: snapshot.shipDesigns,
       starbaseSystemIds: getStarbaseSystemIds(),
       promotedStarbaseSystemIds: getPromotedStarbaseSystemIds(),
       starbases: snapshot.starbases,
