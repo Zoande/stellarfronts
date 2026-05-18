@@ -8,7 +8,7 @@
     radial-gradient(circle at 76% 14%, rgba(50, 168, 255, 0.2), transparent 30%),
     radial-gradient(circle at 16% 22%, rgba(92, 83, 255, 0.18), transparent 30%),
     radial-gradient(circle at 52% 4%, rgba(55, 242, 255, 0.12), transparent 34%),
-    url('/textures/galaxy_bg.png') center / cover,
+    url('/textures/galaxy_bg.webp') center / cover,
     #01040c;
   padding: 22px 30px 28px;
   overflow: hidden;
@@ -118,7 +118,7 @@
   height: 198px;
   left: max(32px, calc(50vw - 700px));
   top: 18%;
-  background-image: url('/textures/planets/Methane/Methane_03-1024x512.png');
+  background-image: url('/textures/planets/Methane/Methane_03-1024x512.webp');
   --planet-start-rotation: -12deg;
   transform: rotate(var(--planet-start-rotation));
 }
@@ -128,7 +128,7 @@
   height: 88px;
   left: max(72px, calc(50vw - 655px));
   bottom: 14%;
-  background-image: url('/textures/planets/Snowy/Snowy_02-1024x512.png');
+  background-image: url('/textures/planets/Snowy/Snowy_02-1024x512.webp');
   opacity: 0.88;
   --planet-start-rotation: 22deg;
   animation-duration: 120s;
@@ -140,7 +140,7 @@
   height: 220px;
   right: max(24px, calc(50vw - 712px));
   top: 48%;
-  background-image: url('/textures/planets/Gaseous/Gaseous_08-1024x512.png');
+  background-image: url('/textures/planets/Gaseous/Gaseous_08-1024x512.webp');
   --planet-start-rotation: 10deg;
   transform: rotate(var(--planet-start-rotation));
   animation-duration: 110s;
@@ -152,7 +152,7 @@
   height: 98px;
   right: max(92px, calc(50vw - 620px));
   top: 17%;
-  background-image: url('/textures/planets/Arid/Arid_04-1024x512.png');
+  background-image: url('/textures/planets/Arid/Arid_04-1024x512.webp');
   opacity: 0.86;
   --planet-start-rotation: -28deg;
   animation-duration: 135s;
@@ -687,7 +687,7 @@
   background:
     radial-gradient(circle at 30% 28%, rgba(255, 255, 255, 0.8), transparent 12%),
     radial-gradient(circle at 56% 54%, rgba(60, 233, 255, 0.62), transparent 34%),
-    url('/textures/planets/Tundra/Tundra_04-1024x512.png') center / cover;
+    url('/textures/planets/Tundra/Tundra_04-1024x512.webp') center / cover;
   box-shadow:
     inset -18px -18px 34px rgba(0, 0, 0, 0.72),
     inset 8px 8px 18px rgba(255, 255, 255, 0.16),

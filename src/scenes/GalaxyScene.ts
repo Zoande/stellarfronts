@@ -1046,7 +1046,7 @@ export class GalaxyScene implements IGameScene {
       this.scene,
     );
     const bgMat = new StandardMaterial("galaxyBackgroundMat", this.scene);
-    bgMat.emissiveTexture = new Texture("/textures/galaxy_bg.png", this.scene);
+    bgMat.emissiveTexture = new Texture("/textures/galaxy_bg.webp", this.scene);
     bgMat.disableLighting = true;
     bgMat.backFaceCulling = false;
     bgSphere.material = bgMat;
@@ -2196,7 +2196,7 @@ export class GalaxyScene implements IGameScene {
   private getPlanetTextureUrl(planet: PlanetConfig): string {
     const cfg = PLANET_TYPES[planet.type];
     const variation = String(planet.textureVariation + 1).padStart(2, "0");
-    return `${cfg.texturePrefix}_${variation}-1024x512.png`;
+    return `${cfg.texturePrefix}_${variation}-1024x512.webp`;
   }
 
   getStars(): StarData[] {

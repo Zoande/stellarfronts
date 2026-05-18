@@ -9,11 +9,27 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = ROOT / "source_materials"
 
+PLANET_QUALITY = 80
 BANNER_QUALITY = 30
 ICON_QUALITY = 50
 WEBP_METHOD = 6
 
 TARGETS = [
+    {
+        "label": "planet",
+        "quality": PLANET_QUALITY,
+        "dirs": [
+            ROOT / "public" / "textures" / "planets",
+        ],
+        "files": [
+            ROOT / "public" / "textures" / "gas_giant.png",
+            ROOT / "public" / "textures" / "rocky_planet.png",
+            ROOT / "public" / "textures" / "ice_planet.png",
+            ROOT / "public" / "textures" / "galaxy_bg.png",
+            ROOT / "public" / "textures" / "star.glow.png",
+            ROOT / "public" / "textures" / "star_surface.png",
+        ],
+    },
     {
         "label": "banner",
         "quality": BANNER_QUALITY,

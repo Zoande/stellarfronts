@@ -43,17 +43,17 @@ const preloadSteps: PreloadStep[] = [
   {
     detail: 'Decoding star glow and surface textures',
     load: () => Promise.all([
-      loadImage('/textures/star.glow.png'),
-      loadImage('/textures/star_surface.png'),
+      loadImage('/textures/star.glow.webp'),
+      loadImage('/textures/star_surface.webp'),
     ]).then(() => undefined),
   },
   {
     detail: 'Loading planet textures: gas giant, rocky, and ice',
     load: () => Promise.all([
-      loadImage('/textures/gas_giant.png'),
-      loadImage('/textures/rocky_planet.png'),
-      loadImage('/textures/ice_planet.png'),
-      loadImage('/textures/planets/Arid/Arid_01-1024x512.png'),
+      loadImage('/textures/gas_giant.webp'),
+      loadImage('/textures/rocky_planet.webp'),
+      loadImage('/textures/ice_planet.webp'),
+      loadImage('/textures/planets/Arid/Arid_01-1024x512.webp'),
     ]).then(() => undefined),
   },
   {

@@ -291,7 +291,7 @@ export class SystemScene implements IGameScene {
   private starCoronaScale = 1.22;
   private starCoronaAlpha = 0.34;
   private systemScaleMultiplier = 1.15;
-  private detailTexturePath = "/textures/star_surface.png";
+  private detailTexturePath = "/textures/star_surface.webp";
 
   private ambientIntensity = 0.2;
   private bounceIntensity = 0.08;
@@ -2084,7 +2084,7 @@ export class SystemScene implements IGameScene {
     this.starCoronaScale = 1.22;
     this.starCoronaAlpha = 0.34;
     this.systemScaleMultiplier = 1.15;
-    this.detailTexturePath = "/textures/star_surface.png";
+    this.detailTexturePath = "/textures/star_surface.webp";
 
     this.ambientIntensity = 0.2;
     this.bounceIntensity = 0.08;
@@ -2243,7 +2243,7 @@ export class SystemScene implements IGameScene {
         this.starCoronaScale = 1.08;
         this.starCoronaAlpha = 0.12;
         this.systemScaleMultiplier = 1.0;
-        this.detailTexturePath = "/textures/gas_giant.png";
+        this.detailTexturePath = "/textures/gas_giant.webp";
 
         this.starRotationSpeed = 0.03;
         this.starDetailRotationSpeed = -0.05;
@@ -2360,7 +2360,7 @@ export class SystemScene implements IGameScene {
       this.scene,
     );
     const bgMat = new StandardMaterial("systemBackgroundMat", this.scene);
-    bgMat.emissiveTexture = new Texture("/textures/galaxy_bg.png", this.scene);
+    bgMat.emissiveTexture = new Texture("/textures/galaxy_bg.webp", this.scene);
     bgMat.disableLighting = true;
     bgMat.backFaceCulling = false;
     bgSphere.material = bgMat;
@@ -3345,7 +3345,7 @@ export class SystemScene implements IGameScene {
     outerDisk.isPickable = false;
 
     const outerMat = new StandardMaterial("blackHoleDiskOuterMat", this.scene);
-    outerMat.emissiveTexture = new Texture("/textures/star_surface.png", this.scene);
+    outerMat.emissiveTexture = new Texture("/textures/star_surface.webp", this.scene);
     outerMat.emissiveTexture.level = 2.0;
     outerMat.emissiveColor = new Color3(1.2, 0.78, 0.4);
     outerMat.diffuseColor = Color3.Black();
@@ -3454,7 +3454,7 @@ export class SystemScene implements IGameScene {
   private createPlanet(index: number, planet: PlanetConfig): void {
     const planetCfg = PLANET_TYPES[planet.type];
     const textureVariantNum = planet.textureVariation + 1;
-    const texturePath = `${planetCfg.texturePrefix}_0${textureVariantNum}-1024x512.png`;
+    const texturePath = `${planetCfg.texturePrefix}_0${textureVariantNum}-1024x512.webp`;
 
     const orbitLayout = {
       ...getSystemOrbitLayout(this.star.type),
@@ -4087,11 +4087,11 @@ export class SystemScene implements IGameScene {
   private getPlanetTextureUrl(planet: PlanetConfig): string {
     const cfg = PLANET_TYPES[planet.type];
     const variation = String(planet.textureVariation + 1).padStart(2, "0");
-    return `${cfg.texturePrefix}_${variation}-1024x512.png`;
+    return `${cfg.texturePrefix}_${variation}-1024x512.webp`;
   }
 
   private getStarBannerTextureUrl(): string {
-    return STAR_BANNER_TEXTURES[this.star.type] ?? "/textures/star_surface.png";
+    return STAR_BANNER_TEXTURES[this.star.type] ?? "/textures/star_surface.webp";
   }
 
   private createFallbackPlanets(kind: StarVisualKind): PlanetConfig[] {

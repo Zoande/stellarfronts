@@ -62,10 +62,10 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
 
     // Load a few planet images (public folder)
     const planetSrcs = [
-      '/textures/gas_giant.png',
-      '/textures/rocky_planet.png',
-      '/textures/ice_planet.png',
-      '/textures/planets/Arid/Arid_01-1024x512.png'
+      '/textures/gas_giant.webp',
+      '/textures/rocky_planet.webp',
+      '/textures/ice_planet.webp',
+      '/textures/planets/Arid/Arid_01-1024x512.webp'
     ];
     const planets: HTMLImageElement[] = [];
     planetSrcs.forEach((src) => {
@@ -76,7 +76,7 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
 
     // glow sprite for star
     const glow = new Image();
-    glow.src = '/textures/star.glow.png';
+    glow.src = '/textures/star.glow.webp';
 
     // central star position (near upper-left quadrant)
     const star = {
