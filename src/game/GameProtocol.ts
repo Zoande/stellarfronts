@@ -329,8 +329,11 @@ export interface SaveShipDesignCommand {
   designId?: string;
   shipKind: StarbaseShipKind;
   name: string;
+  weaponSectionModuleIds?: string[];
+  defenseSectionModuleIds?: string[];
   weaponModuleIds: string[];
   defenseModuleIds: string[];
+  utilityModuleIds?: string[];
   utilityModuleId?: string | null;
 }
 

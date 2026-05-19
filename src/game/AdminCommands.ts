@@ -127,9 +127,9 @@ export const ADMIN_COMMAND_DEFINITIONS: AdminCommandDefinition[] = [
   command("build_district_now", "economy", "build_district_now <planetId|selected> <districtKind>", "Build a district immediately."),
   command("build_planet_building_now", "economy", "build_planet_building_now <planetId|selected> <area> <slotIndex> <buildingKind> [subDistrictIndex]", "Build a planet building immediately."),
 
-  command("create_design", "designs", "create_design <owner|me> <shipKind> name=\"<name>\" weapons=<ids> defenses=<ids> utility=<id|null>", "Create a ship design."),
+  command("create_design", "designs", "create_design <owner|me> <shipKind> name=\"<name>\" weapon_sections=<ids> weapons=<ids> defenses=<ids> utility=<ids|null>", "Create a ship design."),
   command("clone_design", "designs", "clone_design <designId> <owner|me> [name=\"<name>\"]", "Clone a ship design."),
-  command("set_design_modules", "designs", "set_design_modules <designId> weapons=<ids> defenses=<ids> utility=<id|null>", "Change ship design modules."),
+  command("set_design_modules", "designs", "set_design_modules <designId> weapon_sections=<ids> weapons=<ids> defenses=<ids> utility=<ids|null>", "Change ship design modules."),
   command("delete_design", "designs", "delete_design <designId> [--confirm]", "Delete a ship design.", { destructive: true }),
 
   command("create_fleet", "fleets", "create_fleet <systemId|selected|current> <owner|me> [x,z] [name=\"<name>\"]", "Create an empty fleet."),

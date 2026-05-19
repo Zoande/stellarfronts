@@ -68,6 +68,7 @@ import type { StarbaseBuildingKind, StarbaseLevel, StarbaseShipKind, WeaponMount
 import {
   calculateShipDesignStats,
   createDefaultShipDesign,
+  getShipDesignLayout,
   isKnownShipKind,
   normalizeShipDesign,
   SHIP_MODULE_DEFINITIONS,
@@ -2542,7 +2543,6 @@ function handleSaveShipDesign(
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) return reject(socket, "Observer mode is read-only.");
   if (!isKnownShipKind(command.shipKind)) return reject(socket, "Invalid ship hull.");
-  const hull = SHIP_HULL_DEFINITIONS[command.shipKind] ?? SHIP_HULL_DEFINITIONS.corvette;
   const current = command.designId
     ? state.shipDesigns.find((design) => design.id === command.designId && design.ownerId === factionId)
     : null;
@@ -2554,14 +2554,25 @@ function handleSaveShipDesign(
     shipKind: command.shipKind,
     name: command.name,
     status: "active",
+    weaponSectionModuleIds: command.weaponSectionModuleIds,
+    defenseSectionModuleIds: command.defenseSectionModuleIds,
     weaponModuleIds: command.weaponModuleIds,
     defenseModuleIds: command.defenseModuleIds,
+    utilityModuleIds: command.utilityModuleIds,
     utilityModuleId: command.utilityModuleId ?? null,
     createdAtYear: current?.createdAtYear ?? state.clock.year,
     updatedAtYear: state.clock.year,
   };
   const nextDesign = normalizeShipDesign(raw, factionId, state.clock.year);
-  if (nextDesign.weaponModuleIds.length !== hull.weaponSlots || nextDesign.defenseModuleIds.length !== hull.defenseSlots) {
+  const hull = SHIP_HULL_DEFINITIONS[nextDesign.shipKind] ?? SHIP_HULL_DEFINITIONS.corvette;
+  const layout = getShipDesignLayout(nextDesign);
+  if (
+    nextDesign.weaponSectionModuleIds.length !== hull.weaponSectionSlots
+    || nextDesign.defenseSectionModuleIds.length !== hull.defenseSectionSlots
+    || nextDesign.weaponModuleIds.length !== layout.weaponSlots.length
+    || nextDesign.defenseModuleIds.length !== layout.defenseSlots.length
+    || nextDesign.utilityModuleIds.length !== layout.utilitySlots.length
+  ) {
     return reject(socket, "Ship design slots are invalid.");
   }
   if (current) {
@@ -4649,20 +4660,32 @@ async function executeAdminCommand(
       if (!isCreate && !design) throw new Error("Design not found.");
       const shipKind = (isCreate ? parsed.args[1] : design!.shipKind) as StarbaseShipKind;
       if (!isKnownShipKind(shipKind)) throw new Error("Invalid ship kind.");
+      const utilityOption = commandOption(parsed, "utility");
+      const utilityModuleIds = utilityOption === "null" ? [] : splitList(utilityOption);
       const normalized = normalizeShipDesign({
         id: design?.id ?? createRuntimeId("design", [owner, shipKind]),
         ownerId: design?.ownerId ?? owner,
         shipKind,
         name: commandOption(parsed, "name") ?? design?.name ?? "Admin Design",
         status: "active",
+        weaponSectionModuleIds: splitList(commandOption(parsed, "weapon_sections")),
+        defenseSectionModuleIds: splitList(commandOption(parsed, "defense_sections")),
         weaponModuleIds: splitList(commandOption(parsed, "weapons")),
         defenseModuleIds: splitList(commandOption(parsed, "defenses")),
-        utilityModuleId: commandOption(parsed, "utility") === "null" ? null : commandOption(parsed, "utility") ?? null,
+        utilityModuleIds,
+        utilityModuleId: utilityModuleIds[0] ?? null,
         createdAtYear: design?.createdAtYear ?? state.clock.year,
         updatedAtYear: state.clock.year,
       }, design?.ownerId ?? owner, state.clock.year);
-      const hull = SHIP_HULL_DEFINITIONS[shipKind];
-      if (normalized.weaponModuleIds.length !== hull.weaponSlots || normalized.defenseModuleIds.length !== hull.defenseSlots) {
+      const hull = SHIP_HULL_DEFINITIONS[normalized.shipKind];
+      const layout = getShipDesignLayout(normalized);
+      if (
+        normalized.weaponSectionModuleIds.length !== hull.weaponSectionSlots
+        || normalized.defenseSectionModuleIds.length !== hull.defenseSectionSlots
+        || normalized.weaponModuleIds.length !== layout.weaponSlots.length
+        || normalized.defenseModuleIds.length !== layout.defenseSlots.length
+        || normalized.utilityModuleIds.length !== layout.utilitySlots.length
+      ) {
         throw new Error("Design module counts do not match hull slots.");
       }
       if (design) state.shipDesigns = state.shipDesigns.map((candidate) => candidate.id === design.id ? normalized : candidate);
