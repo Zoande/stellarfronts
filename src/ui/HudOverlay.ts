@@ -46,6 +46,7 @@ export interface HudCallbacks {
 
 const STYLE_ID = "space-rts-hud-style";
 const FLEET_SIDEBAR_ICON_URL = new URL("../../side_bar_fleet_icon.webp", import.meta.url).toString();
+const TECH_SIDEBAR_ICON_URL = new URL("../../side_bar_tech_icon.webp", import.meta.url).toString();
 const RESOURCE_ICON_LABELS: Record<string, string> = {
   food: "FD",
   minerals: "MN",
@@ -58,7 +59,7 @@ const RESOURCE_ICON_LABELS: Record<string, string> = {
 const SIDEBAR_ITEMS: Array<{ key: HudSidebarItemKey; label: string; icon?: string; iconUrl?: string }> = [
   { key: "government", label: "Government", icon: "GV" },
   { key: "society", label: "Society", icon: "SC" },
-  { key: "technology", label: "Technology", icon: "TC" },
+  { key: "technology", label: "Technology", iconUrl: TECH_SIDEBAR_ICON_URL },
   { key: "leaders", label: "Leaders", icon: "LD" },
   { key: "planets", label: "Planets", icon: "PL" },
   { key: "fleets", label: "Fleets", iconUrl: FLEET_SIDEBAR_ICON_URL },

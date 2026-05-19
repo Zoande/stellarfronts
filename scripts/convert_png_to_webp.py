@@ -52,6 +52,7 @@ TARGETS = [
             ROOT / "own_starbase_icon.png",
             ROOT / "own_ship_icon.png",
             ROOT / "side_bar_fleet icon.png",
+            ROOT / "side_bar_tech_icon.png",
         ],
     },
 ]
@@ -116,6 +117,8 @@ def move_to_source_materials(png_path: Path, overwrite: bool) -> Path:
 def get_output_path(source_path: Path) -> Path:
     if source_path.name == "side_bar_fleet icon.png":
         return ROOT / "side_bar_fleet_icon.webp"
+    if source_path.name == "side_bar_tech_icon.png":
+        return ROOT / "side_bar_tech_icon.webp"
     return source_path.with_suffix(".webp")
 
 
@@ -125,7 +128,7 @@ def process_group(label: str, quality: int, dirs: list[Path], files: list[Path],
     skipped = 0
 
     for png_path in pngs:
-        effective_quality = 80 if png_path.name == "side_bar_fleet icon.png" else quality
+        effective_quality = 80 if png_path.name in {"side_bar_fleet icon.png", "side_bar_tech_icon.png"} else quality
         webp_path = get_output_path(png_path)
         if webp_path.exists() and not overwrite:
             skipped += 1
