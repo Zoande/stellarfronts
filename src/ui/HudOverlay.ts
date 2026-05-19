@@ -45,8 +45,15 @@ export interface HudCallbacks {
 }
 
 const STYLE_ID = "space-rts-hud-style";
-const FLEET_SIDEBAR_ICON_URL = new URL("../../public/textures/sidebar-icons/side_bar_fleet_icon.webp", import.meta.url).toString();
-const TECH_SIDEBAR_ICON_URL = new URL("../../public/textures/sidebar-icons/side_bar_tech_icon.webp", import.meta.url).toString();
+const FLEET_SIDEBAR_ICON_URL = "/textures/sidebar-icons/side_bar_fleet_icon.webp";
+const TECH_SIDEBAR_ICON_URL = "/textures/sidebar-icons/side_bar_tech_icon.webp";
+const GOVERNMENT_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_government_icon.webp";
+const SOCIETY_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_society_icon.webp";
+const LEADERS_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_leaders_icon.webp";
+const PLANETS_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_planets_icon.webp";
+const DIPLOMACY_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_diplomacy_icon.webp";
+const ESPIONAGE_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_espionage_icon.webp";
+const MARKET_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_market_icon.webp";
 const RESOURCE_ICON_LABELS: Record<string, string> = {
   food: "FD",
   minerals: "MN",
@@ -57,15 +64,15 @@ const RESOURCE_ICON_LABELS: Record<string, string> = {
 };
 
 const SIDEBAR_ITEMS: Array<{ key: HudSidebarItemKey; label: string; icon?: string; iconUrl?: string }> = [
-  { key: "government", label: "Government", icon: "GV" },
-  { key: "society", label: "Society", icon: "SC" },
+  { key: "government", label: "Government", iconUrl: GOVERNMENT_SIDEBAR_ICON_URL },
+  { key: "society", label: "Society", iconUrl: SOCIETY_SIDEBAR_ICON_URL },
   { key: "technology", label: "Technology", iconUrl: TECH_SIDEBAR_ICON_URL },
-  { key: "leaders", label: "Leaders", icon: "LD" },
-  { key: "planets", label: "Planets", icon: "PL" },
+  { key: "leaders", label: "Leaders", iconUrl: LEADERS_SIDEBAR_ICON_URL },
+  { key: "planets", label: "Planets", iconUrl: PLANETS_SIDEBAR_ICON_URL },
   { key: "fleets", label: "Fleets", iconUrl: FLEET_SIDEBAR_ICON_URL },
-  { key: "diplomacy", label: "Diplomacy", icon: "DP" },
-  { key: "espionage", label: "Espionage", icon: "ES" },
-  { key: "market", label: "Market", icon: "MK" },
+  { key: "diplomacy", label: "Diplomacy", iconUrl: DIPLOMACY_SIDEBAR_ICON_URL },
+  { key: "espionage", label: "Espionage", iconUrl: ESPIONAGE_SIDEBAR_ICON_URL },
+  { key: "market", label: "Market", iconUrl: MARKET_SIDEBAR_ICON_URL },
 ] as const;
 
 const HUD_STYLE = `

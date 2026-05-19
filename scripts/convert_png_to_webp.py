@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 from PIL import Image
+from PIL import ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = ROOT / "source_materials"
@@ -13,6 +14,9 @@ PLANET_QUALITY = 80
 BANNER_QUALITY = 30
 ICON_QUALITY = 50
 WEBP_METHOD = 6
+SIDEBAR_ICON_CANVAS = 1024
+SIDEBAR_ICON_PADDING = 10
+SIDEBAR_ICON_WHITE_THRESHOLD = 245
 
 TARGETS = [
     {
@@ -53,6 +57,13 @@ TARGETS = [
             ROOT / "own_ship_icon.png",
             ROOT / "side_bar_fleet icon.png",
             ROOT / "side_bar_tech_icon.png",
+            SOURCE_DIR / "sidebar_government_icon.png",
+            SOURCE_DIR / "sidebar_society_icon.png",
+            SOURCE_DIR / "sidebar_leaders_icon.png",
+            SOURCE_DIR / "sidebar_planets_icon.png",
+            SOURCE_DIR / "sidebar_diplomacy_icon.png",
+            SOURCE_DIR / "sidebar_espionage_icon.png",
+            SOURCE_DIR / "sidebar_market_icon.png",
         ],
     },
 ]
@@ -70,8 +81,6 @@ def iter_pngs(base_dirs: list[Path], base_files: list[Path]) -> list[Path]:
             seen.add(path)
 
     for file_path in base_files:
-        if SOURCE_DIR in file_path.parents:
-            continue
         if file_path.suffix.lower() != ".png":
             continue
         if file_path.exists():
@@ -99,7 +108,45 @@ def convert_to_webp(source_path: Path, dest_path: Path, quality: int) -> None:
         )
 
 
+def prepare_sidebar_icon(source_path: Path) -> Image.Image:
+    with Image.open(source_path) as image:
+        image = to_rgb_or_rgba(image).convert("RGBA")
+
+    pixels = image.load()
+    for y in range(image.height):
+        for x in range(image.width):
+            red, green, blue, alpha = pixels[x, y]
+            if red >= SIDEBAR_ICON_WHITE_THRESHOLD and green >= SIDEBAR_ICON_WHITE_THRESHOLD and blue >= SIDEBAR_ICON_WHITE_THRESHOLD:
+                pixels[x, y] = (255, 255, 255, 0)
+
+    bbox = image.getbbox()
+    if bbox is not None:
+        image = image.crop(bbox)
+
+    target_size = SIDEBAR_ICON_CANVAS - (SIDEBAR_ICON_PADDING * 2)
+    image = ImageOps.contain(image, (target_size, target_size), method=Image.Resampling.LANCZOS)
+
+    canvas = Image.new("RGBA", (SIDEBAR_ICON_CANVAS, SIDEBAR_ICON_CANVAS), (0, 0, 0, 0))
+    offset_x = (SIDEBAR_ICON_CANVAS - image.width) // 2
+    offset_y = (SIDEBAR_ICON_CANVAS - image.height) // 2
+    canvas.paste(image, (offset_x, offset_y), image)
+    return canvas
+
+
+def convert_sidebar_icon_to_webp(source_path: Path, dest_path: Path, quality: int) -> None:
+    image = prepare_sidebar_icon(source_path)
+    image.save(
+        dest_path,
+        format="WEBP",
+        quality=quality,
+        method=WEBP_METHOD,
+    )
+
+
 def move_to_source_materials(png_path: Path, overwrite: bool) -> Path:
+    if SOURCE_DIR in png_path.parents:
+        return png_path
+
     relative = png_path.relative_to(ROOT)
     source_path = SOURCE_DIR / relative
     source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +188,10 @@ def process_group(label: str, quality: int, dirs: list[Path], files: list[Path],
             continue
 
         source_path = move_to_source_materials(png_path, overwrite)
-        convert_to_webp(source_path, webp_path, effective_quality)
+        if source_path.name.startswith("sidebar_"):
+            convert_sidebar_icon_to_webp(source_path, webp_path, effective_quality)
+        else:
+            convert_to_webp(source_path, webp_path, effective_quality)
         converted += 1
 
     return {
