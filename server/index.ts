@@ -64,7 +64,13 @@ import {
   STARBASE_SHIP_DEFINITIONS,
   STARBASE_SHIP_KINDS,
 } from "../src/data/Starbase";
-import type { StarbaseBuildingKind, StarbaseLevel, StarbaseShipKind, WeaponMountDefinition } from "../src/data/Starbase";
+import type {
+  StarbaseBuildingKind,
+  StarbaseLevel,
+  StarbaseShipKind,
+  StarbaseShipQueueItem,
+  WeaponMountDefinition,
+} from "../src/data/Starbase";
 import {
   calculateShipDesignStats,
   createDefaultShipDesign,
@@ -427,6 +433,11 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
         .filter((item) => item.shipKind && isStarbaseShipKind(item.shipKind))
         .map((item) => ({
           ...item,
+          kind: item.kind === "upgrade" ? "upgrade" : "build",
+          designId: typeof item.designId === "string" ? item.designId : null,
+          targetDesignId: typeof item.targetDesignId === "string" ? item.targetDesignId : null,
+          shipId: typeof item.shipId === "string" ? item.shipId : null,
+          cost: normalizeResourceCounts(item.cost),
           remainingDays: Math.max(0, Number(item.remainingDays) || 0),
           totalDays: Math.max(1, Number(item.totalDays) || 1),
           alloyUpkeepPerDay: Math.max(0, Number(item.alloyUpkeepPerDay) || 0),
@@ -449,12 +460,7 @@ function findShipDesign(
   includeDecommissioned = true,
 ): ShipDesign | null {
   if (designId) {
-    const explicit = shipDesigns.find((design) => (
-      design.id === designId
-      && design.ownerId === ownerId
-      && design.shipKind === shipKind
-      && (includeDecommissioned || design.status === "active")
-    ));
+    const explicit = findShipDesignById(shipDesigns, ownerId, shipKind, designId, includeDecommissioned);
     if (explicit) return explicit;
   }
   return shipDesigns.find((design) => (
@@ -466,6 +472,36 @@ function findShipDesign(
     && design.shipKind === shipKind
     && includeDecommissioned
   )) ?? null;
+}
+
+function findShipDesignById(
+  shipDesigns: ShipDesign[],
+  ownerId: number,
+  shipKind: StarbaseShipKind,
+  designId: string | null | undefined,
+  includeDecommissioned = true,
+): ShipDesign | null {
+  if (!designId) return null;
+  return shipDesigns.find((design) => (
+    design.id === designId
+    && design.ownerId === ownerId
+    && design.shipKind === shipKind
+    && (includeDecommissioned || design.status === "active")
+  )) ?? null;
+}
+
+function getNewestActiveShipDesign(
+  shipDesigns: ShipDesign[],
+  ownerId: number,
+  shipKind: StarbaseShipKind,
+): ShipDesign | null {
+  return shipDesigns
+    .filter((design) => design.ownerId === ownerId && design.shipKind === shipKind && design.status === "active")
+    .sort((a, b) => {
+      const yearDelta = (b.updatedAtYear ?? b.createdAtYear) - (a.updatedAtYear ?? a.createdAtYear);
+      if (yearDelta !== 0) return yearDelta;
+      return b.createdAtYear - a.createdAtYear;
+    })[0] ?? null;
 }
 
 function resolveShipDesign(
@@ -482,6 +518,54 @@ function getShipDesignForShip(ship: Pick<ServerShip, "ownerId" | "shipKind" | "d
   return resolveShipDesign(state.shipDesigns, ship.ownerId, ship.shipKind, ship.designId);
 }
 
+function calculateShipUpgradePlan(fromDesign: ShipDesign, targetDesign: ShipDesign): {
+  cost: ResourceCounts;
+  totalDays: number;
+  alloyUpkeepPerDay: number;
+} {
+  const fromStats = calculateShipDesignStats(fromDesign);
+  const targetStats = calculateShipDesignStats(targetDesign);
+  const cost = createEmptyResourceCounts();
+  let positiveCost = 0;
+  let targetCost = 0;
+  for (const resource of RESOURCE_KINDS) {
+    const delta = Math.max(0, targetStats.cost[resource] - fromStats.cost[resource]);
+    cost[resource] = delta;
+    positiveCost += delta;
+    targetCost += Math.max(0, targetStats.cost[resource]);
+  }
+  const refitAlloyCost = Math.max(5, targetStats.cost.alloys * 0.15);
+  cost.alloys = Math.max(cost.alloys, refitAlloyCost);
+  const costRatio = targetCost > 0 ? Math.max(0.2, Math.min(1, positiveCost / targetCost)) : 0.35;
+  const totalDays = Math.max(1, Math.ceil(targetStats.buildDays * Math.max(0.25, costRatio)));
+  return {
+    cost,
+    totalDays,
+    alloyUpkeepPerDay: cost.alloys / totalDays,
+  };
+}
+
+function applyShipDesignToShip(ship: GameShip, design: ShipDesign): void {
+  const stats = calculateShipDesignStats(design);
+  const combat = stats.combat;
+  const shieldRatio = ship.maxShield > 0 ? ship.shield / ship.maxShield : 1;
+  const armorRatio = ship.maxArmor > 0 ? ship.armor / ship.maxArmor : 1;
+  const hullRatio = ship.maxHull > 0 ? ship.hull / ship.maxHull : 1;
+  ship.shipKind = design.shipKind;
+  ship.designId = design.id;
+  ship.targetDesignId = null;
+  ship.speed = stats.speed;
+  ship.maxShield = combat.maxShield;
+  ship.maxArmor = combat.maxArmor;
+  ship.maxHull = combat.maxHull;
+  ship.maxHp = combat.maxHull;
+  ship.shield = clamp(combat.maxShield * shieldRatio, 0, combat.maxShield);
+  ship.armor = clamp(combat.maxArmor * armorRatio, 0, combat.maxArmor);
+  ship.hull = clamp(combat.maxHull * hullRatio, 1, combat.maxHull);
+  ship.hp = ship.hull;
+  ship.weaponCooldowns = {};
+}
+
 function createShipFromDesign(
   ownerId: number,
   fleetId: string,
@@ -496,6 +580,7 @@ function createShipFromDesign(
     fleetId,
     shipKind: design.shipKind,
     designId: design.id,
+    targetDesignId: null,
     speed: stats.speed,
     hp: combat.maxHull,
     maxHp: combat.maxHull,
@@ -664,7 +749,15 @@ function normalizeShip(
 ): GameShip {
   const definition = getShipDefinition(ship.shipKind);
   const shipKind = definition.kind;
-  const design = resolveShipDesign(shipDesigns, Number.isInteger(ship.ownerId) ? ship.ownerId : 0, shipKind, ship.designId);
+  const ownerId = Number.isInteger(ship.ownerId) ? ship.ownerId : 0;
+  const design = resolveShipDesign(shipDesigns, ownerId, shipKind, ship.designId);
+  const explicitTarget = typeof ship.targetDesignId === "string"
+    ? findShipDesignById(shipDesigns, ownerId, shipKind, ship.targetDesignId, false)
+    : null;
+  const fallbackTarget = design.status === "decommissioned"
+    ? getNewestActiveShipDesign(shipDesigns, ownerId, shipKind)
+    : null;
+  const targetDesign = explicitTarget ?? fallbackTarget;
   const stats = calculateShipDesignStats(design);
   const combat = stats.combat;
   const maxHull = Math.max(1, Number(ship.maxHull ?? ship.maxHp) || combat.maxHull);
@@ -675,10 +768,11 @@ function normalizeShip(
   const armor = Math.max(0, Math.min(maxArmor, Number(ship.armor) || maxArmor));
   return {
     id: ship.id,
-    ownerId: Number.isInteger(ship.ownerId) ? ship.ownerId : 0,
+    ownerId,
     fleetId: ship.fleetId || fallbackFleetId,
     shipKind,
     designId: design.id,
+    targetDesignId: targetDesign && targetDesign.id !== design.id ? targetDesign.id : null,
     speed: Math.max(0.05, Number(ship.speed) || stats.speed),
     hp: hull,
     maxHp: maxHull,
@@ -842,24 +936,10 @@ function syncFleetMembership(nextState: GameState): boolean {
 }
 
 function syncShipsForDesign(nextState: GameState, design: ShipDesign): boolean {
-  const stats = calculateShipDesignStats(design);
-  const combat = stats.combat;
   let changed = false;
   for (const ship of nextState.ships) {
     if (ship.designId !== design.id) continue;
-    const shieldRatio = ship.maxShield > 0 ? ship.shield / ship.maxShield : 1;
-    const armorRatio = ship.maxArmor > 0 ? ship.armor / ship.maxArmor : 1;
-    const hullRatio = ship.maxHull > 0 ? ship.hull / ship.maxHull : 1;
-    ship.shipKind = design.shipKind;
-    ship.speed = stats.speed;
-    ship.maxShield = combat.maxShield;
-    ship.maxArmor = combat.maxArmor;
-    ship.maxHull = combat.maxHull;
-    ship.maxHp = combat.maxHull;
-    ship.shield = clamp(combat.maxShield * shieldRatio, 0, combat.maxShield);
-    ship.armor = clamp(combat.maxArmor * armorRatio, 0, combat.maxArmor);
-    ship.hull = clamp(combat.maxHull * hullRatio, 1, combat.maxHull);
-    ship.hp = ship.hull;
+    applyShipDesignToShip(ship, design);
     changed = true;
   }
   if (changed) syncFleetMembership(nextState);
@@ -2522,8 +2602,10 @@ function handleBuildStarbaseShip(
   if (!design) return reject(socket, "Ship design is unavailable.");
   const stats = calculateShipDesignStats(design);
   const item = createStarbaseShipQueueItem(shipKind, {
+    kind: "build",
     designId: design.id,
     label: design.name,
+    cost: stats.cost,
     totalDays: stats.buildDays,
     remainingDays: stats.buildDays,
     alloyUpkeepPerDay: stats.alloyUpkeepPerDay,
@@ -2533,6 +2615,72 @@ function handleBuildStarbaseShip(
     ...starbase,
     shipQueue: [...starbase.shipQueue, item],
   });
+}
+
+function handleUpgradeShip(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  command: Extract<ClientCommand, { type: "upgradeShip" }>,
+): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const ship = state.ships.find((candidate) => candidate.id === command.shipId);
+  if (!ship) return reject(socket, "Ship not found.");
+  if (ship.ownerId !== factionId) return reject(socket, "You do not own that ship.");
+  const fleet = state.fleets.find((candidate) => candidate.id === ship.fleetId);
+  if (!fleet) return reject(socket, "Fleet not found.");
+  if (!isFleetAvailableForOrders(fleet)) return reject(socket, "Fleet is already busy.");
+
+  const starbase = validateStarbaseCommand(socket, perspective, command.starbaseId);
+  if (!starbase) return;
+  if (starbase.starId !== fleet.currentStarId) return reject(socket, "Move the fleet to a shipyard system before upgrading.");
+  if (countStarbaseShipyards(starbase.buildingSlots) <= 0) return reject(socket, "Starbase has no completed shipyards.");
+  const alreadyQueued = state.starbases.some((candidate) => (
+    candidate.shipQueue.some((item) => item.kind === "upgrade" && item.shipId === ship.id)
+  ));
+  if (alreadyQueued) return reject(socket, "Ship upgrade is already queued.");
+
+  const currentDesign = findShipDesign(state.shipDesigns, ship.ownerId, ship.shipKind, ship.designId, true);
+  if (!currentDesign) return reject(socket, "Current ship design is unavailable.");
+  const explicitTarget = command.targetDesignId
+    ? findShipDesignById(state.shipDesigns, ship.ownerId, ship.shipKind, command.targetDesignId, false)
+    : null;
+  if (command.targetDesignId && !explicitTarget) return reject(socket, "Target ship design is unavailable.");
+  const assignedTarget = ship.targetDesignId
+    ? findShipDesignById(state.shipDesigns, ship.ownerId, ship.shipKind, ship.targetDesignId, false)
+    : null;
+  const targetDesign = explicitTarget ?? assignedTarget ?? getNewestActiveShipDesign(state.shipDesigns, ship.ownerId, ship.shipKind);
+  if (!targetDesign) return reject(socket, "No active target design is available.");
+  if (targetDesign.id === currentDesign.id) return reject(socket, "Ship is already using the newest available design.");
+
+  const upgrade = calculateShipUpgradePlan(currentDesign, targetDesign);
+  const item = createStarbaseShipQueueItem(ship.shipKind, {
+    kind: "upgrade",
+    shipId: ship.id,
+    designId: currentDesign.id,
+    targetDesignId: targetDesign.id,
+    label: `Upgrade to ${targetDesign.name}`,
+    cost: upgrade.cost,
+    totalDays: upgrade.totalDays,
+    remainingDays: upgrade.totalDays,
+    alloyUpkeepPerDay: upgrade.alloyUpkeepPerDay,
+    crewDemand: 0,
+  });
+
+  ship.targetDesignId = targetDesign.id;
+  fleet.systemPosition = getSystemStarbaseOrbitPosition(starbase.systemPosition);
+  applyFleetOrbitTarget(fleet, createStarbaseOrbitTarget(starbase, fleet.systemPosition));
+  setFleetPhase(fleet, "orbiting");
+  const starbaseIndex = state.starbases.findIndex((candidate) => candidate.id === starbase.id);
+  state.starbases[starbaseIndex] = normalizeStarbase({
+    ...starbase,
+    shipQueue: [...starbase.shipQueue, item],
+  });
+  syncFleetMembership(state);
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  accept(socket, "Ship upgrade queued.");
+  broadcastUpdates(["clock", "starbases", "ships", "fleets", "factionEconomies"]);
 }
 
 function handleSaveShipDesign(
@@ -2604,9 +2752,51 @@ function handleDecommissionShipDesign(
   if (activeCount <= 1) return reject(socket, "At least one active design is required.");
   design.status = "decommissioned";
   design.updatedAtYear = state.clock.year;
+  const targetDesign = getNewestActiveShipDesign(state.shipDesigns, factionId, design.shipKind);
+  let shipsChanged = false;
+  let starbasesChanged = false;
+  if (targetDesign) {
+    for (const ship of state.ships) {
+      if (
+        ship.ownerId !== factionId
+        || ship.shipKind !== design.shipKind
+        || (ship.designId !== design.id && ship.targetDesignId !== design.id)
+      ) {
+        continue;
+      }
+      ship.targetDesignId = targetDesign.id;
+      shipsChanged = true;
+    }
+    state.starbases = state.starbases.map((starbase) => {
+      let queueChanged = false;
+      const shipQueue = starbase.shipQueue.map((item) => {
+        if (item.kind !== "upgrade" || item.targetDesignId !== design.id) return item;
+        const ship = item.shipId ? state.ships.find((candidate) => candidate.id === item.shipId) : null;
+        const currentDesign = ship
+          ? findShipDesignById(state.shipDesigns, ship.ownerId, ship.shipKind, ship.designId, true)
+          : design;
+        const upgrade = currentDesign ? calculateShipUpgradePlan(currentDesign, targetDesign) : null;
+        queueChanged = true;
+        return {
+          ...item,
+          targetDesignId: targetDesign.id,
+          cost: upgrade?.cost ?? item.cost,
+          totalDays: upgrade?.totalDays ?? item.totalDays,
+          remainingDays: Math.min(item.remainingDays, upgrade?.totalDays ?? item.remainingDays),
+          alloyUpkeepPerDay: upgrade?.alloyUpkeepPerDay ?? item.alloyUpkeepPerDay,
+        };
+      });
+      if (!queueChanged) return starbase;
+      starbasesChanged = true;
+      return normalizeStarbase({ ...starbase, shipQueue });
+    });
+  }
   hasDirtyState = true;
   accept(socket, "Ship design decommissioned.");
-  broadcastUpdates(["shipDesigns"]);
+  const changed: ServerUpdateField[] = ["shipDesigns"];
+  if (shipsChanged) changed.push("ships");
+  if (starbasesChanged) changed.push("starbases");
+  broadcastUpdates(changed);
 }
 
 function isDistrictKind(value: string): value is DistrictKind {
@@ -3803,6 +3993,23 @@ function spawnCompletedShip(starbase: ServerStarbase, item: { shipKind: Starbase
   state.fleets.push(fleet);
 }
 
+function completeQueuedShipUpgrade(item: StarbaseShipQueueItem): boolean {
+  if (item.kind !== "upgrade" || !item.shipId) return false;
+  const ship = state.ships.find((candidate) => candidate.id === item.shipId);
+  if (!ship) return false;
+  const targetDesign = findShipDesignById(
+    state.shipDesigns,
+    ship.ownerId,
+    ship.shipKind,
+    item.targetDesignId ?? item.designId,
+    true,
+  );
+  if (!targetDesign) return false;
+  applyShipDesignToShip(ship, targetDesign);
+  syncFleetMembership(state);
+  return true;
+}
+
 function processStarbaseShipQueues(elapsedDays: number): { starbasesChanged: boolean; fleetsChanged: boolean } {
   if (elapsedDays <= 0) return { starbasesChanged: false, fleetsChanged: false };
   let starbasesChanged = false;
@@ -3819,8 +4026,12 @@ function processStarbaseShipQueues(elapsedDays: number): { starbasesChanged: boo
       economy.stockpiles = addResourceCounts(economy.stockpiles, cost);
     }
     for (const completed of result.completed) {
-      spawnCompletedShip(starbase, completed);
-      fleetsChanged = true;
+      if (completed.kind === "upgrade") {
+        fleetsChanged = completeQueuedShipUpgrade(completed) || fleetsChanged;
+      } else {
+        spawnCompletedShip(starbase, completed);
+        fleetsChanged = true;
+      }
     }
     starbasesChanged = true;
     return result.starbase;
@@ -5267,6 +5478,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "buildStarbaseShip") {
     handleBuildStarbaseShip(session.socket, session.perspective, command.starbaseId, command.shipKind, command.designId);
+    return;
+  }
+  if (command.type === "upgradeShip") {
+    handleUpgradeShip(session.socket, session.perspective, command);
     return;
   }
   if (command.type === "saveShipDesign") {

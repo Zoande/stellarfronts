@@ -105,11 +105,17 @@ export interface StarbaseConstructionQueueItem {
   slotIndex?: number;
 }
 
+export type StarbaseShipQueueKind = "build" | "upgrade";
+
 export interface StarbaseShipQueueItem {
   id: string;
+  kind: StarbaseShipQueueKind;
   shipKind: StarbaseShipKind;
   designId?: string | null;
+  targetDesignId?: string | null;
+  shipId?: string | null;
   label: string;
+  cost: ResourceCounts;
   totalDays: number;
   remainingDays: number;
   alloyUpkeepPerDay: number;
@@ -436,14 +442,20 @@ export function createStarbaseShipQueueItem(
   id = createConstructionId("starbase-ship", [shipKind]),
 ): StarbaseShipQueueItem {
   const definition = STARBASE_SHIP_DEFINITIONS[shipKind];
+  const totalDays = overrides.totalDays ?? definition.buildDays;
+  const alloyUpkeepPerDay = overrides.alloyUpkeepPerDay ?? definition.alloyUpkeepPerDay;
   return {
     id,
+    kind: overrides.kind ?? "build",
     shipKind,
     designId: overrides.designId ?? null,
+    targetDesignId: overrides.targetDesignId ?? null,
+    shipId: overrides.shipId ?? null,
     label: overrides.label ?? definition.label,
-    totalDays: overrides.totalDays ?? definition.buildDays,
-    remainingDays: overrides.remainingDays ?? overrides.totalDays ?? definition.buildDays,
-    alloyUpkeepPerDay: overrides.alloyUpkeepPerDay ?? definition.alloyUpkeepPerDay,
+    cost: resources(overrides.cost ?? { alloys: alloyUpkeepPerDay * totalDays }),
+    totalDays,
+    remainingDays: overrides.remainingDays ?? totalDays,
+    alloyUpkeepPerDay,
     crewDemand: overrides.crewDemand ?? definition.crewDemand,
   };
 }

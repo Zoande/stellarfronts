@@ -348,13 +348,15 @@ export class StarbasePanel {
                 const totalDays = Math.max(1, item.totalDays);
                 const progress = Math.max(0, Math.min(100, ((totalDays - item.remainingDays) / totalDays) * 100));
                 const isActive = index < shipyardCount;
+                const verb = item.kind === "upgrade" ? "Upgrading" : "Building";
+                const waitingVerb = item.kind === "upgrade" ? "Upgrade queued" : "Waiting";
                 return `
                   <div class="sbShipQueueItem ${isActive ? "active" : ""}">
                     <div>
                       <strong>${this.escapeHtml(item.label)}</strong>
-                      <span>${isActive ? "Building" : "Waiting"} | ${Math.ceil(item.remainingDays)}d</span>
+                      <span>${isActive ? verb : waitingVerb} | ${Math.ceil(item.remainingDays)}d</span>
                     </div>
-                    <small>${this.formatCompact(item.alloyUpkeepPerDay)}/d alloys</small>
+                    <small>${this.formatCompact(item.alloyUpkeepPerDay)}/d alloys | ${this.renderInlineCost(item.cost)}</small>
                     <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
                   </div>
                 `;

@@ -181,6 +181,7 @@ export interface ServerShip {
   fleetId: string;
   shipKind: StarbaseShipKind;
   designId?: string;
+  targetDesignId?: string | null;
   speed: number;
   hp: number;
   maxHp: number;
@@ -324,6 +325,13 @@ export interface BuildStarbaseShipCommand {
   designId?: string;
 }
 
+export interface UpgradeShipCommand {
+  type: "upgradeShip";
+  shipId: string;
+  starbaseId: string;
+  targetDesignId?: string;
+}
+
 export interface SaveShipDesignCommand {
   type: "saveShipDesign";
   designId?: string;
@@ -414,6 +422,7 @@ export type ClientCommand =
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
   | BuildStarbaseShipCommand
+  | UpgradeShipCommand
   | SaveShipDesignCommand
   | DecommissionShipDesignCommand
   | SetUrbanSubDistrictCommand

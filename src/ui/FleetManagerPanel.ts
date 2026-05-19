@@ -54,7 +54,7 @@ import type {
   FleetRetreatPolicy,
 } from "../game/CombatTypes";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
-import { computeCombatPowerFromStats, computeFleetPower } from "../game/combatPower";
+import { computeCombatPowerFromStats, computeFleetPower, computeShipPower } from "../game/combatPower";
 import { getFleetTacticalRadius } from "../game/tacticalFormation";
 import {
   captureScrollState,
@@ -604,6 +604,25 @@ export class FleetManagerPanel {
         });
       });
     });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-upgrade-ship]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const shipId = button.dataset.fmUpgradeShip;
+        if (!shipId) return;
+        const ship = data.ships.find((candidate) => candidate.id === shipId);
+        if (!ship) return;
+        const fleet = data.fleets.find((candidate) => candidate.id === ship.fleetId);
+        if (!fleet) return;
+        const targetDesign = this.getTargetDesignForShip(data, ship);
+        const shipyard = this.findShipyardInFleetSystem(data, fleet);
+        if (!targetDesign || !shipyard) return;
+        data.onFleetCommand?.({
+          type: "upgradeShip",
+          shipId,
+          starbaseId: shipyard.id,
+          targetDesignId: targetDesign.id,
+        });
+      });
+    });
     this.bindDesignerEvents(data);
   }
 
@@ -698,10 +717,21 @@ export class FleetManagerPanel {
 
   private renderFleetManager(data: FleetManagerPanelData): string {
     const selectedFleet = this.getSelectedFleet(data);
+    const navalUsed = this.getTotalShipCount(data);
     return `
       <section class="fmBody">
         <article class="fmColumn fmFleetListColumn">
-          <div class="fmSectionTitle">Fleet Manager</div>
+          <div class="fmFleetListHeader">
+            <div class="fmPanelTitle">
+              <span class="fmPanelIcon fmPanelIcon-fleet" aria-hidden="true"></span>
+              <strong>Fleet Manager</strong>
+            </div>
+            <span class="fmCapacityChip"><small>Naval Capacity</small><strong>${this.escapeHtml(String(navalUsed))} / 100</strong></span>
+          </div>
+          <label class="fmFleetSearch">
+            <input type="search" placeholder="Search fleets..." aria-label="Search fleets">
+            <span class="fmSearchIcon" aria-hidden="true"></span>
+          </label>
           <div class="fmFleetList">
             ${data.fleets.length === 0
               ? '<div class="fmEmpty">No fleets currently visible.</div>'
@@ -711,8 +741,8 @@ export class FleetManagerPanel {
         <article class="fmColumn fmSelectedColumn">
           ${selectedFleet ? this.renderSelectedFleet(data, selectedFleet) : this.renderNoSelectedFleet()}
         </article>
-        <aside class="fmColumn fmStatsColumn">
-          ${this.addShipsOpen && selectedFleet ? this.renderShipPicker(data, selectedFleet) : this.renderOverallStats(data)}
+        <aside class="fmColumn fmCompositionColumn">
+          ${selectedFleet ? (this.addShipsOpen ? this.renderShipPicker(data, selectedFleet) : this.renderFleetCompositionPanel(data, selectedFleet)) : this.renderNoSelectedFleet()}
         </aside>
       </section>
     `;
@@ -730,9 +760,10 @@ export class FleetManagerPanel {
           <strong>${this.escapeHtml(this.getFleetName(data, fleet, index))}</strong>
           <small>${this.escapeHtml(systemName)} | ${this.escapeHtml(this.formatFleetStatus(fleet))}</small>
         </span>
+        <span class="fmFleetGhost" aria-hidden="true"></span>
         <span class="fmFleetNumbers">
-          <strong>${shipCount}</strong>
-          <small>${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</small>
+          <strong>${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</strong>
+          <small>${shipCount} ship${shipCount === 1 ? "" : "s"}</small>
         </span>
       </button>
     `;
@@ -744,6 +775,7 @@ export class FleetManagerPanel {
     const index = Math.max(0, data.fleets.findIndex((candidate) => candidate.id === fleet.id));
     const shipCount = this.getFleetShipCount(data, fleet);
     const defense = this.getFleetDefense(data, fleet);
+    const commandUsed = Math.max(shipCount, ships.length);
     return `
       <div class="fmSelectedHeader">
         <div>
@@ -751,28 +783,22 @@ export class FleetManagerPanel {
           <h3>${this.escapeHtml(this.getFleetName(data, fleet, index))}</h3>
           <span>${this.escapeHtml(this.getStarName(data, fleet.currentStarId))} System</span>
         </div>
-        <div class="fmPowerBadge">${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</div>
-      </div>
-      <div class="fmStatGrid">
-        ${this.renderStat("Status", this.formatFleetStatus(fleet))}
-        ${this.renderStat("Owner", owner?.name ?? "Unknown")}
-        ${this.renderStat("Class", shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`)}
-        ${this.renderStat("Shields", `${Math.round(defense.shield)} / ${Math.round(defense.maxShield)}`)}
-        ${this.renderStat("Armor", `${Math.round(defense.armor)} / ${Math.round(defense.maxArmor)}`)}
-        ${this.renderStat("Hull", `${Math.round(defense.hull)} / ${Math.round(defense.maxHull)}`)}
-        ${this.renderStat("Speed", `${this.formatCompact(fleet.speed * 2)} ly/day`)}
-        ${this.renderStat("Order", this.formatFleetOrder(data, fleet))}
-      </div>
-      ${this.renderFleetDoctrinePanel(data, fleet, ships)}
-      <div class="fmDoctrineHeader">
-        <div>
-          <div class="fmSectionTitle fmCompositionTitle">Fleet Composition</div>
-          <span>${ships.length} ship${ships.length === 1 ? "" : "s"} tracked inside this fleet</span>
+        <div class="fmSelectedHeaderChips">
+          <span class="fmCommandChip"><small>Command Limit</small><strong>${this.escapeHtml(String(commandUsed))} / 100</strong></span>
+          <div class="fmPowerBadge"><strong>${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</strong><small>Fleet Power</small></div>
         </div>
       </div>
-      <div class="fmCompositionList">
-        ${this.renderCompositionRows(data, fleet, ships)}
+      <div class="fmStatGrid">
+        ${this.renderFleetInfoCard("status", "Status", this.formatFleetStatus(fleet))}
+        ${this.renderFleetInfoCard("owner", "Owner", owner?.name ?? "Unknown")}
+        ${this.renderFleetInfoCard("class", "Class", shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`)}
+        ${this.renderFleetInfoCard("shields", "Shields", `${Math.round(defense.shield)} / ${Math.round(defense.maxShield)}`, this.getRatio(defense.shield, defense.maxShield))}
+        ${this.renderFleetInfoCard("armor", "Armor", `${Math.round(defense.armor)} / ${Math.round(defense.maxArmor)}`, this.getRatio(defense.armor, defense.maxArmor))}
+        ${this.renderFleetInfoCard("hull", "Hull", `${Math.round(defense.hull)} / ${Math.round(defense.maxHull)}`, this.getRatio(defense.hull, defense.maxHull))}
+        ${this.renderFleetInfoCard("speed", "Speed", `${this.formatCompact(fleet.speed * 2)} ly/day`)}
+        ${this.renderFleetInfoCard("order", "Order", this.formatFleetOrder(data, fleet))}
       </div>
+      ${this.renderFleetDoctrinePanel(data, fleet, ships)}
       <button class="fmAddShipsButton" type="button" data-fm-add-ships ${data.playerFactionId === fleet.ownerId ? "" : "disabled"}>Add Ships</button>
     `;
   }
@@ -798,27 +824,39 @@ export class FleetManagerPanel {
 
   private renderFleetDoctrinePanel(data: FleetManagerPanelData, fleet: ServerFleet, ships: ServerShip[]): string {
     const canCommand = data.playerFactionId === fleet.ownerId;
-    const settings = fleet.combatSettings;
     const tacticalRadius = fleet.tacticalRadius ?? getFleetTacticalRadius(Math.max(ships.length, fleet.shipIds.length));
     const range = fleet.maxWeaponRange ?? 0;
     const status = fleet.combatStatus ?? "idle";
     return `
-      <div class="fmDoctrineHeader">
-        <div>
-          <div class="fmSectionTitle fmCompositionTitle">Fleet Doctrine</div>
+      <div class="fmDoctrinePanel">
+        <div class="fmDoctrineHeader">
+          <div class="fmPanelTitle">
+            <span class="fmPanelIcon fmPanelIcon-doctrine" aria-hidden="true"></span>
+            <strong>Fleet Doctrine</strong>
+          </div>
           <span>${this.escapeHtml(this.formatCombatStatus(status))} | footprint ${this.formatCompact(tacticalRadius)} | max range ${this.formatCompact(range)}</span>
         </div>
+        <div class="fmDoctrineGrid">
+          <label>Stance ${this.renderFleetStanceSelect(fleet, canCommand)}</label>
+          <label>Behavior ${this.renderFleetBehaviorSelect(fleet, canCommand)}</label>
+          <label>Chase ${this.renderFleetChaseSelect(fleet, canCommand)}</label>
+          <label>Auto-retreat ${this.renderFleetRetreatSelect(fleet, canCommand)}</label>
+          <label class="wide">Retreat to ${this.renderFleetRetreatDestinationSelect(data, fleet, canCommand)}</label>
+        </div>
       </div>
-      <div class="fmDoctrineGrid">
-        <label>Stance ${this.renderFleetStanceSelect(fleet, canCommand)}</label>
-        <label>Behavior ${this.renderFleetBehaviorSelect(fleet, canCommand)}</label>
-        <label>Chase ${this.renderFleetChaseSelect(fleet, canCommand)}</label>
-        <label>Auto-retreat ${this.renderFleetRetreatSelect(fleet, canCommand)}</label>
-        <label>Retreat to ${this.renderFleetRetreatDestinationSelect(data, fleet, canCommand)}</label>
-      </div>
-      <div class="fmDoctrineNote">
-        <strong>${this.escapeHtml(this.formatCombatStance(fleet.combatStance))}</strong>
-        <span>${this.escapeHtml(this.getDoctrineDescription(fleet.combatStance, settings.behavior))}</span>
+    `;
+  }
+
+  private renderFleetInfoCard(icon: string, label: string, value: string, ratio?: number): string {
+    const clampedRatio = ratio === undefined ? null : Math.max(0, Math.min(1, ratio));
+    return `
+      <div class="fmInfoCard ${clampedRatio === null ? "" : "hasBar"}">
+        <span class="fmInfoIcon fmInfoIcon-${this.escapeAttribute(icon)}" aria-hidden="true"></span>
+        <div>
+          <small>${this.escapeHtml(label)}</small>
+          <strong>${this.escapeHtml(value)}</strong>
+        </div>
+        ${clampedRatio === null ? "" : `<span class="fmInfoBar" style="--info-ratio: ${(clampedRatio * 100).toFixed(1)}%" aria-hidden="true"><i></i></span>`}
       </div>
     `;
   }
@@ -881,37 +919,111 @@ export class FleetManagerPanel {
     ships: ServerShip[],
   ): string {
     if (ships.length > 0) {
-      return ships.map((ship) => this.renderShipRow(data, ship)).join("");
+      return ships.map((ship, index) => this.renderShipRow(data, fleet, ship, index)).join("");
     }
     if (fleet.shipIds.length > 0) {
-      return fleet.shipIds.map((shipId) => `
-        <div class="fmCompositionRow">
-          <span class="fmShipIcon">CV</span>
-          <span>
-            <strong>Corvette</strong>
-            <small>${this.escapeHtml(shipId)}</small>
-          </span>
-          <em>Tracked</em>
-        </div>
-      `).join("");
+      return fleet.shipIds.map((shipId, index) => this.renderShipPlaceholderRow(data, fleet, shipId, index)).join("");
     }
     return '<div class="fmEmpty">No ships assigned to this fleet.</div>';
   }
 
-  private renderShipRow(data: FleetManagerPanelData, ship: ServerShip): string {
+  private renderFleetCompositionPanel(data: FleetManagerPanelData, fleet: ServerFleet): string {
+    const ships = this.getShipsForFleet(data, fleet.id);
+    return `
+      <div class="fmCompositionHeader">
+        <div class="fmPanelTitle">
+          <span class="fmPanelIcon fmPanelIcon-composition" aria-hidden="true"></span>
+          <strong>Fleet Composition</strong>
+        </div>
+        <button class="fmAddShipsMini" type="button" data-fm-add-ships ${data.playerFactionId === fleet.ownerId ? "" : "disabled"}>+</button>
+      </div>
+      <div class="fmCompositionTableHeader" aria-hidden="true">
+        <span>Ship</span>
+        <span>Shields</span>
+        <span>Armor</span>
+        <span>Hull</span>
+        <span>Power</span>
+        <span>Actions</span>
+      </div>
+      <div class="fmCompositionList">
+        ${this.renderCompositionRows(data, fleet, ships)}
+      </div>
+    `;
+  }
+
+  private renderShipRow(data: FleetManagerPanelData, fleet: ServerFleet, ship: ServerShip, index: number): string {
     const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind];
-    const design = this.getDesignById(data, ship.designId);
-    const shieldPct = ship.maxShield > 0 ? Math.round((ship.shield / ship.maxShield) * 100) : 0;
-    const armorPct = ship.maxArmor > 0 ? Math.round((ship.armor / ship.maxArmor) * 100) : 0;
-    const hullPct = ship.maxHull > 0 ? Math.round((ship.hull / ship.maxHull) * 100) : 0;
+    const targetDesign = this.getTargetDesignForShip(data, ship);
+    const shipPower = computeShipPower(ship, undefined, data.shipDesigns);
     return `
       <div class="fmCompositionRow">
-        <span class="fmShipIcon">${this.escapeHtml(this.getInitials(definition?.label ?? ship.shipKind))}</span>
-        <span>
-          <strong>${this.escapeHtml(definition?.label ?? ship.shipKind)}</strong>
-          <small>${this.escapeHtml(design?.name ?? definition?.className ?? "Unknown class")}</small>
-        </span>
-        <em>S ${shieldPct}% | A ${armorPct}% | H ${hullPct}%</em>
+        <div class="fmShipCell">
+          <span class="fmShipThumb" aria-hidden="true"></span>
+          <span class="fmShipCopy">
+            <strong>${this.escapeHtml(this.getShipDisplayName(data, fleet, ship, index))}</strong>
+            <small>${this.escapeHtml(definition?.label ?? ship.shipKind)}</small>
+            ${index === 0 ? '<em>Flagship</em>' : ""}
+            ${targetDesign ? `<em class="upgradeReady">Upgrade Ready</em>` : ""}
+          </span>
+        </div>
+        ${this.renderShipDefenseCell("shields", ship.shield, ship.maxShield)}
+        ${this.renderShipDefenseCell("armor", ship.armor, ship.maxArmor)}
+        ${this.renderShipDefenseCell("hull", ship.hull, ship.maxHull)}
+        <div class="fmShipPowerCell"><span class="fmActionIcon fmActionIcon-power" aria-hidden="true"></span><strong>${this.escapeHtml(this.formatPowerValue(shipPower))}</strong></div>
+        ${this.renderShipActionButtons(data, fleet, ship.id, targetDesign)}
+      </div>
+    `;
+  }
+
+  private renderShipPlaceholderRow(data: FleetManagerPanelData, fleet: ServerFleet, shipId: string, index: number): string {
+    return `
+      <div class="fmCompositionRow">
+        <div class="fmShipCell">
+          <span class="fmShipThumb" aria-hidden="true"></span>
+          <span class="fmShipCopy">
+            <strong>${this.escapeHtml(this.getPlaceholderShipName(data, fleet, index))}</strong>
+            <small>${this.escapeHtml(shipId)}</small>
+            ${index === 0 ? '<em>Flagship</em>' : ""}
+          </span>
+        </div>
+        ${this.renderShipDefenseCell("shields", 0, 0)}
+        ${this.renderShipDefenseCell("armor", 0, 0)}
+        ${this.renderShipDefenseCell("hull", 0, 0)}
+        <div class="fmShipPowerCell"><span class="fmActionIcon fmActionIcon-power" aria-hidden="true"></span><strong>0K</strong></div>
+        ${this.renderShipActionButtons(data, fleet, shipId, null)}
+      </div>
+    `;
+  }
+
+  private renderShipDefenseCell(kind: "shields" | "armor" | "hull", value: number, maxValue: number): string {
+    return `
+      <div class="fmShipDefenseCell">
+        <span class="fmInfoIcon fmInfoIcon-${kind}" aria-hidden="true"></span>
+        <strong>${Math.round(value)} / ${Math.round(maxValue)}</strong>
+        <span class="fmShipStatBar" style="--ship-stat-ratio: ${(this.getRatio(value, maxValue) * 100).toFixed(1)}%" aria-hidden="true"><i></i></span>
+      </div>
+    `;
+  }
+
+  private renderShipActionButtons(
+    data: FleetManagerPanelData,
+    fleet: ServerFleet,
+    shipId: string,
+    targetDesign: ShipDesign | null,
+  ): string {
+    const canCommand = data.playerFactionId === fleet.ownerId;
+    const shipyard = this.findShipyardInFleetSystem(data, fleet);
+    const canUpgrade = canCommand && !!targetDesign && !!shipyard;
+    const upgradeTitle = !targetDesign
+      ? "Ship is already using the newest design"
+      : shipyard
+        ? `Upgrade to ${targetDesign.name}`
+        : "Move fleet to a completed shipyard system before upgrading";
+    return `
+      <div class="fmShipActions">
+        <button type="button" title="Repair ship" aria-label="Repair ship ${this.escapeAttribute(shipId)}"><span class="fmActionIcon fmActionIcon-repair" aria-hidden="true"></span></button>
+        <button type="button" title="${this.escapeAttribute(upgradeTitle)}" aria-label="Upgrade ship ${this.escapeAttribute(shipId)}" ${canUpgrade ? `data-fm-upgrade-ship="${this.escapeAttribute(shipId)}"` : "disabled"}><span class="fmActionIcon fmActionIcon-upgrade" aria-hidden="true"></span></button>
+        <button class="danger" type="button" title="Destroy ship" aria-label="Destroy ship ${this.escapeAttribute(shipId)}"><span class="fmActionIcon fmActionIcon-trash" aria-hidden="true"></span></button>
       </div>
     `;
   }
@@ -1249,6 +1361,29 @@ export class FleetManagerPanel {
       });
   }
 
+  private getNewestActiveDesign(
+    data: FleetManagerPanelData,
+    ownerId: number,
+    shipKind: StarbaseShipKind,
+  ): ShipDesign | null {
+    return data.shipDesigns
+      .filter((design) => design.status === "active" && design.ownerId === ownerId && design.shipKind === shipKind)
+      .sort((a, b) => {
+        const yearDelta = (b.updatedAtYear ?? b.createdAtYear) - (a.updatedAtYear ?? a.createdAtYear);
+        if (yearDelta !== 0) return yearDelta;
+        return b.createdAtYear - a.createdAtYear;
+      })[0] ?? null;
+  }
+
+  private getTargetDesignForShip(data: FleetManagerPanelData, ship: ServerShip): ShipDesign | null {
+    const currentDesign = this.getDesignById(data, ship.designId);
+    const assignedTarget = this.getDesignById(data, ship.targetDesignId);
+    if (assignedTarget?.status === "active" && assignedTarget.id !== currentDesign?.id) return assignedTarget;
+    const newest = this.getNewestActiveDesign(data, ship.ownerId, ship.shipKind);
+    if (newest && newest.id !== currentDesign?.id && currentDesign?.status === "decommissioned") return newest;
+    return null;
+  }
+
   private parseDesignerSlot(slot: string): { kind: DesignerSlotKind; index: number } {
     const [kind, indexText] = slot.split(":");
     if (kind === "defense" || kind === "utility" || kind === "weapon" || kind === "weaponSection" || kind === "defenseSection") {
@@ -1530,6 +1665,34 @@ export class FleetManagerPanel {
     );
   }
 
+  private getRatio(value: number, maxValue: number): number {
+    return maxValue > 0 ? Math.max(0, Math.min(1, value / maxValue)) : 0;
+  }
+
+  private getShipDisplayName(data: FleetManagerPanelData, fleet: ServerFleet, ship: ServerShip, index: number): string {
+    return this.getPlaceholderShipName(data, fleet, index);
+  }
+
+  private getPlaceholderShipName(data: FleetManagerPanelData, fleet: ServerFleet, index: number): string {
+    const owner = this.getFaction(data, fleet.ownerId);
+    const prefix = this.getShipNamePrefix(owner?.name ?? "Fleet");
+    const callsigns = ["Spearhead", "Lancer", "Valiant", "Arrow", "Vanguard", "Sentinel", "Defender", "Aegis", "Pioneer", "Ranger"];
+    return `${prefix}-${String(index + 1).padStart(2, "0")} ${callsigns[index % callsigns.length]}`;
+  }
+
+  private getShipNamePrefix(name: string): string {
+    const digit = name.match(/\d+/)?.[0];
+    if (digit) return `C${digit}S`;
+    const letters = name
+      .split(/\s+/)
+      .map((word) => word[0])
+      .join("")
+      .replace(/[^A-Za-z]/g, "")
+      .slice(0, 2)
+      .toUpperCase();
+    return `${letters || "FL"}S`;
+  }
+
   private getShipsDefense(ships: ServerShip[]): { total: number; maxTotal: number } {
     return ships.reduce(
       (total, ship) => ({
@@ -1662,6 +1825,16 @@ export class FleetManagerPanel {
     return nearest;
   }
 
+  private findShipyardInFleetSystem(data: FleetManagerPanelData, fleet: ServerFleet): ServerStarbase | null {
+    if (data.playerFactionId !== null && fleet.ownerId !== data.playerFactionId) return null;
+    return data.starbases.find((starbase) => (
+      starbase.ownerId === fleet.ownerId
+      && starbase.starId === fleet.currentStarId
+      && starbase.status === "online"
+      && countStarbaseShipyards(starbase.buildingSlots) > 0
+    )) ?? null;
+  }
+
   private getFleetMapPosition(data: FleetManagerPanelData, fleet: ServerFleet): { x: number; z: number } | null {
     if (fleet.hyperlanePosition) {
       const from = data.stars[fleet.hyperlanePosition.fromStarId];
@@ -1698,7 +1871,8 @@ export class FleetManagerPanel {
 
   private formatPowerValue(value: number): string {
     if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-    return `${Math.round(value / 1000)}K`;
+    if (value >= 1_000) return `${Math.round(value / 1000)}K`;
+    return String(Math.round(value));
   }
 
   private formatFleetStatus(fleet: ServerFleet): string {
@@ -1818,10 +1992,11 @@ export class FleetManagerPanel {
   display: grid;
   place-items: center;
   clip-path: polygon(50% 0, 94% 25%, 94% 75%, 50% 100%, 6% 75%, 6% 25%);
-  background: var(--fleet-accent);
-  color: #062018;
+  background: linear-gradient(135deg, #ff69c9, #7d57ff);
+  color: #160017;
   font-weight: 900;
   font-size: 11px;
+  box-shadow: 0 0 16px rgba(255, 105, 201, 0.32), inset 0 0 0 2px rgba(10, 0, 20, 0.45);
 }
 
 .fmTitle {
@@ -1850,7 +2025,7 @@ export class FleetManagerPanel {
 .fmBody {
   min-height: 0;
   display: grid;
-  grid-template-columns: 270px minmax(0, 1fr) 270px;
+  grid-template-columns: 270px minmax(360px, 0.9fr) minmax(460px, 1.15fr);
   gap: 8px;
   padding: 8px;
 }
@@ -1868,8 +2043,159 @@ export class FleetManagerPanel {
 
 .fmFleetListColumn,
 .fmSelectedColumn,
-.fmStatsColumn {
+.fmStatsColumn,
+.fmCompositionColumn {
   padding: 8px;
+}
+
+.fmFleetListColumn,
+.fmSelectedColumn,
+.fmCompositionColumn {
+  display: flex;
+  flex-direction: column;
+}
+
+.fmFleetListHeader,
+.fmCompositionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.fmPanelTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fmPanelTitle strong {
+  color: #eafff8;
+  font-size: 13px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.fmPanelIcon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  color: #72e2ff;
+}
+
+.fmPanelIcon::before,
+.fmPanelIcon::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.fmPanelIcon-fleet::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #72e2ff;
+  box-shadow: -8px 8px 0 #72e2ff, 8px 8px 0 #72e2ff, 0 16px 0 #72e2ff;
+}
+
+.fmPanelIcon-doctrine::before {
+  width: 21px;
+  height: 21px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmPanelIcon-doctrine::after {
+  width: 22px;
+  height: 2px;
+  background: #72e2ff;
+}
+
+.fmPanelIcon-composition::before {
+  width: 22px;
+  height: 22px;
+  border: 2px solid #72e2ff;
+  transform: rotate(45deg);
+}
+
+.fmPanelIcon-composition::after {
+  width: 8px;
+  height: 8px;
+  background: #72e2ff;
+  border-radius: 50%;
+}
+
+.fmCapacityChip,
+.fmCommandChip {
+  display: grid;
+  place-items: center;
+  min-width: 86px;
+  min-height: 42px;
+  padding: 5px 8px;
+  border: 1px solid rgba(103, 255, 221, 0.28);
+  background: linear-gradient(180deg, rgba(9, 45, 51, 0.82), rgba(2, 14, 18, 0.78));
+  text-align: center;
+}
+
+.fmCapacityChip small,
+.fmCommandChip small,
+.fmPowerBadge small {
+  color: #72e2ff;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.fmCapacityChip strong,
+.fmCommandChip strong {
+  color: #ffffff;
+  font-size: 14px;
+}
+
+.fmFleetSearch {
+  position: relative;
+  display: block;
+  margin-bottom: 10px;
+}
+
+.fmFleetSearch input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid rgba(103, 255, 221, 0.28);
+  background: rgba(1, 8, 10, 0.36);
+  color: #eafff8;
+  font: inherit;
+  font-size: 11px;
+  padding: 0 34px 0 10px;
+}
+
+.fmFleetSearch input::placeholder {
+  color: rgba(206, 232, 226, 0.46);
+}
+
+.fmSearchIcon {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+  transform: translateY(-50%);
+}
+
+.fmSearchIcon::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 2px;
+  right: -6px;
+  bottom: -3px;
+  background: #72e2ff;
+  transform: rotate(45deg);
 }
 
 .fmSectionTitle {
@@ -1892,11 +2218,13 @@ export class FleetManagerPanel {
 }
 
 .fmFleetList {
-  max-height: calc(100% - 26px);
+  flex: 1;
+  max-height: none;
 }
 
 .fmCompositionList {
-  max-height: 154px;
+  flex: 1;
+  max-height: none;
 }
 
 .fmBuildShipList {
@@ -1919,7 +2247,7 @@ export class FleetManagerPanel {
 .fmFleetCard {
   min-height: 64px;
   display: grid;
-  grid-template-columns: 6px minmax(0, 1fr) 56px;
+  grid-template-columns: 6px minmax(0, 1fr) 48px 48px;
   gap: 8px;
   align-items: center;
   border: 1px solid rgba(103, 255, 221, 0.24);
@@ -1931,8 +2259,8 @@ export class FleetManagerPanel {
 }
 
 .fmFleetCard.selected {
-  border-color: rgba(248, 218, 103, 0.78);
-  box-shadow: inset 3px 0 0 rgba(248, 218, 103, 0.82), 0 0 14px rgba(248, 218, 103, 0.12);
+  border-color: rgba(103, 255, 221, 0.82);
+  box-shadow: inset 3px 0 0 rgba(255, 105, 201, 0.9), 0 0 18px rgba(103, 255, 221, 0.16);
 }
 
 .fmFleetCard:hover {
@@ -1984,6 +2312,15 @@ export class FleetManagerPanel {
   font-size: 15px;
 }
 
+.fmFleetGhost {
+  width: 42px;
+  height: 32px;
+  opacity: 0.16;
+  background: linear-gradient(90deg, #72e2ff, #75ff9b);
+  clip-path: polygon(0 52%, 27% 18%, 80% 0, 100% 50%, 80% 100%, 27% 82%);
+  filter: blur(0.2px);
+}
+
 .fmSelectedHeader,
 .fmStatsHeader {
   display: flex;
@@ -1997,7 +2334,8 @@ export class FleetManagerPanel {
 .fmSelectedHeader h3 {
   margin: 0;
   color: #eafff8;
-  font-size: 17px;
+  font-size: 22px;
+  line-height: 1.05;
 }
 
 .fmSelectedHeader span,
@@ -2011,22 +2349,186 @@ export class FleetManagerPanel {
 }
 
 .fmPowerBadge {
-  min-width: 62px;
-  padding: 5px 8px;
+  display: grid;
+  place-items: center;
+  min-width: 74px;
+  min-height: 48px;
+  padding: 6px 9px;
   border: 1px solid rgba(255, 224, 123, 0.64);
   background: rgba(48, 34, 13, 0.72);
   color: #ffe48a;
-  font-size: 12px;
-  font-weight: 900;
   text-align: center;
+}
+
+.fmPowerBadge strong {
+  color: #ffe48a;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.fmSelectedHeaderChips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .fmStatGrid,
 .fmOverallGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px;
-  margin-top: 8px;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.fmInfoCard {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(103, 255, 221, 0.24);
+  background: rgba(1, 8, 10, 0.36);
+}
+
+.fmInfoCard.hasBar {
+  grid-template-columns: 36px minmax(0, 1fr) 78px;
+}
+
+.fmInfoCard small {
+  display: block;
+  color: #72e2ff;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.fmInfoCard strong {
+  display: block;
+  min-width: 0;
+  margin-top: 4px;
+  color: #ffffff;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmInfoIcon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: #72e2ff;
+}
+
+.fmInfoIcon::before,
+.fmInfoIcon::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.fmInfoIcon-status::before,
+.fmInfoIcon-order::before {
+  width: 23px;
+  height: 23px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmInfoIcon-status::after,
+.fmInfoIcon-order::after {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmInfoIcon-owner::before {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #72e2ff;
+  top: 3px;
+}
+
+.fmInfoIcon-owner::after {
+  width: 22px;
+  height: 12px;
+  border-radius: 14px 14px 4px 4px;
+  background: rgba(114, 226, 255, 0.85);
+  bottom: 2px;
+}
+
+.fmInfoIcon-class::before {
+  width: 8px;
+  height: 20px;
+  background: #72e2ff;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.fmInfoIcon-class::after {
+  width: 22px;
+  height: 8px;
+  border-left: 2px solid #72e2ff;
+  border-right: 2px solid #72e2ff;
+  bottom: 3px;
+}
+
+.fmInfoIcon-shields::before {
+  width: 18px;
+  height: 23px;
+  background: linear-gradient(180deg, #72e2ff, rgba(85, 117, 255, 0.72));
+  clip-path: polygon(50% 0, 88% 16%, 78% 72%, 50% 100%, 22% 72%, 12% 16%);
+}
+
+.fmInfoIcon-armor::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #72e2ff;
+  box-shadow: -8px 0 0 #72e2ff, 8px 0 0 #72e2ff, -4px 8px 0 #72e2ff, 4px 8px 0 #72e2ff;
+}
+
+.fmInfoIcon-hull::before {
+  width: 23px;
+  height: 15px;
+  background: #72e2ff;
+  clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);
+}
+
+.fmInfoIcon-speed::before {
+  width: 22px;
+  height: 16px;
+  border-top: 3px solid #72e2ff;
+  border-right: 3px solid #72e2ff;
+  transform: rotate(45deg);
+}
+
+.fmInfoIcon-speed::after {
+  width: 14px;
+  height: 11px;
+  border-top: 3px solid #72e2ff;
+  border-right: 3px solid #72e2ff;
+  transform: translateX(-8px) rotate(45deg);
+  opacity: 0.66;
+}
+
+.fmInfoBar,
+.fmShipStatBar {
+  height: 5px;
+  background: rgba(206, 232, 226, 0.16);
+  overflow: hidden;
+}
+
+.fmInfoBar i,
+.fmShipStatBar i {
+  display: block;
+  width: var(--info-ratio, var(--ship-stat-ratio, 0%));
+  height: 100%;
+  background: #20dfe8;
+  box-shadow: 0 0 10px rgba(32, 223, 232, 0.55);
 }
 
 .fmStat {
@@ -2058,14 +2560,17 @@ export class FleetManagerPanel {
   margin-top: 10px;
 }
 
+.fmDoctrinePanel {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(103, 255, 221, 0.18);
+}
+
 .fmDoctrineHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(103, 255, 221, 0.2);
 }
 
 .fmDoctrineHeader span {
@@ -2080,6 +2585,10 @@ export class FleetManagerPanel {
   margin-top: 8px;
 }
 
+.fmDoctrineGrid label.wide {
+  grid-column: 1 / -1;
+}
+
 .fmDoctrineGrid label {
   display: grid;
   gap: 4px;
@@ -2092,11 +2601,11 @@ export class FleetManagerPanel {
 .fmDoctrineGrid select {
   min-width: 0;
   border: 1px solid rgba(103, 255, 221, 0.32);
-  background: rgba(2, 18, 22, 0.86);
+  background: linear-gradient(180deg, rgba(5, 31, 36, 0.92), rgba(1, 12, 16, 0.94));
   color: #eafff8;
   font: inherit;
-  font-size: 10px;
-  padding: 6px;
+  font-size: 11px;
+  padding: 9px 8px;
 }
 
 .fmDoctrineNote {
@@ -2193,6 +2702,260 @@ export class FleetManagerPanel {
   width: 32px;
   height: 32px;
   font-size: 10px;
+}
+
+.fmCompositionColumn {
+  min-width: 0;
+}
+
+.fmCompositionHeader {
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.18);
+}
+
+.fmAddShipsMini {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(103, 255, 221, 0.44);
+  background: rgba(6, 42, 38, 0.72);
+  color: #d8fff6;
+  font: inherit;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.fmAddShipsMini:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.fmCompositionTableHeader {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.55fr) repeat(3, minmax(58px, 0.68fr)) minmax(48px, 0.5fr) 88px;
+  gap: 8px;
+  padding: 0 8px 8px;
+  color: #72e2ff;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.fmCompositionColumn .fmCompositionList {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  overflow-y: auto;
+  padding-right: 5px;
+  min-height: 0;
+}
+
+.fmCompositionColumn .fmCompositionRow {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.55fr) repeat(3, minmax(58px, 0.68fr)) minmax(48px, 0.5fr) 88px;
+  gap: 8px;
+  align-items: center;
+  min-height: 76px;
+  padding: 7px;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: linear-gradient(135deg, rgba(4, 23, 28, 0.82), rgba(1, 8, 10, 0.55));
+}
+
+.fmShipCell {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.fmShipThumb {
+  width: 46px;
+  height: 30px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.5), transparent 40%),
+    linear-gradient(90deg, #6f7c86, #1f2d36);
+  clip-path: polygon(0 58%, 20% 30%, 68% 0, 100% 46%, 82% 80%, 24% 100%);
+  filter: drop-shadow(0 0 6px rgba(114, 226, 255, 0.24));
+}
+
+.fmShipCopy {
+  min-width: 0;
+}
+
+.fmShipCopy strong,
+.fmShipCopy small,
+.fmShipCopy em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmShipCopy strong {
+  color: #ffffff;
+  font-size: 12px;
+}
+
+.fmShipCopy small {
+  margin-top: 3px;
+  color: #bfffee;
+  font-size: 10px;
+}
+
+.fmShipCopy em {
+  width: max-content;
+  max-width: 100%;
+  margin-top: 5px;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 105, 201, 0.36);
+  background: rgba(255, 105, 201, 0.14);
+  color: #ff9fe0;
+  font-size: 9px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.fmShipCopy em.upgradeReady {
+  border-color: rgba(255, 220, 114, 0.48);
+  background: rgba(255, 220, 114, 0.13);
+  color: #ffdc72;
+}
+
+.fmShipDefenseCell {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.fmShipDefenseCell .fmInfoIcon {
+  width: 22px;
+  height: 22px;
+  transform: scale(0.78);
+}
+
+.fmShipDefenseCell strong {
+  color: #eafff8;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.fmShipStatBar {
+  width: 52px;
+}
+
+.fmShipPowerCell {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  color: #ffe48a;
+}
+
+.fmShipPowerCell strong {
+  color: #ffffff;
+  font-size: 12px;
+}
+
+.fmShipActions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.fmShipActions button {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(103, 255, 221, 0.42);
+  background: rgba(2, 18, 22, 0.78);
+  color: #72e2ff;
+  cursor: pointer;
+}
+
+.fmShipActions button.danger {
+  border-color: rgba(255, 74, 88, 0.56);
+  color: #ff4a58;
+}
+
+.fmShipActions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.fmActionIcon {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.fmActionIcon::before,
+.fmActionIcon::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.fmActionIcon-power::before {
+  width: 9px;
+  height: 16px;
+  background: #ffdc72;
+  clip-path: polygon(48% 0, 100% 0, 62% 42%, 100% 42%, 24% 100%, 43% 56%, 0 56%);
+}
+
+.fmActionIcon-repair::before,
+.fmActionIcon-repair::after {
+  background: #72e2ff;
+}
+
+.fmActionIcon-repair::before {
+  width: 16px;
+  height: 4px;
+  top: 6px;
+}
+
+.fmActionIcon-repair::after {
+  width: 4px;
+  height: 16px;
+  left: 6px;
+}
+
+.fmActionIcon-upgrade::before {
+  width: 14px;
+  height: 8px;
+  left: 0;
+  top: 7px;
+  background: linear-gradient(90deg, #8b9aa4, #d5e0e6 48%, #526371);
+  clip-path: polygon(0 58%, 24% 20%, 72% 0, 100% 48%, 78% 84%, 24% 100%);
+  filter: drop-shadow(0 0 3px rgba(114, 226, 255, 0.25));
+}
+
+.fmActionIcon-upgrade::after {
+  width: 9px;
+  height: 11px;
+  right: -1px;
+  top: 0;
+  background: #ffdc72;
+  clip-path: polygon(50% 0, 100% 44%, 68% 44%, 68% 100%, 32% 100%, 32% 44%, 0 44%);
+  filter: drop-shadow(0 0 4px rgba(255, 220, 114, 0.45));
+}
+
+.fmActionIcon-trash::before {
+  width: 13px;
+  height: 12px;
+  left: 2px;
+  top: 5px;
+  border: 2px solid #ff4a58;
+  border-top: 0;
+}
+
+.fmActionIcon-trash::after {
+  width: 15px;
+  height: 2px;
+  top: 2px;
+  background: #ff4a58;
 }
 
 .fmAddShipsButton {
