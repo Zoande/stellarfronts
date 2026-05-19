@@ -45,6 +45,7 @@ export interface HudCallbacks {
 }
 
 const STYLE_ID = "space-rts-hud-style";
+const FLEET_SIDEBAR_ICON_URL = new URL("../../side_bar_fleet_icon.webp", import.meta.url).toString();
 const RESOURCE_ICON_LABELS: Record<string, string> = {
   food: "FD",
   minerals: "MN",
@@ -54,13 +55,13 @@ const RESOURCE_ICON_LABELS: Record<string, string> = {
   research: "RS",
 };
 
-const SIDEBAR_ITEMS: Array<{ key: HudSidebarItemKey; label: string; icon: string }> = [
+const SIDEBAR_ITEMS: Array<{ key: HudSidebarItemKey; label: string; icon?: string; iconUrl?: string }> = [
   { key: "government", label: "Government", icon: "GV" },
   { key: "society", label: "Society", icon: "SC" },
   { key: "technology", label: "Technology", icon: "TC" },
   { key: "leaders", label: "Leaders", icon: "LD" },
   { key: "planets", label: "Planets", icon: "PL" },
-  { key: "fleets", label: "Fleets", icon: "FL" },
+  { key: "fleets", label: "Fleets", iconUrl: FLEET_SIDEBAR_ICON_URL },
   { key: "diplomacy", label: "Diplomacy", icon: "DP" },
   { key: "espionage", label: "Espionage", icon: "ES" },
   { key: "market", label: "Market", icon: "MK" },
@@ -299,6 +300,8 @@ const HUD_STYLE = `
   display: grid;
   place-items: center;
   margin-left: 3px;
+  padding: 0;
+  overflow: hidden;
   border: 1px solid rgba(94, 173, 142, 0.44);
   border-left-color: rgba(94, 173, 142, 0.72);
   background:
@@ -313,16 +316,6 @@ const HUD_STYLE = `
   clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 0 100%);
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
   transition: transform 0.14s ease, border-color 0.14s ease, background-color 0.14s ease;
-}
-
-.spaceHudSidebarBtn::before {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 5px;
-  right: 5px;
-  height: 2px;
-  background: rgba(127, 255, 220, 0.26);
 }
 
 .spaceHudSidebarBtn::after {
@@ -363,6 +356,17 @@ const HUD_STYLE = `
 .spaceHudSidebarBtn span {
   position: relative;
   z-index: 1;
+}
+
+.spaceHudSidebarBtn img {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  image-rendering: auto;
+  filter: drop-shadow(0 0 4px rgba(127, 255, 220, 0.3));
 }
 
 #spaceHudClock {
@@ -736,7 +740,9 @@ export class HudOverlay {
       button.className = "spaceHudSidebarBtn";
       button.setAttribute("aria-label", item.label);
       button.title = item.label;
-      button.innerHTML = `<span>${item.icon}</span>`;
+      button.innerHTML = item.iconUrl
+        ? `<img src="${item.iconUrl}" alt="" aria-hidden="true">`
+        : `<span>${item.icon}</span>`;
       button.addEventListener("click", () => {
         this.callbacks.onSidebarItem?.(item.key);
       });
