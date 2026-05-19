@@ -45,8 +45,8 @@ export interface HudCallbacks {
 }
 
 const STYLE_ID = "space-rts-hud-style";
-const FLEET_SIDEBAR_ICON_URL = new URL("../../side_bar_fleet_icon.webp", import.meta.url).toString();
-const TECH_SIDEBAR_ICON_URL = new URL("../../side_bar_tech_icon.webp", import.meta.url).toString();
+const FLEET_SIDEBAR_ICON_URL = new URL("../../public/textures/sidebar-icons/side_bar_fleet_icon.webp", import.meta.url).toString();
+const TECH_SIDEBAR_ICON_URL = new URL("../../public/textures/sidebar-icons/side_bar_tech_icon.webp", import.meta.url).toString();
 const RESOURCE_ICON_LABELS: Record<string, string> = {
   food: "FD",
   minerals: "MN",

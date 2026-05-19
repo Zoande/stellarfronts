@@ -115,11 +115,13 @@ def move_to_source_materials(png_path: Path, overwrite: bool) -> Path:
 
 
 def get_output_path(source_path: Path) -> Path:
+    icons_dir = ROOT / "public" / "textures" / "sidebar-icons"
+    icons_dir.mkdir(parents=True, exist_ok=True)
     if source_path.name == "side_bar_fleet icon.png":
-        return ROOT / "side_bar_fleet_icon.webp"
+        return icons_dir / "side_bar_fleet_icon.webp"
     if source_path.name == "side_bar_tech_icon.png":
-        return ROOT / "side_bar_tech_icon.webp"
-    return source_path.with_suffix(".webp")
+        return icons_dir / "side_bar_tech_icon.webp"
+    return icons_dir / source_path.with_suffix(".webp").name
 
 
 def process_group(label: str, quality: int, dirs: list[Path], files: list[Path], dry_run: bool, overwrite: bool) -> dict:
