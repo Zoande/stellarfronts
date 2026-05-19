@@ -6,14 +6,24 @@ import { buildFactions } from '../src/data/Factions';
 import { GALAXY_MAP } from '../src/data/GalaxyMap';
 import { generateStarMap } from '../src/data/StarMap';
 import type { GalaxyPerspective } from '../src/data/Factions';
-import type { AuthAccount, AccountType, Credentials } from '../src/auth/types';
+import type { AuthAccount, AccountType, Credentials, DevGameRuntimeStats, DevStatsResponse } from '../src/auth/types';
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEV_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const DEV_ACTIVITY_SERIES_DAYS = 14;
+const GAME_RUNTIME_STALE_MS = 20_000;
+const DEFAULT_DEV_PANEL_PASSWORD = 'ABDUGYA1398';
+const ADMIN_USERNAME = 'admin';
+const DEFAULT_ADMIN_PASSWORD = 'ABDUGYA1398';
+const SESSION_COOKIE_NAME = 'sf_session';
+const DEV_SESSION_COOKIE_NAME = 'sf_dev_session';
 const PASSWORD_ITERATIONS = 210_000;
 const PASSWORD_KEY_LENGTH = 64;
 const PASSWORD_DIGEST = 'sha512';
 
 type DatabaseInstance = InstanceType<typeof Database>;
+type DevEventType = 'login' | 'signup' | 'game_enter';
 
 interface AccountRow {
   id: number;
@@ -31,6 +41,24 @@ interface SessionRow {
   account_id: number;
   created_at: number;
   expires_at: number;
+}
+
+interface DevEventRow {
+  event_type: DevEventType;
+  account_id: number | null;
+  username: string | null;
+  occurred_at: number;
+}
+
+interface LatestAccountRow {
+  id: number;
+  username: string;
+  account_type: AccountType;
+  faction_id: number | null;
+  created_at: number;
+  last_login_at: number | null;
+  login_count: number;
+  game_enter_count: number;
 }
 
 class AuthError extends Error {
@@ -57,6 +85,20 @@ function hashSessionToken(token: string): string {
 
 function createSessionToken(): string {
   return randomBytes(32).toString('hex');
+}
+
+function getDevPanelPassword(): string {
+  return process.env.DEV_PANEL_PASSWORD ?? DEFAULT_DEV_PANEL_PASSWORD;
+}
+
+function getAdminPassword(): string {
+  return process.env.ADMIN_PASSWORD ?? DEFAULT_ADMIN_PASSWORD;
+}
+
+function safeStringEquals(actual: string, expected: string): boolean {
+  const actualDigest = createHash('sha256').update(actual).digest();
+  const expectedDigest = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(actualDigest, expectedDigest);
 }
 
 function passwordMatches(password: string, salt: string, expectedHash: string): boolean {
@@ -96,6 +138,7 @@ export class AuthStore {
   private readonly db: DatabaseInstance;
 
   constructor(dbPath = path.join(process.cwd(), 'server', 'state', 'auth.sqlite')) {
+    mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
@@ -125,6 +168,31 @@ export class AuthStore {
 
       CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);
       CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
+
+      CREATE TABLE IF NOT EXISTS dev_sessions (
+        token_hash TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS dev_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        account_id INTEGER,
+        username TEXT,
+        occurred_at INTEGER NOT NULL,
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS game_runtime_stats (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_dev_sessions_expires_at ON dev_sessions(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_dev_events_type_time ON dev_events(event_type, occurred_at);
+      CREATE INDEX IF NOT EXISTS idx_dev_events_account_id ON dev_events(account_id);
     `);
 
     this.seedAccounts();
@@ -150,10 +218,19 @@ export class AuthStore {
         updated_at: now,
       });
     }
+
+    this.ensureAdminAccount(now);
   }
 
   getReservedUsernames(): Set<string> {
-    return new Set(buildSeedAccounts().map((account) => normalizeUsername(account.username)));
+    return new Set([
+      ...buildSeedAccounts().map((account) => normalizeUsername(account.username)),
+      ADMIN_USERNAME,
+    ]);
+  }
+
+  isAdminAccount(account: AuthAccount): boolean {
+    return account.accountType === 'admin' && normalizeUsername(account.username) === ADMIN_USERNAME;
   }
 
   getAccountByUsername(username: string): AuthAccount | null {
@@ -190,7 +267,9 @@ export class AuthStore {
       throw new AuthError('Invalid username or password', 401);
     }
 
-    return this.createSessionForAccount(accountRow);
+    const result = this.createSessionForAccount(accountRow);
+    this.recordDevEvent('login', result.account);
+    return result;
   }
 
   signup(credentials: Credentials): { account: AuthAccount; token: string } {
@@ -221,6 +300,7 @@ export class AuthStore {
     }
 
     const token = this.createSession(account.id);
+    this.recordDevEvent('signup', account);
     return { account, token };
   }
 
@@ -239,10 +319,306 @@ export class AuthStore {
     this.db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(hashSessionToken(token));
   }
 
+  validateDevPassword(password: string): boolean {
+    return safeStringEquals(password, getDevPanelPassword());
+  }
+
+  createDevSession(): string {
+    const token = createSessionToken();
+    const tokenHash = hashSessionToken(token);
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO dev_sessions (token_hash, created_at, expires_at)
+      VALUES (?, ?, ?)
+    `).run(tokenHash, now, now + DEV_SESSION_TTL_MS);
+    return token;
+  }
+
+  isDevSessionTokenValid(token: string): boolean {
+    const row = this.db.prepare(`
+      SELECT token_hash
+      FROM dev_sessions
+      WHERE token_hash = ? AND expires_at > ?
+    `).get(hashSessionToken(token), Date.now()) as { token_hash: string } | undefined;
+    return !!row;
+  }
+
+  clearDevSession(token: string): void {
+    this.db.prepare(`DELETE FROM dev_sessions WHERE token_hash = ?`).run(hashSessionToken(token));
+  }
+
+  recordGameEnter(account: AuthAccount): void {
+    this.recordDevEvent('game_enter', account);
+  }
+
+  setGameRuntimeStats(stats: DevGameRuntimeStats): void {
+    const now = Date.now();
+    const runtimeStats: DevGameRuntimeStats = {
+      ...stats,
+      online: true,
+      lastHeartbeatAt: now,
+    };
+    this.db.prepare(`
+      INSERT INTO game_runtime_stats (key, value, updated_at)
+      VALUES ('game', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).run(JSON.stringify(runtimeStats), now);
+  }
+
+  getDevStats(): DevStatsResponse {
+    const now = Date.now();
+    this.db.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).run(now);
+    this.db.prepare(`DELETE FROM dev_sessions WHERE expires_at <= ?`).run(now);
+
+    return {
+      generatedAt: now,
+      accounts: this.getDevAccountsSummary(),
+      activity: this.getDevActivitySummary(now),
+      game: this.getGameRuntimeStats(now),
+    };
+  }
+
   private createSessionForAccount(accountRow: AccountRow): { account: AuthAccount; token: string } {
     const account = this.toAccount(accountRow);
     const token = this.createSession(account.id);
     return { account, token };
+  }
+
+  private recordDevEvent(eventType: DevEventType, account: AuthAccount): void {
+    this.db.prepare(`
+      INSERT INTO dev_events (event_type, account_id, username, occurred_at)
+      VALUES (?, ?, ?, ?)
+    `).run(eventType, account.id, account.username, Date.now());
+  }
+
+  private ensureAdminAccount(now: number): void {
+    const salt = makePasswordSalt();
+    this.db.prepare(`
+      INSERT INTO accounts (username, password_salt, password_hash, account_type, faction_id, created_at, updated_at)
+      VALUES (?, ?, ?, 'admin', NULL, ?, ?)
+      ON CONFLICT(username) DO UPDATE SET
+        password_salt = excluded.password_salt,
+        password_hash = excluded.password_hash,
+        account_type = 'admin',
+        faction_id = NULL,
+        updated_at = excluded.updated_at
+    `).run(
+      ADMIN_USERNAME,
+      salt,
+      hashPassword(getAdminPassword(), salt),
+      now,
+      now,
+    );
+  }
+
+  private getDevAccountsSummary(): DevStatsResponse['accounts'] {
+    const summary = this.db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN account_type = 'user' THEN 1 ELSE 0 END) AS users,
+        SUM(CASE WHEN account_type = 'seeded-faction' THEN 1 ELSE 0 END) AS seeded_factions,
+        SUM(CASE WHEN account_type = 'observer' THEN 1 ELSE 0 END) AS observers,
+        SUM(CASE WHEN account_type = 'admin' THEN 1 ELSE 0 END) AS admins
+      FROM accounts
+    `).get() as { total: number; users: number | null; seeded_factions: number | null; observers: number | null; admins: number | null };
+
+    const latestRows = this.db.prepare(`
+      SELECT
+        a.id,
+        a.username,
+        a.account_type,
+        a.faction_id,
+        a.created_at,
+        (
+          SELECT MAX(e.occurred_at)
+          FROM dev_events e
+          WHERE e.account_id = a.id AND e.event_type = 'login'
+        ) AS last_login_at,
+        (
+          SELECT COUNT(*)
+          FROM dev_events e
+          WHERE e.account_id = a.id AND e.event_type = 'login'
+        ) AS login_count,
+        (
+          SELECT COUNT(*)
+          FROM dev_events e
+          WHERE e.account_id = a.id AND e.event_type = 'game_enter'
+        ) AS game_enter_count
+      FROM accounts a
+      ORDER BY a.created_at DESC
+      LIMIT 12
+    `).all() as LatestAccountRow[];
+
+    return {
+      total: Number(summary.total ?? 0),
+      users: Number(summary.users ?? 0),
+      seededFactions: Number(summary.seeded_factions ?? 0),
+      observers: Number(summary.observers ?? 0),
+      admins: Number(summary.admins ?? 0),
+      latest: latestRows.map((row) => ({
+        id: row.id,
+        username: row.username,
+        accountType: row.account_type,
+        factionId: row.faction_id,
+        createdAt: row.created_at,
+        lastLoginAt: row.last_login_at,
+        loginCount: Number(row.login_count ?? 0),
+        gameEnterCount: Number(row.game_enter_count ?? 0),
+      })),
+    };
+  }
+
+  private getDevActivitySummary(now: number): DevStatsResponse['activity'] {
+    const recentCutoff = now - DAY_MS;
+    const rows = this.db.prepare(`
+      SELECT
+        event_type,
+        COUNT(*) AS total,
+        SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS last_24h
+      FROM dev_events
+      GROUP BY event_type
+    `).all(recentCutoff) as Array<{ event_type: DevEventType; total: number; last_24h: number | null }>;
+
+    const totals: Record<DevEventType, { total: number; last24h: number }> = {
+      login: { total: 0, last24h: 0 },
+      signup: { total: 0, last24h: 0 },
+      game_enter: { total: 0, last24h: 0 },
+    };
+
+    for (const row of rows) {
+      if (!totals[row.event_type]) continue;
+      totals[row.event_type] = {
+        total: Number(row.total ?? 0),
+        last24h: Number(row.last_24h ?? 0),
+      };
+    }
+
+    const activeAuthSessions = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sessions
+      WHERE expires_at > ?
+    `).get(now) as { count: number };
+
+    return {
+      loginsTotal: totals.login.total,
+      logins24h: totals.login.last24h,
+      signupsTotal: totals.signup.total,
+      signups24h: totals.signup.last24h,
+      gameEntersTotal: totals.game_enter.total,
+      gameEnters24h: totals.game_enter.last24h,
+      activeAuthSessions: Number(activeAuthSessions.count ?? 0),
+      series: this.getActivitySeries(now),
+    };
+  }
+
+  private getActivitySeries(now: number): DevStatsResponse['activity']['series'] {
+    const todayUtc = Math.floor(now / DAY_MS) * DAY_MS;
+    const startUtc = todayUtc - (DEV_ACTIVITY_SERIES_DAYS - 1) * DAY_MS;
+    const buckets = new Map<number, {
+      timestamp: number;
+      label: string;
+      logins: number;
+      signups: number;
+      gameEnters: number;
+      uniqueGameAccountsSet: Set<string>;
+    }>();
+
+    for (let index = 0; index < DEV_ACTIVITY_SERIES_DAYS; index += 1) {
+      const timestamp = startUtc + index * DAY_MS;
+      buckets.set(timestamp, {
+        timestamp,
+        label: new Date(timestamp).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        logins: 0,
+        signups: 0,
+        gameEnters: 0,
+        uniqueGameAccountsSet: new Set<string>(),
+      });
+    }
+
+    const eventRows = this.db.prepare(`
+      SELECT event_type, account_id, username, occurred_at
+      FROM dev_events
+      WHERE occurred_at >= ?
+      ORDER BY occurred_at ASC
+    `).all(startUtc) as DevEventRow[];
+
+    for (const row of eventRows) {
+      const bucketTimestamp = Math.floor(row.occurred_at / DAY_MS) * DAY_MS;
+      const bucket = buckets.get(bucketTimestamp);
+      if (!bucket) continue;
+
+      if (row.event_type === 'login') bucket.logins += 1;
+      if (row.event_type === 'signup') bucket.signups += 1;
+      if (row.event_type === 'game_enter') {
+        bucket.gameEnters += 1;
+        bucket.uniqueGameAccountsSet.add(String(row.account_id ?? row.username ?? 'unknown'));
+      }
+    }
+
+    return Array.from(buckets.values()).map((bucket) => ({
+      timestamp: bucket.timestamp,
+      label: bucket.label,
+      logins: bucket.logins,
+      signups: bucket.signups,
+      gameEnters: bucket.gameEnters,
+      uniqueGameAccounts: bucket.uniqueGameAccountsSet.size,
+    }));
+  }
+
+  private getGameRuntimeStats(now: number): DevGameRuntimeStats {
+    const fallback: DevGameRuntimeStats = {
+      online: false,
+      activeConnections: 0,
+      activeAccounts: [],
+      serverStartedAt: null,
+      lastHeartbeatAt: null,
+      gameYear: null,
+      paused: false,
+      speedMultiplier: 0,
+      starCount: 0,
+      factionCount: 0,
+      fleetCount: 0,
+      shipCount: 0,
+      starbaseCount: 0,
+      planetCount: 0,
+      habitedPlanetCount: 0,
+      combatContactCount: 0,
+    };
+
+    const row = this.db.prepare(`
+      SELECT value, updated_at
+      FROM game_runtime_stats
+      WHERE key = 'game'
+    `).get() as { value: string; updated_at: number } | undefined;
+
+    if (!row) return fallback;
+
+    try {
+      const parsed = JSON.parse(row.value) as Partial<DevGameRuntimeStats>;
+      const lastHeartbeatAt = Number(parsed.lastHeartbeatAt ?? row.updated_at) || row.updated_at;
+      return {
+        ...fallback,
+        ...parsed,
+        activeConnections: Number(parsed.activeConnections ?? 0),
+        activeAccounts: Array.isArray(parsed.activeAccounts) ? parsed.activeAccounts : [],
+        serverStartedAt: parsed.serverStartedAt ?? null,
+        lastHeartbeatAt,
+        gameYear: parsed.gameYear ?? null,
+        paused: parsed.paused === true,
+        speedMultiplier: Number(parsed.speedMultiplier ?? 0),
+        starCount: Number(parsed.starCount ?? 0),
+        factionCount: Number(parsed.factionCount ?? 0),
+        fleetCount: Number(parsed.fleetCount ?? 0),
+        shipCount: Number(parsed.shipCount ?? 0),
+        starbaseCount: Number(parsed.starbaseCount ?? 0),
+        planetCount: Number(parsed.planetCount ?? 0),
+        habitedPlanetCount: Number(parsed.habitedPlanetCount ?? 0),
+        combatContactCount: Number(parsed.combatContactCount ?? 0),
+        online: now - lastHeartbeatAt <= GAME_RUNTIME_STALE_MS,
+      };
+    } catch {
+      return fallback;
+    }
   }
 
   private toAccount(row: AccountRow): AuthAccount {
@@ -283,19 +659,40 @@ function buildCookieAttributes(): string {
 
 export function serializeSessionCookie(token: string): string {
   const attrs = buildCookieAttributes();
-  return `sf_session=${encodeURIComponent(token)}; ${attrs}; Max-Age=${SESSION_TTL_MS / 1000}`;
+  return `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; ${attrs}; Max-Age=${SESSION_TTL_MS / 1000}`;
 }
 
 export function clearSessionCookie(): string {
   const attrs = buildCookieAttributes();
-  return `sf_session=; ${attrs}; Max-Age=0`;
+  return `${SESSION_COOKIE_NAME}=; ${attrs}; Max-Age=0`;
 }
 
 export function parseSessionTokenFromCookie(header: string | undefined): string | null {
   if (!header) return null;
   for (const part of header.split(';')) {
     const [key, ...valueParts] = part.trim().split('=');
-    if (key === 'sf_session') {
+    if (key === SESSION_COOKIE_NAME) {
+      return decodeURIComponent(valueParts.join('='));
+    }
+  }
+  return null;
+}
+
+export function serializeDevSessionCookie(token: string): string {
+  const attrs = buildCookieAttributes();
+  return `${DEV_SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; ${attrs}; Max-Age=${DEV_SESSION_TTL_MS / 1000}`;
+}
+
+export function clearDevSessionCookie(): string {
+  const attrs = buildCookieAttributes();
+  return `${DEV_SESSION_COOKIE_NAME}=; ${attrs}; Max-Age=0`;
+}
+
+export function parseDevSessionTokenFromCookie(header: string | undefined): string | null {
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const [key, ...valueParts] = part.trim().split('=');
+    if (key === DEV_SESSION_COOKIE_NAME) {
       return decodeURIComponent(valueParts.join('='));
     }
   }

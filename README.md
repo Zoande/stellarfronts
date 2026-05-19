@@ -181,6 +181,8 @@ Set these before starting the servers:
 # Auth Server (port 8788)
 export AUTH_SERVER_PORT=8788
 export ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
+export ADMIN_PASSWORD=ABDUGYA1398
+export DEV_PANEL_PASSWORD=ABDUGYA1398
 
 # Game/WebSocket Server (port 8787)
 export GAME_SERVER_PORT=8787
@@ -232,6 +234,8 @@ export COOKIE_DOMAIN=.stellarfronts.com
 export COOKIE_SECURE=true
 export ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
 export WS_ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
+export ADMIN_PASSWORD=ABDUGYA1398
+export DEV_PANEL_PASSWORD=ABDUGYA1398
 
 # Run both servers
 npm run server:dev &  # or: tsx server/index.ts
@@ -255,6 +259,8 @@ Environment="COOKIE_DOMAIN=.stellarfronts.com"
 Environment="COOKIE_SECURE=true"
 Environment="ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com"
 Environment="WS_ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com"
+Environment="ADMIN_PASSWORD=ABDUGYA1398"
+Environment="DEV_PANEL_PASSWORD=ABDUGYA1398"
 ExecStart=/usr/bin/npm run server:dev
 Restart=always
 RestartSec=5
@@ -277,6 +283,8 @@ WorkingDirectory=/home/pi/stellar-fronts
 Environment="COOKIE_DOMAIN=.stellarfronts.com"
 Environment="COOKIE_SECURE=true"
 Environment="ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com"
+Environment="ADMIN_PASSWORD=ABDUGYA1398"
+Environment="DEV_PANEL_PASSWORD=ABDUGYA1398"
 ExecStart=/usr/bin/npm run auth:dev
 Restart=always
 RestartSec=5

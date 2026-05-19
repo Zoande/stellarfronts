@@ -148,7 +148,7 @@ import {
   parseAdminCommand,
 } from "../src/game/AdminCommands";
 import type { AdminCommandContext, AdminCommandResult, AdminCommandRow, ParsedAdminCommand } from "../src/game/AdminCommands";
-import type { AuthAccount } from "../src/auth/types";
+import type { AuthAccount, DevGameRuntimeStats } from "../src/auth/types";
 import { authStore, getPerspectiveFromAccount, parseSessionTokenFromCookie } from "./auth-store";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -161,6 +161,8 @@ const ARRIVE_DURATION_MS = 30_000;
 const BUILD_DURATION_MS = 180_000;
 const SAVE_INTERVAL_MS = 5_000;
 const SERVER_TICK_INTERVAL_MS = 100;
+const RUNTIME_STATS_INTERVAL_MS = 5_000;
+const GAME_SERVER_STARTED_AT = Date.now();
 const DEFAULT_TICK_SIZE_DAYS = 1 / 24;
 const DEFAULT_TICK_SPEED_SECONDS = 1;
 const DEFAULT_SHIP_SPEED = STARBASE_SHIP_DEFINITIONS.corvette.speed;
@@ -225,6 +227,7 @@ const clients = new Set<ClientSession>();
 const pendingPlanetDetailRefreshes = new Set<string>();
 let state: GameState;
 let lastSaveAt = 0;
+let lastRuntimeStatsAt = 0;
 let hasDirtyState = false;
 let runtimeIdCounter = 0;
 
@@ -5135,24 +5138,28 @@ async function executeAdminCommand(
 }
 
 async function handleAdminCommand(
-  socket: WebSocket,
-  perspective: GalaxyPerspective,
+  session: ClientSession,
   command: Extract<ClientCommand, { type: "adminCommand" }>,
 ): Promise<void> {
+  if (!authStore.isAdminAccount(session.account)) {
+    sendAdminResponse(session.socket, adminResponse(command, null, false, "Admin commands are not available for this account."));
+    return;
+  }
+
   const parsed = parseAdminCommand(command.input);
   if (!parsed) {
-    sendAdminResponse(socket, adminResponse(command, parsed, false, "Enter an admin command."));
+    sendAdminResponse(session.socket, adminResponse(command, parsed, false, "Enter an admin command."));
     return;
   }
   const confirmation = adminConfirmationRequired(command, parsed);
   if (confirmation) {
-    sendAdminResponse(socket, confirmation);
+    sendAdminResponse(session.socket, confirmation);
     return;
   }
   try {
-    const result = await executeAdminCommand(parsed, command, perspective);
+    const result = await executeAdminCommand(parsed, command, session.perspective);
     const changed = result.changed ? Array.from(new Set(result.changed)) : [];
-    sendAdminResponse(socket, adminResponse(command, parsed, true, result.message, {
+    sendAdminResponse(session.socket, adminResponse(command, parsed, true, result.message, {
       rows: result.rows,
       changed,
       destructive: parsed.definition?.destructive === true,
@@ -5162,7 +5169,7 @@ async function handleAdminCommand(
       flushPlanetDetailRefreshes();
     }
   } catch (error) {
-    sendAdminResponse(socket, adminResponse(
+    sendAdminResponse(session.socket, adminResponse(
       command,
       parsed,
       false,
@@ -5178,7 +5185,7 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "adminCommand") {
-    void handleAdminCommand(session.socket, session.perspective, command);
+    void handleAdminCommand(session, command);
     return;
   }
   if (command.type === "moveShip" || command.type === "moveFleet") {
@@ -5336,6 +5343,44 @@ function isWebSocketOriginAllowed(origin: string | undefined): boolean {
   return wsAllowedOrigins.has(origin);
 }
 
+function buildRuntimeStats(): DevGameRuntimeStats {
+  const activeAccounts = Array.from(new Set(
+    Array.from(clients).map((client) => client.account.username),
+  )).sort((a, b) => a.localeCompare(b));
+
+  return {
+    online: true,
+    activeConnections: clients.size,
+    activeAccounts,
+    serverStartedAt: GAME_SERVER_STARTED_AT,
+    lastHeartbeatAt: Date.now(),
+    gameYear: state.clock.year,
+    paused: state.clock.paused,
+    speedMultiplier: state.clock.speedMultiplier,
+    starCount: state.stars.length,
+    factionCount: state.factions.length,
+    fleetCount: state.fleets.length,
+    shipCount: state.ships.length,
+    starbaseCount: state.starbases.length,
+    planetCount: state.planetStates.length,
+    habitedPlanetCount: state.planetStates.filter((planetState) => planetState.isHabited).length,
+    combatContactCount: state.recentCombatContacts.length,
+  };
+}
+
+function publishRuntimeStats(force = false): void {
+  const now = Date.now();
+  if (!force && now - lastRuntimeStatsAt < RUNTIME_STATS_INTERVAL_MS) return;
+  lastRuntimeStatsAt = now;
+  try {
+    authStore.setGameRuntimeStats(buildRuntimeStats());
+  } catch (error) {
+    console.error("[GameServer] Failed to publish runtime stats", error);
+  }
+}
+
+publishRuntimeStats(true);
+
 const wss = new WebSocketServer({ port: PORT });
 wss.on("connection", (socket, request) => {
   // Validate WebSocket origin
@@ -5361,6 +5406,12 @@ wss.on("connection", (socket, request) => {
     openPlanetId: null,
   };
   clients.add(session);
+  try {
+    authStore.recordGameEnter(account);
+  } catch (error) {
+    console.error("[GameServer] Failed to record game enter", error);
+  }
+  publishRuntimeStats(true);
   sendEvent(socket, { type: "serverInfo", message: "Connected to StellarFronts game server." });
 
   socket.on("message", (data) => {
@@ -5375,6 +5426,7 @@ wss.on("connection", (socket, request) => {
 
   socket.on("close", () => {
     clients.delete(session);
+    publishRuntimeStats(true);
   });
 });
 
@@ -5382,6 +5434,7 @@ setInterval(() => {
   const changed = advanceState(Date.now());
   broadcastUpdates(Array.from(changed));
   flushPlanetDetailRefreshes();
+  publishRuntimeStats();
   if (hasDirtyState && Date.now() - lastSaveAt >= SAVE_INTERVAL_MS) {
     void saveState().catch((error) => console.error("[GameServer] Failed to save state", error));
   }

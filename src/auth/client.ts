@@ -1,4 +1,4 @@
-import type { AuthAccount, AuthMeResponse, AuthSessionResponse, Credentials } from './types';
+import type { AuthAccount, AuthMeResponse, AuthSessionResponse, Credentials, DevStatsResponse } from './types';
 
 const AUTH_SERVER_URL = import.meta.env.VITE_AUTH_SERVER_URL ?? 'http://localhost:8788';
 
@@ -43,6 +43,18 @@ export async function getCurrentSession(): Promise<AuthAccount | null> {
 
 export async function logout(): Promise<void> {
   await requestJson('/api/logout', undefined, 'POST');
+}
+
+export async function loginToDevPanel(password: string): Promise<void> {
+  await requestJson('/api/dev/login', { password });
+}
+
+export async function getDevStats(): Promise<DevStatsResponse> {
+  return requestJson<DevStatsResponse>('/api/dev/stats', undefined, 'GET');
+}
+
+export async function logoutFromDevPanel(): Promise<void> {
+  await requestJson('/api/dev/logout', undefined, 'POST');
 }
 
 export async function requestOAuthPlaceholder(provider: 'google' | 'microsoft'): Promise<never> {

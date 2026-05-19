@@ -4,11 +4,12 @@ import LoginPage from './pages/LoginPage';
 import SignupPage from './pages/SignupPage';
 import GamePage from './pages/GamePage';
 import HomePage from './pages/HomePage';
+import DevPage from './pages/DevPage';
 import { LoadingScreen } from './components/LoadingScreen';
 import BackgroundScene from './components/BackgroundScene';
 import { useAppFlow } from './hooks/useAppFlow';
 
-function App() {
+function MainAppFlow() {
   const {
     authLoadingProgress,
     authLoadingDetail,
@@ -30,12 +31,17 @@ function App() {
     handleHomeTransitionHidden,
   } = useAppFlow();
 
-  const isGameRoute = typeof window !== 'undefined' && window.location.pathname === '/game';
+  const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+  const isGameRoute = currentPath === '/game';
 
   if (isGameRoute && auth.isLoggedIn && auth.account) {
     return (
       <Router>
-        <GamePage username={auth.account.username} onLogout={handleLogout} />
+        <GamePage
+          username={auth.account.username}
+          accountType={auth.account.accountType}
+          onLogout={handleLogout}
+        />
         <Analytics />
       </Router>
     );
@@ -124,6 +130,21 @@ function App() {
       <Analytics />
     </Router>
   );
+}
+
+function App() {
+  const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
+  const isDevRoute = currentPath === '/dev' || currentPath.startsWith('/dev/');
+
+  if (isDevRoute) {
+    return (
+      <Router>
+        <DevPage />
+      </Router>
+    );
+  }
+
+  return <MainAppFlow />;
 }
 
 export default App;
