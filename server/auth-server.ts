@@ -1,5 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { authStore, clearSessionCookie, isAuthError, parseSessionTokenFromCookie, serializeSessionCookie } from './auth-store';
+import {
+  authStore,
+  clearDevSessionCookie,
+  clearSessionCookie,
+  isAuthError,
+  parseDevSessionTokenFromCookie,
+  parseSessionTokenFromCookie,
+  serializeDevSessionCookie,
+  serializeSessionCookie,
+} from './auth-store';
 import type { Credentials } from '../src/auth/types';
 
 const PORT = Number(process.env.AUTH_SERVER_PORT ?? 8788);
@@ -49,6 +58,7 @@ function readJsonBody<T>(request: IncomingMessage): Promise<T> {
 function writeJson(response: ServerResponse, statusCode: number, payload: unknown): void {
   response.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
   });
   response.end(JSON.stringify(payload));
 }
@@ -64,6 +74,11 @@ function applyCors(request: IncomingMessage, response: ServerResponse): void {
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   response.setHeader('Vary', 'Origin');
+}
+
+function isDevRequestAuthorized(request: IncomingMessage): boolean {
+  const token = parseDevSessionTokenFromCookie(request.headers.cookie);
+  return token ? authStore.isDevSessionTokenValid(token) : false;
 }
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -112,6 +127,40 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
     response.setHeader('Set-Cookie', clearSessionCookie());
     writeJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/dev/login') {
+    const body = await readJsonBody<{ password?: unknown }>(request);
+    const password = typeof body.password === 'string' ? body.password : '';
+    if (!authStore.validateDevPassword(password)) {
+      writeJson(response, 401, { error: 'Invalid developer password' });
+      return;
+    }
+
+    const token = authStore.createDevSession();
+    response.setHeader('Set-Cookie', serializeDevSessionCookie(token));
+    writeJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/dev/logout') {
+    const token = parseDevSessionTokenFromCookie(request.headers.cookie);
+    if (token) {
+      authStore.clearDevSession(token);
+    }
+    response.setHeader('Set-Cookie', clearDevSessionCookie());
+    writeJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === 'GET' && url.pathname === '/api/dev/stats') {
+    if (!isDevRequestAuthorized(request)) {
+      writeJson(response, 401, { error: 'Developer session required' });
+      return;
+    }
+
+    writeJson(response, 200, authStore.getDevStats());
     return;
   }
 

@@ -31,6 +31,7 @@ import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY, estimateCloc
 import type { HyperlaneExitPoint, ShipAction } from "./GameplayTypes";
 
 export interface BootOptions {
+  adminCommandsEnabled?: boolean;
   onProgress?: (progress: number, detail: string) => void;
 }
 
@@ -45,6 +46,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   reportProgress(0.08, "Connecting to game server");
   const server = new GameServerClient();
   let snapshot = await server.connect();
+  const adminCommandsEnabled = options.adminCommandsEnabled === true;
   applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
 
   reportProgress(0.28, "Receiving authoritative galaxy state");
@@ -195,6 +197,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
   };
   const executeAdminCommand = async (input: string): Promise<AdminCommandResult> => {
+    if (!adminCommandsEnabled) {
+      return adminResult(input, false, "Admin commands are not available for this account.");
+    }
     const parsed = parseAdminCommand(input);
     if (parsed && isLocalAdminCommand(parsed.canonicalName)) {
       return executeLocalAdminCommand(input);
@@ -202,6 +207,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     return server.executeAdminCommand(input, createAdminContext());
   };
   const openAdminCommandPanel = (): void => {
+    if (!adminCommandsEnabled) return;
     if (!adminCommandPanel) {
       adminCommandPanel = new AdminCommandPanel({ onCommand: executeAdminCommand });
     }
@@ -762,7 +768,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const pressedCodes = new Set<string>();
   const handleKeyDown = (ev: KeyboardEvent) => {
     pressedCodes.add(ev.code);
-    if (ev.shiftKey && pressedCodes.has("KeyN") && pressedCodes.has("Digit2")) {
+    if (adminCommandsEnabled && ev.shiftKey && pressedCodes.has("KeyN") && pressedCodes.has("Digit2")) {
       ev.preventDefault();
       ev.stopPropagation();
       pressedCodes.clear();

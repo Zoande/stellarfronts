@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
+import type { AccountType } from '@/auth/types';
 import { GameLogoutButton } from '@/components/GameLogoutButton';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import '../styles/Game.css';
 
 interface GamePageProps {
   username: string;
+  accountType: AccountType;
   onLogout: () => void;
 }
 
-export default function GamePage({ username, onLogout }: GamePageProps) {
+export default function GamePage({ username, accountType, onLogout }: GamePageProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bootedRef = useRef(false);
   const bootStartedAtRef = useRef(0);
@@ -53,6 +55,7 @@ export default function GamePage({ username, onLogout }: GamePageProps) {
         if (cancelled || !containerRef.current) return;
         bootedRef.current = true;
         void boot(containerRef.current, {
+          adminCommandsEnabled: accountType === 'admin' && username.trim().toLowerCase() === 'admin',
           onProgress: (progress, detail) => {
             if (cancelled) return;
             setBootProgress(progress * 100);
@@ -89,7 +92,7 @@ export default function GamePage({ username, onLogout }: GamePageProps) {
       clearBootHideTimer();
       cleanupBoot?.();
     };
-  }, []);
+  }, [accountType, username]);
 
   return (
     <div className="game-container" ref={containerRef}>
