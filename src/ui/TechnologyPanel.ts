@@ -43,6 +43,7 @@ const COLUMN_GAP = 250;
 const ROW_GAP = 118;
 const TREE_PADDING_X = 36;
 const TREE_PADDING_Y = 28;
+const NODE_MIN_VERTICAL_GAP = 18;
 
 const CATEGORY_LABELS: Record<string, string> = {
   agriculture: "Agriculture",
@@ -90,6 +91,8 @@ export class TechnologyPanel {
 
   public show(data: TechnologyPanelData): void {
     this.currentData = data;
+    const isNewPanel = !this.panelElement;
+    if (isNewPanel) this.selectedTechId = null;
     this.ensureSelectedTech(data);
     const scrollState = captureScrollState(this.panelElement, TECHNOLOGY_SCROLL_SELECTORS);
     if (!this.panelElement) {
@@ -133,13 +136,9 @@ export class TechnologyPanel {
       this.selectedTechId = null;
       return;
     }
+    if (!this.selectedTechId) return;
     const ids = new Set(view.technologies.map((status) => status.id));
-    if (this.selectedTechId && ids.has(this.selectedTechId)) return;
-    this.selectedTechId = view.activeTechId
-      ?? view.technologies.find((status) => status.available)?.id
-      ?? view.technologies.find((status) => !status.completed)?.id
-      ?? view.technologies[0]?.id
-      ?? null;
+    if (!ids.has(this.selectedTechId)) this.selectedTechId = null;
   }
 
   private bindEvents(data: TechnologyPanelData): void {
@@ -160,7 +159,7 @@ export class TechnologyPanel {
       button.addEventListener("click", () => {
         const techId = button.dataset.techNode;
         if (!techId) return;
-        this.selectedTechId = techId;
+        this.selectedTechId = this.selectedTechId === techId ? null : techId;
         this.show(data);
       });
     });
@@ -197,7 +196,7 @@ export class TechnologyPanel {
       `;
     }
 
-    const selected = this.getStatus(view, this.selectedTechId) ?? view.technologies[0];
+    const selected = this.getStatus(view, this.selectedTechId);
     const activeTech = view.activeTechId ? TECHNOLOGY_BY_ID[view.activeTechId] : null;
     const completedCount = view.technologies.filter((status) => status.completed).length;
     return `
@@ -217,7 +216,7 @@ export class TechnologyPanel {
       </div>
       <section class="techBody">
         ${this.renderTree(view, selected?.id ?? null)}
-        ${selected ? this.renderDetail(view, selected) : ""}
+        ${selected ? this.renderDetail(view, selected) : this.renderEmpireDetail(view)}
       </section>
     `;
   }
@@ -232,11 +231,49 @@ export class TechnologyPanel {
     `;
   }
 
+  private buildTreeLayout(): { positions: Map<TechId, { x: number; y: number }>; width: number; height: number } {
+    const positions = new Map<TechId, { x: number; y: number }>();
+    const columns = new Map<number, TechnologyDefinition[]>();
+    for (const tech of TECHNOLOGY_DEFINITIONS) {
+      const column = tech.positionInTree.x;
+      const list = columns.get(column) ?? [];
+      list.push(tech);
+      columns.set(column, list);
+    }
+
+    for (const [column, techs] of columns) {
+      const baseX = TREE_PADDING_X + column * COLUMN_GAP;
+      const ordered = techs
+        .map((tech) => ({ tech, baseY: this.getNodePosition(tech).y }))
+        .sort((a, b) => a.baseY - b.baseY);
+      let lastY = -Infinity;
+      for (const entry of ordered) {
+        let y = entry.baseY;
+        const minY = lastY + NODE_HEIGHT + NODE_MIN_VERTICAL_GAP;
+        if (y < minY) y = minY;
+        positions.set(entry.tech.id, { x: baseX, y });
+        lastY = y;
+      }
+    }
+
+    let maxX = 0;
+    let maxY = 0;
+    positions.forEach((pos) => {
+      maxX = Math.max(maxX, pos.x);
+      maxY = Math.max(maxY, pos.y);
+    });
+    return {
+      positions,
+      width: maxX + NODE_WIDTH + TREE_PADDING_X,
+      height: maxY + NODE_HEIGHT + TREE_PADDING_Y,
+    };
+  }
+
   private renderTree(view: FactionTechnologyView, selectedTechId: TechId | null): string {
     const statusById = new Map(view.technologies.map((status) => [status.id, status]));
-    const bounds = this.getTreeBounds();
-    const width = bounds.width;
-    const height = bounds.height;
+    const layout = this.buildTreeLayout();
+    const width = layout.width;
+    const height = layout.height;
     return `
       <div class="techTreeViewport">
         <div class="techTreeCanvas" style="width:${width}px;height:${height}px;">
@@ -248,23 +285,28 @@ export class TechnologyPanel {
               const toStatus = statusById.get(tech.id);
               const complete = fromStatus?.completed && toStatus?.completed;
               const active = toStatus?.active;
-              const a = this.getNodeCenter(from);
-              const b = this.getNodeCenter(tech);
+              const a = this.getNodeCenterFromLayout(from, layout.positions);
+              const b = this.getNodeCenterFromLayout(tech, layout.positions);
               return `<path class="${complete ? "completed" : ""} ${active ? "active" : ""}" d="M ${a.x} ${a.y} C ${a.x + 90} ${a.y}, ${b.x - 90} ${b.y}, ${b.x} ${b.y}" />`;
             })).join("")}
           </svg>
           ${TECHNOLOGY_DEFINITIONS.map((tech) => {
             const status = statusById.get(tech.id);
             if (!status) return "";
-            return this.renderNode(tech, status, selectedTechId === tech.id);
+            return this.renderNode(tech, status, selectedTechId === tech.id, layout.positions.get(tech.id));
           }).join("")}
         </div>
       </div>
     `;
   }
 
-  private renderNode(tech: TechnologyDefinition, status: TechnologyStatusView, selected: boolean): string {
-    const pos = this.getNodePosition(tech);
+  private renderNode(
+    tech: TechnologyDefinition,
+    status: TechnologyStatusView,
+    selected: boolean,
+    position?: { x: number; y: number },
+  ): string {
+    const pos = position ?? this.getNodePosition(tech);
     const progress = this.getProgressPercent(tech, status);
     const state = status.completed ? "Completed" : status.active ? "Active" : status.available ? "Available" : "Locked";
     const classes = [
@@ -366,6 +408,81 @@ export class TechnologyPanel {
     `;
   }
 
+  private renderEmpireDetail(view: FactionTechnologyView): string {
+    const completedCount = view.technologies.filter((status) => status.completed).length;
+    const availableCount = view.technologies.filter((status) => status.available && !status.completed).length;
+    const activeTech = view.activeTechId ? TECHNOLOGY_BY_ID[view.activeTechId] : null;
+    const affinities = this.getCategoryAffinities(view);
+    const maxAffinity = affinities.reduce((max, entry) => Math.max(max, entry.score), 0) || 1;
+    const signals = this.getModifierHighlights(view);
+    return `
+      <aside class="techDetail techDetailSummary">
+        <div class="techDetailHeader">
+          <div>
+            <span>Empire Affinity</span>
+            <strong>Strategic Profile</strong>
+          </div>
+          <div class="techDetailHint">Select a technology</div>
+        </div>
+        <div class="techDetailBody">
+          <p class="techSoft">Select a technology node to view research detail. Until then, these signals summarize your empire's current lean.</p>
+          <section class="techDetailSection">
+            <div class="techSectionTitle">Focus Snapshot</div>
+            <div class="techInsightGrid">
+              <div class="techInsightCard">
+                <span>Active Focus</span>
+                <strong>${this.escapeHtml(activeTech?.name ?? "No active focus")}</strong>
+                <small>${this.escapeHtml(activeTech ? `${CATEGORY_LABELS[activeTech.category] ?? activeTech.category} / Tier ${activeTech.tier}` : "Set an active research target")}</small>
+              </div>
+              <div class="techInsightCard">
+                <span>Available</span>
+                <strong>${availableCount}</strong>
+                <small>${this.escapeHtml(`${completedCount}/${view.technologies.length} completed`)}</small>
+              </div>
+              <div class="techInsightCard">
+                <span>Research Output</span>
+                <strong>${view.researchPerHour.toFixed(2)}/h</strong>
+                <small>${this.escapeHtml(`Active ${view.activeResearchPerHour.toFixed(2)}/h`)}</small>
+              </div>
+              <div class="techInsightCard">
+                <span>Passive Stream</span>
+                <strong>${view.passiveResearchPerHour.toFixed(2)}/h</strong>
+                <small>${this.escapeHtml("Baseline affinity spread")}</small>
+              </div>
+            </div>
+          </section>
+          <section class="techDetailSection">
+            <div class="techSectionTitle">Affinity Map</div>
+            <div class="techAffinityList">
+              ${affinities.length === 0
+                ? '<span class="techMuted">No affinity telemetry yet.</span>'
+                : affinities.map((entry) => `
+                  <div class="techAffinityRow">
+                    <span>${this.escapeHtml(CATEGORY_LABELS[entry.category] ?? entry.category)}</span>
+                    <div class="techAffinityBar"><i style="width:${Math.max(6, (entry.score / maxAffinity) * 100).toFixed(1)}%"></i></div>
+                    <strong>${this.formatPercent(entry.score)}</strong>
+                  </div>
+                `).join("")}
+            </div>
+          </section>
+          <section class="techDetailSection">
+            <div class="techSectionTitle">Research Signals</div>
+            <div class="techSourceList">
+              ${signals.length === 0
+                ? '<span class="techMuted">No active modifiers detected.</span>'
+                : signals.map((entry) => `
+                  <span>
+                    <strong>${this.escapeHtml(entry.label)}</strong>
+                    <small>${this.formatSignedPercent(entry.bonus)} (cap ${this.formatPercent(entry.cap)})</small>
+                  </span>
+                `).join("")}
+            </div>
+          </section>
+        </div>
+      </aside>
+    `;
+  }
+
   private getStatus(view: FactionTechnologyView, techId: TechId | null): TechnologyStatusView | null {
     if (!techId) return null;
     return view.technologies.find((status) => status.id === techId) ?? null;
@@ -383,21 +500,46 @@ export class TechnologyPanel {
     };
   }
 
-  private getNodeCenter(tech: TechnologyDefinition): { x: number; y: number } {
-    const pos = this.getNodePosition(tech);
+  private getNodeCenterFromLayout(
+    tech: TechnologyDefinition,
+    positions: Map<TechId, { x: number; y: number }>,
+  ): { x: number; y: number } {
+    const pos = positions.get(tech.id) ?? this.getNodePosition(tech);
     return {
       x: pos.x + NODE_WIDTH / 2,
       y: pos.y + NODE_HEIGHT / 2,
     };
   }
 
-  private getTreeBounds(): { width: number; height: number } {
-    const maxX = Math.max(...TECHNOLOGY_DEFINITIONS.map((tech) => tech.positionInTree.x));
-    const maxY = Math.max(...TECHNOLOGY_DEFINITIONS.map((tech) => tech.positionInTree.y));
-    return {
-      width: TREE_PADDING_X * 2 + NODE_WIDTH + maxX * COLUMN_GAP,
-      height: TREE_PADDING_Y * 2 + NODE_HEIGHT + maxY * ROW_GAP,
-    };
+  private getCategoryAffinities(view: FactionTechnologyView): Array<{ category: string; score: number }> {
+    const totals = new Map<string, { score: number; count: number }>();
+    for (const status of view.technologies) {
+      const tech = TECHNOLOGY_BY_ID[status.id];
+      if (!tech) continue;
+      const entry = totals.get(tech.category) ?? { score: 0, count: 0 };
+      entry.score += status.evaluation.passiveScore;
+      entry.count += 1;
+      totals.set(tech.category, entry);
+    }
+    return Array.from(totals.entries())
+      .map(([category, entry]) => ({ category, score: entry.count > 0 ? entry.score / entry.count : 0 }))
+      .sort((a, b) => b.score - a.score);
+  }
+
+  private getModifierHighlights(view: FactionTechnologyView): Array<{ label: string; bonus: number; cap: number }> {
+    const highlights = new Map<string, { label: string; bonus: number; cap: number }>();
+    for (const status of view.technologies) {
+      for (const entry of status.evaluation.breakdown) {
+        if (!entry.bonus) continue;
+        const current = highlights.get(entry.label);
+        if (!current || Math.abs(entry.bonus) > Math.abs(current.bonus)) {
+          highlights.set(entry.label, { label: entry.label, bonus: entry.bonus, cap: entry.cap });
+        }
+      }
+    }
+    return Array.from(highlights.values())
+      .sort((a, b) => Math.abs(b.bonus) - Math.abs(a.bonus))
+      .slice(0, 6);
   }
 
   private describeEffect(effect: TechnologyEffect): string {
@@ -725,6 +867,70 @@ export class TechnologyPanel {
   line-height: 1.45;
   font-size: 12px;
 }
+.techDetailHint {
+  color: rgba(206, 232, 226, 0.58);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.techSoft {
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 11px;
+}
+.techInsightGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+.techInsightCard {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(103, 255, 221, 0.12);
+  background: rgba(255, 255, 255, 0.045);
+}
+.techInsightCard span {
+  display: block;
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.techInsightCard strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+}
+.techInsightCard small {
+  display: block;
+  margin-top: 3px;
+  color: rgba(206, 232, 226, 0.52);
+  font-size: 10px;
+}
+.techAffinityList {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+.techAffinityRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: rgba(206, 232, 226, 0.72);
+}
+.techAffinityBar {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(103, 255, 221, 0.18);
+  overflow: hidden;
+}
+.techAffinityBar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #72e2ff, #ff69c9);
+}
 .techProgressBlock,
 .techDetailSection {
   margin-top: 10px;
@@ -818,6 +1024,9 @@ export class TechnologyPanel {
   .techDetail {
     border-left: 0;
     border-top: 1px solid rgba(126, 211, 255, 0.14);
+  }
+  .techInsightGrid {
+    grid-template-columns: 1fr;
   }
 }
 `;
