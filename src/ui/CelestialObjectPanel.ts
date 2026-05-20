@@ -34,6 +34,11 @@ import type {
   UrbanSubDistrictKind,
 } from "../data/Economy";
 import type { ClientCommand } from "../game/GameProtocol";
+import {
+  getFirstRequiredTechName,
+  getRequiredTechIdsForBuilding,
+} from "../data/Technology";
+import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 
 export type CelestialObjectKind = "planet" | "star";
@@ -48,6 +53,7 @@ export interface CelestialObjectPanelData {
   planetState?: PlanetState;
   imageUrl?: string;
   accentColor?: string;
+  technology?: FactionTechnologyView | null;
   onPlanetCommand?: (command: ClientCommand) => void;
   orbitFleetId?: string | null;
 }
@@ -945,14 +951,21 @@ export class CelestialObjectPanel {
         <div class="coBuildList">
           ${BUILDING_KINDS.map((building) => {
             const isCompatible = compatible.has(building);
+            const lockedByTechnology = !this.isBuildingUnlocked(data.technology, building);
             const definition = BUILDING_DEFINITIONS[building];
+            const disabled = !isCompatible || lockedByTechnology;
+            const note = !isCompatible
+              ? "Incompatible slot"
+              : lockedByTechnology
+                ? `Requires ${this.getRequiredBuildingTechnologyName(building)}`
+                : `${BUILDING_MINERAL_COSTS[building]} minerals | ${BUILDING_BUILD_DAYS[building]} days`;
             return `
               <button
                 type="button"
                 data-co-pick-building="${building}"
-                class="${isCompatible ? "" : "incompatible"}"
+                class="${disabled ? "incompatible" : ""}"
                 data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, planetState, target.area, target.subDistrictIndex))}"
-                ${isCompatible ? "" : "disabled"}
+                ${disabled ? "disabled" : ""}
               >
                 <span class="coBuildCardIcon">
                   <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
@@ -960,7 +973,7 @@ export class CelestialObjectPanel {
                 </span>
                 <span class="coBuildCardCopy">
                   <strong>${this.escapeHtml(definition.label)}</strong>
-                  <small>${isCompatible ? `${BUILDING_MINERAL_COSTS[building]} minerals | ${BUILDING_BUILD_DAYS[building]} days` : "Incompatible slot"}</small>
+                  <small>${this.escapeHtml(note)}</small>
                 </span>
               </button>
             `;
@@ -1463,6 +1476,20 @@ export class CelestialObjectPanel {
     }
     const district = DISTRICTS.find((entry) => entry.kind === target.area);
     return `${district?.label ?? "District"} slot ${target.slotIndex + 1}`;
+  }
+
+  private isBuildingUnlocked(technology: FactionTechnologyView | null | undefined, building: BuildingKind): boolean {
+    const requiredTechIds = getRequiredTechIdsForBuilding(building);
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
+  }
+
+  private isTechnologyCompleted(technology: FactionTechnologyView | null | undefined, techId: TechId): boolean {
+    return technology?.completedTechIds.includes(techId) === true;
+  }
+
+  private getRequiredBuildingTechnologyName(building: BuildingKind): string {
+    return getFirstRequiredTechName(getRequiredTechIdsForBuilding(building));
   }
 
   private openSubDistrictPicker(button: HTMLButtonElement, data: CelestialObjectPanelData, subDistrictIndex: number): void {

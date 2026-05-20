@@ -44,6 +44,9 @@ test("admin command registry exposes planned command categories", () => {
     "start_duel",
     "create_starbase",
     "add_resource",
+    "tech_status",
+    "set_active_tech",
+    "complete_tech",
   ]) {
     assert.equal(names.has(expected), true, `${expected} should be registered`);
   }

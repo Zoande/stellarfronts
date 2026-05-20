@@ -849,9 +849,13 @@ export function getFeatureModifiers(features: PlanetFeatureKind[] | undefined): 
   return modifiers;
 }
 
-function getActiveModifiers(state: Pick<PlanetState, "features" | "modifiers">): PlanetModifier[] {
+function getActiveModifiers(
+  state: Pick<PlanetState, "features" | "modifiers">,
+  externalModifiers: PlanetModifier[] = [],
+): PlanetModifier[] {
   return [
     ...normalizeModifiers(state.modifiers).map((modifier) => cloneModifier(modifier)),
+    ...normalizeModifiers(externalModifiers).map((modifier) => cloneModifier(modifier)),
     ...getFeatureModifiers(state.features),
   ];
 }
@@ -1197,10 +1201,14 @@ function mergePopGroup(groups: PopGroup[], next: PopGroup): void {
   groups.push({ ...next });
 }
 
-export function calculatePlanetEconomy(state: PlanetState, districtLimits?: DistrictCounts): PlanetEconomySummary {
+export function calculatePlanetEconomy(
+  state: PlanetState,
+  districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
+): PlanetEconomySummary {
   if (!state.isHabited) return createEmptyPlanetEconomySummary();
 
-  const activeModifiers = getActiveModifiers(state);
+  const activeModifiers = getActiveModifiers(state, externalModifiers);
   const capacity = emptyJobCapacity();
   const built = state.builtDistricts;
   let housing = built.city * 1_600_000_000;
@@ -1417,11 +1425,15 @@ export function calculatePlanetEconomy(state: PlanetState, districtLimits?: Dist
 
   return {
     ...summaryWithoutGrowth,
-    populationGrowth: calculatePopulationGrowth(state, summaryWithoutGrowth, districtLimits),
+    populationGrowth: calculatePopulationGrowth(state, summaryWithoutGrowth, districtLimits, externalModifiers),
   };
 }
 
-export function calculatePlanetCapacity(state: PlanetState, districtLimits?: DistrictCounts): number {
+export function calculatePlanetCapacity(
+  state: PlanetState,
+  districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
+): number {
   if (!state.isHabited) return 0;
   const limits = districtLimits ?? state.builtDistricts;
   const sizeProxy = Math.max(1, limits.city, state.builtDistricts.city);
@@ -1429,7 +1441,7 @@ export function calculatePlanetCapacity(state: PlanetState, districtLimits?: Dis
   const baseCapacity = sizeProxy * 1_800_000_000;
   const resourceCapacity = resourcePotential * 300_000_000;
   const urbanizedCapacity = state.builtDistricts.city * 450_000_000;
-  const modifiedCapacity = applyModifiers(baseCapacity + resourceCapacity + urbanizedCapacity, getActiveModifiers(state), "planetCapacity");
+  const modifiedCapacity = applyModifiers(baseCapacity + resourceCapacity + urbanizedCapacity, getActiveModifiers(state, externalModifiers), "planetCapacity");
   return Math.max(3_000_000_000, Math.floor(modifiedCapacity));
 }
 
@@ -1437,10 +1449,11 @@ export function calculatePopulationGrowth(
   state: PlanetState,
   economy: Omit<PlanetEconomySummary, "populationGrowth">,
   districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
 ): PlanetPopulationGrowth {
   if (!state.isHabited || state.population <= 0) return createEmptyPopulationGrowth();
 
-  const capacity = calculatePlanetCapacity(state, districtLimits);
+  const capacity = calculatePlanetCapacity(state, districtLimits, externalModifiers);
   const capacityPressure = capacity > 0 ? state.population / capacity : 1;
   const capacityCurve = clamp(1 - capacityPressure, -0.75, 1.15);
   const housingRatio = state.population > 0 ? economy.housing / state.population : 1;
@@ -1462,7 +1475,7 @@ export function calculatePopulationGrowth(
     : clamp(1 + managementPressure, -0.6, 1.8);
   const ratePerQuarter = applyModifiers(
     BASE_POPULATION_GROWTH_RATE_PER_QUARTER * factors.capacity * managementMultiplier,
-    getActiveModifiers(state),
+    getActiveModifiers(state, externalModifiers),
     "populationGrowth",
   );
   const netPerQuarter = Math.round(state.population * ratePerQuarter);
@@ -1476,7 +1489,11 @@ export function calculatePopulationGrowth(
   };
 }
 
-export function recalculatePlanetStateEconomy(state: PlanetState, districtLimits?: DistrictCounts): PlanetState {
+export function recalculatePlanetStateEconomy(
+  state: PlanetState,
+  districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
+): PlanetState {
   const speciesPopulations = normalizeSpeciesPopulations(
     state.speciesPopulations,
     state.population,
@@ -1495,7 +1512,7 @@ export function recalculatePlanetStateEconomy(state: PlanetState, districtLimits
   };
   return {
     ...normalized,
-    economy: calculatePlanetEconomy(normalized, districtLimits),
+    economy: calculatePlanetEconomy(normalized, districtLimits, externalModifiers),
   };
 }
 
@@ -1503,8 +1520,9 @@ export function applyPopulationGrowth(
   state: PlanetState,
   districtLimits?: DistrictCounts,
   quarters = 1,
+  externalModifiers: PlanetModifier[] = [],
 ): PlanetState {
-  let next = recalculatePlanetStateEconomy(state, districtLimits);
+  let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers);
   if (!next.isHabited || quarters <= 0) return next;
 
   for (let i = 0; i < quarters; i++) {
@@ -1514,7 +1532,7 @@ export function applyPopulationGrowth(
       ...next,
       population: sumSpeciesPopulation(speciesPopulations),
       speciesPopulations,
-    }, districtLimits);
+    }, districtLimits, externalModifiers);
   }
 
   return next;
@@ -1524,8 +1542,9 @@ export function applyPopulationGrowthFraction(
   state: PlanetState,
   districtLimits: DistrictCounts | undefined,
   quarterFraction: number,
+  externalModifiers: PlanetModifier[] = [],
 ): PlanetState {
-  const next = recalculatePlanetStateEconomy(state, districtLimits);
+  const next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers);
   if (!next.isHabited || quarterFraction <= 0) return next;
 
   const growth = Math.round(next.economy.populationGrowth.netPerQuarter * quarterFraction);
@@ -1534,7 +1553,7 @@ export function applyPopulationGrowthFraction(
     ...next,
     population: sumSpeciesPopulation(speciesPopulations),
     speciesPopulations,
-  }, districtLimits);
+  }, districtLimits, externalModifiers);
 }
 
 function applyPopulationDeltaToSpecies(populations: SpeciesPopulation[], delta: number): SpeciesPopulation[] {
@@ -1699,8 +1718,9 @@ function completeConstructionItem(
 export function getConstructionSpeedMultiplier(
   state: PlanetState,
   kind?: PlanetConstructionKind,
+  externalModifiers: PlanetModifier[] = [],
 ): number {
-  const activeModifiers = getActiveModifiers(state);
+  const activeModifiers = getActiveModifiers(state, externalModifiers);
   const base = getModifierMultiplier(activeModifiers, "constructionSpeed");
   const typed = kind === "district"
     ? getModifierMultiplier(activeModifiers, "districtConstructionSpeed")
@@ -1714,8 +1734,9 @@ export function progressPlanetConstructionQueue(
   state: PlanetState,
   elapsedDays: number,
   districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
 ): { state: PlanetState; changed: boolean; completed: PlanetConstructionQueueItem[] } {
-  let next = recalculatePlanetStateEconomy(state, districtLimits);
+  let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers);
   const limits = districtLimits ?? next.builtDistricts;
   let days = Math.max(0, elapsedDays);
   const completed: PlanetConstructionQueueItem[] = [];
@@ -1723,7 +1744,7 @@ export function progressPlanetConstructionQueue(
 
   while (days > 0 && next.constructionQueue.length > 0) {
     const [current, ...rest] = next.constructionQueue;
-    const speed = getConstructionSpeedMultiplier(next, current.kind);
+    const speed = getConstructionSpeedMultiplier(next, current.kind, externalModifiers);
     const workDays = days * speed;
     if (workDays < current.remainingDays) {
       current.remainingDays -= workDays;
@@ -1741,7 +1762,7 @@ export function progressPlanetConstructionQueue(
       withoutItem = completeConstructionItem(withoutItem, completedItem);
       completed.push(completedItem);
     }
-    next = recalculatePlanetStateEconomy(withoutItem, limits);
+    next = recalculatePlanetStateEconomy(withoutItem, limits, externalModifiers);
     changed = true;
   }
 

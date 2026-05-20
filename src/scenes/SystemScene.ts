@@ -63,6 +63,7 @@ import type { ShipDesign } from "../data/ShipDesigns";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, FleetOrbitTarget, ServerCombatContact, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { FactionTechnologyView } from "../data/Technology";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { getFleetTacticalRadius, getLayeredFleetFormationPosition } from "../game/tacticalFormation";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
@@ -116,6 +117,7 @@ export interface SystemSceneOptions {
   factions?: FactionInfo[];
   playerFactionId?: number;
   planetStates?: PlanetState[];
+  technology?: FactionTechnologyView | null;
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
   clockYear?: number;
@@ -1766,6 +1768,7 @@ export class SystemScene implements IGameScene {
       status: starbase.status,
       power: this.formatStarbasePower(starbase),
       starbase,
+      technology: this.options.technology,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
     });
   }
@@ -4046,6 +4049,7 @@ export class SystemScene implements IGameScene {
       planetState,
       imageUrl: this.getPlanetTextureUrl(panelPlanet),
       accentColor: "rgba(102, 236, 199, 0.95)",
+      technology: this.options.technology,
       orbitFleetId: this.getOrbitCapableFleetId(),
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
     });
@@ -4231,6 +4235,10 @@ export class SystemScene implements IGameScene {
   setRecentCombatContacts(contacts: ServerCombatContact[]): void {
     this.recentCombatContacts = contacts;
     this.queueRecentCombatContactEffects();
+  }
+
+  setTechnology(technology: FactionTechnologyView | null): void {
+    this.options.technology = technology;
   }
 
   setStarbaseSystemIds(starIds: Iterable<number>): void {

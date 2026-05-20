@@ -43,6 +43,7 @@ import {
   getQueuedDistrictCount,
   hasQueuedBuildingTarget,
   isBuildingCompatible,
+  PEOPLE_PER_MONTHLY_UNIT,
   progressPlanetConstructionQueue,
   recalculatePlanetStateEconomy,
   RESOURCE_KINDS,
@@ -87,6 +88,7 @@ import type {
   DistrictKind,
   FactionEconomyState,
   PlanetState,
+  PlanetModifier,
   ResourceKind,
   ResourceCounts,
   UrbanSubDistrictKind,
@@ -148,6 +150,34 @@ import {
   gameYearToWeekIndex,
 } from "../src/game/GameTime";
 import { getFleetTacticalRadius } from "../src/game/tacticalFormation";
+import { computeFleetPower } from "../src/game/combatPower";
+import {
+  ACTIVE_RESEARCH_FRACTION,
+  BASELINE_RESEARCH_PER_HOUR,
+  createEmptyTechProgress,
+  DEFAULT_COMPLETED_TECH_IDS,
+  evaluateTechnologyResearch,
+  FactionTechState,
+  FactionTechnologyView,
+  getCompletedTechnologyEffects,
+  getFirstRequiredTechName,
+  getMissingPrerequisites,
+  getPassiveProgressCap,
+  getRequiredTechIdsForBuilding,
+  getRequiredTechIdsForShipHull,
+  getRequiredTechIdsForShipModule,
+  getRequiredTechIdsForShipSection,
+  getRequiredTechIdsForStarbaseBuilding,
+  isTechnologyAvailable,
+  isTechnologyCompleted,
+  isUnlockedByAnyRequiredTech,
+  normalizeFactionTechState,
+  PASSIVE_RESEARCH_FRACTION,
+  ResearchContext,
+  TechId,
+  TECHNOLOGY_BY_ID,
+  TECHNOLOGY_DEFINITIONS,
+} from "../src/data/Technology";
 import {
   ADMIN_COMMAND_DEFINITIONS,
   formatAdminCommandHelp,
@@ -205,10 +235,11 @@ interface GameFleet extends ServerFleet {
 interface GameShip extends ServerShip {}
 
 interface GameState {
-  schemaVersion: 14;
+  schemaVersion: 15;
   stars: StarData[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
+  factionTechnologies: FactionTechState[];
   hyperlanes: Array<[number, number]>;
   adjacency: number[][];
   factions: FactionInfo[];
@@ -337,7 +368,11 @@ function getPlanetDistrictLimitsFromState(nextState: GameState, planetState: Pla
 
 function recalculatePlanetEconomies(nextState = state): void {
   nextState.planetStates = nextState.planetStates.map((planetState) => (
-    recalculatePlanetStateEconomy(planetState, getPlanetDistrictLimitsFromState(nextState, planetState))
+    recalculatePlanetStateEconomy(
+      planetState,
+      getPlanetDistrictLimitsFromState(nextState, planetState),
+      getPlanetTechnologyModifiers(nextState, planetState),
+    )
   ));
   applyPlanetStatesToStars(nextState.stars, nextState.planetStates);
 }
@@ -360,6 +395,396 @@ function refreshFactionEconomyDeltas(nextState = state): void {
   for (const economy of nextState.factionEconomies) {
     economy.monthlyDelta = calculateFactionMonthlyDelta(nextState, economy.factionId);
   }
+}
+
+function getFactionTechnology(nextState: GameState, factionId: number): FactionTechState | undefined {
+  return nextState.factionTechnologies.find((techState) => techState.factionId === factionId);
+}
+
+function addInferredTechIdsFromBuilding(techIds: Set<TechId>, buildingKind: BuildingKind): void {
+  for (const techId of getRequiredTechIdsForBuilding(buildingKind)) techIds.add(techId);
+}
+
+function addInferredTechIdsFromStarbaseBuilding(techIds: Set<TechId>, buildingKind: StarbaseBuildingKind): void {
+  for (const techId of getRequiredTechIdsForStarbaseBuilding(buildingKind)) techIds.add(techId);
+}
+
+function addInferredTechIdsFromShipDesign(techIds: Set<TechId>, design: ShipDesign): void {
+  for (const techId of getRequiredTechIdsForShipHull(design.shipKind)) techIds.add(techId);
+  for (const moduleId of design.weaponSectionModuleIds) {
+    for (const techId of getRequiredTechIdsForShipSection(moduleId)) techIds.add(techId);
+  }
+  for (const moduleId of design.defenseSectionModuleIds) {
+    for (const techId of getRequiredTechIdsForShipSection(moduleId)) techIds.add(techId);
+  }
+  for (const moduleId of [...design.weaponModuleIds, ...design.defenseModuleIds, ...design.utilityModuleIds]) {
+    for (const techId of getRequiredTechIdsForShipModule(moduleId)) techIds.add(techId);
+  }
+}
+
+function inferCompletedTechIdsFromExistingAssets(nextState: GameState, factionId: number): TechId[] {
+  const techIds = new Set<TechId>();
+  for (const planetState of nextState.planetStates) {
+    if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    for (const buildingKind of Object.values(planetState.buildings).flat()) {
+      if (buildingKind) addInferredTechIdsFromBuilding(techIds, buildingKind);
+    }
+    for (const subDistrict of planetState.urbanSubDistricts) {
+      for (const buildingKind of subDistrict.buildings) {
+        if (buildingKind) addInferredTechIdsFromBuilding(techIds, buildingKind);
+      }
+    }
+    for (const queued of planetState.constructionQueue) {
+      if (queued.buildingKind) addInferredTechIdsFromBuilding(techIds, queued.buildingKind);
+    }
+  }
+  for (const starbase of nextState.starbases) {
+    if (starbase.ownerId !== factionId) continue;
+    for (const buildingKind of starbase.buildingSlots) {
+      if (buildingKind) addInferredTechIdsFromStarbaseBuilding(techIds, buildingKind);
+    }
+    for (const queued of starbase.constructionQueue) {
+      if (queued.buildingKind) addInferredTechIdsFromStarbaseBuilding(techIds, queued.buildingKind);
+    }
+  }
+  for (const design of nextState.shipDesigns) {
+    if (design.ownerId === factionId) addInferredTechIdsFromShipDesign(techIds, design);
+  }
+  return Array.from(techIds);
+}
+
+function normalizeFactionTechnologies(nextState: Omit<GameState, "factionTechnologies"> & { factionTechnologies?: FactionTechState[] }): FactionTechState[] {
+  const byFaction = new Map((nextState.factionTechnologies ?? []).map((techState) => [techState.factionId, techState]));
+  return nextState.factions.map((faction) => {
+    const raw = byFaction.get(faction.id);
+    const inferred = inferCompletedTechIdsFromExistingAssets(nextState as GameState, faction.id);
+    return normalizeFactionTechState(faction.id, raw, inferred);
+  });
+}
+
+function getTechnologyPlanetModifiers(nextState: GameState, factionId: number): PlanetModifier[] {
+  const techState = getFactionTechnology(nextState, factionId);
+  if (!techState) return [];
+  const modifiers: PlanetModifier[] = [];
+  for (const techId of techState.completedTechIds) {
+    const tech = TECHNOLOGY_BY_ID[techId];
+    if (!tech) continue;
+    for (const effect of tech.effects) {
+      if (effect.type === "job_output_mult") {
+        modifiers.push({
+          id: `tech-${tech.id}-${effect.job}-${effect.resource}`,
+          label: tech.name,
+          source: `technology:${tech.id}`,
+          target: `jobOutput:${effect.job}:${effect.resource}`,
+          operation: "multiply",
+          value: effect.value,
+        });
+      } else if (effect.type === "construction_speed_mult") {
+        modifiers.push({
+          id: `tech-${tech.id}-construction-speed`,
+          label: tech.name,
+          source: `technology:${tech.id}`,
+          target: "constructionSpeed",
+          operation: "multiply",
+          value: effect.value,
+        });
+      }
+    }
+  }
+  return modifiers;
+}
+
+function getPlanetTechnologyModifiers(nextState: GameState, planetState: PlanetState): PlanetModifier[] {
+  const ownerId = nextState.starOwnership[planetState.starId] ?? -1;
+  return ownerId >= 0 ? getTechnologyPlanetModifiers(nextState, ownerId) : [];
+}
+
+function getFactionStarbaseShipBuildSpeedMultiplier(nextState: GameState, factionId: number): number {
+  const techState = getFactionTechnology(nextState, factionId);
+  if (!techState) return 1;
+  let multiplier = 1;
+  for (const effect of getCompletedTechnologyEffects(techState)) {
+    if (effect.type === "starbase_ship_build_speed_mult") multiplier *= 1 + effect.value;
+  }
+  return Math.max(0.1, multiplier);
+}
+
+function getFactionResearchPerHour(factionId: number): number {
+  const economy = getFactionEconomy(factionId);
+  return BASELINE_RESEARCH_PER_HOUR + Math.max(0, (economy?.monthlyDelta.research ?? 0) / GAME_HOURS_PER_MONTH);
+}
+
+function countOwnedPlanetBuildings(factionId: number, buildingKind: BuildingKind): number {
+  let count = 0;
+  for (const planetState of state.planetStates) {
+    if ((state.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    for (const building of Object.values(planetState.buildings).flat()) {
+      if (building === buildingKind) count += 1;
+    }
+    for (const subDistrict of planetState.urbanSubDistricts) {
+      for (const building of subDistrict.buildings) {
+        if (building === buildingKind) count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function buildResearchContext(factionId: number): ResearchContext {
+  const economy = getFactionEconomy(factionId);
+  const jobs: Record<string, number> = {
+    farmer: 0,
+    miner: 0,
+    researcher: 0,
+    artisan: 0,
+    metallurgist: 0,
+    technician: 0,
+  };
+  for (const planetState of state.planetStates) {
+    if ((state.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    for (const group of planetState.economy.popGroups) {
+      if (Object.prototype.hasOwnProperty.call(jobs, group.job)) {
+        jobs[group.job] += group.population / PEOPLE_PER_MONTHLY_UNIT;
+      }
+    }
+  }
+  const factionFleets = state.fleets.filter((fleet) => fleet.ownerId === factionId);
+  const factionShips = state.ships.filter((ship) => ship.ownerId === factionId);
+  const shipsByFleetId = new Map<string, GameShip[]>();
+  for (const ship of factionShips) {
+    const list = shipsByFleetId.get(ship.fleetId) ?? [];
+    list.push(ship);
+    shipsByFleetId.set(ship.fleetId, list);
+  }
+  const fleetPower = factionFleets.reduce((sum, fleet) => (
+    sum + computeFleetPower(shipsByFleetId.get(fleet.id) ?? [], fleet.shipIds.length, undefined, state.shipDesigns)
+  ), 0);
+  const recentCombatCutoff = state.clock.year - 1;
+  const atWar = state.recentCombatContacts.some((contact) => (
+    contact.year >= recentCombatCutoff
+    && (contact.sourceOwnerId === factionId || contact.targetOwnerId === factionId)
+  ));
+  const foodStockpile = economy?.stockpiles.food ?? 0;
+  const foodIncome = economy?.monthlyDelta.food ?? 0;
+  return {
+    farmerJobs: jobs.farmer,
+    minerJobs: jobs.miner,
+    researcherJobs: jobs.researcher,
+    artisanJobs: jobs.artisan,
+    metallurgistJobs: jobs.metallurgist,
+    technicianJobs: jobs.technician,
+    fleetPower,
+    shipCount: factionShips.length,
+    atWar,
+    famine: foodStockpile < 0 || (foodStockpile < 250 && foodIncome < 0),
+    lowFoodStockpile: foodStockpile < 1000 || foodIncome < 0,
+    foodIncome,
+    mineralsIncome: economy?.monthlyDelta.minerals ?? 0,
+    alloyIncome: economy?.monthlyDelta.alloys ?? 0,
+    energyIncome: economy?.monthlyDelta.energy ?? 0,
+    goodsIncome: economy?.monthlyDelta.goods ?? 0,
+    researchIncome: economy?.monthlyDelta.research ?? 0,
+    researchLabs: countOwnedPlanetBuildings(factionId, "researchLabs"),
+    starbaseResearchAnnexes: state.starbases
+      .filter((starbase) => starbase.ownerId === factionId)
+      .reduce((count, starbase) => count + starbase.buildingSlots.filter((building) => building === "researchAnnex").length, 0),
+  };
+}
+
+function selectNextActiveTechnology(techState: FactionTechState): TechId | undefined {
+  return TECHNOLOGY_DEFINITIONS
+    .filter((tech) => isTechnologyAvailable(tech, techState))
+    .sort((a, b) => a.tier - b.tier || a.positionInTree.y - b.positionInTree.y || a.name.localeCompare(b.name))[0]?.id;
+}
+
+function ensureActiveTechnology(techState: FactionTechState): boolean {
+  if (
+    techState.activeTechId
+    && TECHNOLOGY_BY_ID[techState.activeTechId]
+    && !isTechnologyCompleted(techState, techState.activeTechId)
+    && isTechnologyAvailable(TECHNOLOGY_BY_ID[techState.activeTechId], techState)
+  ) {
+    return false;
+  }
+  const nextActive = selectNextActiveTechnology(techState);
+  if (techState.activeTechId === nextActive) return false;
+  techState.activeTechId = nextActive;
+  return true;
+}
+
+function completeTechnology(techState: FactionTechState, techId: TechId): boolean {
+  const tech = TECHNOLOGY_BY_ID[techId];
+  if (!tech || isTechnologyCompleted(techState, techId)) return false;
+  const progress = techState.progressByTechId[techId] ?? createEmptyTechProgress();
+  techState.progressByTechId[techId] = {
+    ...progress,
+    totalProgress: tech.cost,
+    completed: true,
+  };
+  techState.completedTechIds = Array.from(new Set([...techState.completedTechIds, techId]));
+  if (techState.activeTechId === techId) techState.activeTechId = undefined;
+  return true;
+}
+
+function applyActiveResearchPool(
+  techState: FactionTechState,
+  context: ResearchContext,
+  activeResearchPool: number,
+): boolean {
+  let pool = Math.max(0, activeResearchPool);
+  let changed = false;
+  let guard = 0;
+  while (pool > 0.000001 && guard < TECHNOLOGY_DEFINITIONS.length) {
+    guard += 1;
+    changed = ensureActiveTechnology(techState) || changed;
+    const techId = techState.activeTechId;
+    if (!techId) break;
+    const tech = TECHNOLOGY_BY_ID[techId];
+    if (!tech || tech.cost <= 0 || isTechnologyCompleted(techState, techId)) {
+      techState.activeTechId = undefined;
+      continue;
+    }
+    const progress = techState.progressByTechId[techId] ?? createEmptyTechProgress();
+    const evaluation = evaluateTechnologyResearch(tech, context);
+    const remainingProgress = Math.max(0, tech.cost - progress.totalProgress);
+    const poolToComplete = remainingProgress / Math.max(0.000001, evaluation.multiplier);
+    const consumedPool = Math.min(pool, poolToComplete);
+    const gainedProgress = consumedPool * evaluation.multiplier;
+    if (gainedProgress <= 0) break;
+    progress.activeProgress += gainedProgress;
+    progress.totalProgress = Math.min(tech.cost, progress.totalProgress + gainedProgress);
+    techState.progressByTechId[techId] = progress;
+    pool -= consumedPool;
+    changed = true;
+    if (progress.totalProgress >= tech.cost - 0.000001) {
+      completeTechnology(techState, techId);
+      changed = true;
+      continue;
+    }
+    break;
+  }
+  return changed;
+}
+
+function applyPassiveResearchPool(
+  techState: FactionTechState,
+  context: ResearchContext,
+  passiveResearchPool: number,
+): boolean {
+  let pool = Math.max(0, passiveResearchPool);
+  if (pool <= 0) return false;
+  const candidates = TECHNOLOGY_DEFINITIONS
+    .filter((tech) => isTechnologyAvailable(tech, techState))
+    .map((tech) => {
+      const progress = techState.progressByTechId[tech.id] ?? createEmptyTechProgress();
+      const capRemaining = Math.max(0, getPassiveProgressCap(tech) - progress.passiveProgress);
+      const totalRemaining = Math.max(0, tech.cost - progress.totalProgress);
+      const remaining = Math.min(capRemaining, totalRemaining);
+      const evaluation = evaluateTechnologyResearch(tech, context);
+      return { tech, progress, evaluation, remaining };
+    })
+    .filter((entry) => entry.remaining > 0 && entry.evaluation.passiveScore > 0);
+  const totalScore = candidates.reduce((sum, entry) => sum + entry.evaluation.passiveScore, 0);
+  if (totalScore <= 0) return false;
+
+  let changed = false;
+  for (const entry of candidates) {
+    const share = pool * (entry.evaluation.passiveScore / totalScore);
+    const gain = Math.min(share, entry.remaining);
+    if (gain <= 0) continue;
+    entry.progress.passiveProgress += gain;
+    entry.progress.totalProgress = Math.min(entry.tech.cost, entry.progress.totalProgress + gain);
+    entry.progress.completed = false;
+    techState.progressByTechId[entry.tech.id] = entry.progress;
+    changed = true;
+  }
+  return changed;
+}
+
+function applyTechnologyResearchForFaction(factionId: number, elapsedHours: number, researchPerHour: number): boolean {
+  const techState = getFactionTechnology(state, factionId);
+  if (!techState || elapsedHours <= 0) return false;
+  const context = buildResearchContext(factionId);
+  let changed = ensureActiveTechnology(techState);
+  const researchPool = Math.max(0, researchPerHour) * elapsedHours;
+  changed = applyActiveResearchPool(techState, context, researchPool * ACTIVE_RESEARCH_FRACTION) || changed;
+  changed = applyPassiveResearchPool(techState, context, researchPool * PASSIVE_RESEARCH_FRACTION) || changed;
+  changed = ensureActiveTechnology(techState) || changed;
+  if (changed) {
+    hasDirtyState = true;
+  }
+  return changed;
+}
+
+function createFactionTechnologyView(factionId: number): FactionTechnologyView {
+  const techState = getFactionTechnology(state, factionId) ?? normalizeFactionTechState(factionId, undefined);
+  const context = buildResearchContext(factionId);
+  const researchPerHour = getFactionResearchPerHour(factionId);
+  return {
+    factionId,
+    activeTechId: techState.activeTechId,
+    completedTechIds: [...techState.completedTechIds],
+    researchPerHour,
+    activeResearchPerHour: researchPerHour * ACTIVE_RESEARCH_FRACTION,
+    passiveResearchPerHour: researchPerHour * PASSIVE_RESEARCH_FRACTION,
+    technologies: TECHNOLOGY_DEFINITIONS.map((tech) => {
+      const progress = techState.progressByTechId[tech.id] ?? createEmptyTechProgress(isTechnologyCompleted(techState, tech.id));
+      const missingPrerequisites = getMissingPrerequisites(tech, techState);
+      const completed = isTechnologyCompleted(techState, tech.id);
+      const available = !completed && missingPrerequisites.length === 0;
+      return {
+        id: tech.id,
+        completed,
+        available,
+        locked: !completed && !available,
+        active: techState.activeTechId === tech.id,
+        progress,
+        passiveCap: getPassiveProgressCap(tech),
+        evaluation: evaluateTechnologyResearch(tech, context),
+        missingPrerequisites,
+      };
+    }),
+  };
+}
+
+function getVisibleTechnologyViews(perspective: GalaxyPerspective): FactionTechnologyView[] {
+  if (perspective.mode === "faction") return [createFactionTechnologyView(perspective.factionId)];
+  return state.factions.map((faction) => createFactionTechnologyView(faction.id));
+}
+
+function requireUnlocked(socket: WebSocket, factionId: number, requiredTechIds: TechId[]): boolean {
+  if (requiredTechIds.length === 0) return true;
+  const techState = getFactionTechnology(state, factionId);
+  if (isUnlockedByAnyRequiredTech(techState, requiredTechIds)) return true;
+  reject(socket, `Requires ${getFirstRequiredTechName(requiredTechIds)}.`);
+  return false;
+}
+
+function isShipDesignUnlockedForFaction(factionId: number, design: ShipDesign): boolean {
+  const techState = getFactionTechnology(state, factionId);
+  if (!isUnlockedByAnyRequiredTech(techState, getRequiredTechIdsForShipHull(design.shipKind))) return false;
+  for (const sectionModuleId of [...design.weaponSectionModuleIds, ...design.defenseSectionModuleIds]) {
+    if (!isUnlockedByAnyRequiredTech(techState, getRequiredTechIdsForShipSection(sectionModuleId))) return false;
+  }
+  for (const moduleId of [...design.weaponModuleIds, ...design.defenseModuleIds, ...design.utilityModuleIds]) {
+    if (!isUnlockedByAnyRequiredTech(techState, getRequiredTechIdsForShipModule(moduleId))) return false;
+  }
+  return true;
+}
+
+function getShipDesignMissingTechnologyName(factionId: number, design: ShipDesign): string | null {
+  const techState = getFactionTechnology(state, factionId);
+  const hullTechs = getRequiredTechIdsForShipHull(design.shipKind);
+  if (!isUnlockedByAnyRequiredTech(techState, hullTechs)) return getFirstRequiredTechName(hullTechs);
+  for (const sectionModuleId of [...design.weaponSectionModuleIds, ...design.defenseSectionModuleIds]) {
+    const required = getRequiredTechIdsForShipSection(sectionModuleId);
+    if (!isUnlockedByAnyRequiredTech(techState, required)) return getFirstRequiredTechName(required);
+  }
+  for (const moduleId of [...design.weaponModuleIds, ...design.defenseModuleIds, ...design.utilityModuleIds]) {
+    const required = getRequiredTechIdsForShipModule(moduleId);
+    if (!isUnlockedByAnyRequiredTech(techState, required)) return getFirstRequiredTechName(required);
+  }
+  return null;
 }
 
 function queuePlanetDetailRefresh(planetId: string): void {
@@ -1066,10 +1491,11 @@ function createInitialState(): GameState {
   const startMonth = gameYearToMonthIndex(GAME_START_YEAR);
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 14,
+    schemaVersion: 15,
     stars,
     planetStates,
     factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
+    factionTechnologies: factions.map((faction) => normalizeFactionTechState(faction.id, undefined)),
     hyperlanes,
     adjacency,
     factions,
@@ -1102,7 +1528,7 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(STATE_PATH, "utf8");
     const parsed = JSON.parse(raw) as GameState;
-    parsed.schemaVersion = 14;
+    parsed.schemaVersion = 15;
     delete (parsed as GameState & { battles?: unknown }).battles;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
@@ -1156,9 +1582,12 @@ async function loadState(): Promise<GameState> {
     const normalizedFactionEconomies = normalizeFactionEconomies(parsed);
     const factionEconomiesChanged = JSON.stringify(parsed.factionEconomies ?? []) !== JSON.stringify(normalizedFactionEconomies);
     parsed.factionEconomies = normalizedFactionEconomies;
+    const normalizedFactionTechnologies = normalizeFactionTechnologies(parsed);
+    const factionTechnologiesChanged = JSON.stringify(parsed.factionTechnologies ?? []) !== JSON.stringify(normalizedFactionTechnologies);
+    parsed.factionTechnologies = normalizedFactionTechnologies;
     refreshFactionEconomyDeltas(parsed);
     const planetStateApplied = applyPlanetStatesToStars(parsed.stars, parsed.planetStates);
-    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || homeStarbaseChanged) {
+    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || homeStarbaseChanged) {
       hasDirtyState = true;
     }
     refreshDiscovery(parsed);
@@ -1393,6 +1822,9 @@ function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField
   if (changed.includes("starbases")) {
     update.starbases = visibleState.starbases;
   }
+  if (changed.includes("technologies")) {
+    update.technologies = visibleState.technologies;
+  }
   if (changed.includes("combatContacts") || changed.includes("visibility")) {
     update.recentCombatContacts = visibleState.recentCombatContacts;
   }
@@ -1464,6 +1896,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     shipDesigns,
     fleets,
     starbases,
+    technologies: getVisibleTechnologyViews(perspective),
     recentCombatContacts,
     planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
     factionEconomies,
@@ -2496,6 +2929,7 @@ function commitPlanetState(
   state.planetStates[index] = recalculatePlanetStateEconomy(
     nextPlanetState,
     getPlanetDistrictLimitsFromState(state, nextPlanetState),
+    getPlanetTechnologyModifiers(state, nextPlanetState),
   );
   applyPlanetStatesToStars(state.stars, state.planetStates);
   refreshFactionEconomyDeltas();
@@ -2570,6 +3004,7 @@ function handleBuildStarbaseBuilding(
   const starbase = validateStarbaseCommand(socket, perspective, starbaseId);
   if (!starbase) return;
   if (!isStarbaseBuildingKind(buildingKind)) return reject(socket, "Invalid starbase building.");
+  if (!requireUnlocked(socket, starbase.ownerId, getRequiredTechIdsForStarbaseBuilding(buildingKind))) return;
   const unlockedSlots = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.buildingSlots ?? 0;
   if (!isValidSlotIndex(slotIndex, starbase.buildingSlots.length) || slotIndex >= unlockedSlots) {
     return reject(socket, "Invalid starbase building slot.");
@@ -2600,6 +3035,9 @@ function handleBuildStarbaseShip(
   if (shipyardCount <= 0) return reject(socket, "Starbase has no completed shipyards.");
   const design = findShipDesign(state.shipDesigns, starbase.ownerId, shipKind, designId, false);
   if (!design) return reject(socket, "Ship design is unavailable.");
+  if (!isShipDesignUnlockedForFaction(starbase.ownerId, design)) {
+    return reject(socket, `Requires ${getShipDesignMissingTechnologyName(starbase.ownerId, design) ?? "required technology"}.`);
+  }
   const stats = calculateShipDesignStats(design);
   const item = createStarbaseShipQueueItem(shipKind, {
     kind: "build",
@@ -2651,6 +3089,9 @@ function handleUpgradeShip(
     : null;
   const targetDesign = explicitTarget ?? assignedTarget ?? getNewestActiveShipDesign(state.shipDesigns, ship.ownerId, ship.shipKind);
   if (!targetDesign) return reject(socket, "No active target design is available.");
+  if (!isShipDesignUnlockedForFaction(factionId, targetDesign)) {
+    return reject(socket, `Requires ${getShipDesignMissingTechnologyName(factionId, targetDesign) ?? "required technology"}.`);
+  }
   if (targetDesign.id === currentDesign.id) return reject(socket, "Ship is already using the newest available design.");
 
   const upgrade = calculateShipUpgradePlan(currentDesign, targetDesign);
@@ -2712,6 +3153,8 @@ function handleSaveShipDesign(
     updatedAtYear: state.clock.year,
   };
   const nextDesign = normalizeShipDesign(raw, factionId, state.clock.year);
+  const missingTechnology = getShipDesignMissingTechnologyName(factionId, nextDesign);
+  if (missingTechnology) return reject(socket, `Requires ${missingTechnology}.`);
   const hull = SHIP_HULL_DEFINITIONS[nextDesign.shipKind] ?? SHIP_HULL_DEFINITIONS.corvette;
   const layout = getShipDesignLayout(nextDesign);
   if (
@@ -2847,6 +3290,9 @@ function handleBuildPlanetBuilding(
   const planetState = validatePlanetCommand(socket, perspective, planetId);
   if (!planetState) return;
   if (!BUILDING_KINDS.includes(buildingKind)) return reject(socket, "Invalid building.");
+  const factionId = perspective.mode === "faction" ? perspective.factionId : null;
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (!requireUnlocked(socket, factionId, getRequiredTechIdsForBuilding(buildingKind))) return;
 
   if (area === "urbanSubDistrict") {
     if (
@@ -2864,9 +3310,6 @@ function handleBuildPlanetBuilding(
     if (!isBuildingCompatible(buildingKind, area, subDistrict.kind)) {
       return reject(socket, "Building is incompatible with this sub-district.");
     }
-
-    const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-    if (factionId === null) return reject(socket, "Observer mode is read-only.");
     const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex, subDistrictIndex);
     if (!spendMinerals(socket, factionId, item.mineralCost)) return;
     commitPlanetState(socket, perspective, "Building queued.", {
@@ -2882,9 +3325,6 @@ function handleBuildPlanetBuilding(
   if (slots[slotIndex]) return reject(socket, "Building slot is occupied.");
   if (hasQueuedBuildingTarget(planetState, area, slotIndex)) return reject(socket, "Building slot is already queued.");
   if (!isBuildingCompatible(buildingKind, area)) return reject(socket, "Building is incompatible with this district.");
-
-  const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
   const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex);
   if (!spendMinerals(socket, factionId, item.mineralCost)) return;
 
@@ -3869,26 +4309,36 @@ function scaleResourceCounts(counts: ResourceCounts, scale: number): ResourceCou
   };
 }
 
-function processEconomyHours(targetHour: number): boolean {
+function processEconomyHours(targetHour: number): { economyChanged: boolean; technologiesChanged: boolean } {
   recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
-  let processed = false;
+  let economyChanged = false;
+  let technologiesChanged = false;
   for (const economy of state.factionEconomies) {
     const processedHour = economy.lastProcessedHour ?? targetHour;
     const elapsedHours = Math.max(0, targetHour - processedHour);
     if (elapsedHours <= 0) continue;
+    const researchPerHour = getFactionResearchPerHour(economy.factionId);
+    technologiesChanged = applyTechnologyResearchForFaction(economy.factionId, elapsedHours, researchPerHour) || technologiesChanged;
+    const resourceGain = scaleResourceCounts(economy.monthlyDelta, elapsedHours / GAME_HOURS_PER_MONTH);
+    resourceGain.research = 0;
     economy.stockpiles = addResourceCounts(
       economy.stockpiles,
-      scaleResourceCounts(economy.monthlyDelta, elapsedHours / GAME_HOURS_PER_MONTH),
+      resourceGain,
     );
+    economy.stockpiles.research = 0;
     economy.lastProcessedHour = targetHour;
     economy.lastProcessedMonth = gameYearToMonthIndex(elapsedHoursToGameYear(targetHour));
-    processed = true;
+    economyChanged = true;
   }
-  if (processed) {
+  if (technologiesChanged) {
+    recalculatePlanetEconomies();
+    refreshFactionEconomyDeltas();
+  }
+  if (economyChanged || technologiesChanged) {
     hasDirtyState = true;
   }
-  return processed;
+  return { economyChanged, technologiesChanged };
 }
 
 function processPlanetConstruction(elapsedDays: number): boolean {
@@ -3900,6 +4350,7 @@ function processPlanetConstruction(elapsedDays: number): boolean {
       planetState,
       elapsedDays,
       getPlanetDistrictLimitsFromState(state, planetState),
+      getPlanetTechnologyModifiers(state, planetState),
     );
     if (!result.changed) return planetState;
     changed = true;
@@ -4016,7 +4467,8 @@ function processStarbaseShipQueues(elapsedDays: number): { starbasesChanged: boo
   let fleetsChanged = false;
   state.starbases = state.starbases.map((starbase) => {
     if (starbase.shipQueue.length === 0) return starbase;
-    const result = progressStarbaseShipQueue(starbase, elapsedDays);
+    const speed = getFactionStarbaseShipBuildSpeedMultiplier(state, starbase.ownerId);
+    const result = progressStarbaseShipQueue(starbase, elapsedDays * speed);
     if (!result.changed) return starbase;
 
     const economy = getFactionEconomy(starbase.ownerId);
@@ -4058,6 +4510,7 @@ function processPopulationWeeks(targetWeek: number): boolean {
       planetState,
       getPlanetDistrictLimitsFromState(state, planetState),
       (GAME_DAYS_PER_WEEK * weeks) / GAME_DAYS_PER_QUARTER,
+      getPlanetTechnologyModifiers(state, planetState),
     );
     if (nextPlanetState.population !== planetState.population) changed = true;
     if (nextPlanetState.population !== planetState.population) queuePlanetDetailRefresh(planetState.id);
@@ -4150,7 +4603,12 @@ function advanceState(now: number): Set<ServerUpdateField> {
   }
 
   const nextEconomyHour = gameYearToHourIndex(state.clock.year);
-  if (processEconomyHours(nextEconomyHour)) {
+  const economyResult = processEconomyHours(nextEconomyHour);
+  if (economyResult.economyChanged) {
+    changed.add("factionEconomies");
+  }
+  if (economyResult.technologiesChanged) {
+    changed.add("technologies");
     changed.add("factionEconomies");
   }
 
@@ -4462,6 +4920,68 @@ function adminRowsForShips(ships: GameShip[]): AdminCommandRow[] {
   }));
 }
 
+function resolveTechnologyToken(token: string | undefined): TechId {
+  const value = token?.trim();
+  if (!value) throw new Error("Technology id is required.");
+  if (TECHNOLOGY_BY_ID[value]) return value;
+  const normalized = value.toLowerCase().replace(/[\s-]+/g, "_");
+  const tech = TECHNOLOGY_DEFINITIONS.find((candidate) => (
+    candidate.id.toLowerCase() === normalized
+    || candidate.name.toLowerCase() === value.toLowerCase()
+    || candidate.name.toLowerCase().replace(/[\s-]+/g, "_") === normalized
+  ));
+  if (!tech) throw new Error(`Technology "${value}" not found.`);
+  return tech.id;
+}
+
+function adminRowsForTechnologies(factionId: number, onlyTechId?: TechId): AdminCommandRow[] {
+  const view = createFactionTechnologyView(factionId);
+  return view.technologies
+    .filter((status) => !onlyTechId || status.id === onlyTechId)
+    .map((status) => {
+      const tech = TECHNOLOGY_BY_ID[status.id];
+      const progressPercent = tech.cost <= 0
+        ? 100
+        : Math.min(100, (status.progress.totalProgress / tech.cost) * 100);
+      const stateLabel = status.completed
+        ? "completed"
+        : status.active
+          ? "active"
+          : status.available
+            ? "available"
+            : "locked";
+      return {
+        faction: factionId,
+        id: tech.id,
+        name: tech.name,
+        category: tech.category,
+        tier: tech.tier,
+        state: stateLabel,
+        progress: `${progressPercent.toFixed(1)}%`,
+        total: Math.round(status.progress.totalProgress),
+        cost: tech.cost,
+        passive: Math.round(status.progress.passiveProgress),
+        passiveCap: Math.round(status.passiveCap),
+        multiplier: `${status.evaluation.multiplier.toFixed(2)}x`,
+        missing: status.missingPrerequisites.join(", "),
+      };
+    });
+}
+
+function changedTechnologyResult(
+  message: string,
+  completedTech: boolean,
+  rows?: AdminCommandResult["rows"],
+): { message: string; changed: ServerUpdateField[]; rows?: AdminCommandResult["rows"] } {
+  const changed: ServerUpdateField[] = ["technologies"];
+  if (completedTech) {
+    recalculatePlanetEconomies();
+    refreshFactionEconomyDeltas();
+    changed.push("planetStates", "factionEconomies");
+  }
+  return changedResult(message, changed, rows);
+}
+
 async function executeAdminCommand(
   parsed: ParsedAdminCommand,
   command: Extract<ClientCommand, { type: "adminCommand" }>,
@@ -4586,6 +5106,16 @@ async function executeAdminCommand(
         ? state.factionEconomies
         : state.factionEconomies.filter((economy) => economy.factionId === resolveOwnerToken(ownerArg, context, perspective));
       return { message: `${economies.length} economies.`, rows: economies.map((economy) => ({ owner: economy.factionId, ...economy.stockpiles })) };
+    }
+    case "tech_status": {
+      const ownerArg = parsed.args[0] ?? "me";
+      const ownerIds = ownerArg === "all"
+        ? state.factions.map((faction) => faction.id)
+        : [resolveOwnerToken(ownerArg, context, perspective)];
+      return {
+        message: `Technology status for ${ownerIds.length} faction${ownerIds.length === 1 ? "" : "s"}.`,
+        rows: ownerIds.flatMap((ownerId) => adminRowsForTechnologies(ownerId)),
+      };
     }
     case "state_summary":
       return {
@@ -4862,6 +5392,49 @@ async function executeAdminCommand(
       Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet)));
       refreshFactionEconomyDeltas();
       return changedResult("Building built.", ["planetStates", "factionEconomies"]);
+    }
+    case "set_active_tech": {
+      const ownerId = resolveOwnerToken(parsed.args[0], context, perspective);
+      const techId = resolveTechnologyToken(parsed.args[1]);
+      const tech = TECHNOLOGY_BY_ID[techId];
+      const techState = getFactionTechnology(state, ownerId);
+      if (!techState) throw new Error("Faction technology state unavailable.");
+      if (isTechnologyCompleted(techState, techId)) throw new Error(`${tech.name} is already completed.`);
+      const missing = getMissingPrerequisites(tech, techState);
+      if (missing.length > 0) {
+        throw new Error(`Missing prerequisites: ${missing.map((id) => TECHNOLOGY_BY_ID[id]?.name ?? id).join(", ")}.`);
+      }
+      techState.activeTechId = techId;
+      return changedTechnologyResult(`Active research set to ${tech.name}.`, false, adminRowsForTechnologies(ownerId, techId));
+    }
+    case "add_tech_progress": {
+      const ownerId = resolveOwnerToken(parsed.args[0], context, perspective);
+      const techId = resolveTechnologyToken(parsed.args[1]);
+      const amount = numberArg(parsed.args[2], "research progress", 0);
+      const tech = TECHNOLOGY_BY_ID[techId];
+      const techState = getFactionTechnology(state, ownerId);
+      if (!techState) throw new Error("Faction technology state unavailable.");
+      if (isTechnologyCompleted(techState, techId)) {
+        return { message: `${tech.name} is already completed.`, rows: adminRowsForTechnologies(ownerId, techId) };
+      }
+      const progress = techState.progressByTechId[techId] ?? createEmptyTechProgress();
+      progress.activeProgress = Math.min(tech.cost, progress.activeProgress + amount);
+      progress.totalProgress = Math.min(tech.cost, progress.totalProgress + amount);
+      progress.completed = false;
+      techState.progressByTechId[techId] = progress;
+      const completed = progress.totalProgress >= tech.cost - 0.000001 && completeTechnology(techState, techId);
+      ensureActiveTechnology(techState);
+      return changedTechnologyResult(`Added ${Math.round(amount)} progress to ${tech.name}.`, completed, adminRowsForTechnologies(ownerId, techId));
+    }
+    case "complete_tech": {
+      const ownerId = resolveOwnerToken(parsed.args[0], context, perspective);
+      const techId = resolveTechnologyToken(parsed.args[1]);
+      const tech = TECHNOLOGY_BY_ID[techId];
+      const techState = getFactionTechnology(state, ownerId);
+      if (!techState) throw new Error("Faction technology state unavailable.");
+      const completed = completeTechnology(techState, techId);
+      ensureActiveTechnology(techState);
+      return changedTechnologyResult(`${tech.name} completed.`, completed, adminRowsForTechnologies(ownerId, techId));
     }
     case "create_design":
     case "set_design_modules": {
@@ -5413,6 +5986,30 @@ async function handleAdminCommand(
   }
 }
 
+function handleSetActiveTechnology(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  techId: TechId,
+): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const tech = TECHNOLOGY_BY_ID[techId];
+  if (!tech) return reject(socket, "Technology not found.");
+  const techState = getFactionTechnology(state, factionId);
+  if (!techState) return reject(socket, "Faction technology state unavailable.");
+  if (isTechnologyCompleted(techState, techId)) return reject(socket, `${tech.name} is already completed.`);
+  if (!isTechnologyAvailable(tech, techState)) {
+    const missing = getMissingPrerequisites(tech, techState)
+      .map((id) => TECHNOLOGY_BY_ID[id]?.name ?? id)
+      .join(", ");
+    return reject(socket, missing ? `Requires ${missing}.` : "Technology is not available.");
+  }
+  techState.activeTechId = techId;
+  hasDirtyState = true;
+  accept(socket, `Research focus set to ${tech.name}.`);
+  broadcastUpdates(["technologies"]);
+}
+
 function handleCommand(session: ClientSession, command: ClientCommand): void {
   if (command.type === "join") {
     sendEvent(session.socket, createSnapshot(session.perspective));
@@ -5420,6 +6017,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "adminCommand") {
     void handleAdminCommand(session, command);
+    return;
+  }
+  if (command.type === "setActiveTechnology") {
+    handleSetActiveTechnology(session.socket, session.perspective, command.techId);
     return;
   }
   if (command.type === "moveShip" || command.type === "moveFleet") {

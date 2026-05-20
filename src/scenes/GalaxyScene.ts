@@ -41,6 +41,7 @@ import { computeStarbasePower } from "../game/combatPower";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { FactionTechnologyView } from "../data/Technology";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
@@ -75,6 +76,7 @@ export interface GalaxySceneOptions {
   promotedStarbaseSystemIds?: Iterable<number>;
   starbases?: ServerStarbase[];
   planetStates?: PlanetState[];
+  technology?: FactionTechnologyView | null;
   habitedPlanetSystemIds?: Iterable<number>;
   selectedFleetIds?: Iterable<string>;
   onGameplayFrame?: (deltaTime: number) => void;
@@ -2136,6 +2138,7 @@ export class GalaxyScene implements IGameScene {
       planetState,
       imageUrl: this.getPlanetTextureUrl(planet),
       accentColor: "rgba(102, 236, 199, 0.95)",
+      technology: this.options.technology,
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
     });
   }
@@ -2157,6 +2160,7 @@ export class GalaxyScene implements IGameScene {
       status: starbase?.status ?? "online",
       power: this.formatStarbasePower(starbase),
       starbase,
+      technology: this.options.technology,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
     });
   }
@@ -2384,6 +2388,10 @@ export class GalaxyScene implements IGameScene {
     this.starField?.setHabitedPlanetSystemIds(starIds);
   }
 
+  setTechnology(technology: FactionTechnologyView | null): void {
+    this.options.technology = technology;
+  }
+
   showPlanetDetails(star: StarData, planet: PlanetConfig, planetState: PlanetState): void {
     this.objectPanel.show({
       kind: "planet",
@@ -2395,6 +2403,7 @@ export class GalaxyScene implements IGameScene {
       planetState,
       imageUrl: this.getPlanetTextureUrl(planet),
       accentColor: "rgba(102, 236, 199, 0.95)",
+      technology: this.options.technology,
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
     });
   }

@@ -22,6 +22,7 @@ import { buildHyperlaneAdjacency } from "@/data/Hyperlanes";
 import { HudOverlay } from "@/ui/HudOverlay";
 import type { HudConnectedSystem, HudSidebarItemKey, HudVisualToggles } from "@/ui/HudOverlay";
 import { FleetManagerPanel } from "@/ui/FleetManagerPanel";
+import { TechnologyPanel } from "@/ui/TechnologyPanel";
 import { AdminCommandPanel } from "@/ui/AdminCommandPanel";
 import { GameServerClient } from "./GameServerClient";
 import type { ClientCommand, GameSnapshot, ServerFleet, ServerUpdateField } from "./GameProtocol";
@@ -63,6 +64,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let currentSystemStar: StarData | null = null;
   let hud: HudOverlay | null = null;
   let fleetManagerPanel: FleetManagerPanel | null = null;
+  let technologyPanel: TechnologyPanel | null = null;
   let adminCommandPanel: AdminCommandPanel | null = null;
   let selectedFleetIds = new Set<string>();
 
@@ -105,6 +107,17 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       return snapshot.factionEconomies.find((economy) => economy.factionId === perspectiveFactionId) ?? null;
     })()
   );
+  const getCurrentFactionTechnology = () => (
+    (() => {
+      const perspectiveFactionId = snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : null;
+      if (perspectiveFactionId === null) return null;
+      return snapshot.technologies.find((technology) => technology.factionId === perspectiveFactionId) ?? null;
+    })()
+  );
+  const getCurrentFactionName = (): string | undefined => {
+    const factionId = getPlayerFactionId();
+    return factionId === null ? undefined : snapshot.factions.find((faction) => faction.id === factionId)?.name;
+  };
   const getPlayerFactionId = (): number | null => (
     snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : null
   );
@@ -231,7 +244,13 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     factions: snapshot.factions,
     clockYear: getRenderClockYear(),
     playerFactionId: getPlayerFactionId(),
+    technology: getCurrentFactionTechnology(),
     onFleetCommand: (command: ClientCommand) => server.send(command),
+  });
+  const getTechnologyPanelData = () => ({
+    technology: getCurrentFactionTechnology(),
+    factionName: getCurrentFactionName(),
+    onTechnologyCommand: (command: ClientCommand) => server.send(command),
   });
   const openFleetManager = (): void => {
     if (!fleetManagerPanel) {
@@ -239,12 +258,23 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
     fleetManagerPanel.show(getFleetManagerData());
   };
+  const openTechnologyPanel = (): void => {
+    if (!technologyPanel) {
+      technologyPanel = new TechnologyPanel();
+    }
+    technologyPanel.show(getTechnologyPanelData());
+  };
   const refreshFleetManager = (): void => {
     fleetManagerPanel?.refresh(getFleetManagerData());
+  };
+  const refreshTechnologyPanel = (): void => {
+    technologyPanel?.refresh(getTechnologyPanelData());
   };
   const handleSidebarItem = (key: HudSidebarItemKey): void => {
     if (key === "fleets") {
       openFleetManager();
+    } else if (key === "technology") {
+      openTechnologyPanel();
     }
   };
 
@@ -560,6 +590,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       if (isFull || has("planetStates")) {
         activeGalaxyScene.setPlanetStates(snapshot.planetStates);
       }
+      if (isFull || has("technologies")) {
+        activeGalaxyScene.setTechnology(getCurrentFactionTechnology());
+      }
       activeGalaxyScene.setPlayerShipState(
         getPrimaryFleetStarId(),
         getPrimaryTransit(),
@@ -590,6 +623,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       if (isFull || has("planetStates")) {
         activeSystemScene.setPlanetStates(snapshot.planetStates);
       }
+      if (isFull || has("technologies")) {
+        activeSystemScene.setTechnology(getCurrentFactionTechnology());
+      }
     }
 
     updateHud();
@@ -602,6 +638,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       || has("visibility")
     ) {
       refreshFleetManager();
+    }
+    if (isFull || has("technologies") || has("factionEconomies")) {
+      refreshTechnologyPanel();
     }
   }
 
@@ -638,8 +677,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       visibleStarIds: snapshot.visibleStarIds,
       knownStarIds: snapshot.knownStarIds,
       selectedFleetIds,
-          planetStates: snapshot.planetStates,
-          habitedPlanetSystemIds: snapshot.habitedPlanetSystemIds,
+      planetStates: snapshot.planetStates,
+      technology: getCurrentFactionTechnology(),
+      habitedPlanetSystemIds: snapshot.habitedPlanetSystemIds,
       onShipCommand: (action, targetStarId, fleetId) => {
         if (!fleetId) return;
         if (action === "move") {
@@ -711,6 +751,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           clockYear: getRenderClockYear(),
           selectedFleetIds,
           planetStates: details.planetStates,
+          technology: getCurrentFactionTechnology(),
           onPlanetCommand: sendPlanetCommand,
           onFleetCommand: (command) => server.send(command),
           onGameplayFrame: updateSmoothGameplayFrame,
@@ -812,6 +853,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     window.removeEventListener("keyup", handleKeyUp);
     hud?.dispose();
     fleetManagerPanel?.dispose();
+    technologyPanel?.dispose();
     adminCommandPanel?.dispose();
     server.dispose();
     mgr.dispose();

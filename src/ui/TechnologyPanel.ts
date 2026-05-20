@@ -1,0 +1,826 @@
+import {
+  BUILDING_LABELS,
+  JOB_LABELS,
+  RESOURCE_LABELS,
+} from "../data/Economy";
+import {
+  STARBASE_BUILDING_DEFINITIONS,
+} from "../data/Starbase";
+import {
+  getShipModuleDefinition,
+  getShipSectionModuleDefinition,
+  SHIP_HULL_DEFINITIONS,
+} from "../data/ShipDesigns";
+import {
+  TECHNOLOGY_BY_ID,
+  TECHNOLOGY_DEFINITIONS,
+} from "../data/Technology";
+import type {
+  FactionTechnologyView,
+  TechnologyDefinition,
+  TechnologyEffect,
+  TechnologyStatusView,
+  TechId,
+} from "../data/Technology";
+import type { ClientCommand } from "../game/GameProtocol";
+import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+
+export interface TechnologyPanelData {
+  technology: FactionTechnologyView | null;
+  factionName?: string;
+  onTechnologyCommand?: (command: ClientCommand) => void;
+}
+
+const STYLE_ID = "technology-panel-style";
+const TECHNOLOGY_SCROLL_SELECTORS = [
+  ".techTreeViewport",
+  ".techDetailBody",
+] as const;
+
+const NODE_WIDTH = 218;
+const NODE_HEIGHT = 96;
+const COLUMN_GAP = 250;
+const ROW_GAP = 118;
+const TREE_PADDING_X = 36;
+const TREE_PADDING_Y = 28;
+
+const CATEGORY_LABELS: Record<string, string> = {
+  agriculture: "Agriculture",
+  industry: "Industry",
+  military: "Military",
+  logistics: "Logistics",
+  energy: "Energy",
+  computing: "Computing",
+  society: "Society",
+  sensors: "Sensors",
+};
+
+export class TechnologyPanel {
+  private root: HTMLDivElement;
+  private panelElement: HTMLDivElement | null = null;
+  private currentData: TechnologyPanelData | null = null;
+  private selectedTechId: TechId | null = null;
+  private position = { x: 62, y: 74 };
+  private dragOffset = { x: 0, y: 0 };
+  private isDragging = false;
+
+  private readonly onPointerMove = (ev: PointerEvent): void => {
+    if (!this.isDragging || !this.panelElement) return;
+    ev.preventDefault();
+    this.position.x = ev.clientX - this.dragOffset.x;
+    this.position.y = ev.clientY - this.dragOffset.y;
+    this.applyPosition();
+  };
+
+  private readonly onPointerUp = (): void => {
+    this.isDragging = false;
+    window.removeEventListener("pointermove", this.onPointerMove);
+    window.removeEventListener("pointerup", this.onPointerUp);
+  };
+
+  constructor() {
+    this.root = document.getElementById("spaceHudRoot") as HTMLDivElement;
+    if (!this.root) {
+      this.root = document.createElement("div");
+      this.root.id = "spaceHudRoot";
+      document.body.appendChild(this.root);
+    }
+    this.injectStyles();
+  }
+
+  public show(data: TechnologyPanelData): void {
+    this.currentData = data;
+    this.ensureSelectedTech(data);
+    const scrollState = captureScrollState(this.panelElement, TECHNOLOGY_SCROLL_SELECTORS);
+    if (!this.panelElement) {
+      this.panelElement = document.createElement("div");
+      this.panelElement.className = "technologyPanel";
+      this.root.appendChild(this.panelElement);
+    }
+    this.panelElement.innerHTML = this.render(data);
+    this.applyPosition();
+    this.bindEvents(data);
+    restoreScrollStateSoon(this.panelElement, scrollState);
+  }
+
+  public refresh(data: TechnologyPanelData): void {
+    if (!this.panelElement) return;
+    this.show(data);
+  }
+
+  public toggle(data: TechnologyPanelData): void {
+    if (this.panelElement) {
+      this.close();
+      return;
+    }
+    this.show(data);
+  }
+
+  public close(): void {
+    this.onPointerUp();
+    this.panelElement?.remove();
+    this.panelElement = null;
+    this.currentData = null;
+  }
+
+  public dispose(): void {
+    this.close();
+  }
+
+  private ensureSelectedTech(data: TechnologyPanelData): void {
+    const view = data.technology;
+    if (!view) {
+      this.selectedTechId = null;
+      return;
+    }
+    const ids = new Set(view.technologies.map((status) => status.id));
+    if (this.selectedTechId && ids.has(this.selectedTechId)) return;
+    this.selectedTechId = view.activeTechId
+      ?? view.technologies.find((status) => status.available)?.id
+      ?? view.technologies.find((status) => !status.completed)?.id
+      ?? view.technologies[0]?.id
+      ?? null;
+  }
+
+  private bindEvents(data: TechnologyPanelData): void {
+    if (!this.panelElement) return;
+    this.panelElement.querySelector<HTMLButtonElement>("[data-tech-close]")?.addEventListener("click", () => this.close());
+    this.panelElement.querySelector<HTMLElement>("[data-tech-drag]")?.addEventListener("pointerdown", (ev) => {
+      if (!this.panelElement) return;
+      if ((ev.target as HTMLElement).closest("button")) return;
+      ev.preventDefault();
+      const rect = this.panelElement.getBoundingClientRect();
+      this.dragOffset.x = ev.clientX - rect.left;
+      this.dragOffset.y = ev.clientY - rect.top;
+      this.isDragging = true;
+      window.addEventListener("pointermove", this.onPointerMove);
+      window.addEventListener("pointerup", this.onPointerUp);
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-tech-node]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const techId = button.dataset.techNode;
+        if (!techId) return;
+        this.selectedTechId = techId;
+        this.show(data);
+      });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-tech-research]")?.addEventListener("click", () => {
+      if (!this.selectedTechId) return;
+      data.onTechnologyCommand?.({ type: "setActiveTechnology", techId: this.selectedTechId });
+    });
+  }
+
+  private applyPosition(): void {
+    if (!this.panelElement) return;
+    const rect = this.panelElement.getBoundingClientRect();
+    const maxX = Math.max(8, window.innerWidth - rect.width - 8);
+    const maxY = Math.max(8, window.innerHeight - rect.height - 8);
+    this.position.x = Math.max(8, Math.min(maxX, this.position.x));
+    this.position.y = Math.max(8, Math.min(maxY, this.position.y));
+    this.panelElement.style.left = `${this.position.x}px`;
+    this.panelElement.style.top = `${this.position.y}px`;
+  }
+
+  private render(data: TechnologyPanelData): string {
+    const view = data.technology;
+    if (!view) {
+      return `
+        <div class="techHeader" data-tech-drag>
+          <div class="techHeaderIcon">TC</div>
+          <div>
+            <div class="techTitle">Technology</div>
+            <div class="techSubtitle">${this.escapeHtml(data.factionName ?? "No faction selected")}</div>
+          </div>
+          <button class="techClose" type="button" data-tech-close aria-label="Close technology panel">X</button>
+        </div>
+        <section class="techUnavailable">Technology telemetry is unavailable for the current perspective.</section>
+      `;
+    }
+
+    const selected = this.getStatus(view, this.selectedTechId) ?? view.technologies[0];
+    const activeTech = view.activeTechId ? TECHNOLOGY_BY_ID[view.activeTechId] : null;
+    const completedCount = view.technologies.filter((status) => status.completed).length;
+    return `
+      <div class="techHeader" data-tech-drag>
+        <div class="techHeaderIcon">TC</div>
+        <div>
+          <div class="techTitle">Technology</div>
+          <div class="techSubtitle">${this.escapeHtml(data.factionName ?? `Faction ${view.factionId}`)}</div>
+        </div>
+        <button class="techClose" type="button" data-tech-close aria-label="Close technology panel">X</button>
+      </div>
+      <div class="techSummary">
+        ${this.renderSummaryCard("Research", `${view.researchPerHour.toFixed(2)}/h`, "Labs and baseline output")}
+        ${this.renderSummaryCard("Focused", `${view.activeResearchPerHour.toFixed(2)}/h`, activeTech?.name ?? "No active focus")}
+        ${this.renderSummaryCard("Passive", `${view.passiveResearchPerHour.toFixed(2)}/h`, "Empire identity spread")}
+        ${this.renderSummaryCard("Completed", `${completedCount}/${view.technologies.length}`, "Known technologies")}
+      </div>
+      <section class="techBody">
+        ${this.renderTree(view, selected?.id ?? null)}
+        ${selected ? this.renderDetail(view, selected) : ""}
+      </section>
+    `;
+  }
+
+  private renderSummaryCard(label: string, value: string, detail: string): string {
+    return `
+      <article class="techSummaryCard">
+        <span>${this.escapeHtml(label)}</span>
+        <strong>${this.escapeHtml(value)}</strong>
+        <small>${this.escapeHtml(detail)}</small>
+      </article>
+    `;
+  }
+
+  private renderTree(view: FactionTechnologyView, selectedTechId: TechId | null): string {
+    const statusById = new Map(view.technologies.map((status) => [status.id, status]));
+    const bounds = this.getTreeBounds();
+    const width = bounds.width;
+    const height = bounds.height;
+    return `
+      <div class="techTreeViewport">
+        <div class="techTreeCanvas" style="width:${width}px;height:${height}px;">
+          <svg class="techTreeLines" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true">
+            ${TECHNOLOGY_DEFINITIONS.flatMap((tech) => tech.prerequisites.map((prereqId) => {
+              const from = TECHNOLOGY_BY_ID[prereqId];
+              if (!from) return "";
+              const fromStatus = statusById.get(from.id);
+              const toStatus = statusById.get(tech.id);
+              const complete = fromStatus?.completed && toStatus?.completed;
+              const active = toStatus?.active;
+              const a = this.getNodeCenter(from);
+              const b = this.getNodeCenter(tech);
+              return `<path class="${complete ? "completed" : ""} ${active ? "active" : ""}" d="M ${a.x} ${a.y} C ${a.x + 90} ${a.y}, ${b.x - 90} ${b.y}, ${b.x} ${b.y}" />`;
+            })).join("")}
+          </svg>
+          ${TECHNOLOGY_DEFINITIONS.map((tech) => {
+            const status = statusById.get(tech.id);
+            if (!status) return "";
+            return this.renderNode(tech, status, selectedTechId === tech.id);
+          }).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderNode(tech: TechnologyDefinition, status: TechnologyStatusView, selected: boolean): string {
+    const pos = this.getNodePosition(tech);
+    const progress = this.getProgressPercent(tech, status);
+    const state = status.completed ? "Completed" : status.active ? "Active" : status.available ? "Available" : "Locked";
+    const classes = [
+      "techNode",
+      `cat-${tech.category}`,
+      status.completed ? "completed" : "",
+      status.active ? "active" : "",
+      status.available ? "available" : "",
+      status.locked ? "locked" : "",
+      selected ? "selected" : "",
+      tech.defaultUnlocked ? "baseline" : "",
+    ].filter(Boolean).join(" ");
+    return `
+      <button
+        class="${classes}"
+        type="button"
+        data-tech-node="${this.escapeAttribute(tech.id)}"
+        style="left:${pos.x}px;top:${pos.y}px;"
+        aria-label="${this.escapeAttribute(tech.name)}"
+      >
+        <span class="techNodeMeta">${this.escapeHtml(CATEGORY_LABELS[tech.category] ?? tech.category)} T${tech.tier}</span>
+        <strong>${this.escapeHtml(tech.name)}</strong>
+        <small>${this.escapeHtml(state)}</small>
+        <span class="techNodeBar" aria-hidden="true"><i style="width:${progress.toFixed(1)}%"></i></span>
+      </button>
+    `;
+  }
+
+  private renderDetail(view: FactionTechnologyView, status: TechnologyStatusView): string {
+    const tech = TECHNOLOGY_BY_ID[status.id];
+    const progress = this.getProgressPercent(tech, status);
+    const canResearch = status.available && !status.completed && !status.active;
+    const missing = status.missingPrerequisites
+      .map((id) => TECHNOLOGY_BY_ID[id]?.name ?? id)
+      .join(", ");
+    return `
+      <aside class="techDetail">
+        <div class="techDetailHeader">
+          <div>
+            <span>${this.escapeHtml(CATEGORY_LABELS[tech.category] ?? tech.category)} / Tier ${tech.tier}</span>
+            <strong>${this.escapeHtml(tech.name)}</strong>
+          </div>
+          <button type="button" data-tech-research ${canResearch ? "" : "disabled"}>
+            ${status.active ? "Researching" : status.completed ? "Completed" : status.locked ? "Locked" : "Research"}
+          </button>
+        </div>
+        <div class="techDetailBody">
+          <p>${this.escapeHtml(tech.description)}</p>
+          <div class="techProgressBlock">
+            <div class="techProgressHeader">
+              <span>Total progress</span>
+              <strong>${progress.toFixed(1)}%</strong>
+            </div>
+            <div class="techProgressBar"><i style="width:${progress.toFixed(1)}%"></i></div>
+            <div class="techProgressGrid">
+              <span>Total ${Math.round(status.progress.totalProgress)} / ${tech.cost}</span>
+              <span>Active ${Math.round(status.progress.activeProgress)}</span>
+              <span>Passive ${Math.round(status.progress.passiveProgress)} / ${Math.round(status.passiveCap)}</span>
+            </div>
+          </div>
+          <section class="techDetailSection">
+            <div class="techSectionTitle">Research Speed</div>
+            <div class="techMultiplier">
+              <strong>${status.evaluation.multiplier.toFixed(2)}x</strong>
+              <span>${this.formatSignedPercent(status.evaluation.bonus)} total modifier</span>
+            </div>
+            <div class="techSourceList">
+              ${status.evaluation.breakdown.length === 0
+                ? '<span class="techMuted">No contextual modifiers.</span>'
+                : status.evaluation.breakdown.map((entry) => `
+                  <span>
+                    <strong>${this.escapeHtml(entry.label)}</strong>
+                    <small>${this.formatSignedPercent(entry.bonus)} (cap ${this.formatPercent(entry.cap)})</small>
+                  </span>
+                `).join("")}
+            </div>
+          </section>
+          <section class="techDetailSection">
+            <div class="techSectionTitle">Effects</div>
+            <div class="techEffectList">
+              ${tech.effects.map((effect) => `<span>${this.escapeHtml(this.describeEffect(effect))}</span>`).join("")}
+            </div>
+          </section>
+          ${missing ? `
+            <section class="techDetailSection">
+              <div class="techSectionTitle">Prerequisites</div>
+              <div class="techLockedText">${this.escapeHtml(missing)}</div>
+            </section>
+          ` : ""}
+          <section class="techDetailSection">
+            <div class="techSectionTitle">Research Pools</div>
+            <div class="techPoolGrid">
+              <span>Focused <strong>${view.activeResearchPerHour.toFixed(2)}/h</strong></span>
+              <span>Passive <strong>${view.passiveResearchPerHour.toFixed(2)}/h</strong></span>
+            </div>
+          </section>
+        </div>
+      </aside>
+    `;
+  }
+
+  private getStatus(view: FactionTechnologyView, techId: TechId | null): TechnologyStatusView | null {
+    if (!techId) return null;
+    return view.technologies.find((status) => status.id === techId) ?? null;
+  }
+
+  private getProgressPercent(tech: TechnologyDefinition, status: TechnologyStatusView): number {
+    if (tech.cost <= 0 || status.completed) return 100;
+    return Math.max(0, Math.min(100, (status.progress.totalProgress / tech.cost) * 100));
+  }
+
+  private getNodePosition(tech: TechnologyDefinition): { x: number; y: number } {
+    return {
+      x: TREE_PADDING_X + tech.positionInTree.x * COLUMN_GAP,
+      y: TREE_PADDING_Y + tech.positionInTree.y * ROW_GAP,
+    };
+  }
+
+  private getNodeCenter(tech: TechnologyDefinition): { x: number; y: number } {
+    const pos = this.getNodePosition(tech);
+    return {
+      x: pos.x + NODE_WIDTH / 2,
+      y: pos.y + NODE_HEIGHT / 2,
+    };
+  }
+
+  private getTreeBounds(): { width: number; height: number } {
+    const maxX = Math.max(...TECHNOLOGY_DEFINITIONS.map((tech) => tech.positionInTree.x));
+    const maxY = Math.max(...TECHNOLOGY_DEFINITIONS.map((tech) => tech.positionInTree.y));
+    return {
+      width: TREE_PADDING_X * 2 + NODE_WIDTH + maxX * COLUMN_GAP,
+      height: TREE_PADDING_Y * 2 + NODE_HEIGHT + maxY * ROW_GAP,
+    };
+  }
+
+  private describeEffect(effect: TechnologyEffect): string {
+    switch (effect.type) {
+      case "unlock_building":
+        return `Unlock building: ${BUILDING_LABELS[effect.building] ?? effect.building}`;
+      case "unlock_starbase_building":
+        return `Unlock starbase building: ${STARBASE_BUILDING_DEFINITIONS[effect.building]?.label ?? effect.building}`;
+      case "unlock_ship_hull":
+        return `Unlock hull: ${SHIP_HULL_DEFINITIONS[effect.shipKind]?.label ?? effect.shipKind}`;
+      case "unlock_ship_module": {
+        const module = getShipModuleDefinition(effect.moduleId);
+        return `Unlock ship module: ${module?.label ?? effect.moduleId}`;
+      }
+      case "unlock_ship_section": {
+        const module = getShipSectionModuleDefinition(effect.sectionModuleId);
+        return `Unlock ship section: ${module?.label ?? effect.sectionModuleId}`;
+      }
+      case "job_output_mult":
+        return `${JOB_LABELS[effect.job] ?? effect.job} ${RESOURCE_LABELS[effect.resource] ?? effect.resource} output +${this.formatPercent(effect.value)}`;
+      case "construction_speed_mult":
+        return `Planet construction speed +${this.formatPercent(effect.value)}`;
+      case "starbase_ship_build_speed_mult":
+        return `Starbase ship build speed +${this.formatPercent(effect.value)}`;
+    }
+  }
+
+  private formatPercent(value: number): string {
+    return `${Math.round(value * 100)}%`;
+  }
+
+  private formatSignedPercent(value: number): string {
+    const rounded = Math.round(value * 100);
+    return `${rounded >= 0 ? "+" : ""}${rounded}%`;
+  }
+
+  private escapeHtml(value: string | number): string {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  private escapeAttribute(value: string | number): string {
+    return this.escapeHtml(value);
+  }
+
+  private injectStyles(): void {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = `
+.technologyPanel {
+  --tech-accent: rgba(114, 226, 255, 0.95);
+  position: fixed;
+  z-index: 59;
+  pointer-events: auto;
+  width: min(1200px, calc(100vw - 32px));
+  height: min(680px, calc(100vh - 32px));
+  display: grid;
+  grid-template-rows: 58px 72px minmax(0, 1fr);
+  color: #e9fff8;
+  background:
+    radial-gradient(circle at 72% 18%, color-mix(in srgb, var(--tech-accent) 12%, transparent), transparent 18rem),
+    linear-gradient(180deg, rgba(7, 28, 31, 0.98), rgba(2, 12, 15, 0.99));
+  border: 1px solid color-mix(in srgb, var(--tech-accent) 76%, transparent);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.56), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+  font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
+  user-select: none;
+}
+.techHeader {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+  padding: 8px 12px;
+  cursor: grab;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.24);
+  background: linear-gradient(90deg, rgba(20, 70, 62, 0.86), rgba(4, 19, 23, 0.92));
+}
+.techHeaderIcon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  clip-path: polygon(50% 0, 94% 25%, 94% 75%, 50% 100%, 6% 75%, 6% 25%);
+  background: linear-gradient(135deg, #ff69c9, #7d57ff);
+  color: #160017;
+  font-weight: 900;
+  font-size: 11px;
+  box-shadow: 0 0 16px rgba(255, 105, 201, 0.32), inset 0 0 0 2px rgba(10, 0, 20, 0.45);
+}
+.techTitle {
+  font-size: 19px;
+  font-weight: 900;
+}
+.techSubtitle {
+  margin-top: 2px;
+  color: rgba(206, 232, 226, 0.68);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.techClose {
+  margin-left: auto;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(103, 255, 221, 0.62);
+  background: rgba(6, 42, 38, 0.76);
+  color: #bfffee;
+  font: inherit;
+  cursor: pointer;
+}
+.techSummary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.18);
+  background: rgba(1, 8, 10, 0.42);
+}
+.techSummaryCard {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(103, 255, 221, 0.26);
+  background: linear-gradient(180deg, rgba(9, 45, 51, 0.74), rgba(2, 14, 18, 0.72));
+}
+.techSummaryCard span,
+.techSummaryCard small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.techSummaryCard span {
+  color: #72e2ff;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.techSummaryCard strong {
+  display: block;
+  margin-top: 4px;
+  color: #ffffff;
+  font-size: 15px;
+}
+.techSummaryCard small {
+  margin-top: 3px;
+  color: rgba(206, 232, 226, 0.58);
+  font-size: 10px;
+}
+.techBody {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 8px;
+  padding: 8px;
+}
+.techTreeViewport {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid rgba(103, 255, 221, 0.26);
+  background:
+    linear-gradient(rgba(103, 255, 221, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 255, 221, 0.055) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(5, 24, 25, 0.72), rgba(1, 8, 10, 0.84));
+  background-size: 34px 34px;
+  scrollbar-width: thin;
+}
+.techTreeViewport::-webkit-scrollbar,
+.techDetailBody::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.techTreeViewport::-webkit-scrollbar-thumb,
+.techDetailBody::-webkit-scrollbar-thumb {
+  background: rgba(103, 255, 221, 0.34);
+  border-radius: 999px;
+}
+.techTreeCanvas {
+  position: relative;
+}
+.techTreeLines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.techTreeLines path {
+  fill: none;
+  stroke: rgba(103, 255, 221, 0.22);
+  stroke-width: 2;
+}
+.techTreeLines path.completed {
+  stroke: rgba(103, 255, 221, 0.62);
+}
+.techTreeLines path.active {
+  stroke: rgba(255, 105, 201, 0.76);
+}
+.techNode {
+  position: absolute;
+  width: ${NODE_WIDTH}px;
+  height: ${NODE_HEIGHT}px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 9px 10px;
+  border: 1px solid rgba(103, 255, 221, 0.26);
+  color: #eafff8;
+  background: linear-gradient(180deg, rgba(8, 38, 41, 0.96), rgba(2, 14, 18, 0.96));
+  cursor: pointer;
+  text-align: left;
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.32);
+}
+.techNode:hover,
+.techNode.selected {
+  border-color: rgba(114, 226, 255, 0.78);
+  box-shadow: 0 0 0 1px rgba(114, 226, 255, 0.24), 0 12px 26px rgba(0, 0, 0, 0.36);
+}
+.techNode.completed {
+  border-color: rgba(103, 255, 221, 0.52);
+}
+.techNode.active {
+  border-color: rgba(255, 105, 201, 0.78);
+}
+.techNode.locked {
+  opacity: 0.62;
+}
+.techNode.baseline {
+  background: linear-gradient(180deg, rgba(21, 42, 45, 0.96), rgba(5, 20, 23, 0.96));
+}
+.techNodeMeta {
+  color: #72e2ff;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.techNode strong {
+  width: 100%;
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+.techNode small {
+  margin-top: 5px;
+  color: rgba(206, 232, 226, 0.66);
+  font-size: 10px;
+}
+.techNodeBar {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 10px;
+  height: 4px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+}
+.techNodeBar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #72e2ff, #ff69c9);
+}
+.techDetail {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(103, 255, 221, 0.26);
+  background: rgba(5, 24, 25, 0.72);
+  display: flex;
+  flex-direction: column;
+}
+.techDetailHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.18);
+  background: rgba(1, 8, 10, 0.26);
+}
+.techDetailHeader span {
+  display: block;
+  color: #72e2ff;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.techDetailHeader strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.18;
+  overflow-wrap: anywhere;
+}
+.techDetailHeader button {
+  height: 34px;
+  border: 1px solid rgba(103, 255, 221, 0.62);
+  padding: 0 12px;
+  color: #061413;
+  font-weight: 800;
+  font: inherit;
+  background: #72e2ff;
+  cursor: pointer;
+}
+.techDetailHeader button:disabled {
+  color: rgba(206, 232, 226, 0.44);
+  border-color: rgba(103, 255, 221, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  cursor: default;
+}
+.techDetailBody {
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+.techDetailBody p {
+  margin: 0;
+  color: rgba(206, 232, 226, 0.76);
+  line-height: 1.45;
+  font-size: 12px;
+}
+.techProgressBlock,
+.techDetailSection {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: rgba(1, 8, 10, 0.32);
+}
+.techProgressHeader,
+.techMultiplier,
+.techPoolGrid {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.techProgressHeader span,
+.techMultiplier span {
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 11px;
+}
+.techProgressBar {
+  height: 7px;
+  margin-top: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.1);
+}
+.techProgressBar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #72e2ff, #ff69c9);
+}
+.techProgressGrid,
+.techSourceList,
+.techEffectList,
+.techPoolGrid {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  color: rgba(206, 232, 226, 0.74);
+  font-size: 11px;
+}
+.techProgressGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.techSectionTitle {
+  color: #72e2ff;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+.techSourceList span,
+.techEffectList span,
+.techPoolGrid span {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(103, 255, 221, 0.12);
+  background: rgba(255, 255, 255, 0.045);
+}
+.techSourceList strong,
+.techSourceList small {
+  display: block;
+}
+.techSourceList small {
+  margin-top: 2px;
+  color: rgba(206, 232, 226, 0.56);
+}
+.techLockedText,
+.techMuted {
+  display: block;
+  margin-top: 8px;
+  color: rgba(255, 105, 201, 0.88);
+  font-size: 11px;
+}
+.techUnavailable {
+  padding: 18px;
+  color: rgba(206, 232, 226, 0.72);
+}
+@media (max-width: 900px) {
+  .technologyPanel {
+    width: calc(100vw - 16px);
+    height: calc(100vh - 16px);
+  }
+  .techSummary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .techBody {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(280px, 1fr) 360px;
+  }
+  .techDetail {
+    border-left: 0;
+    border-top: 1px solid rgba(126, 211, 255, 0.14);
+  }
+}
+`;
+    document.head.appendChild(style);
+  }
+}

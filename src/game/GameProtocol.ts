@@ -16,6 +16,7 @@ import type {
   StarbaseShipQueueItem,
 } from "../data/Starbase";
 import type { ShipDesign } from "../data/ShipDesigns";
+import type { FactionTechnologyView, TechId } from "../data/Technology";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type {
@@ -62,6 +63,7 @@ export type ServerUpdateField =
   | "shipDesigns"
   | "fleets"
   | "starbases"
+  | "technologies"
   | "combatContacts";
 
 export interface ServerStar extends StarData {}
@@ -350,6 +352,11 @@ export interface DecommissionShipDesignCommand {
   designId: string;
 }
 
+export interface SetActiveTechnologyCommand {
+  type: "setActiveTechnology";
+  techId: TechId;
+}
+
 export interface RetreatFleetCommand {
   type: "retreatFleet";
   fleetId: string;
@@ -425,6 +432,7 @@ export type ClientCommand =
   | UpgradeShipCommand
   | SaveShipDesignCommand
   | DecommissionShipDesignCommand
+  | SetActiveTechnologyCommand
   | SetUrbanSubDistrictCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand
@@ -452,6 +460,7 @@ export interface GameSnapshot {
   shipDesigns: ShipDesign[];
   fleets: ServerFleet[];
   starbases: ServerStarbase[];
+  technologies: FactionTechnologyView[];
   recentCombatContacts: ServerCombatContact[];
 }
 
@@ -473,6 +482,7 @@ export interface GameUpdate {
   shipDesigns?: ShipDesign[];
   fleets?: ServerFleet[];
   starbases?: ServerStarbase[];
+  technologies?: FactionTechnologyView[];
   recentCombatContacts?: ServerCombatContact[];
 }
 

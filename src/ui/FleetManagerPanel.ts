@@ -47,6 +47,13 @@ import type {
 } from "../data/ShipDesigns";
 import type { StarData } from "../data/StarMap";
 import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import {
+  getFirstRequiredTechName,
+  getRequiredTechIdsForShipHull,
+  getRequiredTechIdsForShipModule,
+  getRequiredTechIdsForShipSection,
+} from "../data/Technology";
+import type { FactionTechnologyView, TechId } from "../data/Technology";
 import type {
   CombatStance,
   FleetBehavior,
@@ -71,6 +78,7 @@ export interface FleetManagerPanelData {
   factions: FactionInfo[];
   playerFactionId: number | null;
   clockYear: number;
+  technology?: FactionTechnologyView | null;
   onFleetCommand?: (command: ClientCommand) => void;
 }
 
@@ -1013,10 +1021,13 @@ export class FleetManagerPanel {
   ): string {
     const canCommand = data.playerFactionId === fleet.ownerId;
     const shipyard = this.findShipyardInFleetSystem(data, fleet);
-    const canUpgrade = canCommand && !!targetDesign && !!shipyard;
+    const missingTechnology = targetDesign ? this.getDesignMissingTechnologyName(data, targetDesign) : null;
+    const canUpgrade = canCommand && !!targetDesign && !!shipyard && !missingTechnology;
     const upgradeTitle = !targetDesign
       ? "Ship is already using the newest design"
-      : shipyard
+      : missingTechnology
+        ? `Requires ${missingTechnology}`
+        : shipyard
         ? `Upgrade to ${targetDesign.name}`
         : "Move fleet to a completed shipyard system before upgrading";
     return `
@@ -1081,13 +1092,18 @@ export class FleetManagerPanel {
           ${designs.length === 0 ? '<div class="fmEmpty">No active designs available.</div>' : designs.map((design) => {
             const stats = calculateShipDesignStats(design);
             const predictedAlloys = stats.alloyUpkeepPerDay * stats.buildDays;
+            const missingTechnology = this.getDesignMissingTechnologyName(data, design);
+            const canBuild = Boolean(nearest) && !missingTechnology;
+            const note = missingTechnology
+              ? `Requires ${missingTechnology}`
+              : `${this.formatCompact(predictedAlloys)} alloys predicted | ${stats.buildDays.toFixed(1)} days | ${this.formatCompact(stats.crewDemand)} crew`;
             return `
-              <button class="fmBuildShipCard" type="button" data-fm-build-ship="${design.shipKind}" data-fm-build-design="${this.escapeAttribute(design.id)}" ${nearest ? "" : "disabled"}>
+              <button class="fmBuildShipCard" type="button" data-fm-build-ship="${design.shipKind}" data-fm-build-design="${this.escapeAttribute(design.id)}" ${canBuild ? "" : "disabled"}>
                 <span class="fmShipIcon">${this.escapeHtml(this.getInitials(SHIP_HULL_DEFINITIONS[design.shipKind]?.label ?? design.shipKind))}</span>
                 <span>
                   <strong>${this.escapeHtml(design.name)}</strong>
                   <small>${this.escapeHtml(SHIP_HULL_DEFINITIONS[design.shipKind]?.label ?? design.shipKind)}</small>
-                  <em>${this.formatCompact(predictedAlloys)} alloys predicted | ${stats.buildDays.toFixed(1)} days | ${this.formatCompact(stats.crewDemand)} crew</em>
+                  <em>${this.escapeHtml(note)}</em>
                 </span>
               </button>
             `;
@@ -1384,6 +1400,34 @@ export class FleetManagerPanel {
     return null;
   }
 
+  private getDesignMissingTechnologyName(data: FleetManagerPanelData, design: ShipDesign): string | null {
+    const technology = data.technology;
+    const hullTechs = getRequiredTechIdsForShipHull(design.shipKind);
+    if (!this.areRequiredTechsCompleted(technology, hullTechs)) return getFirstRequiredTechName(hullTechs);
+    for (const sectionModuleId of [...design.weaponSectionModuleIds, ...design.defenseSectionModuleIds]) {
+      const required = getRequiredTechIdsForShipSection(sectionModuleId);
+      if (!this.areRequiredTechsCompleted(technology, required)) return getFirstRequiredTechName(required);
+    }
+    for (const moduleId of [...design.weaponModuleIds, ...design.defenseModuleIds, ...design.utilityModuleIds]) {
+      const required = getRequiredTechIdsForShipModule(moduleId);
+      if (!this.areRequiredTechsCompleted(technology, required)) return getFirstRequiredTechName(required);
+    }
+    return null;
+  }
+
+  private isShipModuleUnlocked(technology: FactionTechnologyView | null | undefined, moduleId: string): boolean {
+    return this.areRequiredTechsCompleted(technology, getRequiredTechIdsForShipModule(moduleId));
+  }
+
+  private isShipSectionUnlocked(technology: FactionTechnologyView | null | undefined, sectionModuleId: string): boolean {
+    return this.areRequiredTechsCompleted(technology, getRequiredTechIdsForShipSection(sectionModuleId));
+  }
+
+  private areRequiredTechsCompleted(technology: FactionTechnologyView | null | undefined, requiredTechIds: TechId[]): boolean {
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => technology?.completedTechIds.includes(techId) === true);
+  }
+
   private parseDesignerSlot(slot: string): { kind: DesignerSlotKind; index: number } {
     const [kind, indexText] = slot.split(":");
     if (kind === "defense" || kind === "utility" || kind === "weapon" || kind === "weaponSection" || kind === "defenseSection") {
@@ -1394,8 +1438,10 @@ export class FleetManagerPanel {
 
   private getModulesForSlot(kind: DesignerSlotKind, index: number): DesignerModuleOption[] {
     if (!this.designerDraft) return [];
+    const technology = this.currentData?.technology;
     if (kind === "weaponSection" || kind === "defenseSection") {
-      return getShipSectionModulesForKind(this.designerDraft.shipKind, kind);
+      return getShipSectionModulesForKind(this.designerDraft.shipKind, kind)
+        .filter((module) => this.isShipSectionUnlocked(technology, module.id));
     }
     const layout = getShipDesignLayout(this.designerDraft);
     const slots = kind === "weapon"
@@ -1404,7 +1450,10 @@ export class FleetManagerPanel {
         ? layout.defenseSlots
         : layout.utilitySlots;
     const slot = slots[index];
-    return slot ? getShipModulesForComponentSlot(this.designerDraft.shipKind, slot) : [];
+    return slot
+      ? getShipModulesForComponentSlot(this.designerDraft.shipKind, slot)
+        .filter((module) => this.isShipModuleUnlocked(technology, module.id))
+      : [];
   }
 
   private applyModuleToDraft(moduleId: string): void {

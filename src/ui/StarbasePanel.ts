@@ -12,6 +12,12 @@ import {
 import type { ResourceCounts } from "../data/Economy";
 import type { StarbaseBuildingKind } from "../data/Starbase";
 import type { ClientCommand, ServerStarbase } from "../game/GameProtocol";
+import {
+  getFirstRequiredTechName,
+  getRequiredTechIdsForShipHull,
+  getRequiredTechIdsForStarbaseBuilding,
+} from "../data/Technology";
+import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 
 export interface StarbasePanelData {
@@ -23,6 +29,7 @@ export interface StarbasePanelData {
   status?: string;
   power?: string;
   starbase?: ServerStarbase;
+  technology?: FactionTechnologyView | null;
   onStarbaseCommand?: (command: ClientCommand) => void;
 }
 
@@ -375,13 +382,18 @@ export class StarbasePanel {
             ${STARBASE_SHIP_KINDS.map((kind) => {
               const definition = STARBASE_SHIP_DEFINITIONS[kind];
               const predictedAlloys = definition.alloyUpkeepPerDay * definition.buildDays;
+              const lockedByTechnology = !this.isShipHullUnlocked(data.technology, kind);
+              const canBuild = shipyardCount > 0 && !lockedByTechnology;
+              const note = lockedByTechnology
+                ? `Requires ${this.getRequiredShipHullTechnologyName(kind)}`
+                : `${this.formatCompact(predictedAlloys)} alloys predicted | ${definition.buildDays} days | ${this.formatCompact(definition.crewDemand)} crew`;
               return `
-                <button class="sbAvailableShipCard" type="button" data-sb-build-ship="${kind}" ${shipyardCount > 0 ? "" : "disabled"}>
+                <button class="sbAvailableShipCard" type="button" data-sb-build-ship="${kind}" ${canBuild ? "" : "disabled"}>
                   <span class="sbShipIcon">◆</span>
                   <span>
                     <strong>${this.escapeHtml(definition.label)}</strong>
                     <small>${this.escapeHtml(definition.className)}</small>
-                    <em>${this.formatCompact(predictedAlloys)} alloys predicted | ${definition.buildDays} days | ${this.formatCompact(definition.crewDemand)} crew</em>
+                    <em>${this.escapeHtml(note)}</em>
                   </span>
                 </button>
               `;
@@ -433,12 +445,16 @@ export class StarbasePanel {
         <div class="sbBuildingList">
           ${STARBASE_BUILDING_KINDS.map((kind) => {
             const definition = STARBASE_BUILDING_DEFINITIONS[kind];
+            const lockedByTechnology = !this.isStarbaseBuildingUnlocked(this.currentData?.technology, kind);
+            const note = lockedByTechnology
+              ? `Requires ${this.getRequiredStarbaseBuildingTechnologyName(kind)}`
+              : `${this.renderInlineCost(definition.cost)} | ${definition.buildDays} days`;
             return `
-              <button class="sbBuildingCard" type="button" data-sb-pick-building="${kind}">
+              <button class="sbBuildingCard ${lockedByTechnology ? "locked" : ""}" type="button" data-sb-pick-building="${kind}" ${lockedByTechnology ? "disabled" : ""}>
                 <span class="sbBuildingIcon">${this.escapeHtml(this.getInitials(definition.label))}</span>
                 <span class="sbBuildingInfo">
                   <strong>${this.escapeHtml(definition.label)}</strong>
-                  <small>${this.renderInlineCost(definition.cost)} | ${definition.buildDays} days</small>
+                  <small>${this.escapeHtml(note)}</small>
                   <em>${this.escapeHtml(definition.description)}</em>
                 </span>
               </button>
@@ -447,6 +463,30 @@ export class StarbasePanel {
         </div>
       </div>
     `;
+  }
+
+  private isStarbaseBuildingUnlocked(technology: FactionTechnologyView | null | undefined, building: StarbaseBuildingKind): boolean {
+    const requiredTechIds = getRequiredTechIdsForStarbaseBuilding(building);
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
+  }
+
+  private isShipHullUnlocked(technology: FactionTechnologyView | null | undefined, shipKind: keyof typeof STARBASE_SHIP_DEFINITIONS): boolean {
+    const requiredTechIds = getRequiredTechIdsForShipHull(shipKind);
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
+  }
+
+  private isTechnologyCompleted(technology: FactionTechnologyView | null | undefined, techId: TechId): boolean {
+    return technology?.completedTechIds.includes(techId) === true;
+  }
+
+  private getRequiredStarbaseBuildingTechnologyName(building: StarbaseBuildingKind): string {
+    return getFirstRequiredTechName(getRequiredTechIdsForStarbaseBuilding(building));
+  }
+
+  private getRequiredShipHullTechnologyName(shipKind: keyof typeof STARBASE_SHIP_DEFINITIONS): string {
+    return getFirstRequiredTechName(getRequiredTechIdsForShipHull(shipKind));
   }
 
   private renderResourceTokens(counts: ResourceCounts, className: "positive" | "negative"): string {
