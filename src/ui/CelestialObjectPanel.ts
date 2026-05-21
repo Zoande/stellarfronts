@@ -1324,14 +1324,11 @@ export class CelestialObjectPanel {
       .join("");
 
     return `
-      <div class="coInfoPanels">
-        <div class="coProduction">
-          <h4>Planet Production</h4>
-          <div class="coTokenGrid">${netRows}</div>
-          <h4>Planet Deficit</h4>
-          ${deficits ? `<div class="coTokenGrid">${deficits}</div>` : '<div class="coEmptyLine">No active deficits</div>'}
-        </div>
-        ${this.renderPopulationSupportPanel(planetState)}
+      <div class="coProduction">
+        <h4>Planet Production</h4>
+        <div class="coTokenGrid">${netRows}</div>
+        <h4>Planet Deficit</h4>
+        ${deficits ? `<div class="coTokenGrid">${deficits}</div>` : '<div class="coEmptyLine">No active deficits</div>'}
       </div>
     `;
   }
@@ -1344,52 +1341,6 @@ export class CelestialObjectPanel {
         <strong>${this.escapeHtml(value)}</strong>
       </span>
     `;
-  }
-
-  private renderPopulationSupportPanel(planetState: PlanetState): string {
-    const economy = planetState.economy;
-    const support = this.getPlanetSupportMetrics(planetState);
-    const employmentRatio = planetState.population > 0 ? economy.employedPopulation / planetState.population : 1;
-
-    return `
-      <div class="coPopulationSupport">
-        <h4>Population Support</h4>
-        <div class="coSupportRows">
-          ${this.renderSupportRow("housing", "Housing Coverage", `${Math.round(support.housingRatio * 100)}%`, `${this.formatSignedPeople(support.housingBalance)} balance`, support.housingRatio, this.getNeedBalanceTone(support.housingRatio))}
-          ${this.renderSupportRow("amenities", "Amenities Coverage", `${Math.round(support.amenityRatio * 100)}%`, `${this.formatSignedCompact(support.amenityBalance)} balance`, support.amenityRatio, this.getNeedBalanceTone(support.amenityRatio))}
-          ${this.renderSupportRow("population", "Employment", `${Math.round(employmentRatio * 100)}%`, `${this.formatPeople(economy.unemployedPopulation)} unemployed`, employmentRatio, this.getEmploymentTone(employmentRatio))}
-        </div>
-      </div>
-    `;
-  }
-
-  private renderSupportRow(
-    icon: string,
-    label: string,
-    value: string,
-    detail: string,
-    ratio: number,
-    tone: string,
-  ): string {
-    const barRatio = Math.max(4, Math.min(100, ratio * 100));
-
-    return `
-      <div class="coSupportRow coTone-${tone}">
-        ${this.renderStatIcon(icon)}
-        <span>
-          <small>${this.escapeHtml(label)}</small>
-          <strong>${this.escapeHtml(value)}</strong>
-        </span>
-        <em>${this.escapeHtml(detail)}</em>
-        <i style="--support-ratio: ${barRatio.toFixed(1)}%"></i>
-      </div>
-    `;
-  }
-
-  private getEmploymentTone(ratio: number): string {
-    if (ratio >= 0.95) return "good";
-    if (ratio >= 0.85) return "warn";
-    return "bad";
   }
 
   private renderEconomyBody(planetState: PlanetState): string {
@@ -2457,16 +2408,7 @@ export class CelestialObjectPanel {
   font-weight: 800;
 }
 
-.coInfoPanels {
-  height: 100%;
-  min-height: 0;
-  display: grid;
-  grid-template-rows: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.coProduction,
-.coPopulationSupport {
+.coProduction {
   min-height: 0;
   padding: 6px;
   border: 1px solid rgba(103, 255, 221, 0.22);
@@ -2479,8 +2421,7 @@ export class CelestialObjectPanel {
   justify-content: start;
 }
 
-.coProduction h4,
-.coPopulationSupport h4 {
+.coProduction h4 {
   margin: 2px 0 6px;
   text-align: center;
   color: #eefaf6;
@@ -2545,81 +2486,6 @@ export class CelestialObjectPanel {
   min-height: 26px;
   text-align: center;
   color: rgba(185, 202, 198, 0.6);
-}
-
-.coSupportRows {
-  display: grid;
-  gap: 5px;
-}
-
-.coSupportRow {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 2px 6px;
-  padding: 4px 5px;
-  border: 1px solid rgba(103, 255, 221, 0.14);
-  background: rgba(1, 8, 10, 0.34);
-  color: var(--co-tone, #72e2ff);
-}
-
-.coSupportRow .coStatIcon {
-  grid-row: span 3;
-  width: 18px;
-  height: 18px;
-}
-
-.coSupportRow > span:not(.coStatIcon) {
-  min-width: 0;
-}
-
-.coSupportRow small,
-.coSupportRow strong,
-.coSupportRow em {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.coSupportRow small {
-  color: rgba(202, 225, 219, 0.68);
-  font-size: 9px;
-  font-style: normal;
-  text-transform: uppercase;
-}
-
-.coSupportRow strong {
-  margin-top: 1px;
-  color: currentColor;
-  font-size: 11px;
-}
-
-.coSupportRow em {
-  align-self: end;
-  color: rgba(202, 225, 219, 0.72);
-  font-size: 9px;
-  font-style: normal;
-}
-
-.coSupportRow > i {
-  grid-column: 2 / -1;
-  display: block;
-  position: relative;
-  height: 4px;
-  overflow: hidden;
-  background: rgba(206, 232, 226, 0.14);
-}
-
-.coSupportRow > i::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: var(--support-ratio, 0%);
-  background: currentColor;
-  box-shadow: 0 0 9px currentColor;
 }
 
 .coEmbeddedBuildings {

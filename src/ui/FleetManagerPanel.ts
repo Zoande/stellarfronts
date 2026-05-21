@@ -2007,9 +2007,12 @@ export class FleetManagerPanel {
     style.textContent = `
 .fleetManagerPanel {
   --fleet-accent: rgba(114, 226, 255, 0.95);
+  --fleet-panel-scale: 0.82;
   position: fixed;
   width: min(1200px, calc(100vw - 32px));
   height: min(680px, calc(100vh - 32px));
+  transform: scale(var(--fleet-panel-scale));
+  transform-origin: top left;
   z-index: 58;
   pointer-events: auto;
   display: grid;

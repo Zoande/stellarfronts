@@ -596,11 +596,14 @@ export class TechnologyPanel {
     style.textContent = `
 .technologyPanel {
   --tech-accent: rgba(114, 226, 255, 0.95);
+  --tech-panel-scale: 0.82;
   position: fixed;
   z-index: 59;
   pointer-events: auto;
   width: min(1200px, calc(100vw - 32px));
   height: min(680px, calc(100vh - 32px));
+  transform: scale(var(--tech-panel-scale));
+  transform-origin: top left;
   display: grid;
   grid-template-rows: 58px 72px minmax(0, 1fr);
   color: #e9fff8;
