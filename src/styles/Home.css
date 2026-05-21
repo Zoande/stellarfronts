@@ -775,6 +775,15 @@
   filter: brightness(1.08);
 }
 
+.home-launch-btn:disabled,
+.home-secondary-btn:disabled,
+.home-page-btn:disabled {
+  cursor: not-allowed;
+  filter: grayscale(0.7);
+  opacity: 0.54;
+  transform: none;
+}
+
 .home-server-row {
   margin: 22px;
   min-height: 148px;
@@ -874,6 +883,115 @@
   text-transform: uppercase;
   letter-spacing: 0.06em;
   font-size: 0.88rem;
+}
+
+.home-games-shell {
+  min-height: 0;
+}
+
+.home-games-catalog {
+  min-height: min(720px, calc(100vh - 240px));
+}
+
+.home-game-list {
+  min-height: 270px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 16px 22px 22px;
+  position: relative;
+  z-index: 1;
+}
+
+.home-game-list.is-catalog {
+  max-height: calc(100vh - 318px);
+  overflow-y: auto;
+}
+
+.home-game-row {
+  min-height: 82px;
+  display: grid;
+  grid-template-columns: 94px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px;
+  border: 1px solid rgba(6, 17, 31, 0.2);
+  background: rgba(215, 232, 249, 0.46);
+}
+
+.home-game-art {
+  width: 94px;
+  height: 62px;
+  overflow: hidden;
+  border: 1px solid rgba(8, 25, 47, 0.28);
+  background: #0b0d0d;
+}
+
+.home-game-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.home-game-copy {
+  min-width: 0;
+}
+
+.home-game-capacity {
+  min-width: 0;
+  margin-top: 7px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: rgba(6, 17, 31, 0.72);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.home-game-capacity span {
+  color: rgba(6, 17, 31, 0.54);
+}
+
+.home-page-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(205, 232, 255, 0.72);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.home-page-btn {
+  min-height: 28px;
+  border: 1px solid rgba(102, 200, 255, 0.34);
+  border-radius: 4px;
+  background: rgba(12, 25, 45, 0.82);
+  color: #e6f8ff;
+  cursor: pointer;
+  font: inherit;
+  padding: 0 9px;
+  text-transform: uppercase;
+}
+
+.home-list-message {
+  min-height: 82px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed rgba(6, 17, 31, 0.28);
+  color: rgba(6, 17, 31, 0.72);
+  background: rgba(215, 232, 249, 0.3);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.home-list-message.is-error {
+  color: #6e1222;
 }
 
 .home-event-grid {
@@ -1010,6 +1128,41 @@
   gap: 10px;
 }
 
+.home-join-form {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 10px;
+}
+
+.home-join-form > p {
+  margin-bottom: 4px;
+}
+
+.home-join-form label {
+  color: rgba(228, 233, 241, 0.66);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.home-join-form input {
+  min-height: 46px;
+  border: 1px solid rgba(102, 200, 255, 0.42);
+  border-radius: 4px;
+  background: rgba(1, 5, 12, 0.76);
+  color: #e6f8ff;
+  font: inherit;
+  padding: 0 13px;
+}
+
+.home-join-error {
+  border-left: 2px solid #ff7488;
+  background: rgba(109, 22, 34, 0.36);
+  color: #ffc0c9;
+  padding: 10px;
+}
+
 @media (max-width: 1120px) {
   .home-grid {
     grid-template-columns: 1fr;
@@ -1043,6 +1196,7 @@
   .home-tabs,
   .home-profile-row,
   .home-server-row,
+  .home-game-row,
   .home-intel-row,
   .home-event-grid,
   .home-perspective-grid {
@@ -1065,6 +1219,11 @@
 
   .home-server-art {
     height: 150px;
+  }
+
+  .home-game-art {
+    width: 100%;
+    height: 92px;
   }
 
   .home-secondary-btn,

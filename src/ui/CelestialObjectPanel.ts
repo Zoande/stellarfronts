@@ -14,6 +14,7 @@ import {
   JOB_FILL_ORDER,
   JOB_DEFINITIONS,
   JOB_LABELS,
+  PEOPLE_PER_MONTHLY_UNIT,
   PLANET_FEATURE_DEFINITIONS,
   RESOURCE_KINDS,
   RESOURCE_LABELS,
@@ -737,20 +738,15 @@ export class CelestialObjectPanel {
           <div class="coSectionTitle">${isPlanet ? "Planet Summary" : "Stellar Summary"}</div>
           <div class="coTypeName">${this.escapeHtml(details.typeName)}</div>
           <div class="coSummaryGrid">
-            <span>Habitability</span><strong>${habitability}</strong>
-            <span>Habited</span><strong>${data.isHabited ? "Yes" : "No"}</strong>
-            <span>Size</span><strong>${details.size}</strong>
+            ${this.renderSummaryStat("habitability", "Habitability", habitability)}
+            ${this.renderSummaryStat("population", "Habited", data.isHabited ? "Yes" : "No")}
+            ${this.renderSummaryStat("size", "Size", String(details.size))}
+            ${planetState ? this.renderSummaryStat("housing", "Housing", this.formatPeople(planetState.economy.housing)) : ""}
+            ${planetState ? this.renderSummaryStat("amenities", "Amenities", this.formatCompact(planetState.economy.amenities)) : ""}
           </div>
           <div class="coPortrait" data-co-portrait></div>
         </aside>
-      </div>
-      <div class="coResourceStrip">
-        <span>STABILITY ${planetState ? `${planetState.economy.stability.toFixed(0)}%` : "?%"}</span>
-        <span>POP ${planetState ? this.formatPeople(planetState.population) : "0"}</span>
-        <span>HAPPINESS ${planetState ? `${planetState.economy.happiness.toFixed(0)}%` : "?%"}</span>
-        <span>CRIME ${planetState ? `${planetState.economy.crime.toFixed(0)}%` : "?%"}</span>
-        <span>AMENITIES ${planetState ? this.formatCompact(planetState.economy.amenities) : "0"}</span>
-        <span>HOUSING ${planetState ? this.formatPeople(planetState.economy.housing) : "0"}</span>
+        ${this.renderResourceStrip(planetState)}
       </div>
       ${this.activeTab === "economy" && isHabitedPlanet && planetState
         ? this.renderEconomyBody(planetState)
@@ -763,6 +759,97 @@ export class CelestialObjectPanel {
         <button class="${tabsDisabled}" type="button">Holdings</button>
       </nav>
     `;
+  }
+
+  private renderSummaryStat(icon: string, label: string, value: string): string {
+    return `
+      <div class="coSummaryStat">
+        ${this.renderStatIcon(icon)}
+        <span>${this.escapeHtml(label)}</span>
+        <strong>${this.escapeHtml(value)}</strong>
+      </div>
+    `;
+  }
+
+  private renderResourceStrip(planetState?: PlanetState): string {
+    if (!planetState) {
+      return `
+        <div class="coResourceStrip">
+          ${this.renderResourceStripStat("stability", "Stability", "?%")}
+          ${this.renderResourceStripStat("population", "Pop", "0")}
+          ${this.renderResourceStripStat("happiness", "Happiness", "?%")}
+          ${this.renderResourceStripStat("crime", "Crime", "?%")}
+          ${this.renderResourceStripStat("amenities", "Amenities Balance", "0")}
+          ${this.renderResourceStripStat("housing", "Housing Balance", "0")}
+        </div>
+      `;
+    }
+
+    const economy = planetState.economy;
+    const support = this.getPlanetSupportMetrics(planetState);
+
+    return `
+      <div class="coResourceStrip">
+        ${this.renderResourceStripStat("stability", "Stability", `${economy.stability.toFixed(0)}%`, this.getHighStatTone(economy.stability))}
+        ${this.renderResourceStripStat("population", "Pop", this.formatPeople(planetState.population))}
+        ${this.renderResourceStripStat("happiness", "Happiness", `${economy.happiness.toFixed(0)}%`, this.getHighStatTone(economy.happiness))}
+        ${this.renderResourceStripStat("crime", "Crime", `${economy.crime.toFixed(0)}%`, this.getCrimeTone(economy.crime))}
+        ${this.renderResourceStripStat("amenities", "Amenities Balance", this.formatSignedCompact(support.amenityBalance), this.getNeedBalanceTone(support.amenityRatio))}
+        ${this.renderResourceStripStat("housing", "Housing Balance", this.formatSignedPeople(support.housingBalance), this.getNeedBalanceTone(support.housingRatio))}
+      </div>
+    `;
+  }
+
+  private renderResourceStripStat(icon: string, label: string, value: string, tone = "neutral"): string {
+    return `
+      <span class="coResourceStripItem coTone-${tone}">
+        ${this.renderStatIcon(icon)}
+        <small>${this.escapeHtml(label)}</small>
+        <strong>${this.escapeHtml(value)}</strong>
+      </span>
+    `;
+  }
+
+  private renderStatIcon(icon: string): string {
+    return `<span class="coStatIcon coStatIcon-${this.escapeHtml(icon)}" aria-hidden="true"></span>`;
+  }
+
+  private getPlanetSupportMetrics(planetState: PlanetState): {
+    housingBalance: number;
+    housingRatio: number;
+    amenityBalance: number;
+    amenityRatio: number;
+  } {
+    const economy = planetState.economy;
+    const housingNeed = planetState.population;
+    const amenityNeed = planetState.population / PEOPLE_PER_MONTHLY_UNIT;
+
+    return {
+      housingBalance: economy.housing - housingNeed,
+      housingRatio: housingNeed > 0 ? economy.housing / housingNeed : 1,
+      amenityBalance: economy.amenities - amenityNeed,
+      amenityRatio: amenityNeed > 0 ? economy.amenities / amenityNeed : 1,
+    };
+  }
+
+  private getHighStatTone(value: number): string {
+    if (value > 80) return "good";
+    if (value < 60) return "bad";
+    return "warn";
+  }
+
+  private getCrimeTone(value: number): string {
+    if (value > 30) return "bad";
+    if (value > 10) return "warn";
+    if (value <= 0) return "good";
+    return "neutral";
+  }
+
+  private getNeedBalanceTone(ratio: number): string {
+    if (ratio >= 1.3) return "good";
+    if (ratio < 0.9) return "bad";
+    if (ratio < 1) return "warn";
+    return "neutral";
   }
 
   private renderSurfaceBody(data: CelestialObjectPanelData): string {
@@ -989,9 +1076,7 @@ export class CelestialObjectPanel {
     const economy = planetState.economy;
     const districtUsed = DISTRICTS.reduce((sum, district) => sum + planetState.builtDistricts[district.kind], 0);
     const districtLimit = DISTRICTS.reduce((sum, district) => sum + data.objectDetails.districtLimits[district.kind], 0);
-    const housingDelta = economy.housing - planetState.population;
-    const amenityNeed = planetState.population / 1_000_000;
-    const amenityDelta = economy.amenities - amenityNeed;
+    const support = this.getPlanetSupportMetrics(planetState);
     const growth = economy.populationGrowth;
     const weeklyGrowth = Math.round(growth.netPerQuarter * (7 / 120));
 
@@ -1004,12 +1089,12 @@ export class CelestialObjectPanel {
           </div>
         </div>
         <div class="coOverviewGrid">
-          <div><span>Unemployment</span><strong>${this.formatPeople(economy.unemployedPopulation)}</strong></div>
-          <div><span>Growth / week</span><strong>${this.formatSignedPeople(weeklyGrowth)}</strong></div>
-          <div><span>Districts</span><strong>${districtUsed}/${districtLimit}</strong></div>
-          <div><span>Happiness</span><strong>${economy.happiness.toFixed(0)}%</strong></div>
-          <div><span>Housing Balance</span><strong>${this.formatSignedPeople(housingDelta)}</strong></div>
-          <div><span>Amenities Balance</span><strong>${this.formatSignedCompact(amenityDelta)}</strong></div>
+          ${this.renderOverviewStat("unemployment", "Unemployment", this.formatPeople(economy.unemployedPopulation))}
+          ${this.renderOverviewStat("growth", "Growth / week", this.formatSignedPeople(weeklyGrowth))}
+          ${this.renderOverviewStat("districts", "Districts", `${districtUsed}/${districtLimit}`)}
+          ${this.renderOverviewStat("happiness", "Happiness", `${economy.happiness.toFixed(0)}%`, this.getHighStatTone(economy.happiness))}
+          ${this.renderOverviewStat("housing", "Housing", this.formatPeople(economy.housing), this.getNeedBalanceTone(support.housingRatio))}
+          ${this.renderOverviewStat("amenities", "Amenities", this.formatCompact(economy.amenities), this.getNeedBalanceTone(support.amenityRatio))}
         </div>
         ${this.renderConstructionQueue(planetState)}
         <div class="coOverviewActions">
@@ -1017,6 +1102,16 @@ export class CelestialObjectPanel {
           <button type="button">Decisions</button>
         </div>
       </aside>
+    `;
+  }
+
+  private renderOverviewStat(icon: string, label: string, value: string, tone = "neutral"): string {
+    return `
+      <div class="coOverviewStat coTone-${tone}">
+        ${this.renderStatIcon(icon)}
+        <span>${this.escapeHtml(label)}</span>
+        <strong>${this.escapeHtml(value)}</strong>
+      </div>
     `;
   }
 
@@ -1221,21 +1316,80 @@ export class CelestialObjectPanel {
     const netRows = RESOURCE_KINDS.map((resource) => {
       const value = planetState.economy.net[resource];
       const className = value >= 0 ? "positive" : "negative";
-      return `<span class="${className}">${this.escapeHtml(RESOURCE_LABELS[resource])} ${this.formatSignedCompact(value)}</span>`;
+      return this.renderProductionToken(resource, RESOURCE_LABELS[resource], this.formatSignedCompact(value), className);
     }).join("");
     const deficits = RESOURCE_KINDS
       .filter((resource) => planetState.economy.deficit[resource] > 0)
-      .map((resource) => `<span class="negative">${this.escapeHtml(RESOURCE_LABELS[resource])} -${this.formatCompact(planetState.economy.deficit[resource])}</span>`)
+      .map((resource) => this.renderProductionToken(resource, RESOURCE_LABELS[resource], `-${this.formatCompact(planetState.economy.deficit[resource])}`, "negative"))
       .join("");
 
     return `
-      <div class="coProduction">
-        <h4>Planet Production</h4>
-        <div class="coTokenGrid">${netRows}</div>
-        <h4>Planet Deficit</h4>
-        ${deficits ? `<div class="coTokenGrid">${deficits}</div>` : '<div class="coEmptyLine">No active deficits</div>'}
+      <div class="coInfoPanels">
+        <div class="coProduction">
+          <h4>Planet Production</h4>
+          <div class="coTokenGrid">${netRows}</div>
+          <h4>Planet Deficit</h4>
+          ${deficits ? `<div class="coTokenGrid">${deficits}</div>` : '<div class="coEmptyLine">No active deficits</div>'}
+        </div>
+        ${this.renderPopulationSupportPanel(planetState)}
       </div>
     `;
+  }
+
+  private renderProductionToken(icon: string, label: string, value: string, className: string): string {
+    return `
+      <span class="coProductionToken ${className}">
+        ${this.renderStatIcon(icon)}
+        <span>${this.escapeHtml(label)}</span>
+        <strong>${this.escapeHtml(value)}</strong>
+      </span>
+    `;
+  }
+
+  private renderPopulationSupportPanel(planetState: PlanetState): string {
+    const economy = planetState.economy;
+    const support = this.getPlanetSupportMetrics(planetState);
+    const employmentRatio = planetState.population > 0 ? economy.employedPopulation / planetState.population : 1;
+
+    return `
+      <div class="coPopulationSupport">
+        <h4>Population Support</h4>
+        <div class="coSupportRows">
+          ${this.renderSupportRow("housing", "Housing Coverage", `${Math.round(support.housingRatio * 100)}%`, `${this.formatSignedPeople(support.housingBalance)} balance`, support.housingRatio, this.getNeedBalanceTone(support.housingRatio))}
+          ${this.renderSupportRow("amenities", "Amenities Coverage", `${Math.round(support.amenityRatio * 100)}%`, `${this.formatSignedCompact(support.amenityBalance)} balance`, support.amenityRatio, this.getNeedBalanceTone(support.amenityRatio))}
+          ${this.renderSupportRow("population", "Employment", `${Math.round(employmentRatio * 100)}%`, `${this.formatPeople(economy.unemployedPopulation)} unemployed`, employmentRatio, this.getEmploymentTone(employmentRatio))}
+        </div>
+      </div>
+    `;
+  }
+
+  private renderSupportRow(
+    icon: string,
+    label: string,
+    value: string,
+    detail: string,
+    ratio: number,
+    tone: string,
+  ): string {
+    const barRatio = Math.max(4, Math.min(100, ratio * 100));
+
+    return `
+      <div class="coSupportRow coTone-${tone}">
+        ${this.renderStatIcon(icon)}
+        <span>
+          <small>${this.escapeHtml(label)}</small>
+          <strong>${this.escapeHtml(value)}</strong>
+        </span>
+        <em>${this.escapeHtml(detail)}</em>
+        <i style="--support-ratio: ${barRatio.toFixed(1)}%"></i>
+      </div>
+    `;
+  }
+
+  private getEmploymentTone(ratio: number): string {
+    if (ratio >= 0.95) return "good";
+    if (ratio >= 0.85) return "warn";
+    return "bad";
   }
 
   private renderEconomyBody(planetState: PlanetState): string {
@@ -1654,9 +1808,10 @@ export class CelestialObjectPanel {
 
 .coHeroRow {
   flex: 0 0 auto;
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
-  min-height: 150px;
+  min-height: 216px;
   border-bottom: 1px solid rgba(110, 212, 181, 0.32);
 }
 
@@ -1721,10 +1876,21 @@ export class CelestialObjectPanel {
 
 .coSummary {
   position: relative;
-  padding: 16px 116px 14px 16px;
+  z-index: 1;
+  padding: 16px 116px 58px 16px;
   background:
-    radial-gradient(circle at 100% 28%, rgba(76, 167, 214, 0.18), transparent 10rem),
-    rgba(4, 12, 16, 0.88);
+    linear-gradient(90deg, rgba(4, 12, 16, 0.44), rgba(4, 12, 16, 0.9) 26%, rgba(4, 12, 16, 0.97)),
+    radial-gradient(circle at 100% 28%, rgba(76, 167, 214, 0.22), transparent 10rem);
+}
+
+.coSummary::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 -84px;
+  z-index: -1;
+  width: 84px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(4, 12, 16, 0), rgba(4, 12, 16, 0.46) 52%, rgba(4, 12, 16, 0.9));
 }
 
 .coSectionTitle {
@@ -1742,16 +1908,23 @@ export class CelestialObjectPanel {
 
 .coSummaryGrid {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px 8px;
+  gap: 5px;
   font-size: 12px;
 }
 
-.coSummaryGrid span {
+.coSummaryStat {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 17px;
+}
+
+.coSummaryStat > span:not(.coStatIcon) {
   color: #d9eee5;
 }
 
-.coSummaryGrid strong {
+.coSummaryStat strong {
   color: #f4d56f;
 }
 
@@ -1771,23 +1944,317 @@ export class CelestialObjectPanel {
 }
 
 .coResourceStrip {
-  flex: 0 0 auto;
+  position: absolute;
+  inset: auto 0 0;
+  z-index: 3;
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  border-bottom: 1px solid rgba(110, 212, 181, 0.24);
-  background: rgba(10, 24, 23, 0.72);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  border-top: 1px solid rgba(148, 255, 226, 0.28);
+  background: linear-gradient(90deg, rgba(2, 11, 13, 0.42), rgba(3, 17, 19, 0.7) 35%, rgba(2, 11, 13, 0.58));
+  box-shadow: 0 -9px 24px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(7px);
 }
 
-.coResourceStrip span {
-  padding: 7px 10px;
+.coResourceStripItem {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 21px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 1px 7px;
+  min-height: 46px;
+  padding: 6px 10px;
   border-right: 1px solid rgba(110, 212, 181, 0.24);
-  color: rgba(191, 231, 220, 0.82);
-  font-size: 11px;
-  text-align: center;
+  color: var(--co-tone, rgba(191, 231, 220, 0.88));
+}
+
+.coResourceStripItem .coStatIcon {
+  grid-row: span 2;
+}
+
+.coResourceStripItem small,
+.coResourceStripItem strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coResourceStripItem small {
+  color: rgba(203, 231, 224, 0.72);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.coResourceStripItem strong {
+  color: currentColor;
+  font-size: 12px;
+  text-shadow: 0 0 12px rgba(0, 0, 0, 0.48);
+}
+
+.coTone-good { --co-tone: #64ff9a; }
+.coTone-warn { --co-tone: #ffbb62; }
+.coTone-bad { --co-tone: #ff756d; }
+.coTone-neutral { --co-tone: #72e2ff; }
+
+.coStatIcon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: var(--co-tone, #72e2ff);
+  filter: drop-shadow(0 0 7px rgba(50, 255, 225, 0.18));
+}
+
+.coStatIcon::before,
+.coStatIcon::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.coStatIcon-stability::before {
+  width: 15px;
+  height: 19px;
+  background: currentColor;
+  clip-path: polygon(50% 0, 88% 15%, 80% 70%, 50% 100%, 20% 70%, 12% 15%);
+}
+
+.coStatIcon-population::before,
+.coStatIcon-unemployment::before {
+  top: 2px;
+  left: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 7px 2px 0 currentColor;
+}
+
+.coStatIcon-population::after {
+  bottom: 3px;
+  left: 2px;
+  width: 17px;
+  height: 9px;
+  border-radius: 10px 10px 3px 3px;
+  background: currentColor;
+  opacity: 0.84;
+}
+
+.coStatIcon-unemployment::after {
+  right: 1px;
+  bottom: 4px;
+  width: 16px;
+  height: 8px;
+  border-bottom: 3px solid currentColor;
+}
+
+.coStatIcon-happiness::before {
+  inset: 2px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.coStatIcon-happiness::after {
+  top: 7px;
+  left: 5px;
+  width: 10px;
+  height: 7px;
+  border-bottom: 2px solid currentColor;
+  border-radius: 0 0 9px 9px;
+  box-shadow: -3px -4px 0 -1px currentColor, 3px -4px 0 -1px currentColor;
+}
+
+.coStatIcon-crime::before {
+  width: 19px;
+  height: 17px;
+  background: currentColor;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.coStatIcon-crime::after {
+  top: 5px;
+  left: 9px;
+  width: 2px;
+  height: 9px;
+  background: rgba(2, 12, 15, 0.94);
+  box-shadow: 0 11px 0 rgba(2, 12, 15, 0.94);
+}
+
+.coStatIcon-housing::before {
+  width: 18px;
+  height: 17px;
+  background: currentColor;
+  clip-path: polygon(50% 0, 100% 40%, 86% 40%, 86% 100%, 14% 100%, 14% 40%, 0 40%);
+}
+
+.coStatIcon-housing::after {
+  right: 7px;
+  bottom: 1px;
+  width: 4px;
+  height: 7px;
+  background: rgba(2, 12, 15, 0.94);
+}
+
+.coStatIcon-amenities::before {
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  clip-path: polygon(50% 0, 62% 36%, 100% 50%, 62% 64%, 50% 100%, 38% 64%, 0 50%, 38% 36%);
+}
+
+.coStatIcon-amenities::after {
+  right: 1px;
+  top: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.74;
+}
+
+.coStatIcon-habitability::before {
+  inset: 2px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.coStatIcon-habitability::after {
+  left: 5px;
+  top: 4px;
+  width: 10px;
+  height: 13px;
+  border-radius: 10px 0 10px 0;
+  background: currentColor;
+  transform: rotate(36deg);
+}
+
+.coStatIcon-size::before {
+  inset: 3px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+
+.coStatIcon-size::after {
+  top: 9px;
+  left: 1px;
+  width: 18px;
+  height: 4px;
+  border-top: 2px solid currentColor;
+  border-left: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+}
+
+.coStatIcon-growth::before {
+  width: 16px;
+  height: 14px;
+  border-top: 3px solid currentColor;
+  border-right: 3px solid currentColor;
+  transform: translate(-2px, 2px) rotate(-45deg);
+}
+
+.coStatIcon-growth::after {
+  right: 1px;
+  top: 1px;
+  width: 8px;
+  height: 8px;
+  background: currentColor;
+  clip-path: polygon(100% 0, 100% 100%, 0 0);
+}
+
+.coStatIcon-districts::before {
+  top: 3px;
+  left: 3px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid currentColor;
+  background: currentColor;
+  box-shadow: 8px 0 0 currentColor, 0 8px 0 currentColor, 8px 8px 0 currentColor;
+}
+
+.coStatIcon-food::before {
+  width: 13px;
+  height: 18px;
+  border-radius: 100% 0 100% 0;
+  background: currentColor;
+  transform: rotate(35deg);
+}
+
+.coStatIcon-food::after {
+  left: 9px;
+  top: 4px;
+  width: 2px;
+  height: 13px;
+  background: rgba(2, 12, 15, 0.56);
+  transform: rotate(35deg);
+}
+
+.coStatIcon-energy::before {
+  width: 14px;
+  height: 19px;
+  background: currentColor;
+  clip-path: polygon(58% 0, 100% 0, 68% 38%, 100% 38%, 28% 100%, 44% 54%, 4% 54%);
+}
+
+.coStatIcon-minerals::before {
+  width: 17px;
+  height: 18px;
+  background: currentColor;
+  clip-path: polygon(50% 0, 94% 28%, 76% 100%, 24% 100%, 6% 28%);
+}
+
+.coStatIcon-minerals::after {
+  top: 4px;
+  left: 9px;
+  width: 2px;
+  height: 13px;
+  background: rgba(2, 12, 15, 0.46);
+}
+
+.coStatIcon-goods::before {
+  width: 17px;
+  height: 15px;
+  border: 2px solid currentColor;
+  background: rgba(114, 226, 255, 0.1);
+}
+
+.coStatIcon-goods::after {
+  top: 3px;
+  left: 9px;
+  width: 2px;
+  height: 15px;
+  background: currentColor;
+}
+
+.coStatIcon-alloys::before {
+  width: 17px;
+  height: 5px;
+  background: currentColor;
+  box-shadow: 0 -6px 0 currentColor, 0 6px 0 currentColor;
+  transform: skewX(-18deg);
+}
+
+.coStatIcon-research::before {
+  width: 18px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  transform: rotate(38deg);
+}
+
+.coStatIcon-research::after {
+  width: 18px;
+  height: 10px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  transform: rotate(-38deg);
 }
 
 .coBody {
   flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   overflow: hidden;
   background: rgba(4, 12, 13, 0.76);
@@ -1811,9 +2278,10 @@ export class CelestialObjectPanel {
 }
 
 .coSurfaceLayout {
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  align-items: start;
+  align-items: stretch;
   min-height: 0;
 }
 
@@ -1841,6 +2309,7 @@ export class CelestialObjectPanel {
 }
 
 .coInfoCard {
+  align-self: stretch;
   grid-column: 3;
   grid-row: 1;
   color: rgba(232, 242, 237, 0.9);
@@ -1988,8 +2457,31 @@ export class CelestialObjectPanel {
   font-weight: 800;
 }
 
-.coProduction h4 {
-  margin: 5px 0;
+.coInfoPanels {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.coProduction,
+.coPopulationSupport {
+  min-height: 0;
+  padding: 6px;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: rgba(4, 20, 21, 0.42);
+}
+
+.coProduction {
+  display: flex;
+  flex-direction: column;
+  justify-content: start;
+}
+
+.coProduction h4,
+.coPopulationSupport h4 {
+  margin: 2px 0 6px;
   text-align: center;
   color: #eefaf6;
 }
@@ -1998,22 +2490,136 @@ export class CelestialObjectPanel {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
-  color: #5df0a7;
   font-size: 11px;
 }
 
-.coTokenGrid .positive {
+.coProductionToken {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: center;
+  gap: 1px 5px;
+  padding: 3px 4px;
+  border: 1px solid rgba(103, 255, 221, 0.14);
+  background: rgba(1, 8, 10, 0.34);
+}
+
+.coProductionToken .coStatIcon {
+  grid-row: span 2;
+  width: 16px;
+  height: 16px;
+}
+
+.coProductionToken > span:not(.coStatIcon),
+.coProductionToken strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coProductionToken > span:not(.coStatIcon) {
+  color: rgba(202, 225, 219, 0.72);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.coProductionToken strong {
+  font-size: 11px;
+}
+
+.coProductionToken.positive {
+  --co-tone: #64ff9a;
   color: #64ff9a;
 }
 
-.coTokenGrid .negative {
+.coProductionToken.negative {
+  --co-tone: #ff8a77;
   color: #ff8a77;
 }
 
 .coEmptyLine {
-  margin-top: 8px;
+  display: grid;
+  flex: 1 1 auto;
+  place-items: center;
+  min-height: 26px;
   text-align: center;
   color: rgba(185, 202, 198, 0.6);
+}
+
+.coSupportRows {
+  display: grid;
+  gap: 5px;
+}
+
+.coSupportRow {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 6px;
+  padding: 4px 5px;
+  border: 1px solid rgba(103, 255, 221, 0.14);
+  background: rgba(1, 8, 10, 0.34);
+  color: var(--co-tone, #72e2ff);
+}
+
+.coSupportRow .coStatIcon {
+  grid-row: span 3;
+  width: 18px;
+  height: 18px;
+}
+
+.coSupportRow > span:not(.coStatIcon) {
+  min-width: 0;
+}
+
+.coSupportRow small,
+.coSupportRow strong,
+.coSupportRow em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coSupportRow small {
+  color: rgba(202, 225, 219, 0.68);
+  font-size: 9px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.coSupportRow strong {
+  margin-top: 1px;
+  color: currentColor;
+  font-size: 11px;
+}
+
+.coSupportRow em {
+  align-self: end;
+  color: rgba(202, 225, 219, 0.72);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.coSupportRow > i {
+  grid-column: 2 / -1;
+  display: block;
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  background: rgba(206, 232, 226, 0.14);
+}
+
+.coSupportRow > i::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--support-ratio, 0%);
+  background: currentColor;
+  box-shadow: 0 0 9px currentColor;
 }
 
 .coEmbeddedBuildings {
@@ -2138,13 +2744,18 @@ export class CelestialObjectPanel {
 .coBuildTray,
 .coPlanetOverview,
 .coFeatureTray {
-  align-self: start;
+  align-self: stretch;
   min-height: 0;
   margin: 4px 4px 4px 0;
   border: 1px solid rgba(96, 196, 164, 0.58);
   background:
     linear-gradient(180deg, rgba(13, 42, 39, 0.92), rgba(5, 13, 15, 0.96)),
     radial-gradient(circle at 50% 0%, rgba(103, 255, 221, 0.16), transparent 12rem);
+}
+
+.coPlanetOverview {
+  display: flex;
+  flex-direction: column;
 }
 
 .coBuildTray {
@@ -2290,26 +2901,41 @@ export class CelestialObjectPanel {
   padding: 7px;
 }
 
-.coOverviewGrid div {
+.coOverviewStat {
   min-height: 44px;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 1px 6px;
   padding: 6px;
   border: 1px solid rgba(103, 255, 221, 0.28);
   background: rgba(6, 26, 26, 0.52);
+  color: var(--co-tone, #72e2ff);
 }
 
-.coOverviewGrid span,
-.coOverviewGrid strong {
+.coOverviewStat .coStatIcon {
+  grid-row: span 2;
+  width: 18px;
+  height: 18px;
+}
+
+.coOverviewStat > span:not(.coStatIcon),
+.coOverviewStat strong {
   display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.coOverviewGrid span {
+.coOverviewStat > span:not(.coStatIcon) {
   color: rgba(202, 225, 219, 0.68);
   font-size: 10px;
 }
 
-.coOverviewGrid strong {
-  margin-top: 5px;
-  color: #eafff8;
+.coOverviewStat strong {
+  margin-top: 3px;
+  color: currentColor;
   font-size: 12px;
 }
 
@@ -2321,6 +2947,10 @@ export class CelestialObjectPanel {
 }
 
 .coQueuePanel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 118px;
   margin: 0 7px 7px;
   border: 1px solid rgba(103, 255, 221, 0.28);
   background: rgba(5, 20, 20, 0.58);
@@ -2345,9 +2975,11 @@ export class CelestialObjectPanel {
 }
 
 .coQueueList {
+  flex: 1 1 auto;
+  align-content: start;
   display: grid;
   gap: 5px;
-  max-height: 148px;
+  min-height: 0;
   overflow-y: auto;
   padding: 6px;
   scrollbar-width: thin;

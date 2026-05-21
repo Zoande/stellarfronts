@@ -33,6 +33,7 @@ import type { HyperlaneExitPoint, ShipAction } from "./GameplayTypes";
 
 export interface BootOptions {
   adminCommandsEnabled?: boolean;
+  gameId?: string;
   onProgress?: (progress: number, detail: string) => void;
 }
 
@@ -45,7 +46,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   };
 
   reportProgress(0.08, "Connecting to game server");
-  const server = new GameServerClient();
+  const server = new GameServerClient(options.gameId);
   let snapshot = await server.connect();
   const adminCommandsEnabled = options.adminCommandsEnabled === true;
   applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);

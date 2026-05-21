@@ -1,11 +1,10 @@
-import type { GalaxyPerspective } from '@/data/Factions';
-
-export type AccountType = 'seeded-faction' | 'observer' | 'user' | 'admin';
+export type AccountType = 'observer' | 'user' | 'admin';
 
 export interface AuthAccount {
   id: number;
   username: string;
   accountType: AccountType;
+  // Legacy account records exposed this value. Gameplay membership is per-game now.
   factionId: number | null;
   createdAt: number;
   updatedAt: number;
@@ -81,6 +80,30 @@ export interface DevGameRuntimeStats {
   planetCount: number;
   habitedPlanetCount: number;
   combatContactCount: number;
+  gameCount: number;
+  games: DevGameRuntimeRow[];
+}
+
+export interface DevGameRuntimeRow {
+  id: string;
+  name: string;
+  seed: number;
+  countryCapacity: number;
+  controlledCountries: number;
+  createdAt: number;
+  online: boolean;
+  activeConnections: number;
+  activeAccounts: string[];
+  gameYear: number | null;
+  paused: boolean;
+  speedMultiplier: number;
+  starCount: number;
+  factionCount: number;
+  fleetCount: number;
+  shipCount: number;
+  starbaseCount: number;
+  habitedPlanetCount: number;
+  lastHeartbeatAt: number | null;
 }
 
 export interface DevStatsResponse {
@@ -90,10 +113,33 @@ export interface DevStatsResponse {
   game: DevGameRuntimeStats;
 }
 
-export function getPerspectiveForAccount(account: AuthAccount): GalaxyPerspective {
-  if (account.accountType === 'seeded-faction' && account.factionId !== null) {
-    return { mode: 'faction', factionId: account.factionId };
-  }
+export interface GameMembership {
+  gameId: string;
+  accountId: number;
+  factionId: number;
+  countryName: string;
+  joinedAt: number;
+}
 
-  return { mode: 'observer' };
+export interface GameSummary {
+  id: string;
+  name: string;
+  seed: number;
+  countryCapacity: number;
+  controlledCountries: number;
+  createdAt: number;
+  isFull: boolean;
+  isJoined: boolean;
+  joinable: boolean;
+  lastEnteredAt: number | null;
+  membership: GameMembership | null;
+}
+
+export interface GamesResponse {
+  games: GameSummary[];
+}
+
+export interface JoinGameResponse {
+  game: GameSummary;
+  membership: GameMembership | null;
 }

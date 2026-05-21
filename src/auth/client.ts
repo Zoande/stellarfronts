@@ -1,4 +1,13 @@
-import type { AuthAccount, AuthMeResponse, AuthSessionResponse, Credentials, DevStatsResponse } from './types';
+import type {
+  AuthAccount,
+  AuthMeResponse,
+  AuthSessionResponse,
+  Credentials,
+  DevStatsResponse,
+  GamesResponse,
+  GameSummary,
+  JoinGameResponse,
+} from './types';
 
 const AUTH_SERVER_URL = import.meta.env.VITE_AUTH_SERVER_URL ?? 'http://localhost:8788';
 
@@ -55,6 +64,23 @@ export async function getDevStats(): Promise<DevStatsResponse> {
 
 export async function logoutFromDevPanel(): Promise<void> {
   await requestJson('/api/dev/logout', undefined, 'POST');
+}
+
+export async function getGames(): Promise<GameSummary[]> {
+  const result = await requestJson<GamesResponse>('/api/games', undefined, 'GET');
+  return result.games;
+}
+
+export async function joinGame(gameId: string, countryName: string): Promise<JoinGameResponse> {
+  return requestJson<JoinGameResponse>(`/api/games/${encodeURIComponent(gameId)}/join`, { countryName });
+}
+
+export async function createDevGame(name: string): Promise<void> {
+  await requestJson('/api/dev/games', { name });
+}
+
+export async function deleteDevGame(gameId: string): Promise<void> {
+  await requestJson(`/api/dev/games/${encodeURIComponent(gameId)}`, undefined, 'DELETE');
 }
 
 export async function requestOAuthPlaceholder(provider: 'google' | 'microsoft'): Promise<never> {

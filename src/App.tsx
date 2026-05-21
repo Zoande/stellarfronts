@@ -32,12 +32,14 @@ function MainAppFlow() {
   } = useAppFlow();
 
   const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
-  const isGameRoute = currentPath === '/game';
+  const gameRouteMatch = currentPath.match(/^\/game\/([^/]+)$/);
+  const gameId = gameRouteMatch?.[1] ? decodeURIComponent(gameRouteMatch[1]) : null;
 
-  if (isGameRoute && auth.isLoggedIn && auth.account) {
+  if (gameId && auth.isLoggedIn && auth.account) {
     return (
       <Router>
         <GamePage
+          gameId={gameId}
           username={auth.account.username}
           accountType={auth.account.accountType}
           onLogout={handleLogout}

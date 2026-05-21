@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
@@ -185,11 +185,12 @@ import {
   parseAdminCommand,
 } from "../src/game/AdminCommands";
 import type { AdminCommandContext, AdminCommandResult, AdminCommandRow, ParsedAdminCommand } from "../src/game/AdminCommands";
-import type { AuthAccount, DevGameRuntimeStats } from "../src/auth/types";
-import { authStore, getPerspectiveFromAccount, parseSessionTokenFromCookie } from "./auth-store";
+import type { AuthAccount, DevGameRuntimeRow, DevGameRuntimeStats } from "../src/auth/types";
+import { authStore, parseSessionTokenFromCookie } from "./auth-store";
+import type { StoredGame } from "./auth-store";
+import { getGameStateDirectory, getGameStatePath } from "./game-state-path";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const STATE_PATH = path.join(__dirname, "state", "game-state.json");
 const PORT = Number(process.env.GAME_SERVER_PORT ?? 8787);
 const DISCOVERY_JUMPS = 2;
 const DEPART_DURATION_MS = 20_000;
@@ -199,6 +200,7 @@ const BUILD_DURATION_MS = 180_000;
 const SAVE_INTERVAL_MS = 5_000;
 const SERVER_TICK_INTERVAL_MS = 100;
 const RUNTIME_STATS_INTERVAL_MS = 5_000;
+const RUNTIME_CATALOG_SYNC_INTERVAL_MS = 1_000;
 const GAME_SERVER_STARTED_AT = Date.now();
 const DEFAULT_TICK_SIZE_DAYS = 1 / 24;
 const DEFAULT_TICK_SPEED_SECONDS = 1;
@@ -259,15 +261,18 @@ interface ClientSession {
   account: AuthAccount;
   perspective: GalaxyPerspective;
   openPlanetId?: string | null;
+  sentInitialSnapshot: boolean;
 }
 
-const clients = new Set<ClientSession>();
-const pendingPlanetDetailRefreshes = new Set<string>();
-let state: GameState;
-let lastSaveAt = 0;
-let lastRuntimeStatsAt = 0;
-let hasDirtyState = false;
-let runtimeIdCounter = 0;
+interface GameRuntime {
+  game: StoredGame;
+  attachClient: (socket: WebSocket, account: AuthAccount, perspective: GalaxyPerspective) => void;
+  touchMembershipNames: () => void;
+  tick: (now: number) => void;
+  save: () => Promise<void>;
+  dispose: (message?: string, deleteState?: boolean) => Promise<void>;
+  getStats: () => DevGameRuntimeRow;
+}
 
 const FLEET_FORMATIONS: FleetFormation[] = ["line", "vanguard", "echelon", "defensive"];
 const COMBAT_STANCES: CombatStance[] = ["passive", "evade", "holdPosition", "guardArea", "defendSystem", "aggressive", "hunt"];
@@ -296,6 +301,15 @@ function normalizeClock(clock: Partial<GameState["clock"]> | undefined, now = Da
     lastProcessedPopulationWeek: Number(clock?.lastProcessedPopulationWeek) || gameYearToWeekIndex(Number(clock?.year) || GAME_START_YEAR),
   };
 }
+
+async function createGameRuntime(game: StoredGame): Promise<GameRuntime> {
+const statePath = getGameStatePath(game.id);
+const clients = new Set<ClientSession>();
+const pendingPlanetDetailRefreshes = new Set<string>();
+let state: GameState;
+let lastSaveAt = 0;
+let hasDirtyState = false;
+let runtimeIdCounter = 0;
 
 function syncClockSpeedFields(): void {
   state.clock.tickSizeDays = Math.max(0.000001, Number(state.clock.tickSizeDays) || DEFAULT_TICK_SIZE_DAYS);
@@ -1434,7 +1448,7 @@ function normalizeShipDesignsForFactions(
 }
 
 function createInitialState(): GameState {
-  const cfg = GALAXY_MAP;
+  const cfg = { ...GALAXY_MAP, seed: game.seed };
   const stars = generateStarMap(
     cfg.width,
     cfg.height,
@@ -1526,7 +1540,7 @@ function createInitialState(): GameState {
 
 async function loadState(): Promise<GameState> {
   try {
-    const raw = await readFile(STATE_PATH, "utf8");
+    const raw = await readFile(statePath, "utf8");
     const parsed = JSON.parse(raw) as GameState;
     parsed.schemaVersion = 15;
     delete (parsed as GameState & { battles?: unknown }).battles;
@@ -1600,8 +1614,8 @@ async function loadState(): Promise<GameState> {
 }
 
 async function saveState(nextState = state): Promise<void> {
-  await mkdir(path.dirname(STATE_PATH), { recursive: true });
-  await writeFile(STATE_PATH, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  await mkdir(path.dirname(statePath), { recursive: true });
+  await writeFile(statePath, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
   lastSaveAt = Date.now();
   hasDirtyState = false;
 }
@@ -6012,7 +6026,10 @@ function handleSetActiveTechnology(
 
 function handleCommand(session: ClientSession, command: ClientCommand): void {
   if (command.type === "join") {
-    sendEvent(session.socket, createSnapshot(session.perspective));
+    if (!session.sentInitialSnapshot) {
+      sendEvent(session.socket, createSnapshot(session.perspective));
+      session.sentInitialSnapshot = true;
+    }
     return;
   }
   if (command.type === "adminCommand") {
@@ -6155,9 +6172,118 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
 }
 
+function touchMembershipNames(): void {
+  let changed = false;
+  for (const membership of authStore.listGameMemberships(game.id)) {
+    const faction = state.factions.find((candidate) => candidate.id === membership.factionId);
+    if (!faction || faction.name === membership.countryName) continue;
+    faction.name = membership.countryName;
+    changed = true;
+  }
+  if (!changed) return;
+  hasDirtyState = true;
+  broadcastUpdates(["visibility"]);
+}
+
 state = await loadState();
+touchMembershipNames();
 advanceState(Date.now());
 await saveState(state);
+
+function attachClient(socket: WebSocket, account: AuthAccount, perspective: GalaxyPerspective): void {
+  const session: ClientSession = {
+    socket,
+    account,
+    perspective,
+    openPlanetId: null,
+    sentInitialSnapshot: false,
+  };
+  clients.add(session);
+  touchMembershipNames();
+  try {
+    authStore.recordGameEnter(account, game.id);
+  } catch (error) {
+    console.error(`[GameServer] Failed to record game enter for ${game.id}`, error);
+  }
+  sendEvent(socket, { type: "serverInfo", message: `Connected to StellarFronts game ${game.name}.` });
+  // Runtime creation can outlive the client's first WebSocket message.
+  sendEvent(socket, createSnapshot(perspective));
+  session.sentInitialSnapshot = true;
+
+  socket.on("message", (data) => {
+    try {
+      const command = JSON.parse(String(data)) as ClientCommand;
+      handleCommand(session, command);
+      flushPlanetDetailRefreshes();
+    } catch (error) {
+      reject(socket, error instanceof Error ? error.message : "Invalid command.");
+    }
+  });
+
+  socket.on("close", () => {
+    clients.delete(session);
+  });
+}
+
+function tick(now: number): void {
+  const changed = advanceState(now);
+  broadcastUpdates(Array.from(changed));
+  flushPlanetDetailRefreshes();
+  if (hasDirtyState && now - lastSaveAt >= SAVE_INTERVAL_MS) {
+    void saveState().catch((error) => console.error(`[GameServer] Failed to save state for ${game.id}`, error));
+  }
+}
+
+function getStats(): DevGameRuntimeRow {
+  const activeAccounts = Array.from(new Set(
+    Array.from(clients).map((client) => client.account.username),
+  )).sort((a, b) => a.localeCompare(b));
+  return {
+    id: game.id,
+    name: game.name,
+    seed: game.seed,
+    countryCapacity: game.countryCapacity,
+    controlledCountries: authStore.listGameMemberships(game.id).length,
+    createdAt: game.createdAt,
+    online: true,
+    activeConnections: clients.size,
+    activeAccounts,
+    gameYear: state.clock.year,
+    paused: state.clock.paused,
+    speedMultiplier: state.clock.speedMultiplier,
+    starCount: state.stars.length,
+    factionCount: state.factions.length,
+    fleetCount: state.fleets.length,
+    shipCount: state.ships.length,
+    starbaseCount: state.starbases.length,
+    habitedPlanetCount: state.planetStates.filter((planetState) => planetState.isHabited).length,
+    lastHeartbeatAt: Date.now(),
+  };
+}
+
+async function dispose(message = "Game runtime stopped.", deleteState = false): Promise<void> {
+  for (const client of clients) {
+    sendEvent(client.socket, { type: "serverInfo", message });
+    client.socket.close(1001, message);
+  }
+  clients.clear();
+  if (deleteState) {
+    await rm(getGameStateDirectory(game.id), { recursive: true, force: true });
+    return;
+  }
+  await saveState(state);
+}
+
+return {
+  game,
+  attachClient,
+  touchMembershipNames,
+  tick,
+  save: () => saveState(state),
+  dispose,
+  getStats,
+};
+}
 
 // Parse comma-separated allowed WebSocket origins from environment
 // Default: localhost dev environments
@@ -6182,28 +6308,78 @@ function isWebSocketOriginAllowed(origin: string | undefined): boolean {
   return wsAllowedOrigins.has(origin);
 }
 
-function buildRuntimeStats(): DevGameRuntimeStats {
-  const activeAccounts = Array.from(new Set(
-    Array.from(clients).map((client) => client.account.username),
-  )).sort((a, b) => a.localeCompare(b));
+const runtimes = new Map<string, GameRuntime>();
+const runtimeLoads = new Map<string, Promise<GameRuntime>>();
+let lastRuntimeStatsAt = 0;
+let lastRuntimeSyncAt = 0;
+let runtimeSyncing = false;
 
+function sendServerEvent(socket: WebSocket, event: ServerEvent): void {
+  if (socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify(event));
+}
+
+async function ensureRuntime(game: StoredGame): Promise<GameRuntime> {
+  const current = runtimes.get(game.id);
+  if (current) return current;
+  const loading = runtimeLoads.get(game.id);
+  if (loading) return loading;
+
+  const load = createGameRuntime(game)
+    .then((runtime) => {
+      runtimes.set(game.id, runtime);
+      runtimeLoads.delete(game.id);
+      return runtime;
+    })
+    .catch((error) => {
+      runtimeLoads.delete(game.id);
+      throw error;
+    });
+  runtimeLoads.set(game.id, load);
+  return load;
+}
+
+async function syncGameRuntimes(): Promise<void> {
+  if (runtimeSyncing) return;
+  runtimeSyncing = true;
+  try {
+    const games = authStore.listGames();
+    const gameById = new Map(games.map((game) => [game.id, game]));
+    await Promise.all(games.map((game) => ensureRuntime(game)));
+    await Promise.all(Array.from(runtimes.entries()).map(async ([gameId, runtime]) => {
+      if (gameById.has(gameId)) return;
+      runtimes.delete(gameId);
+      await runtime.dispose("This game was deleted.", true);
+    }));
+  } finally {
+    lastRuntimeSyncAt = Date.now();
+    runtimeSyncing = false;
+  }
+}
+
+function buildRuntimeStats(): DevGameRuntimeStats {
+  const games = Array.from(runtimes.values()).map((runtime) => runtime.getStats());
+  const activeAccounts = Array.from(new Set(games.flatMap((game) => game.activeAccounts)))
+    .sort((a, b) => a.localeCompare(b));
   return {
     online: true,
-    activeConnections: clients.size,
+    activeConnections: games.reduce((sum, game) => sum + game.activeConnections, 0),
     activeAccounts,
     serverStartedAt: GAME_SERVER_STARTED_AT,
     lastHeartbeatAt: Date.now(),
-    gameYear: state.clock.year,
-    paused: state.clock.paused,
-    speedMultiplier: state.clock.speedMultiplier,
-    starCount: state.stars.length,
-    factionCount: state.factions.length,
-    fleetCount: state.fleets.length,
-    shipCount: state.ships.length,
-    starbaseCount: state.starbases.length,
-    planetCount: state.planetStates.length,
-    habitedPlanetCount: state.planetStates.filter((planetState) => planetState.isHabited).length,
-    combatContactCount: state.recentCombatContacts.length,
+    gameYear: games.length === 1 ? games[0].gameYear : null,
+    paused: games.length > 0 && games.every((game) => game.paused),
+    speedMultiplier: games.length === 1 ? games[0].speedMultiplier : 0,
+    starCount: games.reduce((sum, game) => sum + game.starCount, 0),
+    factionCount: games.reduce((sum, game) => sum + game.factionCount, 0),
+    fleetCount: games.reduce((sum, game) => sum + game.fleetCount, 0),
+    shipCount: games.reduce((sum, game) => sum + game.shipCount, 0),
+    starbaseCount: games.reduce((sum, game) => sum + game.starbaseCount, 0),
+    planetCount: 0,
+    habitedPlanetCount: games.reduce((sum, game) => sum + game.habitedPlanetCount, 0),
+    combatContactCount: 0,
+    gameCount: games.length,
+    games,
   };
 }
 
@@ -6218,64 +6394,61 @@ function publishRuntimeStats(force = false): void {
   }
 }
 
+await syncGameRuntimes();
 publishRuntimeStats(true);
 
-const wss = new WebSocketServer({ port: PORT });
-wss.on("connection", (socket, request) => {
-  // Validate WebSocket origin
+async function handleConnection(socket: WebSocket, request: Parameters<NonNullable<Parameters<WebSocketServer["on"]>[1]>>[1]): Promise<void> {
   const origin = request.headers.origin;
   if (!isWebSocketOriginAllowed(origin)) {
     console.warn(`[GameServer] Rejected WebSocket connection from disallowed origin: ${origin}`);
-    socket.close(1008, 'Origin not allowed');
+    socket.close(1008, "Origin not allowed");
     return;
   }
 
   const token = parseSessionTokenFromCookie(request.headers.cookie);
   const account = token ? authStore.getAccountFromSessionToken(token) : null;
   if (!account) {
-    sendEvent(socket, { type: "serverInfo", message: "Authentication required." });
+    sendServerEvent(socket, { type: "serverInfo", message: "Authentication required." });
     socket.close();
     return;
   }
 
-  const session: ClientSession = {
-    socket,
-    account,
-    perspective: getPerspectiveFromAccount(account),
-    openPlanetId: null,
-  };
-  clients.add(session);
-  try {
-    authStore.recordGameEnter(account);
-  } catch (error) {
-    console.error("[GameServer] Failed to record game enter", error);
+  const url = new URL(request.url ?? "/", `ws://${request.headers.host ?? "localhost"}`);
+  const gameId = url.searchParams.get("gameId") ?? "";
+  const game = authStore.getGameById(gameId);
+  const perspective = game ? authStore.getGamePerspective(account, game.id) : null;
+  if (!game) {
+    sendServerEvent(socket, { type: "serverInfo", message: "Game not found." });
+    socket.close();
+    return;
   }
+  if (!perspective) {
+    sendServerEvent(socket, { type: "serverInfo", message: "Join this game before entering it." });
+    socket.close();
+    return;
+  }
+
+  const runtime = await ensureRuntime(game);
+  runtime.attachClient(socket, account, perspective);
   publishRuntimeStats(true);
-  sendEvent(socket, { type: "serverInfo", message: "Connected to StellarFronts game server." });
+}
 
-  socket.on("message", (data) => {
-    try {
-      const command = JSON.parse(String(data)) as ClientCommand;
-      handleCommand(session, command);
-      flushPlanetDetailRefreshes();
-    } catch (error) {
-      reject(socket, error instanceof Error ? error.message : "Invalid command.");
-    }
-  });
-
-  socket.on("close", () => {
-    clients.delete(session);
-    publishRuntimeStats(true);
+const wss = new WebSocketServer({ port: PORT });
+wss.on("connection", (socket, request) => {
+  void handleConnection(socket, request).catch((error) => {
+    console.error("[GameServer] Failed to accept connection", error);
+    sendServerEvent(socket, { type: "serverInfo", message: "Could not enter game." });
+    socket.close();
   });
 });
 
 setInterval(() => {
-  const changed = advanceState(Date.now());
-  broadcastUpdates(Array.from(changed));
-  flushPlanetDetailRefreshes();
+  const now = Date.now();
+  for (const runtime of runtimes.values()) runtime.tick(now);
   publishRuntimeStats();
-  if (hasDirtyState && Date.now() - lastSaveAt >= SAVE_INTERVAL_MS) {
-    void saveState().catch((error) => console.error("[GameServer] Failed to save state", error));
+  if (now - lastRuntimeSyncAt >= RUNTIME_CATALOG_SYNC_INTERVAL_MS) {
+    void syncGameRuntimes().then(() => publishRuntimeStats(true))
+      .catch((error) => console.error("[GameServer] Failed to sync game runtimes", error));
   }
 }, SERVER_TICK_INTERVAL_MS);
 

@@ -178,3 +178,97 @@
   font-size: 12px;
   max-width: calc(100vw - 24px);
 }
+
+.game-entry-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 200;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background:
+    linear-gradient(180deg, rgba(2, 7, 18, 0.72), rgba(0, 0, 0, 0.94)),
+    url('/textures/galaxy_bg.webp') center / cover;
+}
+
+.game-entry-panel {
+  width: min(520px, 100%);
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(168, 182, 200, 0.64);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(16, 22, 30, 0.98), rgba(8, 12, 18, 0.98));
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.55);
+  color: #d6dde7;
+  padding: 24px;
+}
+
+.game-entry-panel h1,
+.game-entry-panel p {
+  margin: 0;
+}
+
+.game-entry-panel h1 {
+  color: #eef7ff;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.game-entry-panel p {
+  color: #a8b6ca;
+}
+
+.game-entry-kicker,
+.game-join-panel label {
+  color: #8fd6ff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.game-join-panel input {
+  min-height: 46px;
+  border: 1px solid rgba(168, 182, 200, 0.5);
+  border-radius: 5px;
+  background: rgba(5, 10, 17, 0.92);
+  color: #eef7ff;
+  font: inherit;
+  padding: 0 13px;
+}
+
+.game-entry-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.game-entry-actions button {
+  min-height: 40px;
+  border: 1px solid rgba(168, 182, 200, 0.5);
+  border-radius: 5px;
+  background: rgba(24, 46, 73, 0.96);
+  color: #eef7ff;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  padding: 0 14px;
+  text-transform: uppercase;
+}
+
+.game-entry-actions button:first-child {
+  background: rgba(11, 16, 23, 0.94);
+}
+
+.game-entry-actions button:disabled {
+  cursor: progress;
+  opacity: 0.62;
+}
+
+.game-entry-error {
+  border-left: 2px solid rgba(255, 130, 150, 0.76);
+  background: rgba(120, 18, 29, 0.28);
+  color: #ffe6e9;
+  padding: 9px 10px;
+}

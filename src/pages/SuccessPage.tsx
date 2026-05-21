@@ -11,7 +11,7 @@ export default function SuccessPage({ message, onEnterGame }: SuccessPageProps) 
 
   const handleEnterGame = () => {
     onEnterGame();
-    navigate('/game');
+    navigate('/home');
   };
 
   return (
