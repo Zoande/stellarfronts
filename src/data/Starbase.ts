@@ -1,4 +1,4 @@
-import { createEmptyResourceCounts } from "./Economy";
+import { createEmptyResourceCounts, RESOURCE_KINDS } from "./Economy";
 import type { ResourceCounts } from "./Economy";
 import type { RangeBand } from "../game/CombatTypes";
 
@@ -116,6 +116,8 @@ export interface StarbaseShipQueueItem {
   shipId?: string | null;
   label: string;
   cost: ResourceCounts;
+  upfrontCost: ResourceCounts;
+  resourceUpkeepPerDay: ResourceCounts;
   totalDays: number;
   remainingDays: number;
   alloyUpkeepPerDay: number;
@@ -150,6 +152,39 @@ function resources(values: Partial<ResourceCounts>): ResourceCounts {
   return {
     ...createEmptyResourceCounts(),
     ...values,
+  };
+}
+
+function scaleResources(values: ResourceCounts, scale: number): ResourceCounts {
+  return {
+    food: values.food * scale,
+    minerals: values.minerals * scale,
+    energy: values.energy * scale,
+    goods: values.goods * scale,
+    alloys: values.alloys * scale,
+    research: values.research * scale,
+  };
+}
+
+function subtractResources(a: ResourceCounts, b: ResourceCounts): ResourceCounts {
+  return {
+    food: a.food - b.food,
+    minerals: a.minerals - b.minerals,
+    energy: a.energy - b.energy,
+    goods: a.goods - b.goods,
+    alloys: a.alloys - b.alloys,
+    research: a.research - b.research,
+  };
+}
+
+function addResources(a: ResourceCounts, b: ResourceCounts): ResourceCounts {
+  return {
+    food: a.food + b.food,
+    minerals: a.minerals + b.minerals,
+    energy: a.energy + b.energy,
+    goods: a.goods + b.goods,
+    alloys: a.alloys + b.alloys,
+    research: a.research + b.research,
   };
 }
 
@@ -443,7 +478,11 @@ export function createStarbaseShipQueueItem(
 ): StarbaseShipQueueItem {
   const definition = STARBASE_SHIP_DEFINITIONS[shipKind];
   const totalDays = overrides.totalDays ?? definition.buildDays;
-  const alloyUpkeepPerDay = overrides.alloyUpkeepPerDay ?? definition.alloyUpkeepPerDay;
+  const cost = resources(overrides.cost ?? { alloys: definition.alloyUpkeepPerDay * totalDays });
+  const upfrontCost = resources(overrides.upfrontCost ?? scaleResources(cost, 0.05));
+  const deferredCost = subtractResources(cost, upfrontCost);
+  const resourceUpkeepPerDay = resources(overrides.resourceUpkeepPerDay ?? scaleResources(deferredCost, 1 / Math.max(1, totalDays)));
+  const alloyUpkeepPerDay = overrides.alloyUpkeepPerDay ?? resourceUpkeepPerDay.alloys;
   return {
     id,
     kind: overrides.kind ?? "build",
@@ -452,7 +491,9 @@ export function createStarbaseShipQueueItem(
     targetDesignId: overrides.targetDesignId ?? null,
     shipId: overrides.shipId ?? null,
     label: overrides.label ?? definition.label,
-    cost: resources(overrides.cost ?? { alloys: alloyUpkeepPerDay * totalDays }),
+    cost,
+    upfrontCost,
+    resourceUpkeepPerDay,
     totalDays,
     remainingDays: overrides.remainingDays ?? totalDays,
     alloyUpkeepPerDay,
@@ -538,10 +579,11 @@ export function progressStarbaseShipQueue<T extends {
 }>(
   starbase: T,
   elapsedDays: number,
-): { starbase: T; changed: boolean; completed: StarbaseShipQueueItem[]; alloysConsumed: number } {
+  availableResources?: ResourceCounts,
+): { starbase: T; changed: boolean; completed: StarbaseShipQueueItem[]; resourcesConsumed: ResourceCounts; alloysConsumed: number } {
   const shipyardCount = countStarbaseShipyards(starbase.buildingSlots);
   if (shipyardCount <= 0 || elapsedDays <= 0 || starbase.shipQueue.length === 0) {
-    return { starbase, changed: false, completed: [], alloysConsumed: 0 };
+    return { starbase, changed: false, completed: [], resourcesConsumed: createEmptyResourceCounts(), alloysConsumed: 0 };
   }
 
   let queue = starbase.shipQueue
@@ -549,20 +591,36 @@ export function progressStarbaseShipQueue<T extends {
     .map((item) => ({ ...item }));
   let days = Math.max(0, elapsedDays);
   const completed: StarbaseShipQueueItem[] = [];
-  let alloysConsumed = 0;
+  let resourcesConsumed = createEmptyResourceCounts();
+  let remainingResources = availableResources ? resources(availableResources) : null;
   let changed = false;
 
   while (days > 0 && queue.length > 0) {
     const active = queue.slice(0, shipyardCount);
     if (active.length === 0) break;
-    const step = Math.min(days, ...active.map((item) => Math.max(0, item.remainingDays)));
+    const activeDemandPerDay = active.reduce(
+      (total, item) => addResources(total, item.resourceUpkeepPerDay ?? resources({ alloys: item.alloyUpkeepPerDay })),
+      createEmptyResourceCounts(),
+    );
+    let step = Math.min(days, ...active.map((item) => Math.max(0, item.remainingDays)));
+    if (remainingResources) {
+      let affordableDays = Number.POSITIVE_INFINITY;
+      for (const resource of RESOURCE_KINDS) {
+        const dailyDemand = activeDemandPerDay[resource];
+        if (dailyDemand <= 0) continue;
+        affordableDays = Math.min(affordableDays, Math.max(0, remainingResources[resource]) / dailyDemand);
+      }
+      step = Math.min(step, affordableDays);
+    }
     if (step <= 0) break;
 
     for (let index = 0; index < active.length; index += 1) {
       const item = queue[index];
       item.remainingDays = Math.max(0, item.remainingDays - step);
-      alloysConsumed += item.alloyUpkeepPerDay * step;
     }
+    const stepDemand = scaleResources(activeDemandPerDay, step);
+    resourcesConsumed = addResources(resourcesConsumed, stepDemand);
+    if (remainingResources) remainingResources = subtractResources(remainingResources, stepDemand);
     days = Math.max(0, days - step);
     changed = true;
 
@@ -581,6 +639,7 @@ export function progressStarbaseShipQueue<T extends {
     starbase: { ...starbase, shipQueue: queue },
     changed,
     completed,
-    alloysConsumed,
+    resourcesConsumed,
+    alloysConsumed: resourcesConsumed.alloys,
   };
 }

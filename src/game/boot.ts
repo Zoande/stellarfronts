@@ -23,6 +23,9 @@ import { HudOverlay } from "@/ui/HudOverlay";
 import type { HudConnectedSystem, HudSidebarItemKey, HudVisualToggles } from "@/ui/HudOverlay";
 import { FleetManagerPanel } from "@/ui/FleetManagerPanel";
 import { TechnologyPanel } from "@/ui/TechnologyPanel";
+import { LeadersPanel } from "@/ui/LeadersPanel";
+import { OPEN_LEADERS_PANEL_EVENT } from "@/ui/leaderEvents";
+import type { LeaderAssignmentTarget, OpenLeadersPanelEventDetail } from "@/ui/leaderEvents";
 import { AdminCommandPanel } from "@/ui/AdminCommandPanel";
 import { GameServerClient } from "./GameServerClient";
 import type { ClientCommand, GameSnapshot, ServerFleet, ServerUpdateField } from "./GameProtocol";
@@ -66,7 +69,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let hud: HudOverlay | null = null;
   let fleetManagerPanel: FleetManagerPanel | null = null;
   let technologyPanel: TechnologyPanel | null = null;
+  let leadersPanel: LeadersPanel | null = null;
   let adminCommandPanel: AdminCommandPanel | null = null;
+  let leadersPanelAssignmentTarget: LeaderAssignmentTarget | null = null;
   let selectedFleetIds = new Set<string>();
 
   const visualToggles: HudVisualToggles = {
@@ -253,6 +258,48 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     factionName: getCurrentFactionName(),
     onTechnologyCommand: (command: ClientCommand) => server.send(command),
   });
+  const sendLeaderCommand = (command: ClientCommand): void => {
+    server.send(command);
+    if (command.type !== "assignLeader") return;
+    const assignedLeader = snapshot.leaders.find((leader) => leader.id === command.leaderId);
+    if (!assignedLeader) return;
+    const assignment = command.assignment;
+    snapshot = {
+      ...snapshot,
+      leaders: snapshot.leaders.map((leader) => {
+        if (leader.id === command.leaderId) {
+          return {
+            ...leader,
+            status: "recruited",
+            assignment,
+            recruitedAtYear: leader.recruitedAtYear ?? getRenderClockYear(),
+          };
+        }
+        if (
+          assignment
+          && leader.factionId === assignedLeader.factionId
+          && leader.assignment?.kind === assignment.kind
+          && leader.assignment.targetId === assignment.targetId
+        ) {
+          return { ...leader, assignment: null };
+        }
+        return leader;
+      }),
+    };
+    applySnapshotToActiveScene(["leaders"]);
+  };
+  const getLeadersPanelData = () => ({
+    leaders: snapshot.leaders,
+    fleets: snapshot.fleets,
+    stars: snapshot.stars,
+    planetStates: snapshot.planetStates,
+    factions: snapshot.factions,
+    playerFactionId: getPlayerFactionId(),
+    factionName: getCurrentFactionName(),
+    clockYear: getRenderClockYear(),
+    assignmentTarget: leadersPanelAssignmentTarget,
+    onLeaderCommand: sendLeaderCommand,
+  });
   const openFleetManager = (): void => {
     if (!fleetManagerPanel) {
       fleetManagerPanel = new FleetManagerPanel();
@@ -265,17 +312,29 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
     technologyPanel.show(getTechnologyPanelData());
   };
+  const openLeadersPanel = (assignmentTarget: LeaderAssignmentTarget | null = null): void => {
+    leadersPanelAssignmentTarget = assignmentTarget;
+    if (!leadersPanel) {
+      leadersPanel = new LeadersPanel();
+    }
+    leadersPanel.show(getLeadersPanelData());
+  };
   const refreshFleetManager = (): void => {
     fleetManagerPanel?.refresh(getFleetManagerData());
   };
   const refreshTechnologyPanel = (): void => {
     technologyPanel?.refresh(getTechnologyPanelData());
   };
+  const refreshLeadersPanel = (): void => {
+    leadersPanel?.refresh(getLeadersPanelData());
+  };
   const handleSidebarItem = (key: HudSidebarItemKey): void => {
     if (key === "fleets") {
       openFleetManager();
     } else if (key === "technology") {
       openTechnologyPanel();
+    } else if (key === "leaders") {
+      openLeadersPanel(null);
     }
   };
 
@@ -588,6 +647,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       if (isFull || has("fleets")) {
         activeGalaxyScene.setServerFleets(snapshot.fleets);
       }
+      if (isFull || has("leaders")) {
+        activeGalaxyScene.setLeaders(snapshot.leaders);
+      }
       if (isFull || has("planetStates")) {
         activeGalaxyScene.setPlanetStates(snapshot.planetStates);
       }
@@ -611,6 +673,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       if (isFull || has("fleets")) {
         activeSystemScene.setServerFleets(snapshot.fleets);
       }
+      if (isFull || has("leaders")) {
+        activeSystemScene.setLeaders(snapshot.leaders);
+      }
       if (isFull || has("ships")) {
         activeSystemScene.setServerShips(snapshot.ships);
       }
@@ -627,6 +692,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       if (isFull || has("technologies")) {
         activeSystemScene.setTechnology(getCurrentFactionTechnology());
       }
+      if (isFull || has("visibility")) {
+        activeSystemScene.setStarOwnerships(expandStarOwnership());
+      }
     }
 
     updateHud();
@@ -642,6 +710,15 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
     if (isFull || has("technologies") || has("factionEconomies")) {
       refreshTechnologyPanel();
+    }
+    if (
+      isFull
+      || has("leaders")
+      || has("fleets")
+      || has("planetStates")
+      || has("visibility")
+    ) {
+      refreshLeadersPanel();
     }
   }
 
@@ -671,6 +748,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       serverFleets: snapshot.fleets,
       serverShips: snapshot.ships,
       shipDesigns: snapshot.shipDesigns,
+      leaders: snapshot.leaders,
       starbaseSystemIds: getStarbaseSystemIds(),
       promotedStarbaseSystemIds: getPromotedStarbaseSystemIds(),
       starbases: snapshot.starbases,
@@ -744,6 +822,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           starbaseSystemIds: getStarbaseSystemIds(),
           starbases: snapshot.starbases,
           factions: snapshot.factions,
+          starOwnership: expandStarOwnership(),
           playerFactionId: snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : 0,
           playerShipStarId: getPrimaryFleetStarId(),
           shipTransit: getPrimaryTransit(),
@@ -752,6 +831,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           clockYear: getRenderClockYear(),
           selectedFleetIds,
           planetStates: details.planetStates,
+          leaders: snapshot.leaders,
           technology: getCurrentFactionTechnology(),
           onPlanetCommand: sendPlanetCommand,
           onFleetCommand: (command) => server.send(command),
@@ -821,6 +901,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     pressedCodes.delete(ev.code);
     if (ev.key === "Shift") pressedCodes.clear();
   };
+  const handleOpenLeadersPanel = (ev: Event): void => {
+    const detail = (ev as CustomEvent<OpenLeadersPanelEventDetail>).detail;
+    openLeadersPanel(detail?.assignmentTarget ?? null);
+  };
 
   server.onSnapshot((nextSnapshot, changed) => {
     snapshot = nextSnapshot;
@@ -842,6 +926,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   window.addEventListener("keydown", handleKeyDown);
   window.addEventListener("keyup", handleKeyUp);
+  window.addEventListener(OPEN_LEADERS_PANEL_EVENT, handleOpenLeadersPanel);
 
   reportProgress(0.5, "Starting galaxy command sequence");
   applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
@@ -852,9 +937,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   return () => {
     window.removeEventListener("keydown", handleKeyDown);
     window.removeEventListener("keyup", handleKeyUp);
+    window.removeEventListener(OPEN_LEADERS_PANEL_EVENT, handleOpenLeadersPanel);
     hud?.dispose();
     fleetManagerPanel?.dispose();
     technologyPanel?.dispose();
+    leadersPanel?.dispose();
     adminCommandPanel?.dispose();
     server.dispose();
     mgr.dispose();

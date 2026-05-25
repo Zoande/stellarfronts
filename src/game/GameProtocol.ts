@@ -17,6 +17,7 @@ import type {
 } from "../data/Starbase";
 import type { ShipDesign } from "../data/ShipDesigns";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
+import type { LeaderAssignment, LeaderState } from "../data/Leaders";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type {
@@ -51,6 +52,7 @@ export interface GameClock {
   tickSpeedSeconds: number;
   paused: boolean;
   syncedAtMs: number;
+  lastProcessedLeaderDay?: number;
 }
 
 export type ServerUpdateField =
@@ -64,6 +66,7 @@ export type ServerUpdateField =
   | "fleets"
   | "starbases"
   | "technologies"
+  | "leaders"
   | "combatContacts";
 
 export interface ServerStar extends StarData {}
@@ -357,6 +360,22 @@ export interface SetActiveTechnologyCommand {
   techId: TechId;
 }
 
+export interface RecruitLeaderCommand {
+  type: "recruitLeader";
+  leaderId: string;
+}
+
+export interface AssignLeaderCommand {
+  type: "assignLeader";
+  leaderId: string;
+  assignment: LeaderAssignment | null;
+}
+
+export interface DismissLeaderCommand {
+  type: "dismissLeader";
+  leaderId: string;
+}
+
 export interface RetreatFleetCommand {
   type: "retreatFleet";
   fleetId: string;
@@ -433,6 +452,9 @@ export type ClientCommand =
   | SaveShipDesignCommand
   | DecommissionShipDesignCommand
   | SetActiveTechnologyCommand
+  | RecruitLeaderCommand
+  | AssignLeaderCommand
+  | DismissLeaderCommand
   | SetUrbanSubDistrictCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand
@@ -461,6 +483,7 @@ export interface GameSnapshot {
   fleets: ServerFleet[];
   starbases: ServerStarbase[];
   technologies: FactionTechnologyView[];
+  leaders: LeaderState[];
   recentCombatContacts: ServerCombatContact[];
 }
 
@@ -483,6 +506,7 @@ export interface GameUpdate {
   fleets?: ServerFleet[];
   starbases?: ServerStarbase[];
   technologies?: FactionTechnologyView[];
+  leaders?: LeaderState[];
   recentCombatContacts?: ServerCombatContact[];
 }
 

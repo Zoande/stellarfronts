@@ -1091,12 +1091,11 @@ export class FleetManagerPanel {
         <div class="fmBuildShipList">
           ${designs.length === 0 ? '<div class="fmEmpty">No active designs available.</div>' : designs.map((design) => {
             const stats = calculateShipDesignStats(design);
-            const predictedAlloys = stats.alloyUpkeepPerDay * stats.buildDays;
             const missingTechnology = this.getDesignMissingTechnologyName(data, design);
             const canBuild = Boolean(nearest) && !missingTechnology;
             const note = missingTechnology
               ? `Requires ${missingTechnology}`
-              : `${this.formatCompact(predictedAlloys)} alloys predicted | ${stats.buildDays.toFixed(1)} days | ${this.formatCompact(stats.crewDemand)} crew`;
+              : `${this.formatResourceList(stats.cost)} | ${stats.buildDays.toFixed(1)} days | ${this.formatCompact(stats.crewDemand)} crew`;
             return `
               <button class="fmBuildShipCard" type="button" data-fm-build-ship="${design.shipKind}" data-fm-build-design="${this.escapeAttribute(design.id)}" ${canBuild ? "" : "disabled"}>
                 <span class="fmShipIcon">${this.escapeHtml(this.getInitials(SHIP_HULL_DEFINITIONS[design.shipKind]?.label ?? design.shipKind))}</span>
@@ -1657,6 +1656,13 @@ export class FleetManagerPanel {
         <span class="fmResourceRows">${rows.length > 0 ? rows.join("") : "None"}</span>
       </div>
     `;
+  }
+
+  private formatResourceList(resources: Record<string, number>): string {
+    const parts = Object.entries(resources)
+      .filter(([, value]) => Math.abs(value) > 0.001)
+      .map(([resource, value]) => `${this.formatCompact(value)} ${this.formatResourceLabel(resource)}`);
+    return parts.length > 0 ? parts.join(", ") : "Free";
   }
 
   private formatResourceLabel(resource: string): string {

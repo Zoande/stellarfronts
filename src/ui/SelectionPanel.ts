@@ -9,7 +9,10 @@ import type {
   FleetChasePolicy,
   FleetRetreatPolicy,
 } from "../game/CombatTypes";
+import type { LeaderState } from "../data/Leaders";
+import { GAME_DAYS_PER_YEAR, gameYearToDateTime } from "../game/GameTime";
 import type { ShipAction } from "../game/GameplayTypes";
+import { requestOpenLeadersPanel } from "./leaderEvents";
 
 export type SelectionType = "ship" | "fleet" | "starbase";
 export type FleetPolicyControl = "chase" | "stance" | "behavior" | "retreatPolicy";
@@ -27,6 +30,11 @@ export interface SelectionShipData {
   hull: number;
   maxHull: number;
   ownerColor?: [number, number, number];
+}
+
+export interface SelectionMovementData {
+  destination: string;
+  arrivalYear: number;
 }
 
 export interface SelectionData {
@@ -51,10 +59,12 @@ export interface SelectionData {
   actions?: ShipAction[];
   ships?: SelectionShipData[];
   shipCount?: number;
+  movement?: SelectionMovementData;
   combatStance?: CombatStance;
   combatBehavior?: FleetBehavior;
   chasePolicy?: FleetChasePolicy;
   retreatPolicy?: FleetRetreatPolicy;
+  leader?: LeaderState | null;
 }
 
 export interface SelectionPanelCallbacks {
@@ -70,6 +80,7 @@ export class SelectionPanel {
   private canvasElement: HTMLCanvasElement | null = null;
   private activeShipAction: ShipAction | null = null;
   private activePolicyPicker: { selectionKey: string; control: FleetPolicyControl } | null = null;
+  private clockYear = 2100;
   private callbacks: SelectionPanelCallbacks;
 
   constructor(canvasElement?: HTMLCanvasElement, callbacks: SelectionPanelCallbacks = {}) {
@@ -284,7 +295,7 @@ export class SelectionPanel {
 }
 
 .spaceSelectionPanel.fleet {
-  --fleet-panel-width: min(462px, calc(100vw - 18px));
+  --fleet-panel-width: min(560px, calc(100vw - 18px));
   position: relative;
   width: var(--fleet-panel-width);
   min-width: 0;
@@ -385,16 +396,18 @@ export class SelectionPanel {
 }
 
 .fleetSelectionBody {
+  position: relative;
   height: calc(100% - 43px);
   display: grid;
-  grid-template-columns: 166px minmax(248px, 1fr);
-  grid-template-rows: 86px minmax(0, 1fr);
+  grid-template-columns: minmax(236px, 0.86fr) minmax(286px, 1.14fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 8px 10px;
   padding: 8px 12px 10px;
 }
 
 .fleetSelectionIdentity {
   min-width: 0;
+  overflow: hidden;
 }
 
 .fleetSelectionTitle {
@@ -411,25 +424,95 @@ export class SelectionPanel {
 
 .fleetSelectionIdentityGrid {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
-  gap: 6px;
-  align-items: center;
+  grid-template-columns: 124px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  min-width: 0;
 }
 
-.fleetSelectionSilhouette {
-  height: 48px;
+.fleetSelectionLeaderCard {
+  width: 124px;
+  min-width: 0;
+  height: 62px;
   display: flex;
   align-items: center;
-  justify-content: center;
-  opacity: 0.72;
-  filter: drop-shadow(0 0 12px var(--selection-color-soft));
+  gap: 8px;
+  padding: 7px 8px;
+  border: 1px solid rgba(92, 221, 184, 0.38);
+  background: rgba(4, 17, 17, 0.68);
+  color: rgba(236, 248, 244, 0.9);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  overflow: hidden;
 }
 
-.fleetSelectionSilhouette svg {
-  width: 80px;
-  height: 48px;
-  color: var(--selection-color);
-  fill: currentColor;
+.fleetSelectionLeaderCard.assignable {
+  cursor: pointer;
+}
+
+.fleetSelectionLeaderCard.assignable:hover {
+  border-color: rgba(130, 255, 218, 0.72);
+  box-shadow: 0 0 16px rgba(92, 221, 184, 0.18);
+}
+
+.fleetSelectionLeaderCard strong {
+  display: block;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.fleetSelectionLeaderCard span {
+  display: block;
+  margin-top: 3px;
+  color: rgba(218, 236, 229, 0.72);
+  font-size: 9px;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.fleetSelectionLeaderPortrait {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, #516b71, #1a2529 60%, #111);
+  background-size: cover;
+  background-position: center;
+  border: 1px solid rgba(179, 255, 229, 0.42);
+  display: grid;
+  place-items: center;
+  color: rgba(230, 255, 246, 0.88);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.fleetSelectionLeaderPortrait i {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(179, 255, 229, 0.56);
+  color: rgba(179, 255, 229, 0.95);
+  font-style: normal;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.fleetSelectionLeaderText {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .fleetSelectionMetaRows {
@@ -440,8 +523,8 @@ export class SelectionPanel {
 
 .fleetSelectionMetaRow {
   display: grid;
-  grid-template-columns: 45px minmax(0, 1fr);
-  gap: 5px;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 6px;
   align-items: baseline;
   min-width: 0;
 }
@@ -459,7 +542,53 @@ export class SelectionPanel {
   font-size: 8px;
   font-weight: 800;
   letter-spacing: 0.04em;
-  text-align: right;
+  line-height: 1.15;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.fleetSelectionMovement {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 82px;
+  height: 14px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.fleetSelectionMovementRow {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.fleetSelectionMovementRow span {
+  color: rgba(191, 205, 221, 0.66);
+  font-size: 7px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.fleetSelectionMovementRow strong {
+  min-width: 0;
+  color: rgba(237, 247, 255, 0.92);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.16;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -898,6 +1027,12 @@ export class SelectionPanel {
     this.render();
   }
 
+  public setClockYear(year: number): void {
+    if (!Number.isFinite(year)) return;
+    this.clockYear = year;
+    this.updateFleetMovementTimers();
+  }
+
   private render(): void {
     const existingContainer = this.root.querySelector(".spaceSelectionPanelContainer");
     if (existingContainer) {
@@ -1075,6 +1210,7 @@ export class SelectionPanel {
     const ships = data.ships ?? [];
     const shipCount = data.shipCount ?? Math.max(ships.length, 0);
     const selectionKey = this.getSelectionKey(data);
+    panel.dataset.selectionKey = selectionKey;
 
     panel.innerHTML = `
       <div class="fleetSelectionTopStrip">
@@ -1091,7 +1227,7 @@ export class SelectionPanel {
         <section class="fleetSelectionIdentity">
           <div class="fleetSelectionTitle">${this.escapeHtml(data.name)}</div>
           <div class="fleetSelectionIdentityGrid">
-            <div class="fleetSelectionSilhouette" aria-hidden="true">${this.renderShipSilhouette()}</div>
+            ${this.renderFleetLeaderButton(data)}
             <div class="fleetSelectionMetaRows">
               ${this.renderFleetMetaRow("Status", data.status ?? "Operational")}
               ${data.ownerName ? this.renderFleetMetaRow("Owner", data.ownerName) : ""}
@@ -1131,6 +1267,7 @@ export class SelectionPanel {
               : '<div class="fleetSelectionEmptyShips">No ship telemetry</div>'}
           </div>
         </section>
+        ${this.renderFleetMovementDetails(data)}
       </div>
     `;
 
@@ -1167,6 +1304,19 @@ export class SelectionPanel {
         this.callbacks.onFleetPolicyChange?.(control, value, data);
       });
     }
+
+    panel.querySelector<HTMLButtonElement>("[data-open-fleet-leaders]")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (!data.id || data.canCommand !== true) return;
+      requestOpenLeadersPanel({
+        assignmentTarget: {
+          kind: "fleet",
+          targetId: data.id,
+          label: data.name,
+          requiredClass: "military",
+        },
+      });
+    });
 
     return panel;
   }
@@ -1241,6 +1391,60 @@ export class SelectionPanel {
             ${this.renderIcon(option.icon)}
           </button>
         `).join("")}
+      </div>
+    `;
+  }
+
+  private renderFleetLeaderButton(data: SelectionData): string {
+    const leader = data.leader ?? null;
+    const assignable = data.canCommand === true && Boolean(data.id);
+    const leaderName = leader?.name ?? "Add leader";
+    const leaderLabel = leader ? `Commander | Level ${leader.level}` : "No commander assigned";
+    const initials = leader
+      ? leader.name
+        .split(/\s+/)
+        .map((part) => part[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase()
+      : "";
+    const portraitStyle = leader?.portraitUrl ? ` style="background-image: url('${this.escapeHtml(leader.portraitUrl)}')"` : "";
+    return `
+      <button
+        class="fleetSelectionLeaderCard ${assignable ? "assignable" : ""}"
+        type="button"
+        ${assignable ? "data-open-fleet-leaders" : "disabled"}
+        title="Add fleet leader"
+        aria-label="Add fleet leader">
+        <div class="fleetSelectionLeaderPortrait" aria-hidden="true"${portraitStyle}>
+          ${leader ? `<span>${this.escapeHtml(initials)}</span>` : '<i>+</i>'}
+        </div>
+        <div class="fleetSelectionLeaderText">
+          <strong>${this.escapeHtml(leaderName)}</strong>
+          <span>${this.escapeHtml(leaderLabel)}</span>
+        </div>
+      </button>
+    `;
+  }
+
+  private renderFleetMovementDetails(data: SelectionData): string {
+    if (!data.movement) return "";
+    return `
+      <div class="fleetSelectionMovement">
+        <div class="fleetSelectionMovementRow">
+          <span>Destination</span>
+          <strong>${this.escapeHtml(data.movement.destination)}</strong>
+        </div>
+        <div class="fleetSelectionMovementRow">
+          <span>Arrival</span>
+          <strong>${this.escapeHtml(this.formatFleetArrival(data.movement.arrivalYear))}</strong>
+        </div>
+        <div class="fleetSelectionMovementRow">
+          <span>Days Left</span>
+          <strong data-fleet-movement-days-left data-arrival-year="${data.movement.arrivalYear}">
+            ${this.escapeHtml(this.formatFleetDaysLeft(data.movement.arrivalYear))}
+          </strong>
+        </div>
       </div>
     `;
   }
@@ -1358,6 +1562,26 @@ export class SelectionPanel {
     return value
       .replace(/([A-Z])/g, " $1")
       .replace(/^./, (char) => char.toUpperCase());
+  }
+
+  private formatFleetArrival(arrivalYear: number): string {
+    const date = gameYearToDateTime(arrivalYear);
+    return `${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")} ${String(date.hour).padStart(2, "0")}:${String(date.minute).padStart(2, "0")}`;
+  }
+
+  private formatFleetDaysLeft(arrivalYear: number): string {
+    const days = Math.max(0, (arrivalYear - this.clockYear) * GAME_DAYS_PER_YEAR);
+    if (days >= 10) return `${Math.ceil(days)} days`;
+    return `${days.toFixed(1)} days`;
+  }
+
+  private updateFleetMovementTimers(): void {
+    if (!this.containerElement) return;
+    this.containerElement.querySelectorAll<HTMLElement>("[data-fleet-movement-days-left]").forEach((element) => {
+      const arrivalYear = Number(element.dataset.arrivalYear);
+      if (!Number.isFinite(arrivalYear)) return;
+      element.textContent = this.formatFleetDaysLeft(arrivalYear);
+    });
   }
 
   private percentValue(value: number, maxValue: number): number {

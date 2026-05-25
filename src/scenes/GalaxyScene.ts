@@ -27,6 +27,7 @@ import type { FactionInfo, GalaxyPerspective } from "../data/Factions";
 import { applyPlanetStatesToStars, generateStarMap, PLANET_TYPES } from "../data/StarMap";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 import type { PlanetState } from "../data/Economy";
+import type { LeaderState } from "../data/Leaders";
 import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
@@ -76,6 +77,7 @@ export interface GalaxySceneOptions {
   promotedStarbaseSystemIds?: Iterable<number>;
   starbases?: ServerStarbase[];
   planetStates?: PlanetState[];
+  leaders?: LeaderState[];
   technology?: FactionTechnologyView | null;
   habitedPlanetSystemIds?: Iterable<number>;
   selectedFleetIds?: Iterable<string>;
@@ -891,6 +893,7 @@ export class GalaxyScene implements IGameScene {
   private shipDesigns: ShipDesign[] = [];
   private starbases: ServerStarbase[] = [];
   private planetStates: PlanetState[] = [];
+  private leaders: LeaderState[] = [];
   private hasExplicitHabitedPlanetSystemIds = false;
   private starbaseSystemIds = new Set<number>();
   private promotedStarbaseSystemIds = new Set<number>();
@@ -983,6 +986,7 @@ export class GalaxyScene implements IGameScene {
     this.serverFleets = this.options.serverFleets ?? [];
     this.serverShips = this.options.serverShips ?? [];
     this.shipDesigns = this.options.shipDesigns ?? [];
+    this.leaders = this.options.leaders ?? [];
     this.selectedFleetIds = new Set(this.options.selectedFleetIds ?? []);
     this.starbases = this.options.starbases ?? [];
     this.starbaseSystemIds = new Set(
@@ -1927,6 +1931,7 @@ export class GalaxyScene implements IGameScene {
       detail: canCommand
         ? this.formatFleetNavigationDetail(fleet)
         : "Foreign fleet. Command controls unavailable.",
+      movement: this.createFleetMovementSelectionData(fleet),
       ownerName: owner?.name ?? "Unknown",
       ownerColor: owner?.color,
       canCommand,
@@ -1935,6 +1940,20 @@ export class GalaxyScene implements IGameScene {
       combatBehavior: fleet.combatSettings.behavior,
       chasePolicy: fleet.combatSettings.chasePolicy,
       retreatPolicy: fleet.combatSettings.retreatPolicy,
+      leader: this.getAssignedLeader("fleet", fleet.id),
+    };
+  }
+
+  private createFleetMovementSelectionData(fleet: ServerFleet | null): SelectionData["movement"] {
+    if (!fleet?.movementPlan) return undefined;
+    const destination = fleet.movementPlan.destinationPlanetId
+      ? this.findPlanetName(fleet.movementPlan.destinationPlanetId)
+      : (fleet.movementPlan.destinationOrbitTarget
+        ? this.formatOrbitTargetName(fleet.movementPlan.destinationOrbitTarget)
+        : this.getStarName(fleet.movementPlan.destinationStarId));
+    return {
+      destination,
+      arrivalYear: fleet.movementPlan.endsAtYear,
     };
   }
 
@@ -2087,6 +2106,7 @@ export class GalaxyScene implements IGameScene {
           detail: canCommand
             ? this.formatFleetNavigationDetail(serverFleet)
             : "Foreign fleet. Command controls unavailable.",
+          movement: this.createFleetMovementSelectionData(serverFleet),
           ownerName: owner?.name ?? "Unknown",
           ownerColor: owner?.color,
           canCommand,
@@ -2095,6 +2115,7 @@ export class GalaxyScene implements IGameScene {
           combatBehavior: serverFleet?.combatSettings.behavior,
           chasePolicy: serverFleet?.combatSettings.chasePolicy,
           retreatPolicy: serverFleet?.combatSettings.retreatPolicy,
+          leader: serverFleet ? this.getAssignedLeader("fleet", serverFleet.id) : null,
         },
         shiftKey,
       );
@@ -2139,6 +2160,8 @@ export class GalaxyScene implements IGameScene {
       imageUrl: this.getPlanetTextureUrl(planet),
       accentColor: "rgba(102, 236, 199, 0.95)",
       technology: this.options.technology,
+      assignedLeader: this.getAssignedLeader("planet", planet.id),
+      canManageLeaders: this.starOwnership[star.id] === this.playerFactionId,
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
     });
   }
@@ -2177,9 +2200,7 @@ export class GalaxyScene implements IGameScene {
 
   private formatFleetNavigationDetail(fleet: ServerFleet | null): string {
     if (!fleet?.movementPlan) return "Select a command, then choose a highlighted system.";
-    const destination = fleet.movementPlan.destinationPlanetId
-      ? this.findPlanetName(fleet.movementPlan.destinationPlanetId)
-      : this.stars[fleet.movementPlan.destinationStarId]?.name ?? `Star ${fleet.movementPlan.destinationStarId}`;
+    const destination = this.createFleetMovementSelectionData(fleet)?.destination ?? this.getStarName(fleet.movementPlan.destinationStarId);
     const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - this.getClockYearEstimate()) * GAME_DAYS_PER_YEAR);
     const remainingMinutes = remainingDays * REAL_MS_PER_GAME_DAY / 60_000;
     return `Destination: ${destination}. Time remaining: ${remainingDays.toFixed(1)} days (${remainingMinutes.toFixed(1)} minutes).`;
@@ -2195,6 +2216,23 @@ export class GalaxyScene implements IGameScene {
       if (planet) return planet.name;
     }
     return planetId;
+  }
+
+  private getStarName(starId: number): string {
+    return this.stars[starId]?.name ?? `Star ${starId}`;
+  }
+
+  private formatOrbitTargetName(target: NonNullable<ServerFleet["orbitTarget"]>): string {
+    if (target.kind === "planet" && target.planetId) return this.findPlanetName(target.planetId);
+    if (target.kind === "star") return this.getStarName(target.starId);
+    if (target.kind === "starbase") return `${this.getStarName(target.starId)} Starbase`;
+    if (target.kind === "hyperlane") {
+      return target.connectedStarId !== null && target.connectedStarId !== undefined
+        ? `${this.getStarName(target.starId)} Hyperlane to ${this.getStarName(target.connectedStarId)}`
+        : `${this.getStarName(target.starId)} Hyperlane`;
+    }
+    if (target.kind === "fleet") return "Fleet rendezvous";
+    return this.getStarName(target.starId);
   }
 
   private getPlanetTextureUrl(planet: PlanetConfig): string {
@@ -2340,6 +2378,7 @@ export class GalaxyScene implements IGameScene {
 
   setClockYear(year: number): void {
     this.clockYear = year;
+    this.selectionPanel?.setClockYear(year);
   }
 
   selectFleetById(fleetId: string): boolean {
@@ -2392,6 +2431,38 @@ export class GalaxyScene implements IGameScene {
     this.options.technology = technology;
   }
 
+  setLeaders(leaders: LeaderState[]): void {
+    this.leaders = leaders;
+    if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
+    const currentObjectId = this.objectPanel?.getCurrentObjectId();
+    if (currentObjectId && this.objectPanel?.getCurrentKind() === "planet") {
+      this.objectPanel.refreshAssignedLeader(
+        currentObjectId,
+        this.getAssignedLeader("planet", currentObjectId),
+      );
+    }
+    if (this.objectPanel) {
+      for (const planetState of this.planetStates) {
+        const planet = this.stars[planetState.starId]?.system.planets[planetState.planetIndex];
+        if (planet) {
+          this.objectPanel.refreshAssignedLeader(
+            planet.id,
+            this.getAssignedLeader("planet", planet.id),
+            this.starOwnership[planetState.starId] === this.playerFactionId,
+          );
+        }
+      }
+    }
+  }
+
+  private getAssignedLeader(kind: "planet" | "fleet", targetId: string): LeaderState | null {
+    return this.leaders.find((leader) => (
+      leader.status === "recruited"
+      && leader.assignment?.kind === kind
+      && leader.assignment.targetId === targetId
+    )) ?? null;
+  }
+
   showPlanetDetails(star: StarData, planet: PlanetConfig, planetState: PlanetState): void {
     this.objectPanel.show({
       kind: "planet",
@@ -2404,11 +2475,20 @@ export class GalaxyScene implements IGameScene {
       imageUrl: this.getPlanetTextureUrl(planet),
       accentColor: "rgba(102, 236, 199, 0.95)",
       technology: this.options.technology,
+      assignedLeader: this.getAssignedLeader("planet", planet.id),
+      canManageLeaders: this.starOwnership[star.id] === this.playerFactionId,
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
     });
   }
 
   refreshPlanetDetails(planet: PlanetConfig, planetState: PlanetState): void {
+    const nextPlanetStates = this.planetStates.filter((candidate) => candidate.id !== planetState.id);
+    nextPlanetStates.push(planetState);
+    this.planetStates = nextPlanetStates;
+    if (this.stars[planetState.starId]?.system.planets[planetState.planetIndex]) {
+      this.stars[planetState.starId].system.planets[planetState.planetIndex] = planet;
+    }
+    applyPlanetStatesToStars(this.stars, this.planetStates);
     this.objectPanel?.refreshPlanetState(
       planet.id,
       planetState,

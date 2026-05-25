@@ -1,4 +1,4 @@
-import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
+import { createEmptyResourceCounts, RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
 import {
   STARBASE_BUILDING_DEFINITIONS,
   STARBASE_BUILDING_KINDS,
@@ -363,7 +363,7 @@ export class StarbasePanel {
                       <strong>${this.escapeHtml(item.label)}</strong>
                       <span>${isActive ? verb : waitingVerb} | ${Math.ceil(item.remainingDays)}d</span>
                     </div>
-                    <small>${this.formatCompact(item.alloyUpkeepPerDay)}/d alloys | ${this.renderInlineCost(item.cost)}</small>
+                    <small>${this.renderDailyDemand(item.resourceUpkeepPerDay)} / day | ${this.renderInlineCost(item.cost)}</small>
                     <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
                   </div>
                 `;
@@ -373,7 +373,7 @@ export class StarbasePanel {
         <article class="sbShipyardColumn">
           <div class="sbSectionTitle">Shipbuilding Demand</div>
           <div class="sbDemandPanel">
-            <span>Active alloy demand: ${this.formatCompact(this.getActiveShipAlloyDemand(starbase))} / day</span>
+            <span>Active shipyard demand: ${this.renderDailyDemand(this.getActiveShipyardDemand(starbase))} / day</span>
             <span>Queued crew demand: ${this.formatCompact(shipQueue.reduce((total, item) => total + item.crewDemand, 0))}</span>
             <span>Completed ships: spawn as new fleets in orbit</span>
           </div>
@@ -404,12 +404,16 @@ export class StarbasePanel {
     `;
   }
 
-  private getActiveShipAlloyDemand(starbase?: ServerStarbase): number {
-    if (!starbase) return 0;
+  private getActiveShipyardDemand(starbase?: ServerStarbase): ResourceCounts {
+    const demand = createEmptyResourceCounts();
+    if (!starbase) return demand;
     const shipyardCount = countStarbaseShipyards(starbase.buildingSlots);
-    return starbase.shipQueue
-      .slice(0, shipyardCount)
-      .reduce((total, item) => total + item.alloyUpkeepPerDay, 0);
+    for (const item of starbase.shipQueue.slice(0, shipyardCount)) {
+      for (const resource of RESOURCE_KINDS) {
+        demand[resource] += item.resourceUpkeepPerDay[resource];
+      }
+    }
+    return demand;
   }
 
   private renderSlots(
@@ -508,6 +512,13 @@ export class StarbasePanel {
       .filter((resource) => Math.abs(counts[resource]) > 0.0001)
       .map((resource) => `${this.formatCompact(counts[resource])} ${RESOURCE_LABELS[resource]}`);
     return parts.length > 0 ? parts.join(", ") : "Free";
+  }
+
+  private renderDailyDemand(counts: ResourceCounts): string {
+    const parts = RESOURCE_KINDS
+      .filter((resource) => Math.abs(counts[resource]) > 0.0001)
+      .map((resource) => `${this.formatCompact(counts[resource])} ${RESOURCE_LABELS[resource]}`);
+    return parts.length > 0 ? parts.join(", ") : "None";
   }
 
   private getInitials(label: string): string {

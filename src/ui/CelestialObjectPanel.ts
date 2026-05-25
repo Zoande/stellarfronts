@@ -5,8 +5,11 @@ import {
   BUILDING_DEFINITIONS,
   BUILDING_LABELS,
   BUILDING_MINERAL_COSTS,
+  createBuildingConstructionQueueItem,
+  createDistrictConstructionQueueItem,
   DISTRICT_BUILD_DAYS,
   DISTRICT_MINERAL_COSTS,
+  filterInvalidQueuedBuildingsForSubDistrictChange,
   getCompatibleBuildings,
   getEffectiveSpeciesHabitability,
   getHabitabilityProductionMultiplier,
@@ -15,6 +18,7 @@ import {
   JOB_DEFINITIONS,
   JOB_LABELS,
   PEOPLE_PER_MONTHLY_UNIT,
+  isBuildingCompatible,
   PLANET_FEATURE_DEFINITIONS,
   RESOURCE_KINDS,
   RESOURCE_LABELS,
@@ -31,16 +35,19 @@ import type {
   PlanetFeatureKind,
   PlanetModifierTarget,
   PlanetState,
+  PopGroup,
   ResourceKind,
   UrbanSubDistrictKind,
 } from "../data/Economy";
 import type { ClientCommand } from "../game/GameProtocol";
+import type { LeaderState } from "../data/Leaders";
 import {
   getFirstRequiredTechName,
   getRequiredTechIdsForBuilding,
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { requestOpenLeadersPanel } from "./leaderEvents";
 
 export type CelestialObjectKind = "planet" | "star";
 
@@ -57,6 +64,8 @@ export interface CelestialObjectPanelData {
   technology?: FactionTechnologyView | null;
   onPlanetCommand?: (command: ClientCommand) => void;
   orbitFleetId?: string | null;
+  assignedLeader?: LeaderState | null;
+  canManageLeaders?: boolean;
 }
 
 const STYLE_ID = "celestial-object-panel-style";
@@ -64,11 +73,20 @@ const CELESTIAL_SCROLL_SELECTORS = [
   ".coBuildList",
   ".coQueueList",
   ".coFeatureList",
+  ".coJobClassList",
   ".coPopGroupList",
 ] as const;
 const PLANET_BANNER_DIR = "/textures/planet-banners";
 const BUILDING_ICON_DIR = "/textures/buildings";
 const DISTRICT_ICON_DIR = "/textures/districts";
+
+type EconomyFlowResource = ResourceKind | "amenities" | "crime";
+
+interface EconomyFlowEntry {
+  resource: EconomyFlowResource;
+  amount: number;
+  direction: "input" | "output" | "effect";
+}
 
 const DISTRICTS: Array<{ kind: DistrictKind; label: string; code: string }> = [
   { kind: "city", label: "City Districts", code: "CT" },
@@ -160,6 +178,7 @@ export class CelestialObjectPanel {
   private currentData: CelestialObjectPanelData | null = null;
   private activeTab: "surface" | "economy" = "surface";
   private selectedJob: JobKind | null = null;
+  private expandedJobClasses = this.createDefaultExpandedJobClasses();
   private buildingPickerTarget: { area: BuildingSlotArea; slotIndex: number; subDistrictIndex?: number } | null = null;
   private featureTrayOpen = false;
   private tooltipElement: HTMLDivElement | null = null;
@@ -263,6 +282,7 @@ export class CelestialObjectPanel {
     if (this.currentData?.objectId !== data.objectId) {
       this.activeTab = "surface";
       this.selectedJob = null;
+      this.expandedJobClasses = this.createDefaultExpandedJobClasses();
       this.buildingPickerTarget = null;
       this.featureTrayOpen = false;
     }
@@ -300,12 +320,34 @@ export class CelestialObjectPanel {
     });
   }
 
+  public refreshAssignedLeader(
+    objectId: string,
+    assignedLeader: LeaderState | null,
+    canManageLeaders?: boolean,
+  ): void {
+    if (!this.currentData || this.currentData.objectId !== objectId) return;
+    this.show({
+      ...this.currentData,
+      assignedLeader,
+      canManageLeaders: canManageLeaders ?? this.currentData.canManageLeaders,
+    });
+  }
+
+  public getCurrentObjectId(): string | null {
+    return this.currentData?.objectId ?? null;
+  }
+
+  public getCurrentKind(): CelestialObjectKind | null {
+    return this.currentData?.kind ?? null;
+  }
+
   public close(): void {
     this.hideTooltip();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
     this.selectedJob = null;
+    this.expandedJobClasses = this.createDefaultExpandedJobClasses();
     this.buildingPickerTarget = null;
     this.featureTrayOpen = false;
     this.activeTab = "surface";
@@ -475,7 +517,11 @@ export class CelestialObjectPanel {
       button.addEventListener("click", () => {
         const districtKind = button.dataset.coBuildDistrict as DistrictKind | undefined;
         if (!districtKind || !data.planetState) return;
+        this.buildingPickerTarget = null;
+        this.featureTrayOpen = false;
+        const planetState = this.withQueuedDistrict(data.planetState, districtKind);
         data.onPlanetCommand?.({ type: "buildDistrict", planetId: data.planetState.id, districtKind });
+        this.show({ ...data, planetState });
       });
     });
 
@@ -510,6 +556,18 @@ export class CelestialObjectPanel {
       data.onPlanetCommand?.({ type: "orbitPlanet", fleetId: data.orbitFleetId, planetId: data.objectId });
     });
 
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-open-leaders]")?.addEventListener("click", () => {
+      if (data.kind !== "planet" || !data.isHabited || data.canManageLeaders !== true) return;
+      requestOpenLeadersPanel({
+        assignmentTarget: {
+          kind: "planet",
+          targetId: data.objectId,
+          label: data.name,
+          requiredClass: "civilian",
+        },
+      });
+    });
+
     const closeFeatures = this.panelElement.querySelector<HTMLButtonElement>("[data-co-close-features]");
     closeFeatures?.addEventListener("click", () => {
       this.featureTrayOpen = false;
@@ -521,14 +579,19 @@ export class CelestialObjectPanel {
         if (!data.planetState || !this.buildingPickerTarget) return;
         const buildingKind = button.dataset.coPickBuilding as BuildingKind | undefined;
         if (!buildingKind) return;
+        const target = { ...this.buildingPickerTarget };
+        this.buildingPickerTarget = null;
+        this.featureTrayOpen = false;
+        const planetState = this.withQueuedBuilding(data.planetState, target, buildingKind);
         data.onPlanetCommand?.({
           type: "buildPlanetBuilding",
           planetId: data.planetState.id,
-          area: this.buildingPickerTarget.area,
-          slotIndex: this.buildingPickerTarget.slotIndex,
-          subDistrictIndex: this.buildingPickerTarget.subDistrictIndex,
+          area: target.area,
+          slotIndex: target.slotIndex,
+          subDistrictIndex: target.subDistrictIndex,
           buildingKind,
         });
+        this.show({ ...data, planetState });
       });
     });
 
@@ -542,6 +605,19 @@ export class CelestialObjectPanel {
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-job]").forEach((button) => {
       button.addEventListener("click", () => {
         this.selectedJob = button.dataset.coJob as JobKind;
+        this.show(data);
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-job-class]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const className = button.dataset.coJobClass as JobClass | undefined;
+        if (!className) return;
+        if (this.expandedJobClasses.has(className)) {
+          this.expandedJobClasses.delete(className);
+        } else {
+          this.expandedJobClasses.add(className);
+        }
         this.show(data);
       });
     });
@@ -730,7 +806,7 @@ export class CelestialObjectPanel {
       </div>
       <div class="coHeroRow">
         <div class="coHero" data-co-hero>
-          ${isHabitedPlanet ? '<div class="coLeaderCard"><div class="coLeaderPortrait"></div><div><strong>Sector Official</strong><span>No governor assigned</span></div></div>' : ""}
+          ${isHabitedPlanet ? this.renderLeaderCard(data) : ""}
           ${isPlanet && data.orbitFleetId ? '<button class="coHeroAction" type="button" data-co-orbit-planet>Orbit</button>' : ""}
           ${isPlanet && !isHabitedPlanet && !data.orbitFleetId ? '<button class="coHeroAction" type="button">Terraform</button>' : ""}
         </div>
@@ -758,6 +834,35 @@ export class CelestialObjectPanel {
         <button class="${tabsDisabled}" type="button">Armies</button>
         <button class="${tabsDisabled}" type="button">Holdings</button>
       </nav>
+    `;
+  }
+
+  private renderLeaderCard(data: CelestialObjectPanelData): string {
+    const leader = data.assignedLeader ?? null;
+    const canManage = data.canManageLeaders === true;
+    const leaderName = leader?.name ?? "Sector Official";
+    const leaderLabel = leader ? `Level ${leader.level} governor` : "No governor assigned";
+    const initials = leader
+      ? leader.name
+        .split(/\s+/)
+        .map((part) => part[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase()
+      : "";
+    const portraitStyle = leader?.portraitUrl ? ` style="background-image: url('${this.escapeHtml(leader.portraitUrl)}')"` : "";
+    return `
+      <button
+        class="coLeaderCard ${canManage ? "assignable" : ""}"
+        type="button"
+        ${canManage ? "data-co-open-leaders" : "disabled"}
+        aria-label="Assign sector official">
+        <div class="coLeaderPortrait"${portraitStyle}>${leader ? `<span>${this.escapeHtml(initials)}</span>` : "<i>+</i>"}</div>
+        <div>
+          <strong>${this.escapeHtml(leaderName)}</strong>
+          <span>${this.escapeHtml(leaderLabel)}</span>
+        </div>
+      </button>
     `;
   }
 
@@ -1349,6 +1454,7 @@ export class CelestialObjectPanel {
       { className: "middle", label: "Middle Class" },
       { className: "lower", label: "Lower Class" },
     ];
+    const selectedJob = this.resolveSelectedEconomyJob(planetState);
     const growth = planetState.economy.populationGrowth;
     const weeklyGrowth = Math.round(growth.netPerQuarter * (7 / 120));
     const growthLabel = this.formatSignedPeople(weeklyGrowth);
@@ -1358,7 +1464,9 @@ export class CelestialObjectPanel {
       <section class="coBody coEconomyBody">
         <div class="coJobsPanel">
           <div class="coBodyHeader">Jobs</div>
-          ${classes.map((entry) => this.renderJobClass(planetState, entry.className, entry.label)).join("")}
+          <div class="coJobClassList">
+            ${classes.map((entry) => this.renderJobClass(planetState, entry.className, entry.label, selectedJob)).join("")}
+          </div>
         </div>
         <aside class="coDemographicsPanel">
           <div class="coBodyHeader">Demographics</div>
@@ -1369,41 +1477,78 @@ export class CelestialObjectPanel {
           </div>
           <div class="coSpeciesOrb"></div>
           <div class="coSelectedJob">
-            ${this.selectedJob ? this.renderSelectedJob(planetState, this.selectedJob) : "Click a job to inspect its population groups."}
+            ${selectedJob ? this.renderSelectedJob(planetState, selectedJob) : '<div class="coEmptyLine">No assigned jobs</div>'}
           </div>
         </aside>
       </section>
     `;
   }
 
-  private renderJobClass(planetState: PlanetState, className: JobClass, label: string): string {
-    const jobs = JOB_FILL_ORDER
-      .concat("unemployed")
-      .filter((job) => this.getJobClass(job) === className);
+  private renderJobClass(planetState: PlanetState, className: JobClass, label: string, selectedJob: JobKind | null): string {
+    const jobs = this.getJobsForClass(className);
     const total = jobs.reduce((sum, job) => sum + this.getPopForJob(planetState, job), 0);
+    const capacity = jobs.reduce((sum, job) => sum + planetState.economy.jobCapacity[job], 0);
+    const expanded = this.expandedJobClasses.has(className);
 
     return `
-      <div class="coJobClass">
-        <div class="coJobClassTitle">
-          <span>${this.escapeHtml(label)}</span>
-          <strong>${this.formatPeople(total)}</strong>
+      <article class="coJobClass ${expanded ? "expanded" : ""}">
+        <button class="coJobClassTitle" type="button" data-co-job-class="${className}" aria-expanded="${expanded ? "true" : "false"}">
+          <span class="coJobClassLabel"><i aria-hidden="true"></i>${this.escapeHtml(label)}</span>
+          <span class="coJobClassTotals">
+            <strong>${this.formatPeople(total)}</strong>
+            <small>cap ${this.formatPeople(capacity)}</small>
+          </span>
+        </button>
+        <div class="coJobIconRail">
+          ${jobs.map((job) => this.renderJobMini(planetState, job, selectedJob)).join("")}
         </div>
-        <div class="coJobRows">
-          ${jobs.map((job) => this.renderJobRow(planetState, job)).join("")}
-        </div>
-      </div>
+        ${expanded ? `
+          <div class="coJobRows">
+            ${jobs.map((job) => this.renderJobRow(planetState, job, selectedJob)).join("")}
+          </div>
+        ` : ""}
+      </article>
     `;
   }
 
-  private renderJobRow(planetState: PlanetState, job: JobKind): string {
+  private renderJobMini(planetState: PlanetState, job: JobKind, selectedJob: JobKind | null): string {
+    const population = this.getPopForJob(planetState, job);
+    const selected = selectedJob === job ? " selected" : "";
+    return `
+      <button
+        class="coJobMini${selected}"
+        type="button"
+        data-co-job="${job}"
+        data-co-tooltip="${this.tooltipAttr(this.renderJobTooltip(planetState, job))}"
+        aria-label="${this.escapeHtml(JOB_LABELS[job])}">
+        ${this.renderJobIcon(job)}
+        <span>${this.formatPeople(population)}</span>
+      </button>
+    `;
+  }
+
+  private renderJobRow(planetState: PlanetState, job: JobKind, selectedJob: JobKind | null): string {
     const population = this.getPopForJob(planetState, job);
     const capacity = planetState.economy.jobCapacity[job];
-    const selected = this.selectedJob === job ? " selected" : "";
+    const selected = selectedJob === job ? " selected" : "";
     return `
-      <button class="coJobRow${selected}" type="button" data-co-job="${job}">
-        <span>${this.escapeHtml(JOB_LABELS[job])}</span>
-        <strong>${this.formatPeople(population)}</strong>
-        <small>cap ${this.formatPeople(capacity)}</small>
+      <button
+        class="coJobRow${selected}"
+        type="button"
+        data-co-job="${job}"
+        data-co-tooltip="${this.tooltipAttr(this.renderJobTooltip(planetState, job))}">
+        <span class="coJobIcon">${this.renderJobIcon(job)}</span>
+        <span class="coJobMain">
+          <strong>${this.escapeHtml(JOB_LABELS[job])}</strong>
+          <small>${this.escapeHtml(JOB_DEFINITIONS[job].description)}</small>
+        </span>
+        <span class="coJobNumbers">
+          <strong>${this.formatPeople(population)}</strong>
+          <small>cap ${this.formatPeople(capacity)}</small>
+        </span>
+        <span class="coJobRecipe">
+          ${this.renderJobConversion(job, PEOPLE_PER_MONTHLY_UNIT)}
+        </span>
       </button>
     `;
   }
@@ -1412,52 +1557,133 @@ export class CelestialObjectPanel {
     const groups = planetState.economy.popGroups.filter((candidate) => candidate.job === job);
     const population = groups.reduce((sum, group) => sum + group.population, 0);
     const jobClass = this.getJobClass(job);
-    const effects = this.getJobEffectSummary(job);
     return `
-      <h4>${this.escapeHtml(JOB_LABELS[job])}</h4>
-      <p>Class: ${this.escapeHtml(jobClass)}</p>
-      <p>Population: ${this.formatPeople(population)}</p>
-      <p>Capacity: ${this.formatPeople(planetState.economy.jobCapacity[job])}</p>
-      <p>${this.escapeHtml(effects)}</p>
+      <div class="coSelectedJobHeader">
+        <span class="coSelectedJobIcon">${this.renderJobIcon(job)}</span>
+        <div>
+          <h4>${this.escapeHtml(JOB_LABELS[job])}</h4>
+          <p>${this.escapeHtml(this.formatJobClassLabel(jobClass))} | ${this.formatPeople(population)} / ${this.formatPeople(planetState.economy.jobCapacity[job])}</p>
+        </div>
+      </div>
+      <div class="coSelectedJobRecipe">
+        ${this.renderJobConversion(job, PEOPLE_PER_MONTHLY_UNIT, "Per 1M")}
+      </div>
       <div class="coPopGroupList">
         ${groups.length === 0
-          ? '<span>No assigned population.</span>'
-          : groups.map((group) => `
-            <span>
-              <strong>${this.escapeHtml(group.speciesName)}</strong>
-              ${this.formatPeople(group.population)} | Happy ${group.happiness}% | Hab ${group.habitability}%
-            </span>
+          ? '<div class="coEmptyLine">No assigned population</div>'
+          : groups.map((group, index) => `
+            <article class="coPopGroupCard">
+              <img class="coPopPortrait" src="${this.escapeHtml(this.getPopGroupPlaceholderImage(group, index))}" alt="" />
+              <div class="coPopGroupMain">
+                <div class="coPopGroupTitle">
+                  <strong>${this.escapeHtml(group.speciesName)}</strong>
+                  <span>${this.escapeHtml(this.formatJobClassLabel(group.class))}</span>
+                </div>
+                <div class="coPopStats">
+                  <span>Population <strong>${this.formatPeople(group.population)}</strong></span>
+                  <span>Happy <strong>${group.happiness}%</strong></span>
+                  <span>Hab <strong>${group.habitability}%</strong></span>
+                </div>
+                <div class="coPopGroupFlow">
+                  ${this.renderJobConversion(job, group.population)}
+                </div>
+              </div>
+            </article>
           `).join("")}
       </div>
     `;
   }
 
-  private getJobEffectSummary(job: JobKind): string {
-    const output: Partial<Record<ResourceKind | "amenities", number>> = {};
-    const upkeep: Partial<Record<ResourceKind, number>> = {};
-    const addOutput = (resource: ResourceKind | "amenities", value: number) => {
-      output[resource] = (output[resource] ?? 0) + value;
+  private renderJobTooltip(planetState: PlanetState, job: JobKind): string {
+    const population = this.getPopForJob(planetState, job);
+    const capacity = planetState.economy.jobCapacity[job];
+    return `
+      <div class="coTooltipSectionTitle">${this.escapeHtml(JOB_LABELS[job])}</div>
+      <p>${this.escapeHtml(JOB_DEFINITIONS[job].description)}</p>
+      <div class="coTooltipList">
+        <span>Class: ${this.escapeHtml(this.formatJobClassLabel(this.getJobClass(job)))}</span>
+        <span>Population: ${this.formatPeople(population)} / ${this.formatPeople(capacity)}</span>
+      </div>
+      <div class="coTooltipSectionTitle">Conversion</div>
+      ${this.renderJobConversion(job, PEOPLE_PER_MONTHLY_UNIT, "Per 1M")}
+    `;
+  }
+
+  private renderJobConversion(job: JobKind, population: number, prefix?: string): string {
+    const multiplier = Math.max(0, population / PEOPLE_PER_MONTHLY_UNIT);
+    const flows = this.getJobFlowEntries(job)
+      .map((entry) => ({ ...entry, amount: entry.amount * multiplier }))
+      .filter((entry) => Math.abs(entry.amount) > 0.0001);
+    const inputs = flows.filter((entry) => entry.direction === "input");
+    const outputs = flows.filter((entry) => entry.direction === "output");
+    const effects = flows.filter((entry) => entry.direction === "effect");
+    if (flows.length === 0) {
+      return `<span class="coFlowEmpty">${prefix ? `${this.escapeHtml(prefix)}: ` : ""}No conversion</span>`;
+    }
+    return `
+      <span class="coFlowLine">
+        ${prefix ? `<span class="coFlowPrefix">${this.escapeHtml(prefix)}</span>` : ""}
+        ${inputs.length > 0 ? inputs.map((entry) => this.renderFlowChip(entry)).join("") : '<span class="coFlowNone">No input</span>'}
+        <span class="coFlowArrow" aria-hidden="true">&rarr;</span>
+        ${outputs.length > 0 ? outputs.map((entry) => this.renderFlowChip(entry)).join("") : '<span class="coFlowNone">No output</span>'}
+        ${effects.map((entry) => this.renderFlowChip(entry)).join("")}
+      </span>
+    `;
+  }
+
+  private renderFlowChip(entry: EconomyFlowEntry): string {
+    const className = entry.direction === "input" ? "input" : entry.direction === "output" ? "output" : "effect";
+    return `
+      <span class="coFlowChip ${className}">
+        ${this.renderStatIcon(entry.resource)}
+        <strong>${this.escapeHtml(this.formatFlowAmount(entry.amount))}</strong>
+        <small>${this.escapeHtml(this.getFlowResourceLabel(entry.resource))}</small>
+      </span>
+    `;
+  }
+
+  private getJobFlowEntries(job: JobKind): EconomyFlowEntry[] {
+    const entries: EconomyFlowEntry[] = [];
+    const addEntry = (resource: EconomyFlowResource, amount: number, direction: EconomyFlowEntry["direction"]): void => {
+      if (amount === 0) return;
+      const existing = entries.find((entry) => entry.resource === resource && entry.direction === direction);
+      if (existing) {
+        existing.amount += amount;
+      } else {
+        entries.push({ resource, amount, direction });
+      }
     };
-    const addUpkeep = (resource: ResourceKind, value: number) => {
-      upkeep[resource] = (upkeep[resource] ?? 0) + value;
-    };
-    const jobClass = this.getJobClass(job);
-    if (jobClass === "upper") addUpkeep("goods", 0.4);
-    if (jobClass === "middle") addUpkeep("goods", 0.2);
-    if (jobClass === "lower" && job !== "unemployed") addUpkeep("goods", 0.05);
     const definition = JOB_DEFINITIONS[job];
     for (const [resource, value] of Object.entries(definition.output ?? {}) as Array<[ResourceKind, number]>) {
-      addOutput(resource, value);
+      addEntry(resource, value, "output");
     }
     for (const [resource, value] of Object.entries(definition.upkeep ?? {}) as Array<[ResourceKind, number]>) {
-      addUpkeep(resource, value);
+      addEntry(resource, -value, "input");
     }
-    if (definition.amenities) addOutput("amenities", definition.amenities);
-    const outputText = Object.entries(output).map(([resource, value]) => `+${value} ${resource}`).join(", ");
-    const upkeepText = Object.entries(upkeep).map(([resource, value]) => `-${value} ${resource}`).join(", ");
-    const crimeText = definition.crimeReduction ? `-${definition.crimeReduction} crime` : "";
-    if (!outputText && !upkeepText && !crimeText) return "No production or upkeep per 1M population.";
-    return `Per 1M: ${[outputText, upkeepText, crimeText].filter(Boolean).join("; ")}`;
+    addEntry("goods", -this.getClassGoodsUpkeep(this.getJobClass(job)), "input");
+    if (definition.amenities) addEntry("amenities", definition.amenities, "effect");
+    if (definition.crimeReduction) addEntry("crime", -definition.crimeReduction, "effect");
+    return entries;
+  }
+
+  private getClassGoodsUpkeep(jobClass: JobClass): number {
+    if (jobClass === "upper") return 0.45;
+    if (jobClass === "middle") return 0.25;
+    return 0.08;
+  }
+
+  private resolveSelectedEconomyJob(planetState: PlanetState): JobKind | null {
+    const allJobs = JOB_FILL_ORDER.concat("criminal", "unemployed");
+    if (this.selectedJob && allJobs.includes(this.selectedJob)) return this.selectedJob;
+    return allJobs.find((job) => this.getPopForJob(planetState, job) > 0)
+      ?? allJobs.find((job) => planetState.economy.jobCapacity[job] > 0)
+      ?? null;
+  }
+
+  private getJobsForClass(className: JobClass): JobKind[] {
+    return JOB_FILL_ORDER
+      .concat("criminal", "unemployed")
+      .filter((job) => this.getJobClass(job) === className);
   }
 
   private getPopForJob(planetState: PlanetState, job: JobKind): number {
@@ -1468,6 +1694,122 @@ export class CelestialObjectPanel {
 
   private getJobClass(job: JobKind): JobClass {
     return JOB_DEFINITIONS[job].class;
+  }
+
+  private formatJobClassLabel(jobClass: JobClass): string {
+    if (jobClass === "upper") return "Upper Class";
+    if (jobClass === "middle") return "Middle Class";
+    return "Lower Class";
+  }
+
+  private getFlowResourceLabel(resource: EconomyFlowResource): string {
+    if (resource === "amenities") return "Amenities";
+    if (resource === "crime") return "Crime";
+    return RESOURCE_LABELS[resource];
+  }
+
+  private formatFlowAmount(value: number): string {
+    const sign = value >= 0 ? "+" : "-";
+    const abs = Math.abs(value);
+    if (abs >= 1000) return `${sign}${this.formatCompact(abs)}`;
+    if (abs >= 10) return `${sign}${abs.toFixed(0)}`;
+    if (abs >= 1) return `${sign}${abs.toFixed(1).replace(/\.0$/, "")}`;
+    return `${sign}${abs.toFixed(2).replace(/0$/, "").replace(/\.0$/, "")}`;
+  }
+
+  private createDefaultExpandedJobClasses(): Set<JobClass> {
+    return new Set<JobClass>();
+  }
+
+  private renderJobIcon(job: JobKind): string {
+    const icons: Record<JobKind, string> = {
+      administrator: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 12h22L16 5 5 12z"/><path d="M8 13v11M14 13v11M20 13v11M26 13v11"/><path d="M5 25h22"/></svg>',
+      researcher: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="2.5"/><path d="M5 16c3-5 19-5 22 0-3 5-19 5-22 0z"/><path d="M16 5c5 3 5 19 0 22-5-3-5-19 0-22z"/><path d="M9 9c5 1 12 8 14 14"/></svg>',
+      artisan: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M10 22l8-8"/><path d="M15 7l10 10-4 4L11 11l4-4z"/><path d="M7 25l4-1 13-13-3-3L8 21l-1 4z"/></svg>',
+      metallurgist: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M8 25h16l2-10H6l2 10z"/><path d="M11 14c0-5 5-6 5-10 4 4 6 7 4 10"/><path d="M14 21h4"/></svg>',
+      entertainer: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 5l3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1 3-7z"/><path d="M12 17c2 2 6 2 8 0"/></svg>',
+      enforcer: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4l10 4v7c0 7-4 10-10 13C10 25 6 22 6 15V8l10-4z"/><path d="M12 16h8"/><path d="M16 12v8"/></svg>',
+      farmer: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 25V8"/><path d="M16 13c-5-5-9-4-11 0 4 4 8 4 11 0z"/><path d="M16 18c5-5 9-4 11 0-4 4-8 4-11 0z"/><path d="M8 26h16"/></svg>',
+      miner: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 24l10-10"/><path d="M14 7c5 0 9 4 11 9"/><path d="M13 8l11 11"/><path d="M5 25l3 3"/></svg>',
+      technician: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M18 3L8 17h8l-2 12 10-15h-8l2-11z"/><path d="M7 25h6M20 7h5"/></svg>',
+      clerk: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M9 5h14v22H9z"/><path d="M12 11h8M12 16h8M12 21h5"/><path d="M22 5l3 3"/></svg>',
+      criminal: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M8 14V9c0-5 16-5 16 0v5"/><path d="M7 14h18l-2 13H9L7 14z"/><path d="M13 20h6"/><path d="M16 17v6"/></svg>',
+      unemployed: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="11" r="5"/><path d="M7 27c1-6 5-9 9-9s8 3 9 9"/><path d="M10 5l12 22"/></svg>',
+    };
+    return icons[job];
+  }
+
+  private getPopGroupPlaceholderImage(group: PopGroup, index: number): string {
+    const palettes = [
+      ["#7bc8ff", "#123448", "#d9f2ff"],
+      ["#7cffc3", "#123d32", "#d9fff0"],
+      ["#ffd36d", "#443516", "#fff2c7"],
+      ["#ff8e95", "#421b22", "#ffe0e3"],
+    ];
+    const palette = palettes[index % palettes.length];
+    const initial = group.speciesName
+      .trim()
+      .charAt(0)
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "") || "H";
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${palette[0]}"/><stop offset="1" stop-color="${palette[1]}"/></linearGradient></defs><rect width="96" height="96" rx="8" fill="url(#bg)"/><circle cx="48" cy="34" r="18" fill="${palette[2]}" opacity=".82"/><path d="M18 86c5-22 16-33 30-33s25 11 30 33" fill="${palette[2]}" opacity=".68"/><text x="48" y="43" text-anchor="middle" font-family="Arial,sans-serif" font-size="24" font-weight="700" fill="${palette[1]}">${initial}</text></svg>`;
+    return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+  }
+
+  private withQueuedDistrict(planetState: PlanetState, districtKind: DistrictKind): PlanetState {
+    return {
+      ...planetState,
+      constructionQueue: [
+        ...planetState.constructionQueue,
+        createDistrictConstructionQueueItem(districtKind),
+      ],
+    };
+  }
+
+  private withQueuedBuilding(
+    planetState: PlanetState,
+    target: { area: BuildingSlotArea; slotIndex: number; subDistrictIndex?: number },
+    buildingKind: BuildingKind,
+  ): PlanetState {
+    return {
+      ...planetState,
+      constructionQueue: [
+        ...planetState.constructionQueue,
+        createBuildingConstructionQueueItem(
+          buildingKind,
+          target.area,
+          target.slotIndex,
+          target.subDistrictIndex,
+        ),
+      ],
+    };
+  }
+
+  private withChangedSubDistrict(
+    planetState: PlanetState,
+    subDistrictIndex: number,
+    subDistrictKind: UrbanSubDistrictKind,
+  ): PlanetState {
+    if (!Number.isInteger(subDistrictIndex) || !planetState.urbanSubDistricts[subDistrictIndex]) return planetState;
+    const urbanSubDistricts = planetState.urbanSubDistricts.map((subDistrict, index) => {
+      if (index !== subDistrictIndex) return subDistrict;
+      return {
+        kind: subDistrictKind,
+        buildings: subDistrict.buildings.map((building) => (
+          building && isBuildingCompatible(building, "urbanSubDistrict", subDistrictKind) ? building : null
+        )),
+      };
+    });
+
+    return {
+      ...planetState,
+      urbanSubDistricts,
+      constructionQueue: filterInvalidQueuedBuildingsForSubDistrictChange(
+        planetState,
+        subDistrictIndex,
+        subDistrictKind,
+      ),
+    };
   }
 
   private openBuildingPicker(
@@ -1612,6 +1954,7 @@ export class CelestialObjectPanel {
       choice.addEventListener("click", () => {
         const kind = choice.dataset.coPickSub as UrbanSubDistrictKind | undefined;
         if (!kind) return;
+        const planetState = this.withChangedSubDistrict(data.planetState!, subDistrictIndex, kind);
         data.onPlanetCommand?.({
           type: "setUrbanSubDistrict",
           planetId: data.planetState!.id,
@@ -1619,6 +1962,8 @@ export class CelestialObjectPanel {
           subDistrictKind: kind,
         });
         picker.remove();
+        this.buildingPickerTarget = null;
+        this.show({ ...data, planetState });
       });
     });
   }
@@ -1808,6 +2153,24 @@ export class CelestialObjectPanel {
   padding: 8px 10px;
   background: rgba(4, 17, 17, 0.68);
   border: 1px solid rgba(92, 221, 184, 0.38);
+  color: rgba(236, 248, 244, 0.9);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  z-index: 1;
+}
+
+.coLeaderCard.assignable {
+  cursor: pointer;
+}
+
+.coLeaderCard.assignable:hover {
+  border-color: rgba(130, 255, 218, 0.72);
+  box-shadow: 0 0 16px rgba(92, 221, 184, 0.2);
+}
+
+.coLeaderCard:disabled {
+  opacity: 1;
 }
 
 .coLeaderCard span {
@@ -1822,7 +2185,27 @@ export class CelestialObjectPanel {
   height: 46px;
   border-radius: 50%;
   background: linear-gradient(160deg, #516b71, #1a2529 60%, #111);
+  background-size: cover;
+  background-position: center;
   border: 1px solid rgba(179, 255, 229, 0.42);
+  display: grid;
+  place-items: center;
+  color: rgba(230, 255, 246, 0.9);
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.coLeaderPortrait i {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(179, 255, 229, 0.56);
+  color: rgba(179, 255, 229, 0.95);
+  font-style: normal;
+  font-size: 15px;
+  line-height: 1;
 }
 
 .coSummary {
@@ -2974,38 +3357,152 @@ export class CelestialObjectPanel {
 
 .coJobsPanel,
 .coDemographicsPanel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   border: 1px solid rgba(76, 158, 133, 0.46);
   background: rgba(8, 20, 19, 0.74);
 }
 
+.coJobClassList {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  padding: 6px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.coJobClassList::-webkit-scrollbar,
+.coPopGroupList::-webkit-scrollbar {
+  width: 6px;
+}
+
+.coJobClassList::-webkit-scrollbar-thumb,
+.coPopGroupList::-webkit-scrollbar-thumb {
+  background: rgba(103, 255, 221, 0.34);
+  border-radius: 999px;
+}
+
 .coJobClass {
-  margin: 6px;
   border: 1px solid rgba(96, 196, 164, 0.36);
   background: rgba(10, 28, 27, 0.66);
 }
 
 .coJobClassTitle {
+  width: 100%;
   display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 6px 8px;
+  border: 0;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.2);
   color: #eefaf6;
   background: rgba(30, 62, 55, 0.74);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
-.coJobRows {
-  display: flex;
-  flex-wrap: nowrap;
+.coJobClassTitle:hover {
+  background: rgba(42, 82, 73, 0.86);
+}
+
+.coJobClassLabel {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 700;
+}
+
+.coJobClassLabel i {
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 7px solid rgba(151, 249, 222, 0.84);
+  transition: transform 0.16s ease;
+}
+
+.coJobClass.expanded .coJobClassLabel i {
+  transform: rotate(90deg);
+}
+
+.coJobClassTotals {
+  display: inline-grid;
+  justify-items: end;
+  gap: 1px;
+  color: #eefaf6;
+}
+
+.coJobClassTotals strong {
+  font-size: 15px;
+}
+
+.coJobClassTotals small {
+  color: rgba(202, 225, 219, 0.62);
+  font-size: 9px;
+}
+
+.coJobIconRail {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
   gap: 4px;
   padding: 5px;
 }
 
+.coJobRows {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 5px;
+  padding: 5px;
+  border-top: 1px solid rgba(103, 255, 221, 0.18);
+}
+
+.coJobMini {
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  grid-template-rows: 22px 1fr;
+  justify-items: center;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 2px;
+  border: 1px solid rgba(103, 255, 221, 0.28);
+  background: rgba(4, 18, 20, 0.68);
+  color: rgba(217, 248, 240, 0.82);
+  font: inherit;
+  cursor: pointer;
+}
+
+.coJobMini:hover,
+.coJobMini.selected {
+  border-color: rgba(248, 218, 103, 0.82);
+  background: rgba(67, 54, 18, 0.5);
+}
+
+.coJobMini span {
+  max-width: 100%;
+  color: #9cffcc;
+  font-size: 9px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .coJobRow {
-  flex: 1 1 0;
   min-width: 0;
   display: grid;
-  gap: 3px;
-  min-height: 48px;
-  padding: 4px;
+  grid-template-columns: 36px minmax(120px, 1fr) 74px minmax(168px, 1.1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 58px;
+  padding: 6px;
   border: 1px solid rgba(103, 255, 221, 0.36);
   background: rgba(6, 26, 26, 0.62);
   color: #dff7ef;
@@ -3015,29 +3512,139 @@ export class CelestialObjectPanel {
   overflow: hidden;
 }
 
+.coJobRow:hover,
 .coJobRow.selected {
   border-color: rgba(248, 218, 103, 0.82);
   background: rgba(67, 54, 18, 0.54);
 }
 
-.coJobRow strong {
+.coJobIcon,
+.coSelectedJobIcon {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(103, 255, 221, 0.26);
+  background: rgba(4, 16, 18, 0.72);
+  color: #8fffe1;
+}
+
+.coJobGlyph {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.coJobMini .coJobGlyph {
+  width: 20px;
+  height: 20px;
+}
+
+.coJobMain,
+.coJobNumbers {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.coJobMain strong,
+.coJobNumbers strong {
   color: #9cffcc;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.coJobRow small {
+.coJobMain small,
+.coJobNumbers small {
   color: rgba(208, 231, 225, 0.62);
+  font-size: 9px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.coJobRow span {
-  white-space: nowrap;
+.coJobNumbers {
+  justify-items: end;
+  text-align: right;
+}
+
+.coJobRecipe {
+  min-width: 0;
+  display: block;
+}
+
+.coFlowLine {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+}
+
+.coFlowPrefix,
+.coFlowNone,
+.coFlowEmpty {
+  color: rgba(202, 225, 219, 0.64);
+  font-size: 9px;
+}
+
+.coFlowArrow {
+  color: rgba(151, 249, 222, 0.78);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.coFlowChip {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 112px;
+  padding: 2px 4px;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: rgba(5, 18, 20, 0.7);
+  color: rgba(225, 244, 239, 0.84);
+  font-size: 9px;
+}
+
+.coFlowChip.input {
+  border-color: rgba(255, 125, 125, 0.32);
+  color: #ffb6b6;
+}
+
+.coFlowChip.output {
+  border-color: rgba(126, 255, 193, 0.36);
+  color: #9cffcc;
+}
+
+.coFlowChip.effect {
+  border-color: rgba(116, 215, 255, 0.34);
+  color: #9be6ff;
+}
+
+.coFlowChip .coStatIcon {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+}
+
+.coFlowChip strong,
+.coFlowChip small {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coFlowChip small {
+  color: currentColor;
+  opacity: 0.7;
 }
 
 .coGrowthGrid {
@@ -3086,34 +3693,107 @@ export class CelestialObjectPanel {
 }
 
 .coSelectedJob {
+  flex: 1 1 auto;
   margin: 8px;
-  min-height: 98px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.coSelectedJobHeader {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
 }
 
 .coSelectedJob h4 {
-  margin: 0 0 6px;
+  margin: 0;
   color: #eefaf6;
 }
 
 .coSelectedJob p {
-  margin: 4px 0;
+  margin: 3px 0 0;
+  color: rgba(202, 225, 219, 0.68);
+  font-size: 10px;
+}
+
+.coSelectedJobRecipe {
+  margin-top: 7px;
+  padding: 5px;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: rgba(6, 26, 26, 0.52);
 }
 
 .coPopGroupList {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
-  gap: 4px;
+  align-content: start;
+  gap: 6px;
   margin-top: 7px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
-.coPopGroupList span {
-  display: block;
-  padding: 4px;
+.coPopGroupCard {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 7px;
+  padding: 6px;
   border: 1px solid rgba(103, 255, 221, 0.24);
   background: rgba(6, 26, 26, 0.5);
 }
 
-.coPopGroupList strong {
+.coPopPortrait {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  border: 1px solid rgba(151, 249, 222, 0.34);
+  background: rgba(4, 16, 18, 0.9);
+}
+
+.coPopGroupMain,
+.coPopGroupTitle {
+  min-width: 0;
+}
+
+.coPopGroupTitle {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.coPopGroupTitle strong,
+.coPopStats strong {
   color: #9cffcc;
+}
+
+.coPopGroupTitle span {
+  color: rgba(202, 225, 219, 0.62);
+  font-size: 9px;
+}
+
+.coPopStats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.coPopStats span {
+  min-width: 0;
+  color: rgba(202, 225, 219, 0.68);
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coPopGroupFlow {
+  margin-top: 5px;
 }
 
 .coPicker {
