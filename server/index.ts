@@ -404,6 +404,20 @@ function recalculatePlanetEconomies(nextState = state): void {
   applyPlanetStatesToStars(nextState.stars, nextState.planetStates);
 }
 
+function getPlanetDetailSignature(planetState: PlanetState): string {
+  return JSON.stringify(planetState);
+}
+
+function queueChangedPlanetDetailRefreshes(previousSignatures: Map<string, string>): boolean {
+  let changed = false;
+  for (const planetState of state.planetStates) {
+    if (previousSignatures.get(planetState.id) === getPlanetDetailSignature(planetState)) continue;
+    queuePlanetDetailRefresh(planetState.id);
+    changed = true;
+  }
+  return changed;
+}
+
 function calculateFactionMonthlyDelta(nextState: GameState, factionId: number) {
   let delta = createEmptyResourceCounts();
   for (const planetState of nextState.planetStates) {
@@ -3161,6 +3175,13 @@ function spendResources(socket: WebSocket, factionId: number, cost: Partial<Reso
   return true;
 }
 
+function refundResources(factionId: number, refund: Partial<ResourceCounts>): void {
+  const economy = getFactionEconomy(factionId);
+  if (!economy) return;
+  economy.stockpiles = addResourceCounts(economy.stockpiles, normalizeResourceCounts(refund));
+  hasDirtyState = true;
+}
+
 function commitPlanetState(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -3588,6 +3609,28 @@ function handleBuildPlanetBuilding(
   commitPlanetState(socket, perspective, "Building queued.", {
     ...planetState,
     constructionQueue: [...planetState.constructionQueue, item],
+  });
+}
+
+function handleCancelPlanetConstruction(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  queueItemId: string,
+): void {
+  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!planetState) return;
+  const item = planetState.constructionQueue.find((candidate) => candidate.id === queueItemId);
+  if (!item) return reject(socket, "Construction item not found.");
+  const factionId = perspective.mode === "faction" ? perspective.factionId : null;
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const remainingRatio = item.totalDays > 0 ? Math.max(0, Math.min(1, item.remainingDays / item.totalDays)) : 0;
+  const mineralRefund = Math.floor(item.mineralCost * remainingRatio);
+  if (mineralRefund > 0) refundResources(factionId, { minerals: mineralRefund });
+
+  commitPlanetState(socket, perspective, "Construction cancelled.", {
+    ...planetState,
+    constructionQueue: planetState.constructionQueue.filter((candidate) => candidate.id !== queueItemId),
   });
 }
 
@@ -4588,6 +4631,9 @@ function scaleResourceCounts(counts: ResourceCounts, scale: number): ResourceCou
 }
 
 function processEconomyHours(targetHour: number): { economyChanged: boolean; technologiesChanged: boolean } {
+  const previousPlanetSignatures = new Map(
+    state.planetStates.map((planetState) => [planetState.id, getPlanetDetailSignature(planetState)]),
+  );
   recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
   let economyChanged = false;
@@ -4613,9 +4659,11 @@ function processEconomyHours(targetHour: number): { economyChanged: boolean; tec
     recalculatePlanetEconomies();
     refreshFactionEconomyDeltas();
   }
+  const planetDetailsChanged = queueChangedPlanetDetailRefreshes(previousPlanetSignatures);
   if (economyChanged || technologiesChanged) {
     hasDirtyState = true;
   }
+  if (planetDetailsChanged) hasDirtyState = true;
   return { economyChanged, technologiesChanged };
 }
 
@@ -6603,6 +6651,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
       command.buildingKind,
       command.subDistrictIndex,
     );
+    return;
+  }
+  if (command.type === "cancelPlanetConstruction") {
+    handleCancelPlanetConstruction(session.socket, session.perspective, command.planetId, command.queueItemId);
     return;
   }
   if (command.type === "upgradeStarbase") {

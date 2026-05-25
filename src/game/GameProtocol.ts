@@ -311,6 +311,12 @@ export interface SetUrbanSubDistrictCommand {
   subDistrictKind: UrbanSubDistrictKind;
 }
 
+export interface CancelPlanetConstructionCommand {
+  type: "cancelPlanetConstruction";
+  planetId: string;
+  queueItemId: string;
+}
+
 export interface BuildStarbaseBuildingCommand {
   type: "buildStarbaseBuilding";
   starbaseId: string;
@@ -445,6 +451,7 @@ export type ClientCommand =
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
+  | CancelPlanetConstructionCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
   | BuildStarbaseShipCommand

@@ -11,6 +11,7 @@ import {
   DISTRICT_MINERAL_COSTS,
   filterInvalidQueuedBuildingsForSubDistrictChange,
   getCompatibleBuildings,
+  getConstructionSpeedMultiplier,
   getEffectiveSpeciesHabitability,
   getHabitabilityProductionMultiplier,
   getHabitabilityUpkeepMultiplier,
@@ -41,6 +42,7 @@ import type {
 } from "../data/Economy";
 import type { ClientCommand } from "../game/GameProtocol";
 import type { LeaderState } from "../data/Leaders";
+import { GAME_DAYS_PER_YEAR } from "../game/GameTime";
 import {
   getFirstRequiredTechName,
   getRequiredTechIdsForBuilding,
@@ -187,7 +189,11 @@ export class CelestialObjectPanel {
   private tooltipStickTimer: number | null = null;
   private tooltipHideTimer: number | null = null;
   private tooltipSticky = false;
+  private readonly tooltipBoundElements = new WeakSet<HTMLElement>();
+  private readonly clickBoundElements = new WeakSet<HTMLElement>();
   private readonly keyedBuildingIconCache = new Map<string, string>();
+  private clockYear = 2100;
+  private planetStateReceivedAtYear = 2100;
   private position = { x: 24, y: 70 };
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
@@ -279,12 +285,16 @@ export class CelestialObjectPanel {
   }
 
   public show(data: CelestialObjectPanelData): void {
+    const previousData = this.currentData;
     if (this.currentData?.objectId !== data.objectId) {
       this.activeTab = "surface";
       this.selectedJob = null;
       this.expandedJobClasses = this.createDefaultExpandedJobClasses();
       this.buildingPickerTarget = null;
       this.featureTrayOpen = false;
+    }
+    if (data.planetState && (previousData?.objectId !== data.objectId || previousData?.planetState !== data.planetState)) {
+      this.planetStateReceivedAtYear = this.clockYear;
     }
     this.currentData = data;
     if (this.buildingPickerTarget) {
@@ -312,12 +322,28 @@ export class CelestialObjectPanel {
     isHabited: boolean,
   ): void {
     if (!this.currentData || this.currentData.objectId !== planetId) return;
-    this.show({
+    const nextData: CelestialObjectPanelData = {
       ...this.currentData,
       isHabited,
       objectDetails,
       planetState,
-    });
+    };
+    if (!this.panelElement || this.currentData.kind !== "planet") {
+      this.show(nextData);
+      return;
+    }
+    this.currentData = nextData;
+    this.planetStateReceivedAtYear = this.clockYear;
+    if (this.buildingPickerTarget) {
+      this.buildingPickerTarget = this.resolveBuildingPickerTarget(nextData, this.buildingPickerTarget);
+    }
+    this.patchPlanetPanel(nextData);
+  }
+
+  public setClockYear(year: number): void {
+    if (!Number.isFinite(year)) return;
+    this.clockYear = year;
+    this.patchConstructionProgressOnly();
   }
 
   public refreshAssignedLeader(
@@ -326,11 +352,26 @@ export class CelestialObjectPanel {
     canManageLeaders?: boolean,
   ): void {
     if (!this.currentData || this.currentData.objectId !== objectId) return;
-    this.show({
+    const nextData = {
       ...this.currentData,
       assignedLeader,
       canManageLeaders: canManageLeaders ?? this.currentData.canManageLeaders,
-    });
+    };
+    this.currentData = nextData;
+    if (!this.panelElement || nextData.kind !== "planet" || !nextData.isHabited) {
+      this.show(nextData);
+      return;
+    }
+    const currentCard = this.panelElement.querySelector<HTMLElement>(".coLeaderCard");
+    const nextCard = this.createElementFromHtml(this.renderLeaderCard(nextData));
+    if (!nextCard) return;
+    if (currentCard) {
+      if (currentCard.outerHTML === nextCard.outerHTML) return;
+      currentCard.replaceWith(nextCard);
+    } else {
+      this.panelElement.querySelector<HTMLElement>("[data-co-hero]")?.prepend(nextCard);
+    }
+    this.bindLeaderCardEvent(nextData, nextCard);
   }
 
   public getCurrentObjectId(): string | null {
@@ -387,7 +428,699 @@ export class CelestialObjectPanel {
       portrait?.style.setProperty("background-image", `url("${data.imageUrl}")`);
     }
 
-    this.panelElement.querySelectorAll<HTMLImageElement>("[data-building-icon]").forEach((image) => {
+    this.initializeDynamicMedia(this.panelElement);
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.classList.contains("disabled")) return;
+        this.activeTab = button.dataset.coTab === "economy" ? "economy" : "surface";
+        this.show(this.getFreshData(data));
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-build-district]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const districtKind = button.dataset.coBuildDistrict as DistrictKind | undefined;
+        this.handleBuildDistrict(data, districtKind);
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-building-slot]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const freshData = this.getFreshData(data);
+        if (!freshData.planetState) return;
+        this.openBuildingPicker(freshData, {
+          area: button.dataset.coArea as BuildingSlotArea,
+          slotIndex: Number(button.dataset.coSlotIndex),
+          subDistrictIndex: button.dataset.coSubIndex === undefined
+            ? undefined
+            : Number(button.dataset.coSubIndex),
+        });
+      });
+    });
+
+    const closeBuildingPicker = this.panelElement.querySelector<HTMLButtonElement>("[data-co-close-building-picker]");
+    closeBuildingPicker?.addEventListener("click", () => {
+      this.buildingPickerTarget = null;
+      this.patchSurfaceTransientState(data);
+    });
+
+    const openFeatures = this.panelElement.querySelector<HTMLButtonElement>("[data-co-open-features]");
+    openFeatures?.addEventListener("click", () => {
+      this.featureTrayOpen = true;
+      this.buildingPickerTarget = null;
+      this.patchSurfaceTransientState(data);
+    });
+
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-orbit-planet]")?.addEventListener("click", () => {
+      if (!data.orbitFleetId || data.kind !== "planet") return;
+      data.onPlanetCommand?.({ type: "orbitPlanet", fleetId: data.orbitFleetId, planetId: data.objectId });
+    });
+
+    this.bindLeaderCardEvent(data, this.panelElement);
+
+    const closeFeatures = this.panelElement.querySelector<HTMLButtonElement>("[data-co-close-features]");
+    closeFeatures?.addEventListener("click", () => {
+      this.featureTrayOpen = false;
+      this.patchSurfaceTransientState(data);
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-pick-building]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const buildingKind = button.dataset.coPickBuilding as BuildingKind | undefined;
+        this.handlePickBuilding(data, buildingKind);
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-cancel-planet-queue]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.handleCancelPlanetConstruction(data, button.dataset.coCancelPlanetQueue);
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-change-sub]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const freshData = this.getFreshData(data);
+        if (!freshData.planetState) return;
+        this.openSubDistrictPicker(button, freshData, Number(button.dataset.coSubIndex));
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-job]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.selectedJob = button.dataset.coJob as JobKind;
+        this.show(this.getFreshData(data));
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-job-class]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const className = button.dataset.coJobClass as JobClass | undefined;
+        if (!className) return;
+        if (this.expandedJobClasses.has(className)) {
+          this.expandedJobClasses.delete(className);
+        } else {
+          this.expandedJobClasses.add(className);
+        }
+        this.show(this.getFreshData(data));
+      });
+    });
+
+    this.bindTooltips();
+  }
+
+  private getFreshData(fallback: CelestialObjectPanelData): CelestialObjectPanelData {
+    return this.currentData?.objectId === fallback.objectId ? this.currentData : fallback;
+  }
+
+  private bindLeaderCardEvent(data: CelestialObjectPanelData, root: ParentNode): void {
+    this.queryIncludingRoot<HTMLButtonElement>(root, "[data-co-open-leaders]")?.addEventListener("click", () => {
+      const freshData = this.getFreshData(data);
+      if (freshData.kind !== "planet" || !freshData.isHabited || freshData.canManageLeaders !== true) return;
+      requestOpenLeadersPanel({
+        assignmentTarget: {
+          kind: "planet",
+          targetId: freshData.objectId,
+          label: freshData.name,
+          requiredClass: "civilian",
+        },
+      });
+    });
+  }
+
+  private handleBuildDistrict(data: CelestialObjectPanelData, districtKind?: DistrictKind): void {
+    const freshData = this.getFreshData(data);
+    if (!districtKind || !freshData.planetState) return;
+    this.buildingPickerTarget = null;
+    this.featureTrayOpen = false;
+    const planetState = this.withQueuedDistrict(freshData.planetState, districtKind);
+    freshData.onPlanetCommand?.({ type: "buildDistrict", planetId: freshData.planetState.id, districtKind });
+    this.applyLocalPlanetState(freshData, planetState);
+  }
+
+  private handlePickBuilding(data: CelestialObjectPanelData, buildingKind?: BuildingKind): void {
+    const freshData = this.getFreshData(data);
+    if (!freshData.planetState || !this.buildingPickerTarget || !buildingKind) return;
+    const target = { ...this.buildingPickerTarget };
+    this.buildingPickerTarget = null;
+    this.featureTrayOpen = false;
+    const planetState = this.withQueuedBuilding(freshData.planetState, target, buildingKind);
+    freshData.onPlanetCommand?.({
+      type: "buildPlanetBuilding",
+      planetId: freshData.planetState.id,
+      area: target.area,
+      slotIndex: target.slotIndex,
+      subDistrictIndex: target.subDistrictIndex,
+      buildingKind,
+    });
+    this.applyLocalPlanetState(freshData, planetState);
+  }
+
+  private handleCancelPlanetConstruction(data: CelestialObjectPanelData, queueItemId?: string): void {
+    const freshData = this.getFreshData(data);
+    if (!freshData.planetState || !queueItemId) return;
+    if (!freshData.planetState.constructionQueue.some((item) => item.id === queueItemId)) return;
+    const planetState = {
+      ...freshData.planetState,
+      constructionQueue: freshData.planetState.constructionQueue.filter((item) => item.id !== queueItemId),
+    };
+    freshData.onPlanetCommand?.({
+      type: "cancelPlanetConstruction",
+      planetId: freshData.planetState.id,
+      queueItemId,
+    });
+    this.applyLocalPlanetState(freshData, planetState);
+  }
+
+  private handlePickSubDistrict(
+    data: CelestialObjectPanelData,
+    subDistrictIndex: number,
+    subDistrictKind?: UrbanSubDistrictKind,
+    picker?: HTMLElement,
+  ): void {
+    const freshData = this.getFreshData(data);
+    if (!freshData.planetState || !subDistrictKind) return;
+    const planetState = this.withChangedSubDistrict(freshData.planetState, subDistrictIndex, subDistrictKind);
+    freshData.onPlanetCommand?.({
+      type: "setUrbanSubDistrict",
+      planetId: freshData.planetState.id,
+      subDistrictIndex,
+      subDistrictKind,
+    });
+    picker?.remove();
+    this.buildingPickerTarget = null;
+    this.applyLocalPlanetState(freshData, planetState);
+  }
+
+  private applyLocalPlanetState(data: CelestialObjectPanelData, planetState: PlanetState): void {
+    const nextData = { ...data, planetState };
+    this.currentData = nextData;
+    this.planetStateReceivedAtYear = this.clockYear;
+    if (!this.panelElement) {
+      this.show(nextData);
+      return;
+    }
+    this.patchPlanetPanel(nextData);
+  }
+
+  private patchSurfaceTransientState(data: CelestialObjectPanelData): void {
+    const freshData = this.getFreshData(data);
+    if (
+      !this.panelElement
+      || !freshData.planetState
+      || !this.panelElement.querySelector('[data-co-body="surface"]')
+    ) {
+      this.show(freshData);
+      return;
+    }
+    this.currentData = freshData;
+    this.patchBuildingSlotContainers(freshData);
+    this.patchSurfaceSidePanel(freshData);
+  }
+
+  private patchPlanetPanel(data: CelestialObjectPanelData): void {
+    if (!this.panelElement || !data.planetState) {
+      this.show(data);
+      return;
+    }
+
+    this.hideTooltip();
+    this.patchPlanetSummary(data);
+    this.patchResourceStrip(data.planetState);
+
+    const expectedBody = this.activeTab === "economy" && data.isHabited ? "economy" : "surface";
+    const body = this.panelElement.querySelector<HTMLElement>("[data-co-body]");
+    if (body?.dataset.coBody !== expectedBody) {
+      const html = expectedBody === "economy" ? this.renderEconomyBody(data.planetState) : this.renderSurfaceBody(data);
+      const nextBody = body ? this.replaceElementWithHtml(body, html) : this.appendPanelHtml(html);
+      if (nextBody) {
+        this.initializeDynamicMedia(nextBody);
+        this.bindPatchedContentEvents(data, nextBody);
+        this.bindTooltips(nextBody);
+      }
+      return;
+    }
+
+    if (expectedBody === "economy") {
+      this.patchEconomyBody(data);
+    } else {
+      this.patchSurfaceBody(data);
+    }
+  }
+
+  private getEstimatedConstructionQueue(planetState: PlanetState): PlanetConstructionQueueItem[] {
+    if (planetState.constructionQueue.length === 0) return [];
+    const elapsedDays = Math.max(0, (this.clockYear - this.planetStateReceivedAtYear) * GAME_DAYS_PER_YEAR);
+    if (elapsedDays <= 0) return planetState.constructionQueue;
+    const [first, ...rest] = planetState.constructionQueue;
+    const speed = getConstructionSpeedMultiplier(planetState, first.kind);
+    return [
+      {
+        ...first,
+        remainingDays: Math.max(0, first.remainingDays - elapsedDays * speed),
+      },
+      ...rest,
+    ];
+  }
+
+  private patchConstructionProgressOnly(): void {
+    if (!this.panelElement || !this.currentData?.planetState) return;
+    const estimatedQueue = this.getEstimatedConstructionQueue(this.currentData.planetState);
+    for (const item of estimatedQueue) {
+      const remaining = this.formatConstructionDays(item.remainingDays);
+      this.panelElement.querySelectorAll<HTMLElement>("[data-co-queue-item]").forEach((element) => {
+        if (element.dataset.coQueueItem !== item.id) return;
+        const days = element.querySelector<HTMLElement>("[data-co-queue-days]");
+        if (days) days.textContent = `${remaining} remaining`;
+        const fill = element.querySelector<HTMLElement>("[data-co-queue-progress-fill]");
+        if (fill) fill.style.width = this.getConstructionProgressPercent(item);
+      });
+      this.panelElement.querySelectorAll<HTMLElement>("[data-co-queued-building-days]").forEach((element) => {
+        if (element.dataset.coQueueItem !== item.id) return;
+        element.textContent = this.formatConstructionDays(item.remainingDays);
+      });
+    }
+  }
+
+  private getConstructionProgressPercent(item: PlanetConstructionQueueItem): string {
+    const progress = item.totalDays <= 0 ? 1 : 1 - item.remainingDays / item.totalDays;
+    return `${Math.max(2, Math.min(100, progress * 100)).toFixed(0)}%`;
+  }
+
+  private formatConstructionDays(days: number): string {
+    const remaining = Math.max(0, days);
+    if (remaining >= 100) return `${Math.ceil(remaining)}d`;
+    if (remaining >= 10) return `${remaining.toFixed(1)}d`;
+    return `${remaining.toFixed(1)}d`;
+  }
+
+  private patchPlanetSummary(data: CelestialObjectPanelData): void {
+    if (!this.panelElement) return;
+    const typeName = this.panelElement.querySelector<HTMLElement>("[data-co-type-name]");
+    if (typeName) typeName.textContent = data.objectDetails.typeName;
+    const summaryGrid = this.panelElement.querySelector<HTMLElement>("[data-co-summary-grid]");
+    if (summaryGrid) this.replaceElementWithHtmlIfChanged(summaryGrid, this.renderSummaryGrid(data));
+  }
+
+  private patchResourceStrip(planetState: PlanetState): void {
+    if (!this.panelElement) return;
+    const strip = this.panelElement.querySelector<HTMLElement>("[data-co-resource-strip]");
+    if (strip) this.replaceElementWithHtmlIfChanged(strip, this.renderResourceStrip(planetState));
+  }
+
+  private patchEconomyBody(data: CelestialObjectPanelData): void {
+    if (!this.panelElement || !data.planetState) return;
+    const body = this.panelElement.querySelector<HTMLElement>('[data-co-body="economy"]');
+    if (!body) return;
+    const html = this.renderEconomyBody(data.planetState);
+    if (body.outerHTML === html.trim()) return;
+    const scrollState = captureScrollState(this.panelElement, CELESTIAL_SCROLL_SELECTORS);
+    const nextBody = this.replaceElementWithHtml(body, html);
+    if (!nextBody) return;
+    this.bindEconomyContentEvents(data, nextBody);
+    this.bindTooltips(nextBody);
+    restoreScrollStateSoon(this.panelElement, scrollState);
+  }
+
+  private patchSurfaceBody(data: CelestialObjectPanelData): void {
+    if (!this.panelElement || !data.planetState) return;
+    this.patchProductionPanel(data);
+    this.patchDistrictFacts(data);
+    this.patchUrbanSubDistrictFacts(data);
+    this.patchBuildingSlotContainers(data);
+    this.patchSurfaceSidePanel(data);
+  }
+
+  private patchProductionPanel(data: CelestialObjectPanelData): void {
+    if (!this.panelElement || !data.planetState) return;
+    const production = this.panelElement.querySelector<HTMLElement>("[data-co-production-panel]");
+    if (production) this.replaceElementWithHtmlIfChanged(production, this.renderProductionPanels(data.planetState));
+  }
+
+  private patchDistrictFacts(data: CelestialObjectPanelData): void {
+    if (!this.panelElement || !data.planetState) return;
+    const limits = data.objectDetails.districtLimits;
+    const canBuild = data.kind === "planet" && data.isHabited;
+    for (const district of DISTRICTS) {
+      const kind = district.kind;
+      const used = data.planetState.builtDistricts[kind];
+      const queued = this.getQueuedDistrictCount(data.planetState, kind);
+      const limit = limits[kind];
+      const queuedLabel = queued > 0 ? ` +${queued} queued` : "";
+      const count = this.panelElement.querySelector<HTMLElement>(`[data-co-district-count="${kind}"]`);
+      if (count) count.textContent = `${used}/${limit}${queuedLabel}`;
+      const bar = this.panelElement.querySelector<HTMLElement>(`[data-co-district-bar="${kind}"]`);
+      if (bar) {
+        const html = this.renderDistrictSlots(used, limit);
+        if (bar.innerHTML !== html) bar.innerHTML = html;
+      }
+      const button = this.panelElement.querySelector<HTMLButtonElement>(`[data-co-district-build-button="${kind}"]`);
+      if (button) {
+        const disabled = !canBuild || used + queued >= limit;
+        button.disabled = disabled;
+        button.classList.toggle("disabled", disabled);
+      }
+    }
+  }
+
+  private patchUrbanSubDistrictFacts(data: CelestialObjectPanelData): void {
+    if (!this.panelElement || !data.planetState) return;
+    const host = this.panelElement.querySelector<HTMLElement>(".coSubDistricts");
+    if (!host) return;
+    const currentCards = host.querySelectorAll<HTMLElement>("[data-co-subdistrict-card]");
+    if (currentCards.length !== data.planetState.urbanSubDistricts.length) {
+      const nextHost = this.replaceElementWithHtml(host, this.renderUrbanSubDistricts(data, data.planetState));
+      if (nextHost) {
+        this.initializeDynamicMedia(nextHost);
+        this.bindSurfaceContentEvents(data, nextHost);
+        this.bindTooltips(nextHost);
+      }
+      return;
+    }
+    data.planetState.urbanSubDistricts.forEach((subDistrict, index) => {
+      const label = this.panelElement?.querySelector<HTMLElement>(`[data-co-subdistrict-label="${index}"]`);
+      if (label) label.textContent = URBAN_SUB_DISTRICT_LABELS[subDistrict.kind];
+      const button = this.panelElement?.querySelector<HTMLButtonElement>(`[data-co-change-sub][data-co-sub-index="${index}"]`);
+      if (button) button.dataset.coTooltip = this.tooltipAttr(this.renderSubDistrictTooltip(subDistrict.kind, data.planetState!));
+    });
+  }
+
+  private patchBuildingSlotContainers(data: CelestialObjectPanelData): void {
+    if (!this.panelElement || !data.planetState) return;
+    this.syncBuildingSlotContainer(
+      data,
+      this.panelElement.querySelector<HTMLElement>('[data-co-building-area="city"]'),
+      this.renderBuildingSlotsForArea(data, "city", data.planetState.buildings.city, 6),
+    );
+    this.syncBuildingSlotContainer(
+      data,
+      this.panelElement.querySelector<HTMLElement>('[data-co-building-area="generator"]'),
+      this.renderBuildingSlotsForArea(data, "generator", data.planetState.buildings.generator, 3),
+    );
+    this.syncBuildingSlotContainer(
+      data,
+      this.panelElement.querySelector<HTMLElement>('[data-co-building-area="mining"]'),
+      this.renderBuildingSlotsForArea(data, "mining", data.planetState.buildings.mining, 3),
+    );
+    this.syncBuildingSlotContainer(
+      data,
+      this.panelElement.querySelector<HTMLElement>('[data-co-building-area="agriculture"]'),
+      this.renderBuildingSlotsForArea(data, "agriculture", data.planetState.buildings.agriculture, 3),
+    );
+    data.planetState.urbanSubDistricts.forEach((subDistrict, index) => {
+      const container = this.panelElement?.querySelector<HTMLElement>(`[data-co-building-area="urbanSubDistrict"][data-co-sub-index="${index}"]`) ?? null;
+      this.syncBuildingSlotContainer(
+        data,
+        container,
+        this.renderBuildingSlotsForArea(data, "urbanSubDistrict", subDistrict.buildings, 3, index),
+      );
+    });
+  }
+
+  private syncBuildingSlotContainer(
+    data: CelestialObjectPanelData,
+    container: HTMLElement | null,
+    html: string,
+  ): void {
+    if (!container) return;
+    const template = document.createElement("template");
+    template.innerHTML = html.trim();
+    const nextChildren = Array.from(template.content.children) as HTMLElement[];
+    nextChildren.forEach((nextChild, index) => {
+      const current = container.children[index] as HTMLElement | undefined;
+      if (!current) {
+        container.appendChild(nextChild);
+        this.initializeDynamicMedia(nextChild);
+        this.bindSurfaceContentEvents(data, nextChild);
+        this.bindTooltips(nextChild);
+        return;
+      }
+      if (
+        current.dataset.coBuildingSlotKey === nextChild.dataset.coBuildingSlotKey
+        && current.outerHTML === nextChild.outerHTML
+      ) {
+        return;
+      }
+      current.replaceWith(nextChild);
+      this.initializeDynamicMedia(nextChild);
+      this.bindSurfaceContentEvents(data, nextChild);
+      this.bindTooltips(nextChild);
+    });
+    while (container.children.length > nextChildren.length) {
+      container.lastElementChild?.remove();
+    }
+  }
+
+  private patchSurfaceSidePanel(data: CelestialObjectPanelData): void {
+    if (!this.panelElement) return;
+    const layout = this.panelElement.querySelector<HTMLElement>("[data-co-surface-layout]");
+    if (!layout) return;
+    const html = this.renderSurfaceSidePanel(data);
+    const existing = this.getSurfaceSidePanel(layout);
+    layout.classList.toggle("withSide", Boolean(html));
+    if (!html) {
+      existing?.remove();
+      return;
+    }
+
+    const nextPanel = this.createElementFromHtml(html);
+    if (!nextPanel) return;
+    if (!existing) {
+      layout.appendChild(nextPanel);
+      this.initializeDynamicMedia(nextPanel);
+      this.bindSurfaceContentEvents(data, nextPanel);
+      this.bindTooltips(nextPanel);
+      return;
+    }
+
+    if (existing.dataset.coSidePanel !== nextPanel.dataset.coSidePanel) {
+      existing.replaceWith(nextPanel);
+      this.initializeDynamicMedia(nextPanel);
+      this.bindSurfaceContentEvents(data, nextPanel);
+      this.bindTooltips(nextPanel);
+      return;
+    }
+
+    if (existing.dataset.coSidePanel === "overview" && data.planetState) {
+      this.patchOverviewPanel(data, existing);
+      return;
+    }
+
+    if (existing.outerHTML !== html.trim()) {
+      existing.replaceWith(nextPanel);
+      this.initializeDynamicMedia(nextPanel);
+      this.bindSurfaceContentEvents(data, nextPanel);
+      this.bindTooltips(nextPanel);
+    }
+  }
+
+  private renderSurfaceSidePanel(data: CelestialObjectPanelData): string {
+    return this.renderFeaturesTray(data) || this.renderBuildingTray(data) || this.renderPlanetOverview(data);
+  }
+
+  private getSurfaceSidePanel(layout: HTMLElement): HTMLElement | null {
+    return Array.from(layout.children).find((child): child is HTMLElement => (
+      child instanceof HTMLElement && child.matches("aside[data-co-side-panel]")
+    )) ?? null;
+  }
+
+  private patchOverviewPanel(data: CelestialObjectPanelData, overview: HTMLElement): void {
+    if (!data.planetState) return;
+    const nextOverview = this.createElementFromHtml(this.renderPlanetOverview(data));
+    if (!nextOverview) return;
+    const grid = overview.querySelector<HTMLElement>(".coOverviewGrid");
+    const nextGrid = nextOverview.querySelector<HTMLElement>(".coOverviewGrid");
+    if (grid && nextGrid && grid.outerHTML !== nextGrid.outerHTML) grid.replaceWith(nextGrid);
+    this.patchConstructionQueue(data, overview, nextOverview);
+  }
+
+  private patchConstructionQueue(
+    data: CelestialObjectPanelData,
+    overview: HTMLElement,
+    nextOverview?: HTMLElement,
+  ): void {
+    const planetState = data.planetState;
+    if (!planetState) return;
+    const panel = overview.querySelector<HTMLElement>("[data-co-queue-panel]");
+    if (!panel) return;
+    const count = panel.querySelector<HTMLElement>("[data-co-queue-count]");
+    if (count) count.textContent = `${planetState.constructionQueue.length} active`;
+    const list = panel.querySelector<HTMLElement>("[data-co-queue-list]");
+    if (!list) return;
+    const estimatedQueue = this.getEstimatedConstructionQueue(planetState);
+    const nextList = nextOverview?.querySelector<HTMLElement>("[data-co-queue-list]") ?? this.createElementFromHtml(
+      `<div>${estimatedQueue.length === 0
+        ? '<div class="coQueueEmpty">No active construction</div>'
+        : estimatedQueue.map((item) => this.renderQueueItem(item, data.canManageLeaders === true)).join("")}</div>`,
+    );
+    if (!nextList) return;
+    this.syncKeyedChildren(list, Array.from(nextList.children) as HTMLElement[], "coQueueItem");
+    this.bindSurfaceContentEvents(data, list);
+  }
+
+  private syncKeyedChildren(container: HTMLElement, nextChildren: HTMLElement[], keyName: string): void {
+    nextChildren.forEach((nextChild, index) => {
+      const current = container.children[index] as HTMLElement | undefined;
+      const nextKey = nextChild.dataset[keyName];
+      if (!current) {
+        container.appendChild(nextChild);
+        return;
+      }
+      if (current.dataset[keyName] === nextKey && current.outerHTML === nextChild.outerHTML) return;
+      current.replaceWith(nextChild);
+    });
+    while (container.children.length > nextChildren.length) {
+      container.lastElementChild?.remove();
+    }
+  }
+
+  private bindPatchedContentEvents(data: CelestialObjectPanelData, root: ParentNode): void {
+    this.bindSurfaceContentEvents(data, root);
+    this.bindEconomyContentEvents(data, root);
+  }
+
+  private bindSurfaceContentEvents(data: CelestialObjectPanelData, root: ParentNode): void {
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-build-district]").forEach((button) => {
+      this.bindClickOnce(button, () => this.handleBuildDistrict(data, button.dataset.coBuildDistrict as DistrictKind | undefined));
+    });
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-building-slot]").forEach((button) => {
+      this.bindClickOnce(button, () => {
+        const freshData = this.getFreshData(data);
+        if (!freshData.planetState) return;
+        this.openBuildingPicker(freshData, {
+          area: button.dataset.coArea as BuildingSlotArea,
+          slotIndex: Number(button.dataset.coSlotIndex),
+          subDistrictIndex: button.dataset.coSubIndex === undefined ? undefined : Number(button.dataset.coSubIndex),
+        });
+      });
+    });
+    const closeBuildingPicker = this.queryIncludingRoot<HTMLButtonElement>(root, "[data-co-close-building-picker]");
+    if (closeBuildingPicker) this.bindClickOnce(closeBuildingPicker, () => {
+      this.buildingPickerTarget = null;
+      this.patchSurfaceTransientState(data);
+    });
+    const openFeatures = this.queryIncludingRoot<HTMLButtonElement>(root, "[data-co-open-features]");
+    if (openFeatures) this.bindClickOnce(openFeatures, () => {
+      this.featureTrayOpen = true;
+      this.buildingPickerTarget = null;
+      this.patchSurfaceTransientState(data);
+    });
+    const closeFeatures = this.queryIncludingRoot<HTMLButtonElement>(root, "[data-co-close-features]");
+    if (closeFeatures) this.bindClickOnce(closeFeatures, () => {
+      this.featureTrayOpen = false;
+      this.patchSurfaceTransientState(data);
+    });
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-pick-building]").forEach((button) => {
+      this.bindClickOnce(button, () => this.handlePickBuilding(data, button.dataset.coPickBuilding as BuildingKind | undefined));
+    });
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-cancel-planet-queue]").forEach((button) => {
+      this.bindClickOnce(button, () => this.handleCancelPlanetConstruction(data, button.dataset.coCancelPlanetQueue));
+    });
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-change-sub]").forEach((button) => {
+      this.bindClickOnce(button, () => {
+        const freshData = this.getFreshData(data);
+        if (!freshData.planetState) return;
+        this.openSubDistrictPicker(button, freshData, Number(button.dataset.coSubIndex));
+      });
+    });
+  }
+
+  private bindEconomyContentEvents(data: CelestialObjectPanelData, root: ParentNode): void {
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-job]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.selectedJob = button.dataset.coJob as JobKind;
+        this.show(this.getFreshData(data));
+      });
+    });
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-job-class]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const className = button.dataset.coJobClass as JobClass | undefined;
+        if (!className) return;
+        if (this.expandedJobClasses.has(className)) {
+          this.expandedJobClasses.delete(className);
+        } else {
+          this.expandedJobClasses.add(className);
+        }
+        this.show(this.getFreshData(data));
+      });
+    });
+  }
+
+  private createElementFromHtml(html: string): HTMLElement | null {
+    const template = document.createElement("template");
+    template.innerHTML = html.trim();
+    return template.content.firstElementChild as HTMLElement | null;
+  }
+
+  private appendPanelHtml(html: string): HTMLElement | null {
+    if (!this.panelElement) return null;
+    const element = this.createElementFromHtml(html);
+    if (!element) return null;
+    this.panelElement.appendChild(element);
+    return element;
+  }
+
+  private replaceElementWithHtml(element: HTMLElement, html: string): HTMLElement | null {
+    const next = this.createElementFromHtml(html);
+    if (!next) return null;
+    element.replaceWith(next);
+    return next;
+  }
+
+  private replaceElementWithHtmlIfChanged(element: HTMLElement, html: string): HTMLElement | null {
+    if (element.outerHTML === html.trim()) return element;
+    const next = this.replaceElementWithHtml(element, html);
+    if (next) {
+      this.initializeDynamicMedia(next);
+      this.bindTooltips(next);
+    }
+    return next;
+  }
+
+  private queryIncludingRoot<T extends Element>(root: ParentNode, selector: string): T | null {
+    if (root instanceof Element && root.matches(selector)) return root as T;
+    return root.querySelector<T>(selector);
+  }
+
+  private queryAllIncludingRoot<T extends Element>(root: ParentNode, selector: string): T[] {
+    const matches = Array.from(root.querySelectorAll<T>(selector));
+    if (root instanceof Element && root.matches(selector)) {
+      matches.unshift(root as T);
+    }
+    return matches;
+  }
+
+  private bindClickOnce(element: HTMLElement, handler: (ev: MouseEvent) => void): void {
+    if (this.clickBoundElements.has(element)) return;
+    this.clickBoundElements.add(element);
+    element.addEventListener("click", handler);
+  }
+
+  private applyPosition(): void {
+    if (!this.panelElement) return;
+    this.panelElement.style.left = `${this.position.x}px`;
+    this.panelElement.style.top = `${this.position.y}px`;
+  }
+
+  private bindTooltips(root: ParentNode | null = this.panelElement): void {
+    if (!root) return;
+    this.queryAllIncludingRoot<HTMLElement>(root, "[data-co-tooltip]").forEach((anchor) => {
+      if (this.tooltipBoundElements.has(anchor)) return;
+      this.tooltipBoundElements.add(anchor);
+      anchor.addEventListener("pointerenter", () => this.scheduleTooltip(anchor));
+      anchor.addEventListener("pointerleave", () => this.scheduleTooltipHide());
+      anchor.addEventListener("focus", () => this.scheduleTooltip(anchor));
+      anchor.addEventListener("blur", () => this.scheduleTooltipHide());
+    });
+  }
+
+  private initializeDynamicMedia(root: ParentNode): void {
+    this.initializeBuildingIcons(root);
+    this.initializeDistrictIcons(root);
+  }
+
+  private initializeBuildingIcons(root: ParentNode): void {
+    root.querySelectorAll<HTMLImageElement>("[data-building-icon]").forEach((image) => {
       const fallback = image.parentElement?.querySelector<HTMLElement>("[data-building-fallback]");
       const candidates = (image.dataset.buildingIconCandidates ?? "").split("|").filter(Boolean);
       image.loading = "eager";
@@ -450,8 +1183,10 @@ export class CelestialObjectPanel {
 
       tryCandidate(Number(image.dataset.buildingIconIndex ?? "0"));
     });
+  }
 
-    this.panelElement.querySelectorAll<HTMLImageElement>("[data-district-icon]").forEach((image) => {
+  private initializeDistrictIcons(root: ParentNode): void {
+    root.querySelectorAll<HTMLImageElement>("[data-district-icon]").forEach((image) => {
       const fallback = image.parentElement?.querySelector<HTMLElement>("[data-district-fallback]");
       const candidates = (image.dataset.districtIconCandidates ?? "").split("|").filter(Boolean);
       image.loading = "eager";
@@ -503,141 +1238,6 @@ export class CelestialObjectPanel {
       }
 
       tryCandidate(Number(image.dataset.districtIconIndex ?? "0"));
-    });
-
-    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-tab]").forEach((button) => {
-      button.addEventListener("click", () => {
-        if (button.classList.contains("disabled")) return;
-        this.activeTab = button.dataset.coTab === "economy" ? "economy" : "surface";
-        this.show(data);
-      });
-    });
-
-    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-build-district]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const districtKind = button.dataset.coBuildDistrict as DistrictKind | undefined;
-        if (!districtKind || !data.planetState) return;
-        this.buildingPickerTarget = null;
-        this.featureTrayOpen = false;
-        const planetState = this.withQueuedDistrict(data.planetState, districtKind);
-        data.onPlanetCommand?.({ type: "buildDistrict", planetId: data.planetState.id, districtKind });
-        this.show({ ...data, planetState });
-      });
-    });
-
-    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-building-slot]").forEach((button) => {
-      button.addEventListener("click", () => {
-        if (!data.planetState) return;
-        this.openBuildingPicker(data, {
-          area: button.dataset.coArea as BuildingSlotArea,
-          slotIndex: Number(button.dataset.coSlotIndex),
-          subDistrictIndex: button.dataset.coSubIndex === undefined
-            ? undefined
-            : Number(button.dataset.coSubIndex),
-        });
-      });
-    });
-
-    const closeBuildingPicker = this.panelElement.querySelector<HTMLButtonElement>("[data-co-close-building-picker]");
-    closeBuildingPicker?.addEventListener("click", () => {
-      this.buildingPickerTarget = null;
-      this.show(data);
-    });
-
-    const openFeatures = this.panelElement.querySelector<HTMLButtonElement>("[data-co-open-features]");
-    openFeatures?.addEventListener("click", () => {
-      this.featureTrayOpen = true;
-      this.buildingPickerTarget = null;
-      this.show(data);
-    });
-
-    this.panelElement.querySelector<HTMLButtonElement>("[data-co-orbit-planet]")?.addEventListener("click", () => {
-      if (!data.orbitFleetId || data.kind !== "planet") return;
-      data.onPlanetCommand?.({ type: "orbitPlanet", fleetId: data.orbitFleetId, planetId: data.objectId });
-    });
-
-    this.panelElement.querySelector<HTMLButtonElement>("[data-co-open-leaders]")?.addEventListener("click", () => {
-      if (data.kind !== "planet" || !data.isHabited || data.canManageLeaders !== true) return;
-      requestOpenLeadersPanel({
-        assignmentTarget: {
-          kind: "planet",
-          targetId: data.objectId,
-          label: data.name,
-          requiredClass: "civilian",
-        },
-      });
-    });
-
-    const closeFeatures = this.panelElement.querySelector<HTMLButtonElement>("[data-co-close-features]");
-    closeFeatures?.addEventListener("click", () => {
-      this.featureTrayOpen = false;
-      this.show(data);
-    });
-
-    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-pick-building]").forEach((button) => {
-      button.addEventListener("click", () => {
-        if (!data.planetState || !this.buildingPickerTarget) return;
-        const buildingKind = button.dataset.coPickBuilding as BuildingKind | undefined;
-        if (!buildingKind) return;
-        const target = { ...this.buildingPickerTarget };
-        this.buildingPickerTarget = null;
-        this.featureTrayOpen = false;
-        const planetState = this.withQueuedBuilding(data.planetState, target, buildingKind);
-        data.onPlanetCommand?.({
-          type: "buildPlanetBuilding",
-          planetId: data.planetState.id,
-          area: target.area,
-          slotIndex: target.slotIndex,
-          subDistrictIndex: target.subDistrictIndex,
-          buildingKind,
-        });
-        this.show({ ...data, planetState });
-      });
-    });
-
-    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-change-sub]").forEach((button) => {
-      button.addEventListener("click", () => {
-        if (!data.planetState) return;
-        this.openSubDistrictPicker(button, data, Number(button.dataset.coSubIndex));
-      });
-    });
-
-    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-job]").forEach((button) => {
-      button.addEventListener("click", () => {
-        this.selectedJob = button.dataset.coJob as JobKind;
-        this.show(data);
-      });
-    });
-
-    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-job-class]").forEach((button) => {
-      button.addEventListener("click", () => {
-        const className = button.dataset.coJobClass as JobClass | undefined;
-        if (!className) return;
-        if (this.expandedJobClasses.has(className)) {
-          this.expandedJobClasses.delete(className);
-        } else {
-          this.expandedJobClasses.add(className);
-        }
-        this.show(data);
-      });
-    });
-
-    this.bindTooltips();
-  }
-
-  private applyPosition(): void {
-    if (!this.panelElement) return;
-    this.panelElement.style.left = `${this.position.x}px`;
-    this.panelElement.style.top = `${this.position.y}px`;
-  }
-
-  private bindTooltips(): void {
-    if (!this.panelElement) return;
-    this.panelElement.querySelectorAll<HTMLElement>("[data-co-tooltip]").forEach((anchor) => {
-      anchor.addEventListener("pointerenter", () => this.scheduleTooltip(anchor));
-      anchor.addEventListener("pointerleave", () => this.scheduleTooltipHide());
-      anchor.addEventListener("focus", () => this.scheduleTooltip(anchor));
-      anchor.addEventListener("blur", () => this.scheduleTooltipHide());
     });
   }
 
@@ -785,11 +1385,6 @@ export class CelestialObjectPanel {
   }
 
   private render(data: CelestialObjectPanelData): string {
-    const details = data.objectDetails;
-    const habitabilityValue = data.planetState
-      ? getEffectiveSpeciesHabitability(data.planetState)
-      : details.habitability;
-    const habitability = habitabilityValue === null ? "?%" : `${habitabilityValue}%`;
     const isPlanet = data.kind === "planet";
     const isHabitedPlanet = isPlanet && data.isHabited;
     const planetState = data.planetState;
@@ -812,14 +1407,8 @@ export class CelestialObjectPanel {
         </div>
         <aside class="coSummary">
           <div class="coSectionTitle">${isPlanet ? "Planet Summary" : "Stellar Summary"}</div>
-          <div class="coTypeName">${this.escapeHtml(details.typeName)}</div>
-          <div class="coSummaryGrid">
-            ${this.renderSummaryStat("habitability", "Habitability", habitability)}
-            ${this.renderSummaryStat("population", "Habited", data.isHabited ? "Yes" : "No")}
-            ${this.renderSummaryStat("size", "Size", String(details.size))}
-            ${planetState ? this.renderSummaryStat("housing", "Housing", this.formatPeople(planetState.economy.housing)) : ""}
-            ${planetState ? this.renderSummaryStat("amenities", "Amenities", this.formatCompact(planetState.economy.amenities)) : ""}
-          </div>
+          <div class="coTypeName" data-co-type-name>${this.escapeHtml(data.objectDetails.typeName)}</div>
+          ${this.renderSummaryGrid(data)}
           <div class="coPortrait" data-co-portrait></div>
         </aside>
         ${this.renderResourceStrip(planetState)}
@@ -834,6 +1423,23 @@ export class CelestialObjectPanel {
         <button class="${tabsDisabled}" type="button">Armies</button>
         <button class="${tabsDisabled}" type="button">Holdings</button>
       </nav>
+    `;
+  }
+
+  private renderSummaryGrid(data: CelestialObjectPanelData): string {
+    const details = data.objectDetails;
+    const habitabilityValue = data.planetState
+      ? getEffectiveSpeciesHabitability(data.planetState)
+      : details.habitability;
+    const habitability = habitabilityValue === null ? "?%" : `${habitabilityValue}%`;
+    return `
+      <div class="coSummaryGrid" data-co-summary-grid>
+        ${this.renderSummaryStat("habitability", "Habitability", habitability)}
+        ${this.renderSummaryStat("population", "Habited", data.isHabited ? "Yes" : "No")}
+        ${this.renderSummaryStat("size", "Size", String(details.size))}
+        ${data.planetState ? this.renderSummaryStat("housing", "Housing", this.formatPeople(data.planetState.economy.housing)) : ""}
+        ${data.planetState ? this.renderSummaryStat("amenities", "Amenities", this.formatCompact(data.planetState.economy.amenities)) : ""}
+      </div>
     `;
   }
 
@@ -879,7 +1485,7 @@ export class CelestialObjectPanel {
   private renderResourceStrip(planetState?: PlanetState): string {
     if (!planetState) {
       return `
-        <div class="coResourceStrip">
+        <div class="coResourceStrip" data-co-resource-strip>
           ${this.renderResourceStripStat("stability", "Stability", "?%")}
           ${this.renderResourceStripStat("population", "Pop", "0")}
           ${this.renderResourceStripStat("happiness", "Happiness", "?%")}
@@ -894,7 +1500,7 @@ export class CelestialObjectPanel {
     const support = this.getPlanetSupportMetrics(planetState);
 
     return `
-      <div class="coResourceStrip">
+      <div class="coResourceStrip" data-co-resource-strip>
         ${this.renderResourceStripStat("stability", "Stability", `${economy.stability.toFixed(0)}%`, this.getHighStatTone(economy.stability))}
         ${this.renderResourceStripStat("population", "Pop", this.formatPeople(planetState.population))}
         ${this.renderResourceStripStat("happiness", "Happiness", `${economy.happiness.toFixed(0)}%`, this.getHighStatTone(economy.happiness))}
@@ -907,7 +1513,7 @@ export class CelestialObjectPanel {
 
   private renderResourceStripStat(icon: string, label: string, value: string, tone = "neutral"): string {
     return `
-      <span class="coResourceStripItem coTone-${tone}">
+      <span class="coResourceStripItem coTone-${tone}" data-co-resource-stat="${this.escapeHtml(icon)}">
         ${this.renderStatIcon(icon)}
         <small>${this.escapeHtml(label)}</small>
         <strong>${this.escapeHtml(value)}</strong>
@@ -968,35 +1574,35 @@ export class CelestialObjectPanel {
     const sidePanel = featuresTray || buildTray || this.renderPlanetOverview(data);
 
     return `
-      <section class="coBody">
+      <section class="coBody" data-co-body="surface">
         <div class="coBodyHeader">Districts and Buildings</div>
-        <div class="coSurfaceLayout${sidePanel ? " withSide" : ""}">
+        <div class="coSurfaceLayout${sidePanel ? " withSide" : ""}" data-co-surface-layout>
           <div class="coDistrictGrid">
-            <article class="coDistrictCard coDistrictCity">
+            <article class="coDistrictCard coDistrictCity" data-co-district-card="city">
               ${this.renderDistrict("city", "City Districts", built, limits, data.isHabited, canBuild, planetState)}
-              <div class="coEmbeddedBuildings coCityBuildings">
+              <div class="coEmbeddedBuildings coCityBuildings" data-co-building-area="city">
                 ${this.renderBuildingSlotsForArea(data, "city", planetState?.buildings.city ?? [], 6)}
               </div>
               ${planetState && data.isHabited ? this.renderUrbanSubDistricts(data, planetState) : ""}
             </article>
-            <article class="coInfoCard">
+            <article class="coInfoCard" data-co-production-host>
               ${planetState && data.isHabited ? this.renderProductionPanels(planetState) : this.renderDescription(details)}
             </article>
-            <article class="coDistrictCard">
+            <article class="coDistrictCard" data-co-district-card="generator">
               ${this.renderDistrict("generator", "Generator Districts", built, limits, false, canBuild, planetState)}
-              <div class="coEmbeddedBuildings">
+              <div class="coEmbeddedBuildings" data-co-building-area="generator">
                 ${this.renderBuildingSlotsForArea(data, "generator", planetState?.buildings.generator ?? [], 3)}
               </div>
             </article>
-            <article class="coDistrictCard">
+            <article class="coDistrictCard" data-co-district-card="mining">
               ${this.renderDistrict("mining", "Mining Districts", built, limits, false, canBuild, planetState)}
-              <div class="coEmbeddedBuildings">
+              <div class="coEmbeddedBuildings" data-co-building-area="mining">
                 ${this.renderBuildingSlotsForArea(data, "mining", planetState?.buildings.mining ?? [], 3)}
               </div>
             </article>
-            <article class="coDistrictCard">
+            <article class="coDistrictCard" data-co-district-card="agriculture">
               ${this.renderDistrict("agriculture", "Agriculture Districts", built, limits, false, canBuild, planetState)}
-              <div class="coEmbeddedBuildings">
+              <div class="coEmbeddedBuildings" data-co-building-area="agriculture">
                 ${this.renderBuildingSlotsForArea(data, "agriculture", planetState?.buildings.agriculture ?? [], 3)}
               </div>
             </article>
@@ -1018,12 +1624,12 @@ export class CelestialObjectPanel {
     return `
       <div class="coSubDistricts">
         ${planetState.urbanSubDistricts.map((subDistrict, index) => `
-          <div class="coSubDistrictCard">
+          <div class="coSubDistrictCard" data-co-subdistrict-card="${index}">
             <div class="coSubDistrictHeader">
-              <span>${this.escapeHtml(URBAN_SUB_DISTRICT_LABELS[subDistrict.kind])}</span>
+              <span data-co-subdistrict-label="${index}">${this.escapeHtml(URBAN_SUB_DISTRICT_LABELS[subDistrict.kind])}</span>
               <button type="button" data-co-tooltip="${this.tooltipAttr(this.renderSubDistrictTooltip(subDistrict.kind, planetState))}" data-co-change-sub data-co-sub-index="${index}">Change</button>
             </div>
-            <div class="coEmbeddedBuildings coSubBuildings">
+            <div class="coEmbeddedBuildings coSubBuildings" data-co-building-area="urbanSubDistrict" data-co-sub-index="${index}">
               ${this.renderBuildingSlotsForArea(data, "urbanSubDistrict", subDistrict.buildings, 3, index)}
             </div>
           </div>
@@ -1051,7 +1657,7 @@ export class CelestialObjectPanel {
     return `
       <div class="coDistrictTitle">
         <span>${this.escapeHtml(label)}</span>
-        <button class="coTinyAction${buildDisabled}" type="button" data-co-tooltip="${tooltip}" data-co-build-district="${kind}"${buildDisabled ? " disabled" : ""}>+</button>
+        <button class="coTinyAction${buildDisabled}" type="button" data-co-tooltip="${tooltip}" data-co-build-district="${kind}" data-co-district-build-button="${kind}"${buildDisabled ? " disabled" : ""}>+</button>
       </div>
       <div class="coDistrictContent">
         <div class="coDistrictIcon ${kind}">
@@ -1060,8 +1666,8 @@ export class CelestialObjectPanel {
         </div>
         <div class="coDistrictMeta">
           ${showCityIndustry ? '<div class="coSpecialization">Space Age Industry</div>' : ""}
-          <div class="coDistrictCount">${used}/${limit}${queuedLabel}</div>
-          <div class="coDistrictBar ${kind}">
+          <div class="coDistrictCount" data-co-district-count="${kind}">${used}/${limit}${queuedLabel}</div>
+          <div class="coDistrictBar ${kind}" data-co-district-bar="${kind}">
             ${this.renderDistrictSlots(used, limit)}
           </div>
         </div>
@@ -1083,44 +1689,73 @@ export class CelestialObjectPanel {
     slotCount: number,
     subDistrictIndex?: number,
   ): string {
-    const enabled = data.isHabited && Boolean(data.planetState);
-    return Array.from({ length: slotCount }, (_, index) => {
-      if (!enabled) return '<span class="placeholder"></span>';
-      const building = slots[index] ?? null;
-      if (building) {
-        const definition = BUILDING_DEFINITIONS[building];
-        return `
-          <span class="filled coBuildingIconSlot" data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState!, area, subDistrictIndex))}">
-            <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
-            <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
-          </span>
-        `;
-      }
-      const queued = this.getQueuedBuildingForSlot(data.planetState!, area, index, subDistrictIndex);
+    return Array.from({ length: slotCount }, (_, index) => (
+      this.renderBuildingSlotForArea(data, area, slots[index] ?? null, index, subDistrictIndex)
+    )).join("");
+  }
+
+  private renderBuildingSlotForArea(
+    data: CelestialObjectPanelData,
+    area: BuildingSlotArea,
+    building: BuildingKind | null,
+    slotIndex: number,
+    subDistrictIndex?: number,
+  ): string {
+    const attributes = this.getBuildingSlotViewAttributes(area, slotIndex, subDistrictIndex);
+    if (!data.isHabited || !data.planetState) return `<span class="placeholder" ${attributes}></span>`;
+    if (building) {
+      const definition = BUILDING_DEFINITIONS[building];
+      return `
+        <span class="filled coBuildingIconSlot" ${attributes} data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState, area, subDistrictIndex))}">
+          <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
+          <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
+        </span>
+      `;
+    }
+    const queued = this.getQueuedBuildingForSlot(
+      { ...data.planetState, constructionQueue: this.getEstimatedConstructionQueue(data.planetState) },
+      area,
+      slotIndex,
+      subDistrictIndex,
+    );
       if (queued?.buildingKind) {
         const definition = BUILDING_DEFINITIONS[queued.buildingKind];
         return `
-          <span class="queued coBuildingIconSlot" data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState!, area, subDistrictIndex, queued))}">
+          <span class="queued coBuildingIconSlot" ${attributes} data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState, area, subDistrictIndex, queued))}">
             <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
             <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
-            <small>${Math.ceil(queued.remainingDays)}d</small>
+          <small data-co-queued-building-days data-co-queue-item="${this.escapeHtml(queued.id)}">${this.formatConstructionDays(queued.remainingDays)}</small>
           </span>
         `;
       }
-      const subAttribute = subDistrictIndex === undefined ? "" : ` data-co-sub-index="${subDistrictIndex}"`;
-      const selected = this.isBuildingPickerTarget(area, index, subDistrictIndex) ? " selected" : "";
-      return `
-        <button
-          class="coBuildingSlot${selected}"
-          type="button"
-          data-co-building-slot
-          data-co-area="${area}"
-          data-co-slot-index="${index}"
-          ${subAttribute}
-          title="Build in this slot"
-        >+</button>
-      `;
-    }).join("");
+    const subAttribute = subDistrictIndex === undefined ? "" : ` data-co-sub-index="${subDistrictIndex}"`;
+    const selected = this.isBuildingPickerTarget(area, slotIndex, subDistrictIndex) ? " selected" : "";
+    return `
+      <button
+        class="coBuildingSlot${selected}"
+        type="button"
+        ${attributes}
+        data-co-building-slot
+        data-co-area="${area}"
+        data-co-slot-index="${slotIndex}"
+        ${subAttribute}
+        title="Build in this slot"
+      >+</button>
+    `;
+  }
+
+  private getBuildingSlotViewAttributes(
+    area: BuildingSlotArea,
+    slotIndex: number,
+    subDistrictIndex?: number,
+  ): string {
+    const subAttribute = subDistrictIndex === undefined ? "" : ` data-co-sub-index="${subDistrictIndex}"`;
+    const key = this.getBuildingSlotKey(area, slotIndex, subDistrictIndex);
+    return `data-co-building-slot-view data-co-building-slot-key="${this.escapeHtml(key)}" data-co-area="${this.escapeHtml(area)}" data-co-slot-index="${slotIndex}"${subAttribute}`;
+  }
+
+  private getBuildingSlotKey(area: BuildingSlotArea, slotIndex: number, subDistrictIndex?: number): string {
+    return `${area}:${subDistrictIndex ?? "root"}:${slotIndex}`;
   }
 
   private renderBuildingTray(data: CelestialObjectPanelData): string {
@@ -1132,7 +1767,7 @@ export class CelestialObjectPanel {
     const targetLabel = this.getBuildingTargetLabel(planetState, target);
 
     return `
-      <aside class="coBuildTray">
+      <aside class="coBuildTray" data-co-side-panel="build">
         <div class="coBuildTrayHeader">
           <div>
             <strong>Construct Building</strong>
@@ -1186,7 +1821,7 @@ export class CelestialObjectPanel {
     const weeklyGrowth = Math.round(growth.netPerQuarter * (7 / 120));
 
     return `
-      <aside class="coPlanetOverview">
+      <aside class="coPlanetOverview" data-co-side-panel="overview">
         <div class="coSidePanelHeader">
           <div>
             <strong>Planet Overview</strong>
@@ -1201,7 +1836,7 @@ export class CelestialObjectPanel {
           ${this.renderOverviewStat("housing", "Housing", this.formatPeople(economy.housing), this.getNeedBalanceTone(support.housingRatio))}
           ${this.renderOverviewStat("amenities", "Amenities", this.formatCompact(economy.amenities), this.getNeedBalanceTone(support.amenityRatio))}
         </div>
-        ${this.renderConstructionQueue(planetState)}
+        ${this.renderConstructionQueue(data)}
         <div class="coOverviewActions">
           <button type="button" data-co-open-features>Features</button>
           <button type="button">Decisions</button>
@@ -1212,7 +1847,7 @@ export class CelestialObjectPanel {
 
   private renderOverviewStat(icon: string, label: string, value: string, tone = "neutral"): string {
     return `
-      <div class="coOverviewStat coTone-${tone}">
+      <div class="coOverviewStat coTone-${tone}" data-co-overview-stat="${this.escapeHtml(icon)}">
         ${this.renderStatIcon(icon)}
         <span>${this.escapeHtml(label)}</span>
         <strong>${this.escapeHtml(value)}</strong>
@@ -1225,7 +1860,7 @@ export class CelestialObjectPanel {
     if (!this.featureTrayOpen || !planetState || !data.isHabited) return "";
     const features = planetState.features;
     return `
-      <aside class="coFeatureTray">
+      <aside class="coFeatureTray" data-co-side-panel="features">
         <div class="coSidePanelHeader">
           <div>
             <strong>Planet Features</strong>
@@ -1331,7 +1966,7 @@ export class CelestialObjectPanel {
       <p>${this.escapeHtml(definition.description)}</p>
       <div class="coTooltipGrid">
         <div><span>Cost</span><strong>${definition.mineralCost} Minerals</strong></div>
-        <div><span>Build Time</span><strong>${queued ? `${Math.ceil(queued.remainingDays)} days left` : `${definition.buildDays} days`}</strong></div>
+        <div><span>Build Time</span><strong>${queued ? `${this.formatConstructionDays(queued.remainingDays)} left` : `${definition.buildDays} days`}</strong></div>
         <div><span>Slot</span><strong>${compatible ? "Compatible" : "Incompatible"}</strong></div>
       </div>
       <div class="coTooltipSectionTitle">Jobs And Housing</div>
@@ -1390,29 +2025,40 @@ export class CelestialObjectPanel {
     });
   }
 
-  private renderConstructionQueue(planetState: PlanetState): string {
-    const queue = planetState.constructionQueue;
+  private renderConstructionQueue(data: CelestialObjectPanelData): string {
+    const planetState = data.planetState;
+    if (!planetState) return "";
+    const queue = this.getEstimatedConstructionQueue(planetState);
+    const canCancel = data.canManageLeaders === true;
     return `
-      <div class="coQueuePanel">
+      <div class="coQueuePanel" data-co-queue-panel>
         <div class="coQueueHeader">
           <strong>Build Queue</strong>
-          <span>${queue.length} active</span>
+          <span data-co-queue-count>${queue.length} active</span>
         </div>
-        <div class="coQueueList">
-          ${queue.length === 0 ? '<div class="coQueueEmpty">No active construction</div>' : queue.map((item) => this.renderQueueItem(item)).join("")}
+        <div class="coQueueList" data-co-queue-list>
+          ${queue.length === 0 ? '<div class="coQueueEmpty">No active construction</div>' : queue.map((item) => this.renderQueueItem(item, canCancel)).join("")}
         </div>
       </div>
     `;
   }
 
-  private renderQueueItem(item: PlanetConstructionQueueItem): string {
-    const progress = item.totalDays <= 0 ? 1 : 1 - item.remainingDays / item.totalDays;
+  private renderQueueItem(item: PlanetConstructionQueueItem, canCancel: boolean): string {
     return `
-      <div class="coQueueItem">
+      <div class="coQueueItem" data-co-queue-item="${this.escapeHtml(item.id)}">
+        ${canCancel ? `
+          <button
+            class="coQueueCancel"
+            type="button"
+            data-co-cancel-planet-queue="${this.escapeHtml(item.id)}"
+            aria-label="Cancel ${this.escapeHtml(item.label)}"
+            title="Cancel construction"
+          >X</button>
+        ` : ""}
         <strong>${this.escapeHtml(item.label)}</strong>
-        <span>${Math.ceil(item.remainingDays)}d remaining</span>
+        <span data-co-queue-days>${this.formatConstructionDays(item.remainingDays)} remaining</span>
         <small>${item.mineralCost} minerals</small>
-        <div class="coQueueProgress"><span style="width:${Math.max(2, Math.min(100, progress * 100)).toFixed(0)}%"></span></div>
+        <div class="coQueueProgress"><span data-co-queue-progress-fill style="width:${this.getConstructionProgressPercent(item)}"></span></div>
       </div>
     `;
   }
@@ -1429,7 +2075,7 @@ export class CelestialObjectPanel {
       .join("");
 
     return `
-      <div class="coProduction">
+      <div class="coProduction" data-co-production-panel>
         <h4>Planet Production</h4>
         <div class="coTokenGrid">${netRows}</div>
         <h4>Planet Deficit</h4>
@@ -1461,7 +2107,7 @@ export class CelestialObjectPanel {
     const growthRate = `${(growth.ratePerQuarter * (7 / 120) * 100).toFixed(3)}% / week`;
 
     return `
-      <section class="coBody coEconomyBody">
+      <section class="coBody coEconomyBody" data-co-body="economy">
         <div class="coJobsPanel">
           <div class="coBodyHeader">Jobs</div>
           <div class="coJobClassList">
@@ -1819,6 +2465,12 @@ export class CelestialObjectPanel {
     if (!data.planetState || !Number.isInteger(slot.slotIndex)) return;
     this.buildingPickerTarget = this.resolveBuildingPickerTarget(data, slot);
     this.activeTab = "surface";
+    if (this.panelElement && this.panelElement.querySelector('[data-co-body="surface"]')) {
+      this.currentData = data;
+      this.patchBuildingSlotContainers(data);
+      this.patchSurfaceSidePanel(data);
+      return;
+    }
     this.show(data);
   }
 
@@ -1953,17 +2605,7 @@ export class CelestialObjectPanel {
     picker.querySelectorAll<HTMLButtonElement>("[data-co-pick-sub]").forEach((choice) => {
       choice.addEventListener("click", () => {
         const kind = choice.dataset.coPickSub as UrbanSubDistrictKind | undefined;
-        if (!kind) return;
-        const planetState = this.withChangedSubDistrict(data.planetState!, subDistrictIndex, kind);
-        data.onPlanetCommand?.({
-          type: "setUrbanSubDistrict",
-          planetId: data.planetState!.id,
-          subDistrictIndex,
-          subDistrictKind: kind,
-        });
-        picker.remove();
-        this.buildingPickerTarget = null;
-        this.show({ ...data, planetState });
+        this.handlePickSubDistrict(data, subDistrictIndex, kind, picker);
       });
     });
   }
@@ -2617,6 +3259,7 @@ export class CelestialObjectPanel {
   grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
   min-height: 0;
+  overflow: hidden;
 }
 
 .coSurfaceLayout.withSide {
@@ -2996,6 +3639,7 @@ export class CelestialObjectPanel {
   align-self: stretch;
   min-height: 0;
   margin: 4px 4px 4px 0;
+  overflow: hidden;
   border: 1px solid rgba(96, 196, 164, 0.58);
   background:
     linear-gradient(180deg, rgba(13, 42, 39, 0.92), rgba(5, 13, 15, 0.96)),
@@ -3196,10 +3840,10 @@ export class CelestialObjectPanel {
 }
 
 .coQueuePanel {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   display: flex;
   flex-direction: column;
-  min-height: 118px;
+  min-height: 0;
   margin: 0 7px 7px;
   border: 1px solid rgba(103, 255, 221, 0.28);
   background: rgba(5, 20, 20, 0.58);
@@ -3229,7 +3873,9 @@ export class CelestialObjectPanel {
   display: grid;
   gap: 5px;
   min-height: 0;
+  max-height: 100%;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 6px;
   scrollbar-width: thin;
 }
@@ -3252,8 +3898,34 @@ export class CelestialObjectPanel {
 }
 
 .coQueueItem {
+  position: relative;
   display: grid;
   gap: 2px;
+  padding-right: 28px;
+}
+
+.coQueueCancel {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 117, 117, 0.62);
+  background: rgba(66, 12, 20, 0.82);
+  color: #ffb8b8;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.coQueueCancel:hover {
+  border-color: rgba(255, 151, 151, 0.92);
+  background: rgba(116, 20, 34, 0.94);
+  color: #ffe2e2;
 }
 
 .coQueueItem strong,

@@ -2379,6 +2379,7 @@ export class GalaxyScene implements IGameScene {
   setClockYear(year: number): void {
     this.clockYear = year;
     this.selectionPanel?.setClockYear(year);
+    this.objectPanel?.setClockYear(year);
   }
 
   selectFleetById(fleetId: string): boolean {

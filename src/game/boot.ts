@@ -593,16 +593,6 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   function sendPlanetCommand(command: ClientCommand): void {
     server.send(command);
-    if (
-      command.type !== "buildDistrict"
-      && command.type !== "buildPlanetBuilding"
-      && command.type !== "setUrbanSubDistrict"
-    ) {
-      return;
-    }
-    window.setTimeout(() => {
-      void server.requestPlanetDetails(command.planetId).catch(() => undefined);
-    }, 50);
   }
 
   function applySnapshotToActiveScene(changed?: ServerUpdateField[]): void {
