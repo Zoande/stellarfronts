@@ -3,10 +3,28 @@ import path from 'node:path';
 import { randomBytes, pbkdf2Sync, timingSafeEqual, createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { buildFactions } from '../src/data/Factions';
+import { FACTION_COUNT } from '../src/data/Factions';
 import { GALAXY_MAP } from '../src/data/GalaxyMap';
 import { generateStarMap } from '../src/data/StarMap';
 import type { GalaxyPerspective } from '../src/data/Factions';
-import type { AuthAccount, AccountType, Credentials, DevGameRuntimeStats, DevStatsResponse } from '../src/auth/types';
+import {
+  FLAG_COLORS,
+  FLAG_CONTAINERS,
+  FLAG_PATTERNS,
+  FLAG_SYMBOLS,
+  createFlagDesign,
+} from '../src/flags/flagGenerator';
+import type { FlagDesign } from '../src/flags/flagTypes';
+import type {
+  AuthAccount,
+  AccountType,
+  Credentials,
+  DevGameRuntimeRow,
+  DevGameRuntimeStats,
+  DevStatsResponse,
+  GameMembership,
+  GameSummary,
+} from '../src/auth/types';
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEV_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -61,9 +79,94 @@ interface LatestAccountRow {
   game_enter_count: number;
 }
 
+interface GameRow {
+  id: string;
+  name: string;
+  seed: number;
+  country_capacity: number;
+  created_at: number;
+}
+
+interface GameSummaryRow extends GameRow {
+  controlled_countries: number;
+  faction_id: number | null;
+  country_name: string | null;
+  flag_design: string | null;
+  joined_at: number | null;
+  last_entered_at: number | null;
+}
+
+interface MembershipRow {
+  game_id: string;
+  account_id: number;
+  faction_id: number;
+  country_name: string;
+  flag_design: string | null;
+  joined_at: number;
+}
+
+export interface StoredGame {
+  id: string;
+  name: string;
+  seed: number;
+  countryCapacity: number;
+  createdAt: number;
+}
+
 class AuthError extends Error {
   constructor(message: string, public readonly statusCode = 400) {
     super(message);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function pickCatalogItem<T extends { id: string }>(items: T[], id: unknown): T | null {
+  if (typeof id !== 'string') return null;
+  return items.find((item) => item.id === id) ?? null;
+}
+
+function getNestedId(value: unknown, key: string): unknown {
+  if (!isRecord(value)) return undefined;
+  const nested = value[key];
+  if (isRecord(nested)) return nested.id;
+  return undefined;
+}
+
+function sanitizeFlagDesignInput(input: unknown): FlagDesign | null {
+  if (!isRecord(input)) return null;
+
+  const container = pickCatalogItem(FLAG_CONTAINERS, getNestedId(input, 'container') ?? input.containerId);
+  const backgroundColor = pickCatalogItem(FLAG_COLORS, getNestedId(input, 'backgroundColor') ?? input.colorId ?? input.backgroundColorId);
+  const accentColor = pickCatalogItem(FLAG_COLORS, getNestedId(input, 'accentColor') ?? input.accentColorId);
+  const pattern = pickCatalogItem(FLAG_PATTERNS, getNestedId(input, 'pattern') ?? input.patternId);
+  const primarySymbol = pickCatalogItem(FLAG_SYMBOLS, getNestedId(input, 'primarySymbol') ?? input.primarySymbolId);
+  const secondarySymbolInput = getNestedId(input, 'secondarySymbol') ?? input.secondarySymbolId;
+  const secondarySymbol = secondarySymbolInput === undefined || secondarySymbolInput === null || secondarySymbolInput === ''
+    ? undefined
+    : pickCatalogItem(FLAG_SYMBOLS, secondarySymbolInput) ?? undefined;
+
+  if (!container || !backgroundColor || !accentColor || !pattern || !primarySymbol) return null;
+  if (secondarySymbolInput && !secondarySymbol) return null;
+
+  return {
+    container,
+    backgroundColor,
+    accentColor,
+    pattern,
+    primarySymbol,
+    secondarySymbol,
+  };
+}
+
+function parseStoredFlagDesign(value: string | null): FlagDesign | null {
+  if (!value) return null;
+  try {
+    return sanitizeFlagDesignInput(JSON.parse(value));
+  } catch {
+    return null;
   }
 }
 
@@ -85,6 +188,14 @@ function hashSessionToken(token: string): string {
 
 function createSessionToken(): string {
   return randomBytes(32).toString('hex');
+}
+
+function createGameId(): string {
+  return randomBytes(12).toString('hex');
+}
+
+function createGameSeed(): number {
+  return randomBytes(4).readUInt32BE(0);
 }
 
 function getDevPanelPassword(): string {
@@ -122,8 +233,8 @@ function buildSeedAccounts(): Array<{ username: string; password: string; accoun
     ...buildFactions(initialStars, GALAXY_MAP).map((faction) => ({
       username: `color_${faction.id + 1}`,
       password: `color_${faction.id + 1}`,
-      accountType: 'seeded-faction' as const,
-      factionId: faction.id,
+      accountType: 'user' as const,
+      factionId: null,
     })),
     {
       username: 'observer',
@@ -190,11 +301,53 @@ export class AuthStore {
         updated_at INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS games (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        seed INTEGER NOT NULL,
+        country_capacity INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS game_memberships (
+        game_id TEXT NOT NULL,
+        account_id INTEGER NOT NULL,
+        faction_id INTEGER NOT NULL,
+        country_name TEXT NOT NULL,
+        flag_design TEXT,
+        joined_at INTEGER NOT NULL,
+        PRIMARY KEY(game_id, account_id),
+        UNIQUE(game_id, faction_id),
+        FOREIGN KEY(game_id) REFERENCES games(id) ON DELETE CASCADE,
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS game_visits (
+        game_id TEXT NOT NULL,
+        account_id INTEGER NOT NULL,
+        last_entered_at INTEGER NOT NULL,
+        PRIMARY KEY(game_id, account_id),
+        FOREIGN KEY(game_id) REFERENCES games(id) ON DELETE CASCADE,
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
       CREATE INDEX IF NOT EXISTS idx_dev_sessions_expires_at ON dev_sessions(expires_at);
       CREATE INDEX IF NOT EXISTS idx_dev_events_type_time ON dev_events(event_type, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_dev_events_account_id ON dev_events(account_id);
+      CREATE INDEX IF NOT EXISTS idx_game_memberships_account_id ON game_memberships(account_id);
+      CREATE INDEX IF NOT EXISTS idx_game_visits_account_id ON game_visits(account_id, last_entered_at);
     `);
 
+    const membershipColumns = this.db.prepare(`PRAGMA table_info(game_memberships)`).all() as Array<{ name: string }>;
+    if (!membershipColumns.some((column) => column.name === 'flag_design')) {
+      this.db.exec(`ALTER TABLE game_memberships ADD COLUMN flag_design TEXT`);
+    }
+
+    this.db.prepare(`
+      UPDATE accounts
+      SET account_type = 'user', faction_id = NULL, updated_at = ?
+      WHERE account_type = 'seeded-faction'
+    `).run(Date.now());
     this.seedAccounts();
   }
 
@@ -231,6 +384,152 @@ export class AuthStore {
 
   isAdminAccount(account: AuthAccount): boolean {
     return account.accountType === 'admin' && normalizeUsername(account.username) === ADMIN_USERNAME;
+  }
+
+  isPrivilegedGameAccount(account: AuthAccount): boolean {
+    return account.accountType === 'observer' || this.isAdminAccount(account);
+  }
+
+  createGame(nameInput: string): StoredGame {
+    const name = nameInput.trim();
+    if (!name) {
+      throw new AuthError('Game name is required', 400);
+    }
+    if (name.length > 80) {
+      throw new AuthError('Game name must be 80 characters or fewer', 400);
+    }
+    if (this.db.prepare(`SELECT id FROM games WHERE name = ? COLLATE NOCASE`).get(name)) {
+      throw new AuthError('Game name is already in use', 409);
+    }
+
+    const createdAt = Date.now();
+    const game: StoredGame = {
+      id: createGameId(),
+      name,
+      seed: createGameSeed(),
+      countryCapacity: FACTION_COUNT,
+      createdAt,
+    };
+    this.db.prepare(`
+      INSERT INTO games (id, name, seed, country_capacity, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(game.id, game.name, game.seed, game.countryCapacity, game.createdAt);
+    return game;
+  }
+
+  deleteGame(gameId: string): StoredGame | null {
+    const game = this.getGameById(gameId);
+    if (!game) return null;
+    this.db.prepare(`DELETE FROM games WHERE id = ?`).run(game.id);
+    return game;
+  }
+
+  getGameById(gameId: string): StoredGame | null {
+    const row = this.db.prepare(`SELECT * FROM games WHERE id = ?`).get(gameId) as GameRow | undefined;
+    return row ? this.toGame(row) : null;
+  }
+
+  listGames(): StoredGame[] {
+    const rows = this.db.prepare(`SELECT * FROM games ORDER BY created_at DESC, id ASC`).all() as GameRow[];
+    return rows.map((row) => this.toGame(row));
+  }
+
+  getGameSummariesForAccount(account: AuthAccount): GameSummary[] {
+    const rows = this.db.prepare(`
+      SELECT
+        g.*,
+        COUNT(all_members.account_id) AS controlled_countries,
+        own_members.faction_id,
+        own_members.country_name,
+        own_members.flag_design,
+        own_members.joined_at,
+        visits.last_entered_at
+      FROM games g
+      LEFT JOIN game_memberships all_members ON all_members.game_id = g.id
+      LEFT JOIN game_memberships own_members ON own_members.game_id = g.id AND own_members.account_id = ?
+      LEFT JOIN game_visits visits ON visits.game_id = g.id AND visits.account_id = ?
+      GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.flag_design, own_members.joined_at, visits.last_entered_at
+      ORDER BY COALESCE(visits.last_entered_at, 0) DESC, g.created_at DESC, g.id ASC
+    `).all(account.id, account.id) as GameSummaryRow[];
+    return rows.map((row) => this.toGameSummary(row, account));
+  }
+
+  getGameSummaryForAccount(gameId: string, account: AuthAccount): GameSummary | null {
+    return this.getGameSummariesForAccount(account).find((game) => game.id === gameId) ?? null;
+  }
+
+  getGameMembership(gameId: string, accountId: number): GameMembership | null {
+    const row = this.db.prepare(`
+      SELECT game_id, account_id, faction_id, country_name, flag_design, joined_at
+      FROM game_memberships
+      WHERE game_id = ? AND account_id = ?
+    `).get(gameId, accountId) as MembershipRow | undefined;
+    return row ? this.toMembership(row) : null;
+  }
+
+  listGameMemberships(gameId: string): GameMembership[] {
+    const rows = this.db.prepare(`
+      SELECT game_id, account_id, faction_id, country_name, flag_design, joined_at
+      FROM game_memberships
+      WHERE game_id = ?
+      ORDER BY faction_id ASC
+    `).all(gameId) as MembershipRow[];
+    return rows.map((row) => this.toMembership(row));
+  }
+
+  joinGame(account: AuthAccount, gameId: string, countryNameInput: string, flagDesignInput?: unknown): GameMembership | null {
+    if (this.isPrivilegedGameAccount(account)) {
+      if (!this.getGameById(gameId)) throw new AuthError('Game not found', 404);
+      return null;
+    }
+
+    const countryName = countryNameInput.trim();
+    if (!countryName) {
+      throw new AuthError('Country name is required', 400);
+    }
+    if (countryName.length > 48) {
+      throw new AuthError('Country name must be 48 characters or fewer', 400);
+    }
+
+    const membership = this.db.transaction(() => {
+      const game = this.getGameById(gameId);
+      if (!game) throw new AuthError('Game not found', 404);
+      const current = this.getGameMembership(game.id, account.id);
+      if (current) return current;
+
+      const claimedRows = this.db.prepare(`
+        SELECT faction_id
+        FROM game_memberships
+        WHERE game_id = ?
+      `).all(game.id) as Array<{ faction_id: number }>;
+      const claimed = new Set(claimedRows.map((row) => row.faction_id));
+      const availableFactionIds = Array.from({ length: game.countryCapacity }, (_, factionId) => factionId)
+        .filter((factionId) => !claimed.has(factionId));
+      if (availableFactionIds.length === 0) {
+        throw new AuthError('Game is full', 409);
+      }
+
+      const factionId = availableFactionIds[Math.floor(Math.random() * availableFactionIds.length)];
+      const joinedAt = Date.now();
+      const flagDesign = sanitizeFlagDesignInput(flagDesignInput)
+        ?? createFlagDesign({ seed: `${game.id}:${account.id}:${countryName}` });
+      this.db.prepare(`
+        INSERT INTO game_memberships (game_id, account_id, faction_id, country_name, flag_design, joined_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(game.id, account.id, factionId, countryName, JSON.stringify(flagDesign), joinedAt);
+      return this.getGameMembership(game.id, account.id);
+    })();
+    if (!membership) {
+      throw new AuthError('Could not create game membership', 500);
+    }
+    return membership;
+  }
+
+  getGamePerspective(account: AuthAccount, gameId: string): GalaxyPerspective | null {
+    if (!this.getGameById(gameId)) return null;
+    if (this.isPrivilegedGameAccount(account)) return { mode: 'observer' };
+    const membership = this.getGameMembership(gameId, account.id);
+    return membership ? { mode: 'faction', factionId: membership.factionId } : null;
   }
 
   getAccountByUsername(username: string): AuthAccount | null {
@@ -347,8 +646,15 @@ export class AuthStore {
     this.db.prepare(`DELETE FROM dev_sessions WHERE token_hash = ?`).run(hashSessionToken(token));
   }
 
-  recordGameEnter(account: AuthAccount): void {
+  recordGameEnter(account: AuthAccount, gameId?: string): void {
     this.recordDevEvent('game_enter', account);
+    if (!gameId || !this.getGameById(gameId)) return;
+    this.db.prepare(`
+      INSERT INTO game_visits (game_id, account_id, last_entered_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(game_id, account_id) DO UPDATE SET
+        last_entered_at = excluded.last_entered_at
+    `).run(gameId, account.id, Date.now());
   }
 
   setGameRuntimeStats(stats: DevGameRuntimeStats): void {
@@ -566,6 +872,7 @@ export class AuthStore {
   }
 
   private getGameRuntimeStats(now: number): DevGameRuntimeStats {
+    const offlineGames = this.getOfflineGameRuntimeRows();
     const fallback: DevGameRuntimeStats = {
       online: false,
       activeConnections: 0,
@@ -583,6 +890,8 @@ export class AuthStore {
       planetCount: 0,
       habitedPlanetCount: 0,
       combatContactCount: 0,
+      gameCount: offlineGames.length,
+      games: offlineGames,
     };
 
     const row = this.db.prepare(`
@@ -596,6 +905,10 @@ export class AuthStore {
     try {
       const parsed = JSON.parse(row.value) as Partial<DevGameRuntimeStats>;
       const lastHeartbeatAt = Number(parsed.lastHeartbeatAt ?? row.updated_at) || row.updated_at;
+      const games = this.mergeGameRuntimeRows(
+        Array.isArray(parsed.games) ? parsed.games as DevGameRuntimeRow[] : [],
+        now,
+      );
       return {
         ...fallback,
         ...parsed,
@@ -614,6 +927,8 @@ export class AuthStore {
         planetCount: Number(parsed.planetCount ?? 0),
         habitedPlanetCount: Number(parsed.habitedPlanetCount ?? 0),
         combatContactCount: Number(parsed.combatContactCount ?? 0),
+        gameCount: games.length,
+        games,
         online: now - lastHeartbeatAt <= GAME_RUNTIME_STALE_MS,
       };
     } catch {
@@ -631,14 +946,106 @@ export class AuthStore {
       updatedAt: row.updated_at,
     };
   }
-}
 
-export function getPerspectiveFromAccount(account: AuthAccount): GalaxyPerspective {
-  if (account.accountType === 'seeded-faction' && account.factionId !== null) {
-    return { mode: 'faction', factionId: account.factionId };
+  private toGame(row: GameRow): StoredGame {
+    return {
+      id: row.id,
+      name: row.name,
+      seed: row.seed,
+      countryCapacity: row.country_capacity,
+      createdAt: row.created_at,
+    };
   }
 
-  return { mode: 'observer' };
+  private toMembership(row: MembershipRow): GameMembership {
+    return {
+      gameId: row.game_id,
+      accountId: row.account_id,
+      factionId: row.faction_id,
+      countryName: row.country_name,
+      flagDesign: parseStoredFlagDesign(row.flag_design),
+      joinedAt: row.joined_at,
+    };
+  }
+
+  private toGameSummary(row: GameSummaryRow, account: AuthAccount): GameSummary {
+    const game = this.toGame(row);
+    const membership = row.faction_id === null || !row.country_name || row.joined_at === null
+      ? null
+      : this.toMembership({
+        game_id: row.id,
+        account_id: account.id,
+        faction_id: row.faction_id,
+        country_name: row.country_name,
+        flag_design: row.flag_design,
+        joined_at: row.joined_at,
+      });
+    const controlledCountries = Number(row.controlled_countries ?? 0);
+    const isFull = controlledCountries >= game.countryCapacity;
+    const isPrivileged = this.isPrivilegedGameAccount(account);
+    return {
+      ...game,
+      controlledCountries,
+      isFull,
+      isJoined: isPrivileged || membership !== null,
+      joinable: isPrivileged || membership !== null || !isFull,
+      lastEnteredAt: row.last_entered_at ?? null,
+      membership,
+    };
+  }
+
+  private getOfflineGameRuntimeRows(): DevGameRuntimeRow[] {
+    const summaries = this.db.prepare(`
+      SELECT
+        g.*,
+        COUNT(m.account_id) AS controlled_countries
+      FROM games g
+      LEFT JOIN game_memberships m ON m.game_id = g.id
+      GROUP BY g.id
+      ORDER BY g.created_at DESC, g.id ASC
+    `).all() as Array<GameRow & { controlled_countries: number }>;
+    return summaries.map((row) => ({
+      id: row.id,
+      name: row.name,
+      seed: row.seed,
+      countryCapacity: row.country_capacity,
+      controlledCountries: Number(row.controlled_countries ?? 0),
+      createdAt: row.created_at,
+      online: false,
+      activeConnections: 0,
+      activeAccounts: [],
+      gameYear: null,
+      paused: false,
+      speedMultiplier: 0,
+      starCount: 0,
+      factionCount: 0,
+      fleetCount: 0,
+      shipCount: 0,
+      starbaseCount: 0,
+      habitedPlanetCount: 0,
+      lastHeartbeatAt: null,
+    }));
+  }
+
+  private mergeGameRuntimeRows(runtimeRows: DevGameRuntimeRow[], now: number): DevGameRuntimeRow[] {
+    const runtimeById = new Map(runtimeRows.map((game) => [game.id, game]));
+    return this.getOfflineGameRuntimeRows().map((offline) => {
+      const runtime = runtimeById.get(offline.id);
+      if (!runtime) return offline;
+      const lastHeartbeatAt = runtime.lastHeartbeatAt ?? null;
+      return {
+        ...offline,
+        ...runtime,
+        countryCapacity: offline.countryCapacity,
+        controlledCountries: offline.controlledCountries,
+        createdAt: offline.createdAt,
+        name: offline.name,
+        seed: offline.seed,
+        lastHeartbeatAt,
+        online: !!lastHeartbeatAt && now - lastHeartbeatAt <= GAME_RUNTIME_STALE_MS,
+      };
+    });
+  }
 }
 
 function buildCookieAttributes(): string {

@@ -1,6 +1,7 @@
 import { GALAXY_MAP } from "./GalaxyMap";
 import type { GalaxyMapConfig } from "./GalaxyMap";
 import type { StarData } from "./StarMap";
+import type { FlagDesign } from "../flags/flagTypes";
 
 export const FACTION_COUNT = 15;
 export const FOG_OF_WAR_MAX_JUMPS = 3;
@@ -14,6 +15,7 @@ export interface FactionInfo {
   name: string;
   color: [number, number, number];
   homeStarId: number;
+  flagDesign?: FlagDesign | null;
 }
 
 const FACTION_COLOR_BANK: Array<[number, number, number]> = [

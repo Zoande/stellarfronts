@@ -4,3 +4,4 @@ dist/
 *.log
 server/state/*.json
 server/state/auth.sqlite*
+server/state/games/

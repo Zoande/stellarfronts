@@ -1,4 +1,4 @@
-import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
+import { createEmptyResourceCounts, RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
 import {
   STARBASE_BUILDING_DEFINITIONS,
   STARBASE_BUILDING_KINDS,
@@ -12,6 +12,12 @@ import {
 import type { ResourceCounts } from "../data/Economy";
 import type { StarbaseBuildingKind } from "../data/Starbase";
 import type { ClientCommand, ServerStarbase } from "../game/GameProtocol";
+import {
+  getFirstRequiredTechName,
+  getRequiredTechIdsForShipHull,
+  getRequiredTechIdsForStarbaseBuilding,
+} from "../data/Technology";
+import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 
 export interface StarbasePanelData {
@@ -23,6 +29,7 @@ export interface StarbasePanelData {
   status?: string;
   power?: string;
   starbase?: ServerStarbase;
+  technology?: FactionTechnologyView | null;
   onStarbaseCommand?: (command: ClientCommand) => void;
 }
 
@@ -348,13 +355,15 @@ export class StarbasePanel {
                 const totalDays = Math.max(1, item.totalDays);
                 const progress = Math.max(0, Math.min(100, ((totalDays - item.remainingDays) / totalDays) * 100));
                 const isActive = index < shipyardCount;
+                const verb = item.kind === "upgrade" ? "Upgrading" : "Building";
+                const waitingVerb = item.kind === "upgrade" ? "Upgrade queued" : "Waiting";
                 return `
                   <div class="sbShipQueueItem ${isActive ? "active" : ""}">
                     <div>
                       <strong>${this.escapeHtml(item.label)}</strong>
-                      <span>${isActive ? "Building" : "Waiting"} | ${Math.ceil(item.remainingDays)}d</span>
+                      <span>${isActive ? verb : waitingVerb} | ${Math.ceil(item.remainingDays)}d</span>
                     </div>
-                    <small>${this.formatCompact(item.alloyUpkeepPerDay)}/d alloys</small>
+                    <small>${this.renderDailyDemand(item.resourceUpkeepPerDay)} / day | ${this.renderInlineCost(item.cost)}</small>
                     <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
                   </div>
                 `;
@@ -364,7 +373,7 @@ export class StarbasePanel {
         <article class="sbShipyardColumn">
           <div class="sbSectionTitle">Shipbuilding Demand</div>
           <div class="sbDemandPanel">
-            <span>Active alloy demand: ${this.formatCompact(this.getActiveShipAlloyDemand(starbase))} / day</span>
+            <span>Active shipyard demand: ${this.renderDailyDemand(this.getActiveShipyardDemand(starbase))} / day</span>
             <span>Queued crew demand: ${this.formatCompact(shipQueue.reduce((total, item) => total + item.crewDemand, 0))}</span>
             <span>Completed ships: spawn as new fleets in orbit</span>
           </div>
@@ -373,13 +382,18 @@ export class StarbasePanel {
             ${STARBASE_SHIP_KINDS.map((kind) => {
               const definition = STARBASE_SHIP_DEFINITIONS[kind];
               const predictedAlloys = definition.alloyUpkeepPerDay * definition.buildDays;
+              const lockedByTechnology = !this.isShipHullUnlocked(data.technology, kind);
+              const canBuild = shipyardCount > 0 && !lockedByTechnology;
+              const note = lockedByTechnology
+                ? `Requires ${this.getRequiredShipHullTechnologyName(kind)}`
+                : `${this.formatCompact(predictedAlloys)} alloys predicted | ${definition.buildDays} days | ${this.formatCompact(definition.crewDemand)} crew`;
               return `
-                <button class="sbAvailableShipCard" type="button" data-sb-build-ship="${kind}" ${shipyardCount > 0 ? "" : "disabled"}>
+                <button class="sbAvailableShipCard" type="button" data-sb-build-ship="${kind}" ${canBuild ? "" : "disabled"}>
                   <span class="sbShipIcon">◆</span>
                   <span>
                     <strong>${this.escapeHtml(definition.label)}</strong>
                     <small>${this.escapeHtml(definition.className)}</small>
-                    <em>${this.formatCompact(predictedAlloys)} alloys predicted | ${definition.buildDays} days | ${this.formatCompact(definition.crewDemand)} crew</em>
+                    <em>${this.escapeHtml(note)}</em>
                   </span>
                 </button>
               `;
@@ -390,12 +404,16 @@ export class StarbasePanel {
     `;
   }
 
-  private getActiveShipAlloyDemand(starbase?: ServerStarbase): number {
-    if (!starbase) return 0;
+  private getActiveShipyardDemand(starbase?: ServerStarbase): ResourceCounts {
+    const demand = createEmptyResourceCounts();
+    if (!starbase) return demand;
     const shipyardCount = countStarbaseShipyards(starbase.buildingSlots);
-    return starbase.shipQueue
-      .slice(0, shipyardCount)
-      .reduce((total, item) => total + item.alloyUpkeepPerDay, 0);
+    for (const item of starbase.shipQueue.slice(0, shipyardCount)) {
+      for (const resource of RESOURCE_KINDS) {
+        demand[resource] += item.resourceUpkeepPerDay[resource];
+      }
+    }
+    return demand;
   }
 
   private renderSlots(
@@ -431,12 +449,16 @@ export class StarbasePanel {
         <div class="sbBuildingList">
           ${STARBASE_BUILDING_KINDS.map((kind) => {
             const definition = STARBASE_BUILDING_DEFINITIONS[kind];
+            const lockedByTechnology = !this.isStarbaseBuildingUnlocked(this.currentData?.technology, kind);
+            const note = lockedByTechnology
+              ? `Requires ${this.getRequiredStarbaseBuildingTechnologyName(kind)}`
+              : `${this.renderInlineCost(definition.cost)} | ${definition.buildDays} days`;
             return `
-              <button class="sbBuildingCard" type="button" data-sb-pick-building="${kind}">
+              <button class="sbBuildingCard ${lockedByTechnology ? "locked" : ""}" type="button" data-sb-pick-building="${kind}" ${lockedByTechnology ? "disabled" : ""}>
                 <span class="sbBuildingIcon">${this.escapeHtml(this.getInitials(definition.label))}</span>
                 <span class="sbBuildingInfo">
                   <strong>${this.escapeHtml(definition.label)}</strong>
-                  <small>${this.renderInlineCost(definition.cost)} | ${definition.buildDays} days</small>
+                  <small>${this.escapeHtml(note)}</small>
                   <em>${this.escapeHtml(definition.description)}</em>
                 </span>
               </button>
@@ -445,6 +467,30 @@ export class StarbasePanel {
         </div>
       </div>
     `;
+  }
+
+  private isStarbaseBuildingUnlocked(technology: FactionTechnologyView | null | undefined, building: StarbaseBuildingKind): boolean {
+    const requiredTechIds = getRequiredTechIdsForStarbaseBuilding(building);
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
+  }
+
+  private isShipHullUnlocked(technology: FactionTechnologyView | null | undefined, shipKind: keyof typeof STARBASE_SHIP_DEFINITIONS): boolean {
+    const requiredTechIds = getRequiredTechIdsForShipHull(shipKind);
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
+  }
+
+  private isTechnologyCompleted(technology: FactionTechnologyView | null | undefined, techId: TechId): boolean {
+    return technology?.completedTechIds.includes(techId) === true;
+  }
+
+  private getRequiredStarbaseBuildingTechnologyName(building: StarbaseBuildingKind): string {
+    return getFirstRequiredTechName(getRequiredTechIdsForStarbaseBuilding(building));
+  }
+
+  private getRequiredShipHullTechnologyName(shipKind: keyof typeof STARBASE_SHIP_DEFINITIONS): string {
+    return getFirstRequiredTechName(getRequiredTechIdsForShipHull(shipKind));
   }
 
   private renderResourceTokens(counts: ResourceCounts, className: "positive" | "negative"): string {
@@ -466,6 +512,13 @@ export class StarbasePanel {
       .filter((resource) => Math.abs(counts[resource]) > 0.0001)
       .map((resource) => `${this.formatCompact(counts[resource])} ${RESOURCE_LABELS[resource]}`);
     return parts.length > 0 ? parts.join(", ") : "Free";
+  }
+
+  private renderDailyDemand(counts: ResourceCounts): string {
+    const parts = RESOURCE_KINDS
+      .filter((resource) => Math.abs(counts[resource]) > 0.0001)
+      .map((resource) => `${this.formatCompact(counts[resource])} ${RESOURCE_LABELS[resource]}`);
+    return parts.length > 0 ? parts.join(", ") : "None";
   }
 
   private getInitials(label: string): string {

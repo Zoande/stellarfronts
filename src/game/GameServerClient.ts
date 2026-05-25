@@ -31,12 +31,19 @@ function withClientClockSync<T extends { clock?: GameSnapshot["clock"] }>(event:
   };
 }
 
-function getWebSocketUrl(): string {
+function getWebSocketUrl(gameId?: string): string {
   // Support VITE_WS_URL env var for production (set at build time by Vite)
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_WS_URL) {
-    return import.meta.env.VITE_WS_URL;
+    return appendGameId(import.meta.env.VITE_WS_URL, gameId);
   }
-  return 'ws://localhost:8787';
+  return appendGameId('ws://localhost:8787', gameId);
+}
+
+function appendGameId(baseUrl: string, gameId?: string): string {
+  if (!gameId) return baseUrl;
+  const url = new URL(baseUrl);
+  url.searchParams.set("gameId", gameId);
+  return url.toString();
 }
 
 export class GameServerClient {
@@ -50,7 +57,7 @@ export class GameServerClient {
   private planetDetailsRequests = new Map<string, PendingRequest<PlanetDetailsEvent>>();
   private adminCommandRequests = new Map<string, PendingRequest<AdminCommandResult>>();
 
-  constructor(private readonly url = getWebSocketUrl()) {}
+  constructor(gameId?: string, private readonly url = getWebSocketUrl(gameId)) {}
 
   async connect(): Promise<GameSnapshot> {
     if (this.latestSnapshot) return this.latestSnapshot;
@@ -103,6 +110,8 @@ export class GameServerClient {
             shipDesigns: parsed.shipDesigns ?? this.latestSnapshot.shipDesigns,
             fleets: parsed.fleets ?? this.latestSnapshot.fleets,
             starbases: parsed.starbases ?? this.latestSnapshot.starbases,
+            technologies: parsed.technologies ?? this.latestSnapshot.technologies,
+            leaders: parsed.leaders ?? this.latestSnapshot.leaders,
             recentCombatContacts: parsed.recentCombatContacts ?? this.latestSnapshot.recentCombatContacts,
           };
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);

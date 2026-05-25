@@ -505,6 +505,46 @@
   padding-bottom: 18px;
 }
 
+.dev-games-panel {
+  max-width: 1380px;
+  margin: 0 auto 16px;
+}
+
+.dev-game-create {
+  min-width: min(420px, 100%);
+  display: flex;
+  gap: 10px;
+}
+
+.dev-game-create input {
+  min-width: 0;
+  flex: 1;
+  min-height: 43px;
+  border: 1px solid var(--dev-border);
+  border-radius: 5px;
+  background: rgba(6, 9, 13, 0.72);
+  color: var(--dev-text);
+  font: inherit;
+  padding: 0 13px;
+}
+
+.dev-game-create .dev-primary-button {
+  padding: 0 18px;
+}
+
+.dev-games-error {
+  margin-bottom: 14px;
+}
+
+.dev-games-table {
+  min-width: 920px;
+}
+
+.dev-delete-button {
+  border-color: rgba(214, 134, 145, 0.58);
+  color: #f1a5ae;
+}
+
 @media (max-width: 1020px) {
   .dev-page {
     padding: 22px;
@@ -517,6 +557,10 @@
 
   .dev-header-actions {
     justify-content: flex-start;
+  }
+
+  .dev-game-create {
+    min-width: 100%;
   }
 
   .dev-stat-grid,

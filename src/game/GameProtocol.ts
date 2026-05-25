@@ -16,6 +16,8 @@ import type {
   StarbaseShipQueueItem,
 } from "../data/Starbase";
 import type { ShipDesign } from "../data/ShipDesigns";
+import type { FactionTechnologyView, TechId } from "../data/Technology";
+import type { LeaderAssignment, LeaderState } from "../data/Leaders";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type {
@@ -50,6 +52,7 @@ export interface GameClock {
   tickSpeedSeconds: number;
   paused: boolean;
   syncedAtMs: number;
+  lastProcessedLeaderDay?: number;
 }
 
 export type ServerUpdateField =
@@ -62,6 +65,8 @@ export type ServerUpdateField =
   | "shipDesigns"
   | "fleets"
   | "starbases"
+  | "technologies"
+  | "leaders"
   | "combatContacts";
 
 export interface ServerStar extends StarData {}
@@ -181,6 +186,7 @@ export interface ServerShip {
   fleetId: string;
   shipKind: StarbaseShipKind;
   designId?: string;
+  targetDesignId?: string | null;
   speed: number;
   hp: number;
   maxHp: number;
@@ -305,6 +311,12 @@ export interface SetUrbanSubDistrictCommand {
   subDistrictKind: UrbanSubDistrictKind;
 }
 
+export interface CancelPlanetConstructionCommand {
+  type: "cancelPlanetConstruction";
+  planetId: string;
+  queueItemId: string;
+}
+
 export interface BuildStarbaseBuildingCommand {
   type: "buildStarbaseBuilding";
   starbaseId: string;
@@ -324,19 +336,50 @@ export interface BuildStarbaseShipCommand {
   designId?: string;
 }
 
+export interface UpgradeShipCommand {
+  type: "upgradeShip";
+  shipId: string;
+  starbaseId: string;
+  targetDesignId?: string;
+}
+
 export interface SaveShipDesignCommand {
   type: "saveShipDesign";
   designId?: string;
   shipKind: StarbaseShipKind;
   name: string;
+  weaponSectionModuleIds?: string[];
+  defenseSectionModuleIds?: string[];
   weaponModuleIds: string[];
   defenseModuleIds: string[];
+  utilityModuleIds?: string[];
   utilityModuleId?: string | null;
 }
 
 export interface DecommissionShipDesignCommand {
   type: "decommissionShipDesign";
   designId: string;
+}
+
+export interface SetActiveTechnologyCommand {
+  type: "setActiveTechnology";
+  techId: TechId;
+}
+
+export interface RecruitLeaderCommand {
+  type: "recruitLeader";
+  leaderId: string;
+}
+
+export interface AssignLeaderCommand {
+  type: "assignLeader";
+  leaderId: string;
+  assignment: LeaderAssignment | null;
+}
+
+export interface DismissLeaderCommand {
+  type: "dismissLeader";
+  leaderId: string;
 }
 
 export interface RetreatFleetCommand {
@@ -408,11 +451,17 @@ export type ClientCommand =
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
+  | CancelPlanetConstructionCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
   | BuildStarbaseShipCommand
+  | UpgradeShipCommand
   | SaveShipDesignCommand
   | DecommissionShipDesignCommand
+  | SetActiveTechnologyCommand
+  | RecruitLeaderCommand
+  | AssignLeaderCommand
+  | DismissLeaderCommand
   | SetUrbanSubDistrictCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand
@@ -440,6 +489,8 @@ export interface GameSnapshot {
   shipDesigns: ShipDesign[];
   fleets: ServerFleet[];
   starbases: ServerStarbase[];
+  technologies: FactionTechnologyView[];
+  leaders: LeaderState[];
   recentCombatContacts: ServerCombatContact[];
 }
 
@@ -461,6 +512,8 @@ export interface GameUpdate {
   shipDesigns?: ShipDesign[];
   fleets?: ServerFleet[];
   starbases?: ServerStarbase[];
+  technologies?: FactionTechnologyView[];
+  leaders?: LeaderState[];
   recentCombatContacts?: ServerCombatContact[];
 }
 

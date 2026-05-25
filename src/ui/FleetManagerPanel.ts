@@ -26,15 +26,34 @@ import type { StarbaseShipKind } from "../data/Starbase";
 import {
   calculateShipDesignStats,
   createDefaultShipDesign,
+  getShipDesignLayout,
   getShipModuleDefinition,
-  SHIP_DEFENSE_MODULES,
+  getShipModulesForComponentSlot,
+  getShipSectionModuleDefinition,
+  getShipSectionModulesForKind,
+  normalizeShipDesign,
   SHIP_HULL_DEFINITIONS,
-  SHIP_UTILITY_MODULES,
-  SHIP_WEAPON_MODULES,
+  WEAPON_SLOT_SIZE_LABELS,
 } from "../data/ShipDesigns";
-import type { ShipDesign, ShipModuleDefinition, ShipModuleSlotType } from "../data/ShipDesigns";
+import type {
+  ShipComponentSlotDefinition,
+  ShipComponentSlotType,
+  ShipDesign,
+  ShipDesignerModuleType,
+  ShipDesignStats,
+  ShipModuleDefinition,
+  ShipSectionModuleDefinition,
+  ShipSectionSlotType,
+} from "../data/ShipDesigns";
 import type { StarData } from "../data/StarMap";
 import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import {
+  getFirstRequiredTechName,
+  getRequiredTechIdsForShipHull,
+  getRequiredTechIdsForShipModule,
+  getRequiredTechIdsForShipSection,
+} from "../data/Technology";
+import type { FactionTechnologyView, TechId } from "../data/Technology";
 import type {
   CombatStance,
   FleetBehavior,
@@ -42,7 +61,7 @@ import type {
   FleetRetreatPolicy,
 } from "../game/CombatTypes";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
-import { computeCombatPowerFromStats, computeFleetPower } from "../game/combatPower";
+import { computeCombatPowerFromStats, computeFleetPower, computeShipPower } from "../game/combatPower";
 import { getFleetTacticalRadius } from "../game/tacticalFormation";
 import {
   captureScrollState,
@@ -59,6 +78,7 @@ export interface FleetManagerPanelData {
   factions: FactionInfo[];
   playerFactionId: number | null;
   clockYear: number;
+  technology?: FactionTechnologyView | null;
   onFleetCommand?: (command: ClientCommand) => void;
 }
 
@@ -78,7 +98,17 @@ const FLEET_MANAGER_SCROLL_SELECTORS = [
 ] as const;
 
 type FleetManagerTab = "fleetManager" | "shipDesigner";
-type DesignerSlotKind = "weapon" | "defense" | "utility";
+type DesignerSlotKind = ShipDesignerModuleType;
+type DesignerModuleOption = ShipModuleDefinition | ShipSectionModuleDefinition;
+type DesignStatMetricId = "power" | "damage" | "shields" | "armor" | "hull" | "evasion" | "speed" | "sensor";
+
+interface DesignStatComparison {
+  id: DesignStatMetricId;
+  label: string;
+  value: number;
+  displayValue: string;
+  score: number;
+}
 
 export class FleetManagerPanel {
   private root: HTMLDivElement;
@@ -88,7 +118,7 @@ export class FleetManagerPanel {
   private selectedFleetId: string | null = null;
   private selectedDesignId: string | null = null;
   private designerDraft: ShipDesign | null = null;
-  private selectedDesignerSlot = "weapon:0";
+  private selectedDesignerSlot: string | null = null;
   private addShipsOpen = false;
   private position = { x: 62, y: 82 };
   private dragOffset = { x: 0, y: 0 };
@@ -247,7 +277,7 @@ export class FleetManagerPanel {
       stencil: true,
     }, true);
     const scene = new Scene(engine);
-    scene.clearColor = new Color4(0, 0, 0, 1);
+    scene.clearColor = new Color4(0.01, 0.025, 0.04, 0);
 
     const camera = new ArcRotateCamera(
       "fleetManagerShipPreviewCamera",
@@ -582,6 +612,25 @@ export class FleetManagerPanel {
         });
       });
     });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-upgrade-ship]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const shipId = button.dataset.fmUpgradeShip;
+        if (!shipId) return;
+        const ship = data.ships.find((candidate) => candidate.id === shipId);
+        if (!ship) return;
+        const fleet = data.fleets.find((candidate) => candidate.id === ship.fleetId);
+        if (!fleet) return;
+        const targetDesign = this.getTargetDesignForShip(data, ship);
+        const shipyard = this.findShipyardInFleetSystem(data, fleet);
+        if (!targetDesign || !shipyard) return;
+        data.onFleetCommand?.({
+          type: "upgradeShip",
+          shipId,
+          starbaseId: shipyard.id,
+          targetDesignId: targetDesign.id,
+        });
+      });
+    });
     this.bindDesignerEvents(data);
   }
 
@@ -593,7 +642,7 @@ export class FleetManagerPanel {
         if (!design) return;
         this.selectedDesignId = design.id;
         this.designerDraft = this.cloneDesign(design);
-        this.selectedDesignerSlot = "weapon:0";
+        this.selectedDesignerSlot = null;
         this.show(data);
       });
     });
@@ -606,14 +655,14 @@ export class FleetManagerPanel {
         id: "",
         name: "New Corvette Design",
       };
-      this.selectedDesignerSlot = "weapon:0";
+      this.selectedDesignerSlot = null;
       this.show(data);
     });
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-design-slot]").forEach((button) => {
       button.addEventListener("click", () => {
         const slot = button.dataset.fmDesignSlot;
         if (!slot) return;
-        this.selectedDesignerSlot = slot;
+        this.selectedDesignerSlot = this.selectedDesignerSlot === slot ? null : slot;
         this.show(data);
       });
     });
@@ -632,26 +681,17 @@ export class FleetManagerPanel {
       const base = createDefaultShipDesign(ownerId, shipKind, data.clockYear);
       this.designerDraft = {
         ...this.designerDraft,
+        weaponSectionModuleIds: [...base.weaponSectionModuleIds],
+        defenseSectionModuleIds: [...base.defenseSectionModuleIds],
         weaponModuleIds: [...base.weaponModuleIds],
         defenseModuleIds: [...base.defenseModuleIds],
+        utilityModuleIds: [...base.utilityModuleIds],
         utilityModuleId: base.utilityModuleId,
       };
       this.show(data);
     });
-    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-save-design]")?.addEventListener("click", () => {
-      if (!this.designerDraft) return;
-      const nameInput = this.panelElement?.querySelector<HTMLInputElement>("[data-fm-design-name]");
-      const name = (nameInput?.value ?? this.designerDraft.name).trim() || this.designerDraft.name;
-      this.designerDraft.name = name;
-      data.onFleetCommand?.({
-        type: "saveShipDesign",
-        designId: this.designerDraft.id || undefined,
-        shipKind: this.designerDraft.shipKind,
-        name,
-        weaponModuleIds: [...this.designerDraft.weaponModuleIds],
-        defenseModuleIds: [...this.designerDraft.defenseModuleIds],
-        utilityModuleId: this.designerDraft.utilityModuleId,
-      });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-save-design], [data-fm-save-design-name]").forEach((button) => {
+      button.addEventListener("click", () => this.saveDesignerDraft(data));
     });
     this.panelElement.querySelector<HTMLButtonElement>("[data-fm-decommission-design]")?.addEventListener("click", () => {
       if (!this.designerDraft?.id) return;
@@ -685,10 +725,21 @@ export class FleetManagerPanel {
 
   private renderFleetManager(data: FleetManagerPanelData): string {
     const selectedFleet = this.getSelectedFleet(data);
+    const navalUsed = this.getTotalShipCount(data);
     return `
       <section class="fmBody">
         <article class="fmColumn fmFleetListColumn">
-          <div class="fmSectionTitle">Fleet Manager</div>
+          <div class="fmFleetListHeader">
+            <div class="fmPanelTitle">
+              <span class="fmPanelIcon fmPanelIcon-fleet" aria-hidden="true"></span>
+              <strong>Fleet Manager</strong>
+            </div>
+            <span class="fmCapacityChip"><small>Naval Capacity</small><strong>${this.escapeHtml(String(navalUsed))} / 100</strong></span>
+          </div>
+          <label class="fmFleetSearch">
+            <input type="search" placeholder="Search fleets..." aria-label="Search fleets">
+            <span class="fmSearchIcon" aria-hidden="true"></span>
+          </label>
           <div class="fmFleetList">
             ${data.fleets.length === 0
               ? '<div class="fmEmpty">No fleets currently visible.</div>'
@@ -698,8 +749,8 @@ export class FleetManagerPanel {
         <article class="fmColumn fmSelectedColumn">
           ${selectedFleet ? this.renderSelectedFleet(data, selectedFleet) : this.renderNoSelectedFleet()}
         </article>
-        <aside class="fmColumn fmStatsColumn">
-          ${this.addShipsOpen && selectedFleet ? this.renderShipPicker(data, selectedFleet) : this.renderOverallStats(data)}
+        <aside class="fmColumn fmCompositionColumn">
+          ${selectedFleet ? (this.addShipsOpen ? this.renderShipPicker(data, selectedFleet) : this.renderFleetCompositionPanel(data, selectedFleet)) : this.renderNoSelectedFleet()}
         </aside>
       </section>
     `;
@@ -717,9 +768,10 @@ export class FleetManagerPanel {
           <strong>${this.escapeHtml(this.getFleetName(data, fleet, index))}</strong>
           <small>${this.escapeHtml(systemName)} | ${this.escapeHtml(this.formatFleetStatus(fleet))}</small>
         </span>
+        <span class="fmFleetGhost" aria-hidden="true"></span>
         <span class="fmFleetNumbers">
-          <strong>${shipCount}</strong>
-          <small>${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</small>
+          <strong>${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</strong>
+          <small>${shipCount} ship${shipCount === 1 ? "" : "s"}</small>
         </span>
       </button>
     `;
@@ -731,6 +783,7 @@ export class FleetManagerPanel {
     const index = Math.max(0, data.fleets.findIndex((candidate) => candidate.id === fleet.id));
     const shipCount = this.getFleetShipCount(data, fleet);
     const defense = this.getFleetDefense(data, fleet);
+    const commandUsed = Math.max(shipCount, ships.length);
     return `
       <div class="fmSelectedHeader">
         <div>
@@ -738,55 +791,80 @@ export class FleetManagerPanel {
           <h3>${this.escapeHtml(this.getFleetName(data, fleet, index))}</h3>
           <span>${this.escapeHtml(this.getStarName(data, fleet.currentStarId))} System</span>
         </div>
-        <div class="fmPowerBadge">${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</div>
-      </div>
-      <div class="fmStatGrid">
-        ${this.renderStat("Status", this.formatFleetStatus(fleet))}
-        ${this.renderStat("Owner", owner?.name ?? "Unknown")}
-        ${this.renderStat("Class", shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`)}
-        ${this.renderStat("Shields", `${Math.round(defense.shield)} / ${Math.round(defense.maxShield)}`)}
-        ${this.renderStat("Armor", `${Math.round(defense.armor)} / ${Math.round(defense.maxArmor)}`)}
-        ${this.renderStat("Hull", `${Math.round(defense.hull)} / ${Math.round(defense.maxHull)}`)}
-        ${this.renderStat("Speed", `${this.formatCompact(fleet.speed * 2)} ly/day`)}
-        ${this.renderStat("Order", this.formatFleetOrder(data, fleet))}
-      </div>
-      ${this.renderFleetDoctrinePanel(data, fleet, ships)}
-      <div class="fmDoctrineHeader">
-        <div>
-          <div class="fmSectionTitle fmCompositionTitle">Fleet Composition</div>
-          <span>${ships.length} ship${ships.length === 1 ? "" : "s"} tracked inside this fleet</span>
+        <div class="fmSelectedHeaderChips">
+          <span class="fmCommandChip"><small>Command Limit</small><strong>${this.escapeHtml(String(commandUsed))} / 100</strong></span>
+          <div class="fmPowerBadge"><strong>${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</strong><small>Fleet Power</small></div>
         </div>
       </div>
-      <div class="fmCompositionList">
-        ${this.renderCompositionRows(data, fleet, ships)}
+      <div class="fmStatGrid">
+        ${this.renderFleetInfoCard("status", "Status", this.formatFleetStatus(fleet))}
+        ${this.renderFleetInfoCard("owner", "Owner", owner?.name ?? "Unknown")}
+        ${this.renderFleetInfoCard("class", "Class", shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`)}
+        ${this.renderFleetInfoCard("shields", "Shields", `${Math.round(defense.shield)} / ${Math.round(defense.maxShield)}`, this.getRatio(defense.shield, defense.maxShield))}
+        ${this.renderFleetInfoCard("armor", "Armor", `${Math.round(defense.armor)} / ${Math.round(defense.maxArmor)}`, this.getRatio(defense.armor, defense.maxArmor))}
+        ${this.renderFleetInfoCard("hull", "Hull", `${Math.round(defense.hull)} / ${Math.round(defense.maxHull)}`, this.getRatio(defense.hull, defense.maxHull))}
+        ${this.renderFleetInfoCard("speed", "Speed", `${this.formatCompact(fleet.speed * 2)} ly/day`)}
+        ${this.renderFleetInfoCard("order", "Order", this.formatFleetOrder(data, fleet))}
       </div>
+      ${this.renderFleetDoctrinePanel(data, fleet, ships)}
       <button class="fmAddShipsButton" type="button" data-fm-add-ships ${data.playerFactionId === fleet.ownerId ? "" : "disabled"}>Add Ships</button>
     `;
   }
 
+  private saveDesignerDraft(data: FleetManagerPanelData): void {
+    if (!this.designerDraft) return;
+    const nameInput = this.panelElement?.querySelector<HTMLInputElement>("[data-fm-design-name]");
+    const name = (nameInput?.value ?? this.designerDraft.name).trim() || this.designerDraft.name;
+    this.designerDraft.name = name;
+    data.onFleetCommand?.({
+      type: "saveShipDesign",
+      designId: this.designerDraft.id || undefined,
+      shipKind: this.designerDraft.shipKind,
+      name,
+      weaponSectionModuleIds: [...this.designerDraft.weaponSectionModuleIds],
+      defenseSectionModuleIds: [...this.designerDraft.defenseSectionModuleIds],
+      weaponModuleIds: [...this.designerDraft.weaponModuleIds],
+      defenseModuleIds: [...this.designerDraft.defenseModuleIds],
+      utilityModuleIds: [...this.designerDraft.utilityModuleIds],
+      utilityModuleId: this.designerDraft.utilityModuleId,
+    });
+  }
+
   private renderFleetDoctrinePanel(data: FleetManagerPanelData, fleet: ServerFleet, ships: ServerShip[]): string {
     const canCommand = data.playerFactionId === fleet.ownerId;
-    const settings = fleet.combatSettings;
     const tacticalRadius = fleet.tacticalRadius ?? getFleetTacticalRadius(Math.max(ships.length, fleet.shipIds.length));
     const range = fleet.maxWeaponRange ?? 0;
     const status = fleet.combatStatus ?? "idle";
     return `
-      <div class="fmDoctrineHeader">
-        <div>
-          <div class="fmSectionTitle fmCompositionTitle">Fleet Doctrine</div>
+      <div class="fmDoctrinePanel">
+        <div class="fmDoctrineHeader">
+          <div class="fmPanelTitle">
+            <span class="fmPanelIcon fmPanelIcon-doctrine" aria-hidden="true"></span>
+            <strong>Fleet Doctrine</strong>
+          </div>
           <span>${this.escapeHtml(this.formatCombatStatus(status))} | footprint ${this.formatCompact(tacticalRadius)} | max range ${this.formatCompact(range)}</span>
         </div>
+        <div class="fmDoctrineGrid">
+          <label>Stance ${this.renderFleetStanceSelect(fleet, canCommand)}</label>
+          <label>Behavior ${this.renderFleetBehaviorSelect(fleet, canCommand)}</label>
+          <label>Chase ${this.renderFleetChaseSelect(fleet, canCommand)}</label>
+          <label>Auto-retreat ${this.renderFleetRetreatSelect(fleet, canCommand)}</label>
+          <label class="wide">Retreat to ${this.renderFleetRetreatDestinationSelect(data, fleet, canCommand)}</label>
+        </div>
       </div>
-      <div class="fmDoctrineGrid">
-        <label>Stance ${this.renderFleetStanceSelect(fleet, canCommand)}</label>
-        <label>Behavior ${this.renderFleetBehaviorSelect(fleet, canCommand)}</label>
-        <label>Chase ${this.renderFleetChaseSelect(fleet, canCommand)}</label>
-        <label>Auto-retreat ${this.renderFleetRetreatSelect(fleet, canCommand)}</label>
-        <label>Retreat to ${this.renderFleetRetreatDestinationSelect(data, fleet, canCommand)}</label>
-      </div>
-      <div class="fmDoctrineNote">
-        <strong>${this.escapeHtml(this.formatCombatStance(fleet.combatStance))}</strong>
-        <span>${this.escapeHtml(this.getDoctrineDescription(fleet.combatStance, settings.behavior))}</span>
+    `;
+  }
+
+  private renderFleetInfoCard(icon: string, label: string, value: string, ratio?: number): string {
+    const clampedRatio = ratio === undefined ? null : Math.max(0, Math.min(1, ratio));
+    return `
+      <div class="fmInfoCard ${clampedRatio === null ? "" : "hasBar"}">
+        <span class="fmInfoIcon fmInfoIcon-${this.escapeAttribute(icon)}" aria-hidden="true"></span>
+        <div>
+          <small>${this.escapeHtml(label)}</small>
+          <strong>${this.escapeHtml(value)}</strong>
+        </div>
+        ${clampedRatio === null ? "" : `<span class="fmInfoBar" style="--info-ratio: ${(clampedRatio * 100).toFixed(1)}%" aria-hidden="true"><i></i></span>`}
       </div>
     `;
   }
@@ -849,37 +927,114 @@ export class FleetManagerPanel {
     ships: ServerShip[],
   ): string {
     if (ships.length > 0) {
-      return ships.map((ship) => this.renderShipRow(data, ship)).join("");
+      return ships.map((ship, index) => this.renderShipRow(data, fleet, ship, index)).join("");
     }
     if (fleet.shipIds.length > 0) {
-      return fleet.shipIds.map((shipId) => `
-        <div class="fmCompositionRow">
-          <span class="fmShipIcon">CV</span>
-          <span>
-            <strong>Corvette</strong>
-            <small>${this.escapeHtml(shipId)}</small>
-          </span>
-          <em>Tracked</em>
-        </div>
-      `).join("");
+      return fleet.shipIds.map((shipId, index) => this.renderShipPlaceholderRow(data, fleet, shipId, index)).join("");
     }
     return '<div class="fmEmpty">No ships assigned to this fleet.</div>';
   }
 
-  private renderShipRow(data: FleetManagerPanelData, ship: ServerShip): string {
+  private renderFleetCompositionPanel(data: FleetManagerPanelData, fleet: ServerFleet): string {
+    const ships = this.getShipsForFleet(data, fleet.id);
+    return `
+      <div class="fmCompositionHeader">
+        <div class="fmPanelTitle">
+          <span class="fmPanelIcon fmPanelIcon-composition" aria-hidden="true"></span>
+          <strong>Fleet Composition</strong>
+        </div>
+        <button class="fmAddShipsMini" type="button" data-fm-add-ships ${data.playerFactionId === fleet.ownerId ? "" : "disabled"}>+</button>
+      </div>
+      <div class="fmCompositionTableHeader" aria-hidden="true">
+        <span>Ship</span>
+        <span>Shields</span>
+        <span>Armor</span>
+        <span>Hull</span>
+        <span>Power</span>
+        <span>Actions</span>
+      </div>
+      <div class="fmCompositionList">
+        ${this.renderCompositionRows(data, fleet, ships)}
+      </div>
+    `;
+  }
+
+  private renderShipRow(data: FleetManagerPanelData, fleet: ServerFleet, ship: ServerShip, index: number): string {
     const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind];
-    const design = this.getDesignById(data, ship.designId);
-    const shieldPct = ship.maxShield > 0 ? Math.round((ship.shield / ship.maxShield) * 100) : 0;
-    const armorPct = ship.maxArmor > 0 ? Math.round((ship.armor / ship.maxArmor) * 100) : 0;
-    const hullPct = ship.maxHull > 0 ? Math.round((ship.hull / ship.maxHull) * 100) : 0;
+    const targetDesign = this.getTargetDesignForShip(data, ship);
+    const shipPower = computeShipPower(ship, undefined, data.shipDesigns);
     return `
       <div class="fmCompositionRow">
-        <span class="fmShipIcon">${this.escapeHtml(this.getInitials(definition?.label ?? ship.shipKind))}</span>
-        <span>
-          <strong>${this.escapeHtml(definition?.label ?? ship.shipKind)}</strong>
-          <small>${this.escapeHtml(design?.name ?? definition?.className ?? "Unknown class")}</small>
-        </span>
-        <em>S ${shieldPct}% | A ${armorPct}% | H ${hullPct}%</em>
+        <div class="fmShipCell">
+          <span class="fmShipThumb" aria-hidden="true"></span>
+          <span class="fmShipCopy">
+            <strong>${this.escapeHtml(this.getShipDisplayName(data, fleet, ship, index))}</strong>
+            <small>${this.escapeHtml(definition?.label ?? ship.shipKind)}</small>
+            ${index === 0 ? '<em>Flagship</em>' : ""}
+            ${targetDesign ? `<em class="upgradeReady">Upgrade Ready</em>` : ""}
+          </span>
+        </div>
+        ${this.renderShipDefenseCell("shields", ship.shield, ship.maxShield)}
+        ${this.renderShipDefenseCell("armor", ship.armor, ship.maxArmor)}
+        ${this.renderShipDefenseCell("hull", ship.hull, ship.maxHull)}
+        <div class="fmShipPowerCell"><span class="fmActionIcon fmActionIcon-power" aria-hidden="true"></span><strong>${this.escapeHtml(this.formatPowerValue(shipPower))}</strong></div>
+        ${this.renderShipActionButtons(data, fleet, ship.id, targetDesign)}
+      </div>
+    `;
+  }
+
+  private renderShipPlaceholderRow(data: FleetManagerPanelData, fleet: ServerFleet, shipId: string, index: number): string {
+    return `
+      <div class="fmCompositionRow">
+        <div class="fmShipCell">
+          <span class="fmShipThumb" aria-hidden="true"></span>
+          <span class="fmShipCopy">
+            <strong>${this.escapeHtml(this.getPlaceholderShipName(data, fleet, index))}</strong>
+            <small>${this.escapeHtml(shipId)}</small>
+            ${index === 0 ? '<em>Flagship</em>' : ""}
+          </span>
+        </div>
+        ${this.renderShipDefenseCell("shields", 0, 0)}
+        ${this.renderShipDefenseCell("armor", 0, 0)}
+        ${this.renderShipDefenseCell("hull", 0, 0)}
+        <div class="fmShipPowerCell"><span class="fmActionIcon fmActionIcon-power" aria-hidden="true"></span><strong>0K</strong></div>
+        ${this.renderShipActionButtons(data, fleet, shipId, null)}
+      </div>
+    `;
+  }
+
+  private renderShipDefenseCell(kind: "shields" | "armor" | "hull", value: number, maxValue: number): string {
+    return `
+      <div class="fmShipDefenseCell">
+        <span class="fmInfoIcon fmInfoIcon-${kind}" aria-hidden="true"></span>
+        <strong>${Math.round(value)} / ${Math.round(maxValue)}</strong>
+        <span class="fmShipStatBar" style="--ship-stat-ratio: ${(this.getRatio(value, maxValue) * 100).toFixed(1)}%" aria-hidden="true"><i></i></span>
+      </div>
+    `;
+  }
+
+  private renderShipActionButtons(
+    data: FleetManagerPanelData,
+    fleet: ServerFleet,
+    shipId: string,
+    targetDesign: ShipDesign | null,
+  ): string {
+    const canCommand = data.playerFactionId === fleet.ownerId;
+    const shipyard = this.findShipyardInFleetSystem(data, fleet);
+    const missingTechnology = targetDesign ? this.getDesignMissingTechnologyName(data, targetDesign) : null;
+    const canUpgrade = canCommand && !!targetDesign && !!shipyard && !missingTechnology;
+    const upgradeTitle = !targetDesign
+      ? "Ship is already using the newest design"
+      : missingTechnology
+        ? `Requires ${missingTechnology}`
+        : shipyard
+        ? `Upgrade to ${targetDesign.name}`
+        : "Move fleet to a completed shipyard system before upgrading";
+    return `
+      <div class="fmShipActions">
+        <button type="button" title="Repair ship" aria-label="Repair ship ${this.escapeAttribute(shipId)}"><span class="fmActionIcon fmActionIcon-repair" aria-hidden="true"></span></button>
+        <button type="button" title="${this.escapeAttribute(upgradeTitle)}" aria-label="Upgrade ship ${this.escapeAttribute(shipId)}" ${canUpgrade ? `data-fm-upgrade-ship="${this.escapeAttribute(shipId)}"` : "disabled"}><span class="fmActionIcon fmActionIcon-upgrade" aria-hidden="true"></span></button>
+        <button class="danger" type="button" title="Destroy ship" aria-label="Destroy ship ${this.escapeAttribute(shipId)}"><span class="fmActionIcon fmActionIcon-trash" aria-hidden="true"></span></button>
       </div>
     `;
   }
@@ -936,14 +1091,18 @@ export class FleetManagerPanel {
         <div class="fmBuildShipList">
           ${designs.length === 0 ? '<div class="fmEmpty">No active designs available.</div>' : designs.map((design) => {
             const stats = calculateShipDesignStats(design);
-            const predictedAlloys = stats.alloyUpkeepPerDay * stats.buildDays;
+            const missingTechnology = this.getDesignMissingTechnologyName(data, design);
+            const canBuild = Boolean(nearest) && !missingTechnology;
+            const note = missingTechnology
+              ? `Requires ${missingTechnology}`
+              : `${this.formatResourceList(stats.cost)} | ${stats.buildDays.toFixed(1)} days | ${this.formatCompact(stats.crewDemand)} crew`;
             return `
-              <button class="fmBuildShipCard" type="button" data-fm-build-ship="${design.shipKind}" data-fm-build-design="${this.escapeAttribute(design.id)}" ${nearest ? "" : "disabled"}>
+              <button class="fmBuildShipCard" type="button" data-fm-build-ship="${design.shipKind}" data-fm-build-design="${this.escapeAttribute(design.id)}" ${canBuild ? "" : "disabled"}>
                 <span class="fmShipIcon">${this.escapeHtml(this.getInitials(SHIP_HULL_DEFINITIONS[design.shipKind]?.label ?? design.shipKind))}</span>
                 <span>
                   <strong>${this.escapeHtml(design.name)}</strong>
                   <small>${this.escapeHtml(SHIP_HULL_DEFINITIONS[design.shipKind]?.label ?? design.shipKind)}</small>
-                  <em>${this.formatCompact(predictedAlloys)} alloys predicted | ${stats.buildDays.toFixed(1)} days | ${this.formatCompact(stats.crewDemand)} crew</em>
+                  <em>${this.escapeHtml(note)}</em>
                 </span>
               </button>
             `;
@@ -966,6 +1125,8 @@ export class FleetManagerPanel {
       `;
     }
     const stats = calculateShipDesignStats(draft);
+    const layout = getShipDesignLayout(draft);
+    const comparisonStats = this.getDesignStatComparisons(data, draft, stats);
     const activeDesignCount = this.getActiveDesigns(data, draft.ownerId, draft.shipKind).length;
     return `
       <section class="fmDesignerBody">
@@ -979,33 +1140,35 @@ export class FleetManagerPanel {
         <main class="fmDesignWorkbench">
           <div class="fmDesignNameBar">
             <input type="text" value="${this.escapeAttribute(draft.name)}" maxlength="40" data-fm-design-name aria-label="Design name">
-            <span>${this.escapeHtml(SHIP_HULL_DEFINITIONS[draft.shipKind]?.label ?? draft.shipKind)}</span>
+            <button class="fmNameSaveButton" type="button" data-fm-save-design-name>Save Name</button>
           </div>
           <div class="fmDesignViewport" data-fm-ship-preview aria-label="Ship preview">
             <div class="fmPreviewOverlay">
-              <div class="fmPreviewSlots">
-                <div class="fmPreviewSlotGroup">
-                  <div class="fmPreviewSlotTitle">Weapons</div>
+              <div class="fmTopSlotTray">
+                <div class="fmCoreSelector">
+                  <div class="fmSectionModuleRow">
+                    ${draft.weaponSectionModuleIds.map((moduleId, index) => this.renderSectionModuleSlot("weaponSection", index, moduleId)).join("")}
+                  </div>
+                </div>
+                <div class="fmPreviewSlotGroup fmWeaponGroup">
                   <div class="fmSlotRow fmWeaponSlots">
-                    ${draft.weaponModuleIds.map((moduleId, index) => this.renderDesignSlot("weapon", index, moduleId)).join("")}
+                    ${layout.weaponSlots.map((slot, index) => this.renderDesignSlot("weapon", index, draft.weaponModuleIds[index], slot)).join("")}
                   </div>
                 </div>
-                <div class="fmPreviewSlotGroup">
-                  <div class="fmPreviewSlotTitle">Defense</div>
+              </div>
+              <div class="fmBottomSlotTray">
+                <div class="fmPreviewSlotGroup fmDefenseGroup">
                   <div class="fmSlotRow fmDefenseSlots">
-                    ${draft.defenseModuleIds.map((moduleId, index) => this.renderDesignSlot("defense", index, moduleId)).join("")}
-                  </div>
-                </div>
-                <div class="fmPreviewSlotGroup compact">
-                  <div class="fmPreviewSlotTitle">Extra</div>
-                  <div class="fmSlotRow">
-                    ${this.renderDesignSlot("utility", 0, draft.utilityModuleId)}
+                    ${layout.defenseSlots.map((slot, index) => this.renderDesignSlot("defense", index, draft.defenseModuleIds[index], slot)).join("")}
                   </div>
                 </div>
               </div>
-              <div class="fmModulePalette fmPreviewPalette">
-                ${this.renderModulePalette()}
+              <div class="fmUtilityRail">
+                <div class="fmSlotColumn">
+                  ${layout.utilitySlots.map((slot, index) => this.renderDesignSlot("utility", index, draft.utilityModuleIds[index], slot)).join("")}
+                </div>
               </div>
+              ${this.selectedDesignerSlot ? `<div class="fmModulePalette fmPreviewPalette">${this.renderModulePalette()}</div>` : ""}
             </div>
           </div>
         </main>
@@ -1017,23 +1180,10 @@ export class FleetManagerPanel {
             </div>
           </div>
           <div class="fmOverallGrid fmDesignStatGrid">
-            ${this.renderStat("Power", this.formatPowerValue(computeCombatPowerFromStats(stats.combat)))}
-            ${this.renderStat("Damage", this.formatCompact(stats.combat.weaponMounts.reduce((sum, mount) => sum + mount.damage * mount.barrels, 0)))}
-            ${this.renderStat("Shields", this.formatCompact(stats.combat.maxShield))}
-            ${this.renderStat("Armor", this.formatCompact(stats.combat.maxArmor))}
-            ${this.renderStat("Hull", this.formatCompact(stats.combat.maxHull))}
-            ${this.renderStat("Evasion", `${Math.round(stats.combat.evasion * 100)}%`)}
-            ${this.renderStat("Speed", this.formatCompact(stats.speed))}
-            ${this.renderStat("Sensor", this.formatCompact(stats.combat.sensorRange))}
+            ${comparisonStats.map((metric) => this.renderDesignStatBar(metric)).join("")}
           </div>
-          <div class="fmStatsNote">
-            <strong>Cost</strong>
-            <span>${this.escapeHtml(this.formatResources(stats.cost))}</span>
-          </div>
-          <div class="fmStatsNote">
-            <strong>Upkeep</strong>
-            <span>${this.escapeHtml(this.formatResources(stats.upkeep))}</span>
-          </div>
+          ${this.renderResourceBreakdown("Cost", stats.cost)}
+          ${this.renderResourceBreakdown("Upkeep", stats.upkeep)}
           <div class="fmControlStack">
             <button type="button" data-fm-clear-design>Auto-complete</button>
             <button type="button" data-fm-save-design>Save</button>
@@ -1062,10 +1212,11 @@ export class FleetManagerPanel {
           <div class="fmDesignTypeLabel">${this.escapeHtml(hull?.label ?? shipKind)}</div>
           ${designs.map((design) => `
             <button class="fmDesignCard ${draft.id === design.id ? "selected" : ""}" type="button" data-fm-select-design="${this.escapeAttribute(design.id)}">
-              <span class="fmDesignThumb">${this.escapeHtml(this.getInitials(hull?.label ?? shipKind))}</span>
-              <span>
+              <span class="fmDesignThumb fmShipSilhouette" aria-hidden="true"></span>
+              <span class="fmDesignCardCopy">
                 <strong>${this.escapeHtml(design.name)}</strong>
                 <small>${this.escapeHtml(hull?.label ?? shipKind)}</small>
+                <span class="fmDesignModuleStrip">${this.renderDesignModuleStrip(design)}</span>
               </span>
             </button>
           `).join("")}
@@ -1074,22 +1225,52 @@ export class FleetManagerPanel {
     }).join("");
   }
 
-  private renderDesignSlot(kind: DesignerSlotKind, index: number, moduleId: string | null | undefined): string {
+  private renderSectionModuleSlot(
+    kind: ShipSectionSlotType,
+    index: number,
+    moduleId: string | null | undefined,
+  ): string {
+    const module = getShipSectionModuleDefinition(moduleId);
+    const slot = `${kind}:${index}`;
+    const selected = this.selectedDesignerSlot === slot;
+    const slotSummary = (module?.slots ?? [])
+      .map((componentSlot) => componentSlot.kind === "weapon" ? WEAPON_SLOT_SIZE_LABELS[componentSlot.size ?? "small"] : "D")
+      .join(" ");
+    return `
+      <button class="fmSectionModuleSlot ${selected ? "selected" : ""} ${module ? "" : "empty"}" type="button" data-fm-design-slot="${this.escapeAttribute(slot)}" title="${this.escapeAttribute(module?.description ?? "Select section module")}">
+        ${this.renderModuleGlyph(module, "section")}
+        <span>
+          <strong>${this.escapeHtml(module?.label ?? "Section Module")}</strong>
+          <small>${this.escapeHtml(slotSummary)}</small>
+        </span>
+      </button>
+    `;
+  }
+
+  private renderDesignSlot(
+    kind: ShipComponentSlotType,
+    index: number,
+    moduleId: string | null | undefined,
+    componentSlot: ShipComponentSlotDefinition,
+  ): string {
     const module = getShipModuleDefinition(moduleId);
     const slot = `${kind}:${index}`;
     const selected = this.selectedDesignerSlot === slot;
-    const emptyLabel = kind === "utility" ? "Extra" : kind === "weapon" ? "Weapon" : "Defense";
+    const emptyLabel = kind === "utility" ? "Utility" : kind === "weapon" ? "Weapon" : "Defense";
+    const sizeLabel = componentSlot.kind === "weapon" ? WEAPON_SLOT_SIZE_LABELS[componentSlot.size ?? "small"] : "";
     return `
-      <button class="fmDesignSlot ${selected ? "selected" : ""} ${module ? "" : "empty"}" type="button" data-fm-design-slot="${this.escapeAttribute(slot)}">
-        <span>${this.escapeHtml(module ? this.getInitials(module.label) : "+")}</span>
-        <strong>${this.escapeHtml(module?.label ?? emptyLabel)}</strong>
+      <button class="fmDesignSlot ${selected ? "selected" : ""} ${module ? "" : "empty"}" type="button" data-fm-design-slot="${this.escapeAttribute(slot)}" title="${this.escapeAttribute(module?.label ?? emptyLabel)}">
+        ${this.renderModuleGlyph(module, sizeLabel ? "component hasSize" : "component")}
+        <strong>${this.escapeHtml(this.getCompactModuleLabel(module?.label ?? emptyLabel))}</strong>
+        ${sizeLabel ? `<small>${this.escapeHtml(sizeLabel)}</small>` : ""}
       </button>
     `;
   }
 
   private renderModulePalette(): string {
+    if (!this.selectedDesignerSlot) return "";
     const slot = this.parseDesignerSlot(this.selectedDesignerSlot);
-    const modules = this.getModulesForSlot(slot.kind);
+    const modules = this.getModulesForSlot(slot.kind, slot.index);
     return `
       <div class="fmPaletteHeader">
         <strong>${this.escapeHtml(this.formatSlotKind(slot.kind))}</strong>
@@ -1100,14 +1281,37 @@ export class FleetManagerPanel {
     `;
   }
 
-  private renderModuleButton(module: ShipModuleDefinition): string {
+  private renderModuleButton(module: DesignerModuleOption): string {
     const selected = this.isModuleSelectedInSlot(module.id);
     return `
-      <button class="fmModuleButton ${selected ? "selected" : ""}" type="button" data-fm-module="${this.escapeAttribute(module.id)}">
-        <span>${this.escapeHtml(this.getInitials(module.label))}</span>
-        <strong>${this.escapeHtml(module.label)}</strong>
+      <button class="fmModuleButton ${selected ? "selected" : ""}" type="button" data-fm-module="${this.escapeAttribute(module.id)}" title="${this.escapeAttribute(module.description)}">
+        ${this.renderModuleGlyph(module, "palette")}
+        <span>
+          <strong>${this.escapeHtml(module.label)}</strong>
+          <small>${this.escapeHtml(this.getModuleMetaLabel(module))}</small>
+        </span>
       </button>
     `;
+  }
+
+  private renderDesignModuleStrip(design: ShipDesign): string {
+    const modules: DesignerModuleOption[] = [
+      ...design.weaponSectionModuleIds.map((id) => getShipSectionModuleDefinition(id)),
+      ...design.weaponModuleIds.map((id) => getShipModuleDefinition(id)),
+      ...design.defenseModuleIds.map((id) => getShipModuleDefinition(id)),
+      ...design.utilityModuleIds.slice(0, 3).map((id) => getShipModuleDefinition(id)),
+    ].filter((module): module is DesignerModuleOption => !!module);
+    return modules.slice(0, 9).map((module) => this.renderModuleGlyph(module, "strip")).join("");
+  }
+
+  private renderModuleGlyph(
+    module: DesignerModuleOption | null | undefined,
+    variant = "",
+  ): string {
+    const iconKind = module?.iconKind ?? (module?.slotType === "weapon" ? module.weaponKind : module?.slotType ?? "empty");
+    const title = module?.label ?? "Empty";
+    const sizeClass = module && "weaponSize" in module && module.weaponSize ? ` fmSize-${module.weaponSize}` : "";
+    return `<span class="fmModuleGlyph fmIcon-${this.escapeAttribute(iconKind)} ${this.escapeAttribute(variant)}${sizeClass}" title="${this.escapeAttribute(title)}" aria-hidden="true"></span>`;
   }
 
   private renderTab(tab: FleetManagerTab, label: string): string {
@@ -1142,8 +1346,11 @@ export class FleetManagerPanel {
   private cloneDesign(design: ShipDesign): ShipDesign {
     return {
       ...design,
+      weaponSectionModuleIds: [...design.weaponSectionModuleIds],
+      defenseSectionModuleIds: [...design.defenseSectionModuleIds],
       weaponModuleIds: [...design.weaponModuleIds],
       defenseModuleIds: [...design.defenseModuleIds],
+      utilityModuleIds: [...design.utilityModuleIds],
     };
   }
 
@@ -1169,47 +1376,163 @@ export class FleetManagerPanel {
       });
   }
 
-  private parseDesignerSlot(slot: string): { kind: DesignerSlotKind; index: number } {
-    const [kind, indexText] = slot.split(":");
-    if (kind === "defense" || kind === "utility" || kind === "weapon") {
-      return { kind, index: Math.max(0, Number(indexText) || 0) };
-    }
-    return { kind: "weapon", index: 0 };
+  private getNewestActiveDesign(
+    data: FleetManagerPanelData,
+    ownerId: number,
+    shipKind: StarbaseShipKind,
+  ): ShipDesign | null {
+    return data.shipDesigns
+      .filter((design) => design.status === "active" && design.ownerId === ownerId && design.shipKind === shipKind)
+      .sort((a, b) => {
+        const yearDelta = (b.updatedAtYear ?? b.createdAtYear) - (a.updatedAtYear ?? a.createdAtYear);
+        if (yearDelta !== 0) return yearDelta;
+        return b.createdAtYear - a.createdAtYear;
+      })[0] ?? null;
   }
 
-  private getModulesForSlot(kind: DesignerSlotKind): ShipModuleDefinition[] {
-    if (kind === "defense") return SHIP_DEFENSE_MODULES;
-    if (kind === "utility") return SHIP_UTILITY_MODULES;
-    return SHIP_WEAPON_MODULES;
+  private getTargetDesignForShip(data: FleetManagerPanelData, ship: ServerShip): ShipDesign | null {
+    const currentDesign = this.getDesignById(data, ship.designId);
+    const assignedTarget = this.getDesignById(data, ship.targetDesignId);
+    if (assignedTarget?.status === "active" && assignedTarget.id !== currentDesign?.id) return assignedTarget;
+    const newest = this.getNewestActiveDesign(data, ship.ownerId, ship.shipKind);
+    if (newest && newest.id !== currentDesign?.id && currentDesign?.status === "decommissioned") return newest;
+    return null;
+  }
+
+  private getDesignMissingTechnologyName(data: FleetManagerPanelData, design: ShipDesign): string | null {
+    const technology = data.technology;
+    const hullTechs = getRequiredTechIdsForShipHull(design.shipKind);
+    if (!this.areRequiredTechsCompleted(technology, hullTechs)) return getFirstRequiredTechName(hullTechs);
+    for (const sectionModuleId of [...design.weaponSectionModuleIds, ...design.defenseSectionModuleIds]) {
+      const required = getRequiredTechIdsForShipSection(sectionModuleId);
+      if (!this.areRequiredTechsCompleted(technology, required)) return getFirstRequiredTechName(required);
+    }
+    for (const moduleId of [...design.weaponModuleIds, ...design.defenseModuleIds, ...design.utilityModuleIds]) {
+      const required = getRequiredTechIdsForShipModule(moduleId);
+      if (!this.areRequiredTechsCompleted(technology, required)) return getFirstRequiredTechName(required);
+    }
+    return null;
+  }
+
+  private isShipModuleUnlocked(technology: FactionTechnologyView | null | undefined, moduleId: string): boolean {
+    return this.areRequiredTechsCompleted(technology, getRequiredTechIdsForShipModule(moduleId));
+  }
+
+  private isShipSectionUnlocked(technology: FactionTechnologyView | null | undefined, sectionModuleId: string): boolean {
+    return this.areRequiredTechsCompleted(technology, getRequiredTechIdsForShipSection(sectionModuleId));
+  }
+
+  private areRequiredTechsCompleted(technology: FactionTechnologyView | null | undefined, requiredTechIds: TechId[]): boolean {
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => technology?.completedTechIds.includes(techId) === true);
+  }
+
+  private parseDesignerSlot(slot: string): { kind: DesignerSlotKind; index: number } {
+    const [kind, indexText] = slot.split(":");
+    if (kind === "defense" || kind === "utility" || kind === "weapon" || kind === "weaponSection" || kind === "defenseSection") {
+      return { kind, index: Math.max(0, Number(indexText) || 0) };
+    }
+    return { kind: "weaponSection", index: 0 };
+  }
+
+  private getModulesForSlot(kind: DesignerSlotKind, index: number): DesignerModuleOption[] {
+    if (!this.designerDraft) return [];
+    const technology = this.currentData?.technology;
+    if (kind === "weaponSection" || kind === "defenseSection") {
+      return getShipSectionModulesForKind(this.designerDraft.shipKind, kind)
+        .filter((module) => this.isShipSectionUnlocked(technology, module.id));
+    }
+    const layout = getShipDesignLayout(this.designerDraft);
+    const slots = kind === "weapon"
+      ? layout.weaponSlots
+      : kind === "defense"
+        ? layout.defenseSlots
+        : layout.utilitySlots;
+    const slot = slots[index];
+    return slot
+      ? getShipModulesForComponentSlot(this.designerDraft.shipKind, slot)
+        .filter((module) => this.isShipModuleUnlocked(technology, module.id))
+      : [];
   }
 
   private applyModuleToDraft(moduleId: string): void {
     if (!this.designerDraft) return;
-    const module = getShipModuleDefinition(moduleId);
-    if (!module) return;
+    if (!this.selectedDesignerSlot) return;
     const slot = this.parseDesignerSlot(this.selectedDesignerSlot);
-    if (module.slotType !== slot.kind) return;
+    if (slot.kind === "weaponSection" || slot.kind === "defenseSection") {
+      const module = getShipSectionModuleDefinition(moduleId);
+      if (!module || module.slotType !== slot.kind || !module.shipKinds.includes(this.designerDraft.shipKind)) return;
+      if (slot.kind === "weaponSection" && slot.index < this.designerDraft.weaponSectionModuleIds.length) {
+        this.designerDraft.weaponSectionModuleIds[slot.index] = moduleId;
+      } else if (slot.kind === "defenseSection" && slot.index < this.designerDraft.defenseSectionModuleIds.length) {
+        this.designerDraft.defenseSectionModuleIds[slot.index] = moduleId;
+      }
+      this.normalizeDesignerDraft();
+      return;
+    }
+
+    const module = getShipModuleDefinition(moduleId);
+    if (!module || module.slotType !== slot.kind) return;
     if (slot.kind === "weapon" && slot.index < this.designerDraft.weaponModuleIds.length) {
       this.designerDraft.weaponModuleIds[slot.index] = moduleId;
     } else if (slot.kind === "defense" && slot.index < this.designerDraft.defenseModuleIds.length) {
       this.designerDraft.defenseModuleIds[slot.index] = moduleId;
-    } else if (slot.kind === "utility") {
+    } else if (slot.kind === "utility" && slot.index < this.designerDraft.utilityModuleIds.length) {
+      this.designerDraft.utilityModuleIds[slot.index] = moduleId;
       this.designerDraft.utilityModuleId = moduleId;
     }
+    this.normalizeDesignerDraft();
   }
 
   private isModuleSelectedInSlot(moduleId: string): boolean {
     if (!this.designerDraft) return false;
+    if (!this.selectedDesignerSlot) return false;
     const slot = this.parseDesignerSlot(this.selectedDesignerSlot);
+    if (slot.kind === "weaponSection") return this.designerDraft.weaponSectionModuleIds[slot.index] === moduleId;
+    if (slot.kind === "defenseSection") return this.designerDraft.defenseSectionModuleIds[slot.index] === moduleId;
     if (slot.kind === "weapon") return this.designerDraft.weaponModuleIds[slot.index] === moduleId;
     if (slot.kind === "defense") return this.designerDraft.defenseModuleIds[slot.index] === moduleId;
-    return this.designerDraft.utilityModuleId === moduleId;
+    return this.designerDraft.utilityModuleIds[slot.index] === moduleId;
   }
 
-  private formatSlotKind(kind: ShipModuleSlotType): string {
-    if (kind === "defense") return "Defense Modules";
-    if (kind === "utility") return "Extra Components";
+  private normalizeDesignerDraft(): void {
+    if (!this.designerDraft) return;
+    this.designerDraft = normalizeShipDesign(this.designerDraft, this.designerDraft.ownerId, this.currentData?.clockYear ?? this.designerDraft.updatedAtYear);
+  }
+
+  private formatSlotKind(kind: DesignerSlotKind): string {
+    if (kind === "weaponSection") return "Core Modules";
+    if (kind === "defenseSection") return "Core Defense";
+    if (kind === "defense") return "Defense Components";
+    if (kind === "utility") return "Utility Components";
     return "Weapons";
+  }
+
+  private getModuleMetaLabel(module: DesignerModuleOption): string {
+    if (module.slotType === "weaponSection" || module.slotType === "defenseSection") {
+      return module.slots
+        .map((slot) => slot.kind === "weapon" ? WEAPON_SLOT_SIZE_LABELS[slot.size ?? "small"] : "D")
+        .join(" ");
+    }
+    if (module.slotType === "weapon") return `${WEAPON_SLOT_SIZE_LABELS[module.weaponSize ?? "small"]} hardpoint`;
+    if (module.slotType === "defense") return module.defenseKind ?? "defense";
+    return "utility";
+  }
+
+  private getCompactModuleLabel(label: string): string {
+    return label
+      .replace(/^S\s+/, "")
+      .replace(/^M\s+/, "")
+      .replace(/^L\s+/, "")
+      .replace("Point Defense", "PD")
+      .replace("Missile Rack", "Missile")
+      .replace("Laser Cannon", "Laser")
+      .replace("Shield Generator", "Shield")
+      .replace("Armor Plating", "Armor")
+      .replace("Reinforced Hull", "Hull")
+      .replace("Reactor Capacitor", "Reactor")
+      .replace("Shield Capacitor", "Capacitor")
+      .replace("Repair Drones", "Repair");
   }
 
   private formatResources(resources: Record<string, number>): string {
@@ -1217,6 +1540,133 @@ export class FleetManagerPanel {
       .filter(([, value]) => Math.abs(value) > 0.001)
       .map(([resource, value]) => `${this.formatCompact(value)} ${resource}`);
     return parts.length > 0 ? parts.join(" | ") : "None";
+  }
+
+  private getDesignStatComparisons(
+    data: FleetManagerPanelData,
+    draft: ShipDesign,
+    stats: ShipDesignStats,
+  ): DesignStatComparison[] {
+    const galaxyDesigns = data.shipDesigns
+      .filter((design) => design.status === "active")
+      .filter((design) => design.id !== draft.id);
+    const comparisonDesigns = [...galaxyDesigns, draft];
+    const sampleStats = comparisonDesigns.map((design) => this.getComparableStatValues(calculateShipDesignStats(design)));
+    const current = this.getComparableStatValues(stats);
+    const metricLabels: Array<{ id: DesignStatMetricId; label: string }> = [
+      { id: "power", label: "Power" },
+      { id: "damage", label: "Damage" },
+      { id: "shields", label: "Shields" },
+      { id: "armor", label: "Armor" },
+      { id: "hull", label: "Hull" },
+      { id: "evasion", label: "Evasion" },
+      { id: "speed", label: "Speed" },
+      { id: "sensor", label: "Sensor" },
+    ];
+
+    return metricLabels.map(({ id, label }) => ({
+      id,
+      label,
+      value: current[id],
+      displayValue: this.formatDesignStatValue(id, current[id]),
+      score: this.calculateDistributionScore(current[id], sampleStats.map((sample) => sample[id])),
+    }));
+  }
+
+  private getComparableStatValues(stats: ShipDesignStats): Record<DesignStatMetricId, number> {
+    return {
+      power: computeCombatPowerFromStats(stats.combat),
+      damage: stats.combat.weaponMounts.reduce((sum, mount) => sum + mount.damage * mount.barrels, 0),
+      shields: stats.combat.maxShield,
+      armor: stats.combat.maxArmor,
+      hull: stats.combat.maxHull,
+      evasion: stats.combat.evasion * 100,
+      speed: stats.speed,
+      sensor: stats.combat.sensorRange,
+    };
+  }
+
+  private calculateDistributionScore(value: number, samples: number[]): number {
+    const sorted = samples
+      .filter((sample) => Number.isFinite(sample))
+      .sort((a, b) => a - b);
+    if (sorted.length <= 1) return 50;
+    const min = sorted[0];
+    const q1 = this.quantile(sorted, 0.25);
+    const median = this.quantile(sorted, 0.5);
+    const q3 = this.quantile(sorted, 0.75);
+    const max = sorted[sorted.length - 1];
+    if (Math.abs(max - min) < 0.0001) return 50;
+    if (value <= q1) return this.interpolateScore(value, min, q1, 0, 25);
+    if (value <= median) return this.interpolateScore(value, q1, median, 25, 50);
+    if (value <= q3) return this.interpolateScore(value, median, q3, 50, 75);
+    return this.interpolateScore(value, q3, max, 75, 100);
+  }
+
+  private quantile(sorted: number[], q: number): number {
+    if (sorted.length === 0) return 0;
+    const position = (sorted.length - 1) * q;
+    const base = Math.floor(position);
+    const rest = position - base;
+    return sorted[base + 1] === undefined
+      ? sorted[base]
+      : sorted[base] + rest * (sorted[base + 1] - sorted[base]);
+  }
+
+  private interpolateScore(value: number, fromValue: number, toValue: number, fromScore: number, toScore: number): number {
+    if (Math.abs(toValue - fromValue) < 0.0001) return (fromScore + toScore) / 2;
+    const progress = Math.max(0, Math.min(1, (value - fromValue) / (toValue - fromValue)));
+    return fromScore + progress * (toScore - fromScore);
+  }
+
+  private formatDesignStatValue(id: DesignStatMetricId, value: number): string {
+    if (id === "evasion") return `${Math.round(value)}%`;
+    if (id === "speed") return value.toFixed(2);
+    if (id === "sensor") return value.toFixed(1);
+    return this.formatCompact(value);
+  }
+
+  private renderDesignStatBar(metric: DesignStatComparison): string {
+    const score = Math.max(0, Math.min(100, metric.score));
+    return `
+      <div class="fmDesignStatBar" style="--stat-score: ${score.toFixed(1)}%">
+        <span class="fmMetricIcon fmMetricIcon-${this.escapeAttribute(metric.id)}" aria-hidden="true"></span>
+        <span class="fmDesignStatText">
+          <strong>${this.escapeHtml(metric.label)}</strong>
+          <small>${this.escapeHtml(metric.displayValue)}</small>
+        </span>
+        <span class="fmStatTrack" aria-hidden="true"><i></i></span>
+      </div>
+    `;
+  }
+
+  private renderResourceBreakdown(label: string, resources: Record<string, number>): string {
+    const rows = Object.entries(resources)
+      .filter(([, value]) => Math.abs(value) > 0.001)
+      .map(([resource, value]) => `
+        <span class="fmResourceRow">
+          <span class="fmResourceIcon fmResourceIcon-${this.escapeAttribute(resource)}" aria-hidden="true"></span>
+          <strong>${this.escapeHtml(this.formatCompact(value))}</strong>
+          <small>${this.escapeHtml(this.formatResourceLabel(resource))}</small>
+        </span>
+      `);
+    return `
+      <div class="fmStatsNote">
+        <strong>${this.escapeHtml(label)}</strong>
+        <span class="fmResourceRows">${rows.length > 0 ? rows.join("") : "None"}</span>
+      </div>
+    `;
+  }
+
+  private formatResourceList(resources: Record<string, number>): string {
+    const parts = Object.entries(resources)
+      .filter(([, value]) => Math.abs(value) > 0.001)
+      .map(([resource, value]) => `${this.formatCompact(value)} ${this.formatResourceLabel(resource)}`);
+    return parts.length > 0 ? parts.join(", ") : "Free";
+  }
+
+  private formatResourceLabel(resource: string): string {
+    return resource.slice(0, 1).toUpperCase() + resource.slice(1);
   }
 
   private ensureSelectedFleet(data: FleetManagerPanelData): void {
@@ -1268,6 +1718,34 @@ export class FleetManagerPanel {
       }),
       { shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0 },
     );
+  }
+
+  private getRatio(value: number, maxValue: number): number {
+    return maxValue > 0 ? Math.max(0, Math.min(1, value / maxValue)) : 0;
+  }
+
+  private getShipDisplayName(data: FleetManagerPanelData, fleet: ServerFleet, ship: ServerShip, index: number): string {
+    return this.getPlaceholderShipName(data, fleet, index);
+  }
+
+  private getPlaceholderShipName(data: FleetManagerPanelData, fleet: ServerFleet, index: number): string {
+    const owner = this.getFaction(data, fleet.ownerId);
+    const prefix = this.getShipNamePrefix(owner?.name ?? "Fleet");
+    const callsigns = ["Spearhead", "Lancer", "Valiant", "Arrow", "Vanguard", "Sentinel", "Defender", "Aegis", "Pioneer", "Ranger"];
+    return `${prefix}-${String(index + 1).padStart(2, "0")} ${callsigns[index % callsigns.length]}`;
+  }
+
+  private getShipNamePrefix(name: string): string {
+    const digit = name.match(/\d+/)?.[0];
+    if (digit) return `C${digit}S`;
+    const letters = name
+      .split(/\s+/)
+      .map((word) => word[0])
+      .join("")
+      .replace(/[^A-Za-z]/g, "")
+      .slice(0, 2)
+      .toUpperCase();
+    return `${letters || "FL"}S`;
   }
 
   private getShipsDefense(ships: ServerShip[]): { total: number; maxTotal: number } {
@@ -1402,6 +1880,16 @@ export class FleetManagerPanel {
     return nearest;
   }
 
+  private findShipyardInFleetSystem(data: FleetManagerPanelData, fleet: ServerFleet): ServerStarbase | null {
+    if (data.playerFactionId !== null && fleet.ownerId !== data.playerFactionId) return null;
+    return data.starbases.find((starbase) => (
+      starbase.ownerId === fleet.ownerId
+      && starbase.starId === fleet.currentStarId
+      && starbase.status === "online"
+      && countStarbaseShipyards(starbase.buildingSlots) > 0
+    )) ?? null;
+  }
+
   private getFleetMapPosition(data: FleetManagerPanelData, fleet: ServerFleet): { x: number; z: number } | null {
     if (fleet.hyperlanePosition) {
       const from = data.stars[fleet.hyperlanePosition.fromStarId];
@@ -1438,7 +1926,8 @@ export class FleetManagerPanel {
 
   private formatPowerValue(value: number): string {
     if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-    return `${Math.round(value / 1000)}K`;
+    if (value >= 1_000) return `${Math.round(value / 1000)}K`;
+    return String(Math.round(value));
   }
 
   private formatFleetStatus(fleet: ServerFleet): string {
@@ -1524,9 +2013,12 @@ export class FleetManagerPanel {
     style.textContent = `
 .fleetManagerPanel {
   --fleet-accent: rgba(114, 226, 255, 0.95);
+  --fleet-panel-scale: 0.82;
   position: fixed;
-  width: min(1120px, calc(100vw - 32px));
+  width: min(1200px, calc(100vw - 32px));
   height: min(680px, calc(100vh - 32px));
+  transform: scale(var(--fleet-panel-scale));
+  transform-origin: top left;
   z-index: 58;
   pointer-events: auto;
   display: grid;
@@ -1558,10 +2050,11 @@ export class FleetManagerPanel {
   display: grid;
   place-items: center;
   clip-path: polygon(50% 0, 94% 25%, 94% 75%, 50% 100%, 6% 75%, 6% 25%);
-  background: var(--fleet-accent);
-  color: #062018;
+  background: linear-gradient(135deg, #ff69c9, #7d57ff);
+  color: #160017;
   font-weight: 900;
   font-size: 11px;
+  box-shadow: 0 0 16px rgba(255, 105, 201, 0.32), inset 0 0 0 2px rgba(10, 0, 20, 0.45);
 }
 
 .fmTitle {
@@ -1590,7 +2083,7 @@ export class FleetManagerPanel {
 .fmBody {
   min-height: 0;
   display: grid;
-  grid-template-columns: 270px minmax(0, 1fr) 270px;
+  grid-template-columns: 270px minmax(360px, 0.9fr) minmax(460px, 1.15fr);
   gap: 8px;
   padding: 8px;
 }
@@ -1608,8 +2101,159 @@ export class FleetManagerPanel {
 
 .fmFleetListColumn,
 .fmSelectedColumn,
-.fmStatsColumn {
+.fmStatsColumn,
+.fmCompositionColumn {
   padding: 8px;
+}
+
+.fmFleetListColumn,
+.fmSelectedColumn,
+.fmCompositionColumn {
+  display: flex;
+  flex-direction: column;
+}
+
+.fmFleetListHeader,
+.fmCompositionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.fmPanelTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fmPanelTitle strong {
+  color: #eafff8;
+  font-size: 13px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.fmPanelIcon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  color: #72e2ff;
+}
+
+.fmPanelIcon::before,
+.fmPanelIcon::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.fmPanelIcon-fleet::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #72e2ff;
+  box-shadow: -8px 8px 0 #72e2ff, 8px 8px 0 #72e2ff, 0 16px 0 #72e2ff;
+}
+
+.fmPanelIcon-doctrine::before {
+  width: 21px;
+  height: 21px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmPanelIcon-doctrine::after {
+  width: 22px;
+  height: 2px;
+  background: #72e2ff;
+}
+
+.fmPanelIcon-composition::before {
+  width: 22px;
+  height: 22px;
+  border: 2px solid #72e2ff;
+  transform: rotate(45deg);
+}
+
+.fmPanelIcon-composition::after {
+  width: 8px;
+  height: 8px;
+  background: #72e2ff;
+  border-radius: 50%;
+}
+
+.fmCapacityChip,
+.fmCommandChip {
+  display: grid;
+  place-items: center;
+  min-width: 86px;
+  min-height: 42px;
+  padding: 5px 8px;
+  border: 1px solid rgba(103, 255, 221, 0.28);
+  background: linear-gradient(180deg, rgba(9, 45, 51, 0.82), rgba(2, 14, 18, 0.78));
+  text-align: center;
+}
+
+.fmCapacityChip small,
+.fmCommandChip small,
+.fmPowerBadge small {
+  color: #72e2ff;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.fmCapacityChip strong,
+.fmCommandChip strong {
+  color: #ffffff;
+  font-size: 14px;
+}
+
+.fmFleetSearch {
+  position: relative;
+  display: block;
+  margin-bottom: 10px;
+}
+
+.fmFleetSearch input {
+  width: 100%;
+  height: 34px;
+  border: 1px solid rgba(103, 255, 221, 0.28);
+  background: rgba(1, 8, 10, 0.36);
+  color: #eafff8;
+  font: inherit;
+  font-size: 11px;
+  padding: 0 34px 0 10px;
+}
+
+.fmFleetSearch input::placeholder {
+  color: rgba(206, 232, 226, 0.46);
+}
+
+.fmSearchIcon {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+  transform: translateY(-50%);
+}
+
+.fmSearchIcon::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 2px;
+  right: -6px;
+  bottom: -3px;
+  background: #72e2ff;
+  transform: rotate(45deg);
 }
 
 .fmSectionTitle {
@@ -1632,11 +2276,13 @@ export class FleetManagerPanel {
 }
 
 .fmFleetList {
-  max-height: calc(100% - 26px);
+  flex: 1;
+  max-height: none;
 }
 
 .fmCompositionList {
-  max-height: 154px;
+  flex: 1;
+  max-height: none;
 }
 
 .fmBuildShipList {
@@ -1659,7 +2305,7 @@ export class FleetManagerPanel {
 .fmFleetCard {
   min-height: 64px;
   display: grid;
-  grid-template-columns: 6px minmax(0, 1fr) 56px;
+  grid-template-columns: 6px minmax(0, 1fr) 48px 48px;
   gap: 8px;
   align-items: center;
   border: 1px solid rgba(103, 255, 221, 0.24);
@@ -1671,8 +2317,8 @@ export class FleetManagerPanel {
 }
 
 .fmFleetCard.selected {
-  border-color: rgba(248, 218, 103, 0.78);
-  box-shadow: inset 3px 0 0 rgba(248, 218, 103, 0.82), 0 0 14px rgba(248, 218, 103, 0.12);
+  border-color: rgba(103, 255, 221, 0.82);
+  box-shadow: inset 3px 0 0 rgba(255, 105, 201, 0.9), 0 0 18px rgba(103, 255, 221, 0.16);
 }
 
 .fmFleetCard:hover {
@@ -1724,6 +2370,15 @@ export class FleetManagerPanel {
   font-size: 15px;
 }
 
+.fmFleetGhost {
+  width: 42px;
+  height: 32px;
+  opacity: 0.16;
+  background: linear-gradient(90deg, #72e2ff, #75ff9b);
+  clip-path: polygon(0 52%, 27% 18%, 80% 0, 100% 50%, 80% 100%, 27% 82%);
+  filter: blur(0.2px);
+}
+
 .fmSelectedHeader,
 .fmStatsHeader {
   display: flex;
@@ -1737,7 +2392,8 @@ export class FleetManagerPanel {
 .fmSelectedHeader h3 {
   margin: 0;
   color: #eafff8;
-  font-size: 17px;
+  font-size: 22px;
+  line-height: 1.05;
 }
 
 .fmSelectedHeader span,
@@ -1751,22 +2407,186 @@ export class FleetManagerPanel {
 }
 
 .fmPowerBadge {
-  min-width: 62px;
-  padding: 5px 8px;
+  display: grid;
+  place-items: center;
+  min-width: 74px;
+  min-height: 48px;
+  padding: 6px 9px;
   border: 1px solid rgba(255, 224, 123, 0.64);
   background: rgba(48, 34, 13, 0.72);
   color: #ffe48a;
-  font-size: 12px;
-  font-weight: 900;
   text-align: center;
+}
+
+.fmPowerBadge strong {
+  color: #ffe48a;
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.fmSelectedHeaderChips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .fmStatGrid,
 .fmOverallGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px;
-  margin-top: 8px;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.fmInfoCard {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid rgba(103, 255, 221, 0.24);
+  background: rgba(1, 8, 10, 0.36);
+}
+
+.fmInfoCard.hasBar {
+  grid-template-columns: 36px minmax(0, 1fr) 78px;
+}
+
+.fmInfoCard small {
+  display: block;
+  color: #72e2ff;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.fmInfoCard strong {
+  display: block;
+  min-width: 0;
+  margin-top: 4px;
+  color: #ffffff;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmInfoIcon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: #72e2ff;
+}
+
+.fmInfoIcon::before,
+.fmInfoIcon::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.fmInfoIcon-status::before,
+.fmInfoIcon-order::before {
+  width: 23px;
+  height: 23px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmInfoIcon-status::after,
+.fmInfoIcon-order::after {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmInfoIcon-owner::before {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #72e2ff;
+  top: 3px;
+}
+
+.fmInfoIcon-owner::after {
+  width: 22px;
+  height: 12px;
+  border-radius: 14px 14px 4px 4px;
+  background: rgba(114, 226, 255, 0.85);
+  bottom: 2px;
+}
+
+.fmInfoIcon-class::before {
+  width: 8px;
+  height: 20px;
+  background: #72e2ff;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+
+.fmInfoIcon-class::after {
+  width: 22px;
+  height: 8px;
+  border-left: 2px solid #72e2ff;
+  border-right: 2px solid #72e2ff;
+  bottom: 3px;
+}
+
+.fmInfoIcon-shields::before {
+  width: 18px;
+  height: 23px;
+  background: linear-gradient(180deg, #72e2ff, rgba(85, 117, 255, 0.72));
+  clip-path: polygon(50% 0, 88% 16%, 78% 72%, 50% 100%, 22% 72%, 12% 16%);
+}
+
+.fmInfoIcon-armor::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #72e2ff;
+  box-shadow: -8px 0 0 #72e2ff, 8px 0 0 #72e2ff, -4px 8px 0 #72e2ff, 4px 8px 0 #72e2ff;
+}
+
+.fmInfoIcon-hull::before {
+  width: 23px;
+  height: 15px;
+  background: #72e2ff;
+  clip-path: polygon(50% 0, 100% 26%, 100% 74%, 50% 100%, 0 74%, 0 26%);
+}
+
+.fmInfoIcon-speed::before {
+  width: 22px;
+  height: 16px;
+  border-top: 3px solid #72e2ff;
+  border-right: 3px solid #72e2ff;
+  transform: rotate(45deg);
+}
+
+.fmInfoIcon-speed::after {
+  width: 14px;
+  height: 11px;
+  border-top: 3px solid #72e2ff;
+  border-right: 3px solid #72e2ff;
+  transform: translateX(-8px) rotate(45deg);
+  opacity: 0.66;
+}
+
+.fmInfoBar,
+.fmShipStatBar {
+  height: 5px;
+  background: rgba(206, 232, 226, 0.16);
+  overflow: hidden;
+}
+
+.fmInfoBar i,
+.fmShipStatBar i {
+  display: block;
+  width: var(--info-ratio, var(--ship-stat-ratio, 0%));
+  height: 100%;
+  background: #20dfe8;
+  box-shadow: 0 0 10px rgba(32, 223, 232, 0.55);
 }
 
 .fmStat {
@@ -1798,14 +2618,17 @@ export class FleetManagerPanel {
   margin-top: 10px;
 }
 
+.fmDoctrinePanel {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(103, 255, 221, 0.18);
+}
+
 .fmDoctrineHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(103, 255, 221, 0.2);
 }
 
 .fmDoctrineHeader span {
@@ -1820,6 +2643,10 @@ export class FleetManagerPanel {
   margin-top: 8px;
 }
 
+.fmDoctrineGrid label.wide {
+  grid-column: 1 / -1;
+}
+
 .fmDoctrineGrid label {
   display: grid;
   gap: 4px;
@@ -1832,11 +2659,11 @@ export class FleetManagerPanel {
 .fmDoctrineGrid select {
   min-width: 0;
   border: 1px solid rgba(103, 255, 221, 0.32);
-  background: rgba(2, 18, 22, 0.86);
+  background: linear-gradient(180deg, rgba(5, 31, 36, 0.92), rgba(1, 12, 16, 0.94));
   color: #eafff8;
   font: inherit;
-  font-size: 10px;
-  padding: 6px;
+  font-size: 11px;
+  padding: 9px 8px;
 }
 
 .fmDoctrineNote {
@@ -1935,6 +2762,260 @@ export class FleetManagerPanel {
   font-size: 10px;
 }
 
+.fmCompositionColumn {
+  min-width: 0;
+}
+
+.fmCompositionHeader {
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.18);
+}
+
+.fmAddShipsMini {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(103, 255, 221, 0.44);
+  background: rgba(6, 42, 38, 0.72);
+  color: #d8fff6;
+  font: inherit;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.fmAddShipsMini:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.fmCompositionTableHeader {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.55fr) repeat(3, minmax(58px, 0.68fr)) minmax(48px, 0.5fr) 88px;
+  gap: 8px;
+  padding: 0 8px 8px;
+  color: #72e2ff;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.fmCompositionColumn .fmCompositionList {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  overflow-y: auto;
+  padding-right: 5px;
+  min-height: 0;
+}
+
+.fmCompositionColumn .fmCompositionRow {
+  display: grid;
+  grid-template-columns: minmax(130px, 1.55fr) repeat(3, minmax(58px, 0.68fr)) minmax(48px, 0.5fr) 88px;
+  gap: 8px;
+  align-items: center;
+  min-height: 76px;
+  padding: 7px;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: linear-gradient(135deg, rgba(4, 23, 28, 0.82), rgba(1, 8, 10, 0.55));
+}
+
+.fmShipCell {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.fmShipThumb {
+  width: 46px;
+  height: 30px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.5), transparent 40%),
+    linear-gradient(90deg, #6f7c86, #1f2d36);
+  clip-path: polygon(0 58%, 20% 30%, 68% 0, 100% 46%, 82% 80%, 24% 100%);
+  filter: drop-shadow(0 0 6px rgba(114, 226, 255, 0.24));
+}
+
+.fmShipCopy {
+  min-width: 0;
+}
+
+.fmShipCopy strong,
+.fmShipCopy small,
+.fmShipCopy em {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmShipCopy strong {
+  color: #ffffff;
+  font-size: 12px;
+}
+
+.fmShipCopy small {
+  margin-top: 3px;
+  color: #bfffee;
+  font-size: 10px;
+}
+
+.fmShipCopy em {
+  width: max-content;
+  max-width: 100%;
+  margin-top: 5px;
+  padding: 2px 6px;
+  border: 1px solid rgba(255, 105, 201, 0.36);
+  background: rgba(255, 105, 201, 0.14);
+  color: #ff9fe0;
+  font-size: 9px;
+  font-style: normal;
+  text-transform: uppercase;
+}
+
+.fmShipCopy em.upgradeReady {
+  border-color: rgba(255, 220, 114, 0.48);
+  background: rgba(255, 220, 114, 0.13);
+  color: #ffdc72;
+}
+
+.fmShipDefenseCell {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.fmShipDefenseCell .fmInfoIcon {
+  width: 22px;
+  height: 22px;
+  transform: scale(0.78);
+}
+
+.fmShipDefenseCell strong {
+  color: #eafff8;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.fmShipStatBar {
+  width: 52px;
+}
+
+.fmShipPowerCell {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  color: #ffe48a;
+}
+
+.fmShipPowerCell strong {
+  color: #ffffff;
+  font-size: 12px;
+}
+
+.fmShipActions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.fmShipActions button {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(103, 255, 221, 0.42);
+  background: rgba(2, 18, 22, 0.78);
+  color: #72e2ff;
+  cursor: pointer;
+}
+
+.fmShipActions button.danger {
+  border-color: rgba(255, 74, 88, 0.56);
+  color: #ff4a58;
+}
+
+.fmShipActions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.fmActionIcon {
+  position: relative;
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.fmActionIcon::before,
+.fmActionIcon::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.fmActionIcon-power::before {
+  width: 9px;
+  height: 16px;
+  background: #ffdc72;
+  clip-path: polygon(48% 0, 100% 0, 62% 42%, 100% 42%, 24% 100%, 43% 56%, 0 56%);
+}
+
+.fmActionIcon-repair::before,
+.fmActionIcon-repair::after {
+  background: #72e2ff;
+}
+
+.fmActionIcon-repair::before {
+  width: 16px;
+  height: 4px;
+  top: 6px;
+}
+
+.fmActionIcon-repair::after {
+  width: 4px;
+  height: 16px;
+  left: 6px;
+}
+
+.fmActionIcon-upgrade::before {
+  width: 14px;
+  height: 8px;
+  left: 0;
+  top: 7px;
+  background: linear-gradient(90deg, #8b9aa4, #d5e0e6 48%, #526371);
+  clip-path: polygon(0 58%, 24% 20%, 72% 0, 100% 48%, 78% 84%, 24% 100%);
+  filter: drop-shadow(0 0 3px rgba(114, 226, 255, 0.25));
+}
+
+.fmActionIcon-upgrade::after {
+  width: 9px;
+  height: 11px;
+  right: -1px;
+  top: 0;
+  background: #ffdc72;
+  clip-path: polygon(50% 0, 100% 44%, 68% 44%, 68% 100%, 32% 100%, 32% 44%, 0 44%);
+  filter: drop-shadow(0 0 4px rgba(255, 220, 114, 0.45));
+}
+
+.fmActionIcon-trash::before {
+  width: 13px;
+  height: 12px;
+  left: 2px;
+  top: 5px;
+  border: 2px solid #ff4a58;
+  border-top: 0;
+}
+
+.fmActionIcon-trash::after {
+  width: 15px;
+  height: 2px;
+  top: 2px;
+  background: #ff4a58;
+}
+
 .fmAddShipsButton {
   width: 100%;
   min-height: 36px;
@@ -1969,6 +3050,89 @@ export class FleetManagerPanel {
 .fmStatsNote span {
   color: rgba(206, 232, 226, 0.62);
   font-size: 11px;
+}
+
+.fmResourceRows {
+  display: grid;
+  gap: 5px;
+}
+
+.fmResourceRow {
+  display: grid;
+  grid-template-columns: 18px 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+}
+
+.fmResourceRow strong,
+.fmResourceRow small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmResourceRow strong {
+  color: #eafff8;
+  font-size: 11px;
+}
+
+.fmResourceRow small {
+  color: rgba(206, 232, 226, 0.64);
+  font-size: 10px;
+}
+
+.fmResourceIcon,
+.fmMetricIcon {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+}
+
+.fmResourceIcon::before,
+.fmMetricIcon::before,
+.fmMetricIcon::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.fmResourceIcon-minerals::before {
+  width: 13px;
+  height: 13px;
+  background: #ff9f66;
+  clip-path: polygon(50% 0, 100% 30%, 84% 100%, 16% 100%, 0 30%);
+}
+
+.fmResourceIcon-energy::before {
+  width: 9px;
+  height: 17px;
+  background: #ffdc72;
+  clip-path: polygon(48% 0, 100% 0, 61% 42%, 100% 42%, 25% 100%, 43% 56%, 0 56%);
+}
+
+.fmResourceIcon-alloys::before,
+.fmResourceIcon-goods::before {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #8fb2ff;
+  transform: rotate(45deg);
+}
+
+.fmResourceIcon-food::before {
+  width: 12px;
+  height: 15px;
+  border-radius: 50% 50% 45% 45%;
+  background: #75ff9b;
+}
+
+.fmResourceIcon-research::before {
+  width: 15px;
+  height: 15px;
+  border: 2px solid #b985ff;
+  border-radius: 50%;
 }
 
 .fmShipPicker {
@@ -2028,7 +3192,7 @@ export class FleetManagerPanel {
 .fmDesignerBody {
   min-height: 0;
   display: grid;
-  grid-template-columns: 208px minmax(430px, 1fr) 232px;
+  grid-template-columns: 230px minmax(500px, 1fr) 270px;
   gap: 8px;
   padding: 8px;
 }
@@ -2070,7 +3234,7 @@ export class FleetManagerPanel {
   background: rgba(103, 255, 221, 0.08);
 }
 
-.fmNewDesignCard span,
+.fmNewDesignCard > span,
 .fmDesignThumb {
   display: grid;
   place-items: center;
@@ -2079,6 +3243,20 @@ export class FleetManagerPanel {
   border: 1px solid rgba(103, 255, 221, 0.38);
   color: #a9ffea;
   font-weight: 900;
+}
+
+.fmShipSilhouette {
+  position: relative;
+  overflow: hidden;
+}
+
+.fmShipSilhouette::before {
+  content: "";
+  width: 25px;
+  height: 13px;
+  background: linear-gradient(90deg, rgba(114, 226, 255, 0.9), rgba(117, 255, 155, 0.72));
+  clip-path: polygon(0 50%, 34% 14%, 82% 0, 100% 50%, 82% 100%, 34% 86%);
+  filter: drop-shadow(0 0 5px rgba(114, 226, 255, 0.55));
 }
 
 .fmDesignTypeGroup {
@@ -2098,6 +3276,10 @@ export class FleetManagerPanel {
   grid-template-columns: 40px minmax(0, 1fr);
   min-height: 62px;
   padding: 7px;
+}
+
+.fmDesignCardCopy {
+  min-width: 0;
 }
 
 .fmDesignCard.selected,
@@ -2124,6 +3306,20 @@ export class FleetManagerPanel {
   font-size: 10px;
 }
 
+.fmDesignModuleStrip {
+  display: flex;
+  gap: 3px;
+  margin-top: 5px;
+  min-height: 16px;
+  overflow: hidden;
+}
+
+.fmDesignModuleStrip .fmModuleGlyph {
+  width: 15px;
+  height: 15px;
+  min-width: 15px;
+}
+
 .fmDesignWorkbench {
   display: grid;
   grid-template-rows: 36px minmax(0, 1fr);
@@ -2148,10 +3344,22 @@ export class FleetManagerPanel {
   font-size: 13px;
 }
 
-.fmDesignNameBar span {
-  color: #75ff9b;
-  font-size: 11px;
+.fmNameSaveButton {
+  min-width: 92px;
+  height: 34px;
+  border: 1px solid rgba(103, 255, 221, 0.42);
+  background: rgba(6, 42, 38, 0.72);
+  color: #d8fff6;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 900;
   text-transform: uppercase;
+  cursor: pointer;
+}
+
+.fmNameSaveButton:hover {
+  border-color: rgba(103, 255, 221, 0.76);
+  color: #ffffff;
 }
 
 .fmCoreSection,
@@ -2168,45 +3376,109 @@ export class FleetManagerPanel {
   flex-wrap: wrap;
 }
 
-.fmDesignSlot {
-  width: 92px;
-  height: 60px;
+.fmSectionModuleRow {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.fmSectionModuleSlot {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  border: 1px solid rgba(103, 255, 221, 0.3);
+  background: linear-gradient(135deg, rgba(13, 49, 52, 0.88), rgba(2, 14, 18, 0.92));
+  color: #e9fff8;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 6px;
+}
+
+.fmSectionModuleSlot.selected,
+.fmDesignSlot.selected,
+.fmModuleButton.selected {
+  border-color: rgba(248, 218, 103, 0.82);
+  box-shadow: inset 0 0 0 1px rgba(248, 218, 103, 0.24);
+}
+
+.fmSectionModuleSlot strong,
+.fmSectionModuleSlot small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmSectionModuleSlot strong {
+  color: #eafff8;
+  font-size: 11px;
+}
+
+.fmSectionModuleSlot small {
+  margin-top: 3px;
+  color: rgba(255, 224, 123, 0.76);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.fmDesignSlot {
+  position: relative;
+  width: 76px;
+  height: 66px;
+  display: grid;
+  grid-template-rows: 30px 1fr;
+  justify-items: center;
+  align-items: center;
+  gap: 3px;
   border: 1px solid rgba(103, 255, 221, 0.28);
   background: rgba(5, 20, 22, 0.72);
   color: #e9fff8;
   font: inherit;
   cursor: pointer;
-  padding: 5px;
-}
-
-.fmDesignSlot span {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  border: 1px solid rgba(103, 255, 221, 0.34);
-  color: #a9ffea;
-  font-size: 9px;
-  font-weight: 900;
+  padding: 6px 5px 5px;
 }
 
 .fmDesignSlot strong {
+  width: 100%;
   min-width: 0;
   color: #eafff8;
-  font-size: 10px;
+  font-size: 9px;
+  line-height: 1.05;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.fmDesignSlot small {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid rgba(255, 224, 123, 0.48);
+  background: rgba(48, 34, 13, 0.72);
+  color: #ffe48a;
+  font-size: 8px;
+  font-weight: 900;
 }
 
 .fmDesignViewport {
   position: relative;
   min-height: 430px;
   border: 1px solid rgba(103, 255, 221, 0.2);
-  background: #000;
+  background:
+    radial-gradient(circle at 24% 42%, rgba(36, 117, 122, 0.3), transparent 13rem),
+    radial-gradient(circle at 78% 32%, rgba(91, 74, 142, 0.24), transparent 15rem),
+    radial-gradient(circle at 55% 62%, rgba(34, 74, 92, 0.35), transparent 17rem),
+    linear-gradient(180deg, #02080d, #031014 48%, #010509);
   overflow: hidden;
   box-shadow: inset 0 0 28px rgba(103, 255, 221, 0.08);
   isolation: isolate;
@@ -2219,8 +3491,22 @@ export class FleetManagerPanel {
   z-index: 1;
   pointer-events: none;
   background:
+    radial-gradient(circle at 16% 18%, rgba(255, 255, 255, 0.72) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 68% 28%, rgba(255, 255, 255, 0.54) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 84% 72%, rgba(117, 255, 155, 0.46) 0 1px, transparent 1.5px),
+    linear-gradient(rgba(103, 255, 221, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 255, 221, 0.03) 1px, transparent 1px),
     radial-gradient(circle at 56% 44%, rgba(103, 255, 221, 0.12), transparent 18rem),
     linear-gradient(180deg, rgba(103, 255, 221, 0.05), transparent 24%, transparent 76%, rgba(0, 0, 0, 0.42));
+  background-size:
+    auto,
+    auto,
+    auto,
+    42px 42px,
+    42px 42px,
+    auto,
+    auto;
+  opacity: 0.92;
 }
 
 .fmShipPreviewCanvas {
@@ -2230,7 +3516,7 @@ export class FleetManagerPanel {
   width: 100%;
   height: 100%;
   display: block;
-  background: #000;
+  background: transparent;
   outline: none;
   touch-action: none;
 }
@@ -2242,61 +3528,124 @@ export class FleetManagerPanel {
   pointer-events: none;
 }
 
-.fmPreviewSlots {
+.fmTopSlotTray {
   position: absolute;
   top: 10px;
   left: 10px;
-  width: min(292px, calc(100% - 20px));
+  right: 92px;
   display: grid;
-  gap: 7px;
+  grid-template-rows: auto auto auto;
+  justify-items: center;
+  gap: 4px;
   pointer-events: auto;
 }
 
-.fmPreviewSlotGroup {
-  border: 1px solid rgba(103, 255, 221, 0.22);
-  background: rgba(1, 10, 13, 0.72);
-  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
-  padding: 7px;
+.fmCoreSelector {
+  width: min(230px, 100%);
 }
 
-.fmPreviewSlotGroup.compact {
-  width: max-content;
+.fmCoreSelector .fmSectionModuleRow {
+  margin: 0;
+}
+
+.fmCoreSelector .fmSectionModuleSlot {
+  min-height: 30px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  padding: 3px 8px;
+  background: rgba(1, 10, 13, 0.46);
+  border-color: rgba(103, 255, 221, 0.38);
+}
+
+.fmCoreSelector .fmSectionModuleSlot .fmModuleGlyph {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+}
+
+.fmCoreSelector .fmSectionModuleSlot strong {
+  font-size: 11px;
+  text-align: center;
+}
+
+.fmCoreSelector .fmSectionModuleSlot small {
+  display: none;
+}
+
+.fmPreviewSlotGroup {
+  display: flex;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
   max-width: 100%;
 }
 
-.fmPreviewSlotTitle {
-  margin-bottom: 6px;
-  color: rgba(206, 232, 226, 0.72);
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .fmPreviewSlotGroup .fmSlotRow {
-  gap: 5px;
+  gap: 3px;
+  justify-content: center;
 }
 
 .fmPreviewSlotGroup .fmDesignSlot {
-  width: 86px;
-  height: 50px;
-  grid-template-columns: 24px minmax(0, 1fr);
+  width: 58px;
+  height: 52px;
+  background: rgba(4, 15, 18, 0.34);
+  border-color: rgba(206, 232, 226, 0.22);
+  backdrop-filter: blur(1px);
 }
 
-.fmPreviewSlotGroup .fmDesignSlot span {
-  width: 22px;
-  height: 22px;
+.fmPreviewSlotGroup .fmDesignSlot .fmModuleGlyph {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
 }
 
 .fmPreviewSlotGroup .fmDesignSlot strong {
-  font-size: 9px;
+  font-size: 8px;
+}
+
+.fmBottomSlotTray {
+  position: absolute;
+  left: 10px;
+  right: 92px;
+  bottom: 16px;
+  z-index: 3;
+  display: flex;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+.fmUtilityRail {
+  position: absolute;
+  top: 92px;
+  right: 10px;
+  z-index: 3;
+  pointer-events: auto;
+}
+
+.fmSlotColumn {
+  display: grid;
+  gap: 7px;
+}
+
+.fmUtilityRail .fmDesignSlot {
+  width: 58px;
+  height: 58px;
+  grid-template-rows: 1fr;
+  background: rgba(4, 15, 18, 0.28);
+  border-color: rgba(206, 232, 226, 0.24);
+  backdrop-filter: blur(1px);
+}
+
+.fmUtilityRail .fmDesignSlot strong {
+  display: none;
 }
 
 .fmPreviewPalette {
   position: absolute;
   left: 10px;
   right: 10px;
-  bottom: 10px;
+  bottom: 88px;
   z-index: 3;
   pointer-events: auto;
   border-color: rgba(103, 255, 221, 0.28);
@@ -2329,10 +3678,10 @@ export class FleetManagerPanel {
 }
 
 .fmModuleButton {
-  min-width: 132px;
-  height: 58px;
+  min-width: 154px;
+  height: 62px;
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
   gap: 7px;
   border: 1px solid rgba(103, 255, 221, 0.24);
@@ -2344,22 +3693,225 @@ export class FleetManagerPanel {
   padding: 6px;
 }
 
-.fmModuleButton span {
+.fmModuleButton > span {
+  min-width: 0;
+}
+
+.fmModuleButton strong,
+.fmModuleButton small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmModuleButton strong {
+  color: #eafff8;
+  font-size: 10px;
+}
+
+.fmModuleButton small {
+  margin-top: 3px;
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 9px;
+}
+
+.fmModuleGlyph {
+  position: relative;
   display: grid;
   place-items: center;
   width: 28px;
   height: 28px;
-  border: 1px solid rgba(103, 255, 221, 0.34);
+  min-width: 28px;
+  border: 1px solid rgba(103, 255, 221, 0.36);
+  background: radial-gradient(circle at 50% 50%, rgba(103, 255, 221, 0.16), rgba(0, 0, 0, 0.08));
   color: #a9ffea;
-  font-size: 9px;
-  font-weight: 900;
+  overflow: hidden;
 }
 
-.fmModuleButton strong {
-  min-width: 0;
-  font-size: 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.fmModuleGlyph::before,
+.fmModuleGlyph::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.fmSectionModuleSlot .fmModuleGlyph,
+.fmModuleButton .fmModuleGlyph {
+  width: 30px;
+  height: 30px;
+}
+
+.fmDesignSlot .fmModuleGlyph {
+  width: 28px;
+  height: 28px;
+}
+
+.fmIcon-laser::before {
+  width: 22px;
+  height: 3px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #75ff9b, #72e2ff);
+  transform: rotate(-32deg);
+  box-shadow: 0 0 9px rgba(114, 226, 255, 0.8);
+}
+
+.fmIcon-missile::before {
+  width: 20px;
+  height: 7px;
+  border-radius: 999px 3px 3px 999px;
+  background: linear-gradient(90deg, #ffad5a, #72e2ff);
+  transform: rotate(-24deg);
+}
+
+.fmIcon-missile::after {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 7px solid #ffdc72;
+  transform: translate(10px, -5px) rotate(-24deg);
+}
+
+.fmIcon-pointDefense::before {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmIcon-pointDefense::after {
+  width: 18px;
+  height: 2px;
+  background: #ff5a78;
+  box-shadow: 0 0 0 1px rgba(255, 90, 120, 0.25);
+}
+
+.fmIcon-shield::before {
+  width: 18px;
+  height: 22px;
+  background: linear-gradient(180deg, rgba(114, 226, 255, 0.95), rgba(85, 117, 255, 0.65));
+  clip-path: polygon(50% 0, 88% 16%, 78% 72%, 50% 100%, 22% 72%, 12% 16%);
+}
+
+.fmIcon-armor::before {
+  width: 21px;
+  height: 17px;
+  border: 2px solid #ffdc72;
+  transform: skewX(-16deg);
+}
+
+.fmIcon-hull::before {
+  width: 21px;
+  height: 18px;
+  background: linear-gradient(135deg, #75ff9b, #d8fff6);
+  clip-path: polygon(18% 0, 82% 0, 100% 50%, 82% 100%, 18% 100%, 0 50%);
+}
+
+.fmIcon-targeting::before,
+.fmIcon-sensor::before {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #b985ff;
+  border-radius: 50%;
+}
+
+.fmIcon-targeting::after {
+  width: 22px;
+  height: 2px;
+  background: #b985ff;
+  box-shadow: 0 0 0 1px rgba(185, 133, 255, 0.18);
+}
+
+.fmIcon-sensor::after {
+  width: 9px;
+  height: 9px;
+  border-top: 2px solid #b985ff;
+  border-right: 2px solid #b985ff;
+  transform: rotate(45deg);
+}
+
+.fmIcon-power::before {
+  width: 11px;
+  height: 22px;
+  background: #ffdc72;
+  clip-path: polygon(46% 0, 100% 0, 64% 41%, 100% 41%, 29% 100%, 47% 56%, 0 56%);
+}
+
+.fmIcon-speed::before {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmIcon-speed::after {
+  width: 9px;
+  height: 2px;
+  background: #72e2ff;
+  transform-origin: left center;
+  transform: translate(2px, 1px) rotate(-35deg);
+}
+
+.fmIcon-repair::before {
+  width: 18px;
+  height: 4px;
+  background: #75ff9b;
+  transform: rotate(-45deg);
+  border-radius: 999px;
+}
+
+.fmIcon-repair::after {
+  width: 4px;
+  height: 18px;
+  background: #75ff9b;
+  transform: rotate(-45deg);
+  border-radius: 999px;
+}
+
+.fmIcon-swarm::before {
+  width: 7px;
+  height: 7px;
+  background: #75ff9b;
+  box-shadow: -9px 6px 0 #72e2ff, 9px 6px 0 #ffdc72;
+  transform: rotate(45deg);
+}
+
+.fmIcon-tank::before,
+.fmIcon-bulwark::before {
+  width: 22px;
+  height: 16px;
+  border: 2px solid #ffdc72;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 3px rgba(255, 220, 114, 0.18);
+}
+
+.fmIcon-screen::before {
+  width: 22px;
+  height: 18px;
+  border: 2px solid #72e2ff;
+  border-radius: 50% 50% 42% 42%;
+}
+
+.fmIcon-utility::before,
+.fmIcon-empty::before {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(216, 255, 246, 0.72);
+  transform: rotate(45deg);
+}
+
+.fmSize-small {
+  border-color: rgba(117, 255, 155, 0.42);
+}
+
+.fmSize-medium {
+  border-color: rgba(114, 226, 255, 0.48);
+}
+
+.fmSize-large {
+  border-color: rgba(255, 220, 114, 0.56);
 }
 
 .fmDesignStatsPane {
@@ -2368,6 +3920,130 @@ export class FleetManagerPanel {
 
 .fmDesignStatGrid {
   grid-template-columns: 1fr;
+  gap: 7px;
+}
+
+.fmDesignStatBar {
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: 22px minmax(76px, 1fr) 92px;
+  align-items: center;
+  gap: 7px;
+  padding: 6px;
+  border: 1px solid rgba(103, 255, 221, 0.2);
+  background: rgba(1, 8, 10, 0.34);
+}
+
+.fmDesignStatText {
+  min-width: 0;
+}
+
+.fmDesignStatText strong,
+.fmDesignStatText small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmDesignStatText strong {
+  color: #eafff8;
+  font-size: 10px;
+}
+
+.fmDesignStatText small {
+  margin-top: 3px;
+  color: rgba(206, 232, 226, 0.64);
+  font-size: 10px;
+}
+
+.fmStatTrack {
+  height: 5px;
+  background: rgba(206, 232, 226, 0.16);
+  overflow: hidden;
+}
+
+.fmStatTrack i {
+  display: block;
+  width: var(--stat-score, 50%);
+  height: 100%;
+  background: linear-gradient(90deg, #ff5a78, #ffdc72 50%, #75ff9b);
+  box-shadow: 0 0 10px rgba(117, 255, 155, 0.24);
+}
+
+.fmMetricIcon-power::before {
+  width: 14px;
+  height: 14px;
+  background: #ffdc72;
+  clip-path: polygon(50% 0, 100% 28%, 88% 88%, 50% 100%, 12% 88%, 0 28%);
+}
+
+.fmMetricIcon-damage::before {
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+  background: #ff5a78;
+  transform: rotate(-35deg);
+}
+
+.fmMetricIcon-shields::before {
+  width: 15px;
+  height: 18px;
+  background: #72e2ff;
+  clip-path: polygon(50% 0, 88% 18%, 76% 73%, 50% 100%, 24% 73%, 12% 18%);
+}
+
+.fmMetricIcon-armor::before {
+  width: 16px;
+  height: 13px;
+  border: 2px solid #ffdc72;
+  transform: skewX(-14deg);
+}
+
+.fmMetricIcon-hull::before {
+  width: 17px;
+  height: 15px;
+  background: #75ff9b;
+  clip-path: polygon(18% 0, 82% 0, 100% 50%, 82% 100%, 18% 100%, 0 50%);
+}
+
+.fmMetricIcon-evasion::before {
+  width: 18px;
+  height: 9px;
+  border-top: 2px solid #75ff9b;
+  border-right: 2px solid #75ff9b;
+  transform: rotate(45deg);
+}
+
+.fmMetricIcon-speed::before {
+  width: 17px;
+  height: 17px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmMetricIcon-speed::after {
+  width: 8px;
+  height: 2px;
+  background: #72e2ff;
+  transform-origin: left center;
+  transform: translate(2px, 1px) rotate(-35deg);
+}
+
+.fmMetricIcon-sensor::before {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #b985ff;
+  border-radius: 50%;
+}
+
+.fmMetricIcon-sensor::after {
+  width: 6px;
+  height: 6px;
+  border-top: 2px solid #b985ff;
+  border-right: 2px solid #b985ff;
+  transform: rotate(45deg);
 }
 
 .fmControlStack {

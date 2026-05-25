@@ -56,6 +56,7 @@ import {
 } from "../data/SystemCoordinates";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type { PlanetState } from "../data/Economy";
+import type { LeaderState } from "../data/Leaders";
 import type { FactionInfo } from "../data/Factions";
 import { STARBASE_LEVEL_DEFINITIONS } from "../data/Starbase";
 import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
@@ -63,6 +64,7 @@ import type { ShipDesign } from "../data/ShipDesigns";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, FleetOrbitTarget, ServerCombatContact, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { FactionTechnologyView } from "../data/Technology";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { getFleetTacticalRadius, getLayeredFleetFormationPosition } from "../game/tacticalFormation";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
@@ -114,8 +116,11 @@ export interface SystemSceneOptions {
   starbaseSystemIds?: number[];
   starbases?: ServerStarbase[];
   factions?: FactionInfo[];
+  starOwnership?: number[];
   playerFactionId?: number;
   planetStates?: PlanetState[];
+  leaders?: LeaderState[];
+  technology?: FactionTechnologyView | null;
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
   clockYear?: number;
@@ -193,8 +198,10 @@ export class SystemScene implements IGameScene {
   private starbaseSystemIds: Set<number>;
   private starbases: ServerStarbase[];
   private factions: FactionInfo[];
+  private starOwnership: number[];
   private playerFactionId: number;
   private planetStates: PlanetState[];
+  private leaders: LeaderState[];
   private shipTransit: GalaxyShipTransit | null;
   private clockYear: number;
   private hyperlaneExits: HyperlaneExitPoint[];
@@ -260,7 +267,7 @@ export class SystemScene implements IGameScene {
   private activeFleetAction: ShipAction | null = null;
   private systemActionTargetRoots: Array<{ root: TransformNode; target: SystemActionTarget; meshes: Mesh[] }> = [];
   private systemActionMarkerMaterial: StandardMaterial | null = null;
-  private readonly factionFlagSvgCache = new Map<number, string>();
+  private readonly factionFlagSvgCache = new Map<string, string>();
   private pointerObserver: Observer<PointerInfo> | null = null;
   private starOccluded = false;
   private debugLogOccluder = false;
@@ -335,8 +342,10 @@ export class SystemScene implements IGameScene {
     this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
     this.starbases = options.starbases ?? [];
     this.factions = options.factions ?? [];
+    this.starOwnership = options.starOwnership ?? [];
     this.playerFactionId = options.playerFactionId ?? 0;
     this.planetStates = options.planetStates ?? [];
+    this.leaders = options.leaders ?? [];
     applyPlanetStatesToStars([this.star], this.planetStates);
     this.shipTransit = options.shipTransit ?? null;
     this.clockYear = options.clockYear ?? 2100;
@@ -1639,6 +1648,7 @@ export class SystemScene implements IGameScene {
       detail: fleet.ownerId === this.playerFactionId
         ? doctrine
         : "Foreign fleet. Tactical details are limited.",
+      movement: this.createFleetMovementSelectionData(fleet),
       ownerName: owner?.name ?? "Unknown",
       ownerColor: owner?.color,
       canCommand: fleet.ownerId === this.playerFactionId,
@@ -1647,6 +1657,22 @@ export class SystemScene implements IGameScene {
       combatBehavior: fleet.combatSettings.behavior,
       chasePolicy: fleet.combatSettings.chasePolicy,
       retreatPolicy: fleet.combatSettings.retreatPolicy,
+      leader: this.getAssignedLeader("fleet", fleet.id),
+    };
+  }
+
+  private createFleetMovementSelectionData(fleet: ServerFleet): SelectionData["movement"] {
+    if (!fleet.movementPlan) return undefined;
+    const destination = fleet.movementPlan.destinationPlanetId
+      ? this.getPlanetName(fleet.movementPlan.destinationPlanetId)
+      : (fleet.movementPlan.destinationOrbitTarget
+        ? this.formatOrbitTargetName(fleet.movementPlan.destinationOrbitTarget)
+        : this.star.id === fleet.movementPlan.destinationStarId
+          ? this.star.name
+          : `Star ${fleet.movementPlan.destinationStarId}`);
+    return {
+      destination,
+      arrivalYear: fleet.movementPlan.endsAtYear,
     };
   }
 
@@ -1766,6 +1792,7 @@ export class SystemScene implements IGameScene {
       status: starbase.status,
       power: this.formatStarbasePower(starbase),
       starbase,
+      technology: this.options.technology,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
     });
   }
@@ -1775,14 +1802,17 @@ export class SystemScene implements IGameScene {
   }
 
   private getFactionFlagSvg(ownerId: number): string {
-    const cached = this.factionFlagSvgCache.get(ownerId);
+    const faction = this.getFaction(ownerId);
+    const design = faction?.flagDesign ?? createFlagDesign({ seed: `system-entity-${ownerId}` });
+    const cacheKey = `${ownerId}:${JSON.stringify(design)}`;
+    const cached = this.factionFlagSvgCache.get(cacheKey);
     if (cached) return cached;
-    const svg = renderFlagSvg(createFlagDesign({ seed: `system-entity-${ownerId}` }), {
+    const svg = renderFlagSvg(design, {
       size: 26,
       className: "systemEntityFlagSvg",
       idPrefix: `system-entity-flag-${ownerId}`,
     });
-    this.factionFlagSvgCache.set(ownerId, svg);
+    this.factionFlagSvgCache.set(cacheKey, svg);
     return svg;
   }
 
@@ -4046,9 +4076,18 @@ export class SystemScene implements IGameScene {
       planetState,
       imageUrl: this.getPlanetTextureUrl(panelPlanet),
       accentColor: "rgba(102, 236, 199, 0.95)",
+      technology: this.options.technology,
       orbitFleetId: this.getOrbitCapableFleetId(),
+      assignedLeader: this.getAssignedLeader("planet", panelPlanet.id),
+      canManageLeaders: this.getCurrentStarOwnerId() === this.playerFactionId,
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
     });
+  }
+
+  private getCurrentStarOwnerId(): number | null {
+    const explicitOwner = this.starOwnership[this.star.id];
+    if (Number.isInteger(explicitOwner) && explicitOwner >= 0) return explicitOwner;
+    return this.starbases.find((starbase) => starbase.starId === this.star.id)?.ownerId ?? null;
   }
 
   private getOrbitCapableFleetId(): string | null {
@@ -4200,6 +4239,8 @@ export class SystemScene implements IGameScene {
 
   setClockYear(year: number): void {
     this.clockYear = year;
+    this.selectionPanel?.setClockYear(year);
+    this.objectPanel?.setClockYear(year);
   }
 
   selectFleetById(fleetId: string): boolean {
@@ -4222,6 +4263,13 @@ export class SystemScene implements IGameScene {
     this.refreshSystemEntityCards();
   }
 
+  setFactions(factions: FactionInfo[]): void {
+    this.factions = factions;
+    this.factionFlagSvgCache.clear();
+    this.refreshSystemEntityCards();
+    if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
+  }
+
   setShipDesigns(shipDesigns: ShipDesign[]): void {
     this.shipDesigns = shipDesigns;
     this.refreshShipVisuals();
@@ -4231,6 +4279,46 @@ export class SystemScene implements IGameScene {
   setRecentCombatContacts(contacts: ServerCombatContact[]): void {
     this.recentCombatContacts = contacts;
     this.queueRecentCombatContactEffects();
+  }
+
+  setTechnology(technology: FactionTechnologyView | null): void {
+    this.options.technology = technology;
+  }
+
+  setLeaders(leaders: LeaderState[]): void {
+    this.leaders = leaders;
+    if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
+    const currentObjectId = this.objectPanel?.getCurrentObjectId();
+    if (currentObjectId && this.objectPanel?.getCurrentKind() === "planet") {
+      this.objectPanel.refreshAssignedLeader(
+        currentObjectId,
+        this.getAssignedLeader("planet", currentObjectId),
+        this.getCurrentStarOwnerId() === this.playerFactionId,
+      );
+    }
+    for (const planetState of this.planetStates) {
+      if (planetState.starId !== this.star.id) continue;
+      const planet = this.star.system.planets[planetState.planetIndex];
+      if (planet) {
+        this.objectPanel?.refreshAssignedLeader(
+          planet.id,
+          this.getAssignedLeader("planet", planet.id),
+          this.getCurrentStarOwnerId() === this.playerFactionId,
+        );
+      }
+    }
+  }
+
+  setStarOwnerships(ownerByStar: number[]): void {
+    this.starOwnership = ownerByStar;
+  }
+
+  private getAssignedLeader(kind: "planet" | "fleet", targetId: string): LeaderState | null {
+    return this.leaders.find((leader) => (
+      leader.status === "recruited"
+      && leader.assignment?.kind === kind
+      && leader.assignment.targetId === targetId
+    )) ?? null;
   }
 
   setStarbaseSystemIds(starIds: Iterable<number>): void {

@@ -31,6 +31,7 @@ export type JobKind =
   | "miner"
   | "technician"
   | "clerk"
+  | "criminal"
   | "unemployed";
 
 export type BuildingKind =
@@ -179,6 +180,7 @@ export interface JobCapacity {
   miner: number;
   technician: number;
   clerk: number;
+  criminal: number;
   unemployed: number;
 }
 
@@ -257,6 +259,8 @@ export const PEOPLE_PER_MONTHLY_UNIT = 1_000_000;
 export const STARTING_HABITED_POPULATION = 10_000_000_000;
 const BASE_POPULATION_GROWTH_RATE_PER_QUARTER = 0.01;
 const POP_FOOD_UPKEEP_PER_UNIT = 1.1;
+const UNEMPLOYED_GOODS_UPKEEP_PER_UNIT = 0.025;
+const CRIMINAL_JOB_POPULATION_SHARE_AT_MAX_CRIME = 0.25;
 
 export const DISTRICT_MINERAL_COSTS: Record<DistrictKind, number> = {
   city: 900,
@@ -285,6 +289,7 @@ export const JOB_KINDS: JobKind[] = [
   "miner",
   "technician",
   "clerk",
+  "criminal",
   "unemployed",
 ];
 
@@ -312,6 +317,7 @@ export const JOB_CLASS_BY_KIND: Record<JobKind, JobClass> = {
   miner: "lower",
   technician: "lower",
   clerk: "lower",
+  criminal: "lower",
   unemployed: "lower",
 };
 
@@ -412,6 +418,14 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     description: "Handles services, commerce, and local administration.",
     output: { energy: 0.6 },
     amenities: 1.5,
+  },
+  criminal: {
+    kind: "criminal",
+    label: "Criminals",
+    class: "lower",
+    description: "Organized illicit work that consumes supplies and intensifies local crime.",
+    upkeep: { energy: 0.15, goods: 0.08 },
+    crimeReduction: -0.01,
   },
   unemployed: {
     kind: "unemployed",
@@ -648,6 +662,7 @@ function emptyJobCapacity(): JobCapacity {
     miner: 0,
     technician: 0,
     clerk: 0,
+    criminal: 0,
     unemployed: 0,
   };
 }
@@ -849,9 +864,13 @@ export function getFeatureModifiers(features: PlanetFeatureKind[] | undefined): 
   return modifiers;
 }
 
-function getActiveModifiers(state: Pick<PlanetState, "features" | "modifiers">): PlanetModifier[] {
+function getActiveModifiers(
+  state: Pick<PlanetState, "features" | "modifiers">,
+  externalModifiers: PlanetModifier[] = [],
+): PlanetModifier[] {
   return [
     ...normalizeModifiers(state.modifiers).map((modifier) => cloneModifier(modifier)),
+    ...normalizeModifiers(externalModifiers).map((modifier) => cloneModifier(modifier)),
     ...getFeatureModifiers(state.features),
   ];
 }
@@ -1110,9 +1129,10 @@ function applyGoodsUpkeep(
   population: number,
   modifiers: PlanetModifier[],
   upkeepMultiplier: number,
+  perUnitOverride?: number,
 ): void {
   const units = population / PEOPLE_PER_MONTHLY_UNIT;
-  const upkeepPerUnit = jobClass === "upper" ? 0.45 : jobClass === "middle" ? 0.25 : 0.08;
+  const upkeepPerUnit = perUnitOverride ?? (jobClass === "upper" ? 0.45 : jobClass === "middle" ? 0.25 : 0.08);
   addResource(upkeep, "goods", applyModifiers(units * upkeepPerUnit, modifiers, `goodsUpkeep:${jobClass}`) * upkeepMultiplier);
 }
 
@@ -1173,13 +1193,52 @@ function getAmenitiesHappinessModifier(amenityRatio: number): number {
 }
 
 function getEmploymentHappinessModifier(unemploymentRatio: number): number {
-  return clamp(5 - unemploymentRatio * 25, -20, 5);
+  return clamp(5 - unemploymentRatio * 40, -28, 5);
 }
 
 function getHappinessCrimePressure(happiness: number): number {
   if (happiness >= 100) return 0;
   if (happiness >= 80) return (100 - happiness) * 0.25;
   return 5 + ((80 - happiness) / 80) * 95;
+}
+
+function getJobHappinessPenalty(job: JobKind): number {
+  if (job === "unemployed") return -25;
+  if (job === "criminal") return -18;
+  return 0;
+}
+
+function getStabilityHappinessModifier(stability: number): number {
+  if (stability < 50) return -(50 - stability) * 0.3;
+  if (stability > 75) return Math.min(5, (stability - 75) * 0.08);
+  return 0;
+}
+
+function getStabilityProductionMultiplier(stability: number): number {
+  if (stability <= 50) return interpolate(stability, 0, 50, 0.35, 1);
+  return interpolate(stability, 50, 100, 1, 1.25);
+}
+
+function calculateStabilityValue(
+  happiness: number,
+  crime: number,
+  housingRatio: number,
+  amenityRatio: number,
+  unemploymentRatio: number,
+  highHappinessStability: number,
+  modifiers: PlanetModifier[],
+): number {
+  const housingShortfall = clamp(1 - housingRatio, 0, 1);
+  const amenityShortfall = clamp(1 - amenityRatio, 0, 1);
+  const lowHappinessPressure = clamp((55 - happiness) / 55, 0, 1);
+  const base = 58
+    + highHappinessStability * 0.6
+    - crime * 0.55
+    - housingShortfall * 34
+    - amenityShortfall * 34
+    - unemploymentRatio * 24
+    - lowHappinessPressure * 24;
+  return clamp(applyModifiers(base, modifiers, "stability"), 0, 100);
 }
 
 function mergePopGroup(groups: PopGroup[], next: PopGroup): void {
@@ -1197,10 +1256,14 @@ function mergePopGroup(groups: PopGroup[], next: PopGroup): void {
   groups.push({ ...next });
 }
 
-export function calculatePlanetEconomy(state: PlanetState, districtLimits?: DistrictCounts): PlanetEconomySummary {
+export function calculatePlanetEconomy(
+  state: PlanetState,
+  districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
+): PlanetEconomySummary {
   if (!state.isHabited) return createEmptyPlanetEconomySummary();
 
-  const activeModifiers = getActiveModifiers(state);
+  const activeModifiers = getActiveModifiers(state, externalModifiers);
   const capacity = emptyJobCapacity();
   const built = state.builtDistricts;
   let housing = built.city * 1_600_000_000;
@@ -1292,73 +1355,135 @@ export function calculatePlanetEconomy(state: PlanetState, districtLimits?: Dist
   }
   capacity.unemployed = unemployedPopulation;
 
-  const unemploymentRatio = totalPopulation > 0 ? unemployedPopulation / totalPopulation : 0;
   const housingRatio = totalPopulation > 0 ? housing / totalPopulation : 1;
-  let amenities = 0;
-  let crimeReduction = 0;
+  const sharedHousingHappiness = getHousingHappinessModifier(housingRatio);
+  const calculateAssignmentEffects = (sourceAssignments: PopAssignment[]) => {
+    let assignmentAmenities = 0;
+    let assignmentCrimeReduction = 0;
+    for (const assignment of sourceAssignments) {
+      if (assignment.job === "unemployed") continue;
+      const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId);
+      const productionMultiplier = getHabitabilityProductionMultiplier(habitability);
+      assignmentAmenities += getJobAmenityEffect(
+        assignment.job,
+        assignment.population,
+        activeModifiers,
+        productionMultiplier,
+      );
+      assignmentCrimeReduction += getJobCrimeReductionEffect(assignment.job, assignment.population, productionMultiplier);
+    }
+    return {
+      amenities: applyModifiers(assignmentAmenities, activeModifiers, "amenities"),
+      crimeReduction: assignmentCrimeReduction,
+    };
+  };
 
-  for (const assignment of assignments) {
-    if (assignment.job === "unemployed") continue;
-    const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId);
-    const productionMultiplier = getHabitabilityProductionMultiplier(habitability);
-    amenities += getJobAmenityEffect(
-      assignment.job,
-      assignment.population,
-      activeModifiers,
-      productionMultiplier,
-    );
-    crimeReduction += getJobCrimeReductionEffect(assignment.job, assignment.population, productionMultiplier);
-  }
-
-  amenities = applyModifiers(amenities, activeModifiers, "amenities");
+  let { amenities, crimeReduction } = calculateAssignmentEffects(assignments);
   const amenityNeed = totalPopulation / PEOPLE_PER_MONTHLY_UNIT;
   const amenityRatio = amenityNeed > 0 ? amenities / amenityNeed : 1;
-  const sharedHousingHappiness = getHousingHappinessModifier(housingRatio);
   const sharedAmenitiesHappiness = getAmenitiesHappinessModifier(amenityRatio);
-  const sharedEmploymentHappiness = getEmploymentHappinessModifier(unemploymentRatio);
-  const popGroups: PopGroup[] = [];
-  let weightedHappiness = 0;
-  let weightedCrimePressure = 0;
-  let weightedHighHappinessStability = 0;
+  let unemploymentRatio = totalPopulation > 0 ? unemployedPopulation / totalPopulation : 0;
+  let sharedEmploymentHappiness = getEmploymentHappinessModifier(unemploymentRatio);
 
-  for (const assignment of assignments) {
-    const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId);
-    const jobPenalty = assignment.job === "unemployed" ? -12 : 0;
-    const happiness = clamp(Math.round(applyModifiers(
-      50
-        + getHabitabilityHappinessModifier(habitability)
-        + sharedHousingHappiness
-        + sharedAmenitiesHappiness
-        + sharedEmploymentHappiness
-        + jobPenalty,
-      activeModifiers,
-      "happiness",
-    )), 0, 100);
-    const speciesName = SPECIES_DEFINITIONS[assignment.speciesId].name;
-    mergePopGroup(popGroups, {
-      job: assignment.job,
-      class: assignment.class,
-      speciesId: assignment.speciesId,
-      speciesName,
-      habitability,
-      happiness,
-      population: assignment.population,
-    });
-    weightedHappiness += happiness * assignment.population;
-    weightedCrimePressure += getHappinessCrimePressure(happiness) * assignment.population;
-    weightedHighHappinessStability += Math.max(0, happiness - 80) / 20 * 15 * assignment.population;
+  const buildSocialMetrics = (sourceAssignments: PopAssignment[], stabilityHappinessModifier = 0) => {
+    const groups: PopGroup[] = [];
+    let weightedHappiness = 0;
+    let weightedCrimePressure = 0;
+    let weightedHighHappinessStability = 0;
+
+    for (const assignment of sourceAssignments) {
+      const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId);
+      const happiness = clamp(Math.round(applyModifiers(
+        50
+          + getHabitabilityHappinessModifier(habitability)
+          + sharedHousingHappiness
+          + sharedAmenitiesHappiness
+          + sharedEmploymentHappiness
+          + stabilityHappinessModifier
+          + getJobHappinessPenalty(assignment.job),
+        activeModifiers,
+        "happiness",
+      )), 0, 100);
+      const speciesName = SPECIES_DEFINITIONS[assignment.speciesId].name;
+      mergePopGroup(groups, {
+        job: assignment.job,
+        class: assignment.class,
+        speciesId: assignment.speciesId,
+        speciesName,
+        habitability,
+        happiness,
+        population: assignment.population,
+      });
+      weightedHappiness += happiness * assignment.population;
+      weightedCrimePressure += getHappinessCrimePressure(happiness) * assignment.population;
+      weightedHighHappinessStability += Math.max(0, happiness - 80) / 20 * 15 * assignment.population;
+    }
+
+    return {
+      popGroups: groups,
+      happiness: totalPopulation > 0 ? weightedHappiness / totalPopulation : 50,
+      rawCrime: totalPopulation > 0 ? weightedCrimePressure / totalPopulation : 0,
+      highHappinessStability: totalPopulation > 0 ? weightedHighHappinessStability / totalPopulation : 0,
+    };
+  };
+
+  const preliminaryMetrics = buildSocialMetrics(assignments);
+  const preliminaryCrime = clamp(applyModifiers(preliminaryMetrics.rawCrime - crimeReduction, activeModifiers, "crime"), 0, 100);
+  const criminalJobCapacity = Math.floor(totalPopulation * (preliminaryCrime / 100) * CRIMINAL_JOB_POPULATION_SHARE_AT_MAX_CRIME);
+  let criminalPopulation = 0;
+  let criminalPopulationRemaining = Math.min(unemployedPopulation, criminalJobCapacity);
+  if (criminalPopulationRemaining > 0) {
+    for (const assignment of assignments) {
+      if (assignment.job !== "unemployed" || criminalPopulationRemaining <= 0) continue;
+      const converted = Math.min(assignment.population, criminalPopulationRemaining);
+      assignment.population -= converted;
+      criminalPopulationRemaining -= converted;
+      criminalPopulation += converted;
+      assignments.push({ job: "criminal", class: "lower", speciesId: assignment.speciesId, population: converted });
+    }
+    for (let index = assignments.length - 1; index >= 0; index -= 1) {
+      if (assignments[index].population <= 0) assignments.splice(index, 1);
+    }
+    unemployedPopulation -= criminalPopulation;
+    employedPopulation += criminalPopulation;
   }
+  capacity.criminal = criminalJobCapacity;
+  capacity.unemployed = unemployedPopulation;
+  unemploymentRatio = totalPopulation > 0 ? unemployedPopulation / totalPopulation : 0;
+  sharedEmploymentHappiness = getEmploymentHappinessModifier(unemploymentRatio);
+  ({ amenities, crimeReduction } = calculateAssignmentEffects(assignments));
 
-  const happiness = totalPopulation > 0 ? weightedHappiness / totalPopulation : 50;
-  const rawCrime = totalPopulation > 0 ? weightedCrimePressure / totalPopulation : 0;
-  const crime = clamp(applyModifiers(rawCrime - crimeReduction, activeModifiers, "crime"), 0, 100);
-  const highHappinessStability = totalPopulation > 0 ? weightedHighHappinessStability / totalPopulation : 0;
-  const stability = clamp(
-    applyModifiers(50 + (20 - crime * 0.5) + highHappinessStability, activeModifiers, "stability"),
-    0,
-    100,
+  let metrics = buildSocialMetrics(assignments);
+  let happiness = metrics.happiness;
+  let crime = clamp(applyModifiers(metrics.rawCrime - crimeReduction, activeModifiers, "crime"), 0, 100);
+  let highHappinessStability = metrics.highHappinessStability;
+  let stability = calculateStabilityValue(
+    happiness,
+    crime,
+    housingRatio,
+    amenityRatio,
+    unemploymentRatio,
+    highHappinessStability,
+    activeModifiers,
   );
-  const stabilityProductionMultiplier = Math.max(0, 1 + (stability - 50) * 0.005);
+  const stabilityHappinessModifier = getStabilityHappinessModifier(stability);
+  if (Math.abs(stabilityHappinessModifier) > 0.0001) {
+    metrics = buildSocialMetrics(assignments, stabilityHappinessModifier);
+    happiness = metrics.happiness;
+    crime = clamp(applyModifiers(metrics.rawCrime - crimeReduction, activeModifiers, "crime"), 0, 100);
+    highHappinessStability = metrics.highHappinessStability;
+    stability = calculateStabilityValue(
+      happiness,
+      crime,
+      housingRatio,
+      amenityRatio,
+      unemploymentRatio,
+      highHappinessStability,
+      activeModifiers,
+    );
+  }
+  const popGroups = metrics.popGroups;
+  const stabilityProductionMultiplier = getStabilityProductionMultiplier(stability);
 
   const production = createEmptyResourceCounts();
   const upkeep = createEmptyResourceCounts();
@@ -1377,6 +1502,15 @@ export function calculatePlanetEconomy(state: PlanetState, districtLimits?: Dist
         habitabilityUpkeepMultiplier,
       );
       applyGoodsUpkeep(upkeep, group.class, group.population, activeModifiers, habitabilityUpkeepMultiplier);
+    } else {
+      applyGoodsUpkeep(
+        upkeep,
+        group.class,
+        group.population,
+        activeModifiers,
+        habitabilityUpkeepMultiplier,
+        UNEMPLOYED_GOODS_UPKEEP_PER_UNIT,
+      );
     }
   }
 
@@ -1417,11 +1551,15 @@ export function calculatePlanetEconomy(state: PlanetState, districtLimits?: Dist
 
   return {
     ...summaryWithoutGrowth,
-    populationGrowth: calculatePopulationGrowth(state, summaryWithoutGrowth, districtLimits),
+    populationGrowth: calculatePopulationGrowth(state, summaryWithoutGrowth, districtLimits, externalModifiers),
   };
 }
 
-export function calculatePlanetCapacity(state: PlanetState, districtLimits?: DistrictCounts): number {
+export function calculatePlanetCapacity(
+  state: PlanetState,
+  districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
+): number {
   if (!state.isHabited) return 0;
   const limits = districtLimits ?? state.builtDistricts;
   const sizeProxy = Math.max(1, limits.city, state.builtDistricts.city);
@@ -1429,7 +1567,7 @@ export function calculatePlanetCapacity(state: PlanetState, districtLimits?: Dis
   const baseCapacity = sizeProxy * 1_800_000_000;
   const resourceCapacity = resourcePotential * 300_000_000;
   const urbanizedCapacity = state.builtDistricts.city * 450_000_000;
-  const modifiedCapacity = applyModifiers(baseCapacity + resourceCapacity + urbanizedCapacity, getActiveModifiers(state), "planetCapacity");
+  const modifiedCapacity = applyModifiers(baseCapacity + resourceCapacity + urbanizedCapacity, getActiveModifiers(state, externalModifiers), "planetCapacity");
   return Math.max(3_000_000_000, Math.floor(modifiedCapacity));
 }
 
@@ -1437,10 +1575,11 @@ export function calculatePopulationGrowth(
   state: PlanetState,
   economy: Omit<PlanetEconomySummary, "populationGrowth">,
   districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
 ): PlanetPopulationGrowth {
   if (!state.isHabited || state.population <= 0) return createEmptyPopulationGrowth();
 
-  const capacity = calculatePlanetCapacity(state, districtLimits);
+  const capacity = calculatePlanetCapacity(state, districtLimits, externalModifiers);
   const capacityPressure = capacity > 0 ? state.population / capacity : 1;
   const capacityCurve = clamp(1 - capacityPressure, -0.75, 1.15);
   const housingRatio = state.population > 0 ? economy.housing / state.population : 1;
@@ -1450,10 +1589,10 @@ export function calculatePopulationGrowth(
 
   const factors: PlanetPopulationGrowthFactors = {
     housing: clamp((housingRatio - 1) * 0.55, -0.35, 0.2),
-    amenities: clamp((amenityRatio - 1) * 0.12, -0.1, 0.08),
-    stability: clamp((economy.stability - 50) / 100 * 0.6, -0.3, 0.3),
-    crime: clamp(-economy.crime / 100 * 0.12, -0.12, 0),
-    employment: clamp(-unemploymentRatio * 0.56 + (unemploymentRatio <= 0.03 ? 0.04 : 0), -0.28, 0.04),
+    amenities: clamp((amenityRatio - 1) * 0.18, -0.18, 0.08),
+    stability: clamp((economy.stability - 50) / 100 * 0.9, -0.45, 0.35),
+    crime: clamp(-economy.crime / 100 * 0.2, -0.2, 0),
+    employment: clamp(-unemploymentRatio * 0.72 + (unemploymentRatio <= 0.03 ? 0.04 : 0), -0.36, 0.04),
     capacity: capacityCurve,
   };
   const managementPressure = factors.housing + factors.amenities + factors.stability + factors.crime + factors.employment;
@@ -1462,7 +1601,7 @@ export function calculatePopulationGrowth(
     : clamp(1 + managementPressure, -0.6, 1.8);
   const ratePerQuarter = applyModifiers(
     BASE_POPULATION_GROWTH_RATE_PER_QUARTER * factors.capacity * managementMultiplier,
-    getActiveModifiers(state),
+    getActiveModifiers(state, externalModifiers),
     "populationGrowth",
   );
   const netPerQuarter = Math.round(state.population * ratePerQuarter);
@@ -1476,7 +1615,11 @@ export function calculatePopulationGrowth(
   };
 }
 
-export function recalculatePlanetStateEconomy(state: PlanetState, districtLimits?: DistrictCounts): PlanetState {
+export function recalculatePlanetStateEconomy(
+  state: PlanetState,
+  districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
+): PlanetState {
   const speciesPopulations = normalizeSpeciesPopulations(
     state.speciesPopulations,
     state.population,
@@ -1495,7 +1638,7 @@ export function recalculatePlanetStateEconomy(state: PlanetState, districtLimits
   };
   return {
     ...normalized,
-    economy: calculatePlanetEconomy(normalized, districtLimits),
+    economy: calculatePlanetEconomy(normalized, districtLimits, externalModifiers),
   };
 }
 
@@ -1503,8 +1646,9 @@ export function applyPopulationGrowth(
   state: PlanetState,
   districtLimits?: DistrictCounts,
   quarters = 1,
+  externalModifiers: PlanetModifier[] = [],
 ): PlanetState {
-  let next = recalculatePlanetStateEconomy(state, districtLimits);
+  let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers);
   if (!next.isHabited || quarters <= 0) return next;
 
   for (let i = 0; i < quarters; i++) {
@@ -1514,7 +1658,7 @@ export function applyPopulationGrowth(
       ...next,
       population: sumSpeciesPopulation(speciesPopulations),
       speciesPopulations,
-    }, districtLimits);
+    }, districtLimits, externalModifiers);
   }
 
   return next;
@@ -1524,8 +1668,9 @@ export function applyPopulationGrowthFraction(
   state: PlanetState,
   districtLimits: DistrictCounts | undefined,
   quarterFraction: number,
+  externalModifiers: PlanetModifier[] = [],
 ): PlanetState {
-  const next = recalculatePlanetStateEconomy(state, districtLimits);
+  const next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers);
   if (!next.isHabited || quarterFraction <= 0) return next;
 
   const growth = Math.round(next.economy.populationGrowth.netPerQuarter * quarterFraction);
@@ -1534,7 +1679,7 @@ export function applyPopulationGrowthFraction(
     ...next,
     population: sumSpeciesPopulation(speciesPopulations),
     speciesPopulations,
-  }, districtLimits);
+  }, districtLimits, externalModifiers);
 }
 
 function applyPopulationDeltaToSpecies(populations: SpeciesPopulation[], delta: number): SpeciesPopulation[] {
@@ -1699,8 +1844,9 @@ function completeConstructionItem(
 export function getConstructionSpeedMultiplier(
   state: PlanetState,
   kind?: PlanetConstructionKind,
+  externalModifiers: PlanetModifier[] = [],
 ): number {
-  const activeModifiers = getActiveModifiers(state);
+  const activeModifiers = getActiveModifiers(state, externalModifiers);
   const base = getModifierMultiplier(activeModifiers, "constructionSpeed");
   const typed = kind === "district"
     ? getModifierMultiplier(activeModifiers, "districtConstructionSpeed")
@@ -1714,8 +1860,9 @@ export function progressPlanetConstructionQueue(
   state: PlanetState,
   elapsedDays: number,
   districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
 ): { state: PlanetState; changed: boolean; completed: PlanetConstructionQueueItem[] } {
-  let next = recalculatePlanetStateEconomy(state, districtLimits);
+  let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers);
   const limits = districtLimits ?? next.builtDistricts;
   let days = Math.max(0, elapsedDays);
   const completed: PlanetConstructionQueueItem[] = [];
@@ -1723,7 +1870,7 @@ export function progressPlanetConstructionQueue(
 
   while (days > 0 && next.constructionQueue.length > 0) {
     const [current, ...rest] = next.constructionQueue;
-    const speed = getConstructionSpeedMultiplier(next, current.kind);
+    const speed = getConstructionSpeedMultiplier(next, current.kind, externalModifiers);
     const workDays = days * speed;
     if (workDays < current.remainingDays) {
       current.remainingDays -= workDays;
@@ -1741,7 +1888,7 @@ export function progressPlanetConstructionQueue(
       withoutItem = completeConstructionItem(withoutItem, completedItem);
       completed.push(completedItem);
     }
-    next = recalculatePlanetStateEconomy(withoutItem, limits);
+    next = recalculatePlanetStateEconomy(withoutItem, limits, externalModifiers);
     changed = true;
   }
 

@@ -4,7 +4,7 @@ StellarFronts is a browser-based space strategy prototype with a Vite/React clie
 
 ## Current State
 
-The project now includes a real account system, session cookies, a separate auth service, server-side perspective handling, and a cleaned-up in-game logout path. User-created accounts are treated as observers, while the seeded faction accounts are the only ones bound to factions. Logout is now part of the game HUD and tears down the active game UI instead of leaving the clock/resources behind.
+The project now includes session-backed accounts, a separate auth service, a multi-game catalog, server-side per-game membership checks, and a cleaned-up in-game logout path. Player accounts claim a generated country when they join a game, while observer and admin accounts may enter every game with full-map observer visibility.
 
 ## Run Locally
 
@@ -25,14 +25,14 @@ Available scripts:
 ## App Layout
 
 - Home route: command dashboard, account summary, and launch point.
-- Game route: BabylonJS-backed strategy view with an imperative HUD.
+- Game route (`/game/:gameId`): BabylonJS-backed strategy view with an imperative HUD.
 - Login and signup routes: auth forms backed by the auth server.
 
 ## Core Gameplay Loop
 
 The game is currently a logistics and expansion prototype rather than a full war game. The main loop is:
 
-1. Log in as an observer or a seeded faction account.
+1. Log in and join a game from Home, or enter as the observer/admin account.
 2. Open the galaxy map and inspect discovered stars and connected systems.
 3. Move ships through the hyperlane network.
 4. Build starbases from ships, then upgrade them and add orbital infrastructure.
@@ -111,13 +111,13 @@ Seeded accounts:
 - `color_14` / `color_14`
 - `color_15` / `color_15`
 
-User-created accounts can use any unused username and password. They are created as observer accounts for gameplay.
+User-created accounts can use any unused username and password. Normal accounts claim one permanent generated country per game when they join it. The historical `color_*` seeded logins are treated as normal user accounts by the multi-game membership layer.
 
 Google and Microsoft login buttons are placeholders and currently disabled. Email verification is disabled for now.
 
 ## Persistence
 
-- Game state lives in `server/state/game-state.json`.
+- Each game state lives under `server/state/games/<gameId>/game-state.json`.
 - Auth data lives in the SQLite auth database under `server/state/auth.sqlite`.
 - Auth database sidecar files are local runtime artifacts and are ignored by git.
 

@@ -8,6 +8,7 @@ import {
 } from "../game/GameTime";
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
+import type { FlagDesign } from "../flags/flagTypes";
 
 export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
 export type HudSidebarItemKey =
@@ -35,6 +36,7 @@ export interface HudState {
   toggles: HudVisualToggles;
   clock?: GameClock;
   economy?: FactionEconomyState | null;
+  flagDesign?: FlagDesign | null;
 }
 
 export interface HudCallbacks {
@@ -45,6 +47,15 @@ export interface HudCallbacks {
 }
 
 const STYLE_ID = "space-rts-hud-style";
+const FLEET_SIDEBAR_ICON_URL = "/textures/sidebar-icons/side_bar_fleet_icon.webp";
+const TECH_SIDEBAR_ICON_URL = "/textures/sidebar-icons/side_bar_tech_icon.webp";
+const GOVERNMENT_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_government_icon.webp";
+const SOCIETY_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_society_icon.webp";
+const LEADERS_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_leaders_icon.webp";
+const PLANETS_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_planets_icon.webp";
+const DIPLOMACY_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_diplomacy_icon.webp";
+const ESPIONAGE_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_espionage_icon.webp";
+const MARKET_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_market_icon.webp";
 const RESOURCE_ICON_LABELS: Record<string, string> = {
   food: "FD",
   minerals: "MN",
@@ -54,16 +65,16 @@ const RESOURCE_ICON_LABELS: Record<string, string> = {
   research: "RS",
 };
 
-const SIDEBAR_ITEMS: Array<{ key: HudSidebarItemKey; label: string; icon: string }> = [
-  { key: "government", label: "Government", icon: "GV" },
-  { key: "society", label: "Society", icon: "SC" },
-  { key: "technology", label: "Technology", icon: "TC" },
-  { key: "leaders", label: "Leaders", icon: "LD" },
-  { key: "planets", label: "Planets", icon: "PL" },
-  { key: "fleets", label: "Fleets", icon: "FL" },
-  { key: "diplomacy", label: "Diplomacy", icon: "DP" },
-  { key: "espionage", label: "Espionage", icon: "ES" },
-  { key: "market", label: "Market", icon: "MK" },
+const SIDEBAR_ITEMS: Array<{ key: HudSidebarItemKey; label: string; icon?: string; iconUrl?: string }> = [
+  { key: "government", label: "Government", iconUrl: GOVERNMENT_SIDEBAR_ICON_URL },
+  { key: "society", label: "Society", iconUrl: SOCIETY_SIDEBAR_ICON_URL },
+  { key: "technology", label: "Technology", iconUrl: TECH_SIDEBAR_ICON_URL },
+  { key: "leaders", label: "Leaders", iconUrl: LEADERS_SIDEBAR_ICON_URL },
+  { key: "planets", label: "Planets", iconUrl: PLANETS_SIDEBAR_ICON_URL },
+  { key: "fleets", label: "Fleets", iconUrl: FLEET_SIDEBAR_ICON_URL },
+  { key: "diplomacy", label: "Diplomacy", iconUrl: DIPLOMACY_SIDEBAR_ICON_URL },
+  { key: "espionage", label: "Espionage", iconUrl: ESPIONAGE_SIDEBAR_ICON_URL },
+  { key: "market", label: "Market", iconUrl: MARKET_SIDEBAR_ICON_URL },
 ] as const;
 
 const HUD_STYLE = `
@@ -299,6 +310,8 @@ const HUD_STYLE = `
   display: grid;
   place-items: center;
   margin-left: 3px;
+  padding: 0;
+  overflow: hidden;
   border: 1px solid rgba(94, 173, 142, 0.44);
   border-left-color: rgba(94, 173, 142, 0.72);
   background:
@@ -313,16 +326,6 @@ const HUD_STYLE = `
   clip-path: polygon(0 0, calc(100% - 5px) 0, 100% 5px, 100% 100%, 0 100%);
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
   transition: transform 0.14s ease, border-color 0.14s ease, background-color 0.14s ease;
-}
-
-.spaceHudSidebarBtn::before {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 5px;
-  right: 5px;
-  height: 2px;
-  background: rgba(127, 255, 220, 0.26);
 }
 
 .spaceHudSidebarBtn::after {
@@ -363,6 +366,17 @@ const HUD_STYLE = `
 .spaceHudSidebarBtn span {
   position: relative;
   z-index: 1;
+}
+
+.spaceHudSidebarBtn img {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  image-rendering: auto;
+  filter: drop-shadow(0 0 4px rgba(127, 255, 220, 0.3));
 }
 
 #spaceHudClock {
@@ -692,7 +706,6 @@ export class HudOverlay {
   private readonly clockEl: HTMLDivElement;
   private readonly resourceEl: HTMLDivElement;
   private readonly sidebarEl: HTMLDivElement;
-  private readonly factionFlagSvg: string;
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
   private readonly toggleButtons: Record<HudToggleKey, HTMLButtonElement>;
@@ -701,17 +714,12 @@ export class HudOverlay {
   private clockShellVisible = false;
   private connectedSignature: string | null = null;
   private resourceSignature = "";
+  private flagSignature = "";
+  private factionFlagSvg = "";
 
   constructor(callbacks: HudCallbacks) {
     this.callbacks = callbacks;
     ensureHudStyles();
-    const flagDesign = createFlagDesign({ seed: `${Date.now()}-${Math.random()}` });
-    this.factionFlagSvg = renderFlagSvg(flagDesign, {
-      size: 34,
-      className: "spaceHudFactionFlagSvg",
-      title: "Faction flag",
-      idPrefix: "hud-faction-flag",
-    });
 
     this.root = document.createElement("div");
     this.root.id = "spaceHudRoot";
@@ -736,7 +744,9 @@ export class HudOverlay {
       button.className = "spaceHudSidebarBtn";
       button.setAttribute("aria-label", item.label);
       button.title = item.label;
-      button.innerHTML = `<span>${item.icon}</span>`;
+      button.innerHTML = item.iconUrl
+        ? `<img src="${item.iconUrl}" alt="" aria-hidden="true">`
+        : `<span>${item.icon}</span>`;
       button.addEventListener("click", () => {
         this.callbacks.onSidebarItem?.(item.key);
       });
@@ -819,6 +829,18 @@ export class HudOverlay {
       }
     }
     if (state.economy) {
+      const flagDesign = state.flagDesign ?? createFlagDesign({ seed: "hud-faction-flag" });
+      const nextFlagSignature = JSON.stringify(flagDesign);
+      if (this.flagSignature !== nextFlagSignature) {
+        this.flagSignature = nextFlagSignature;
+        this.factionFlagSvg = renderFlagSvg(flagDesign, {
+          size: 34,
+          className: "spaceHudFactionFlagSvg",
+          title: "Faction flag",
+          idPrefix: "hud-faction-flag",
+        });
+        this.resourceSignature = "";
+      }
       const nextResourceSignature = JSON.stringify({
         stockpiles: state.economy.stockpiles,
         monthlyDelta: state.economy.monthlyDelta,

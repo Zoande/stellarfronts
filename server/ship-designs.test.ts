@@ -3,47 +3,96 @@ import { test } from "node:test";
 import {
   calculateShipDesignStats,
   createDefaultShipDesign,
+  getShipDesignLayout,
   normalizeShipDesign,
 } from "../src/data/ShipDesigns";
 
-test("default corvette design has distinct weapon, defense, and utility modules", () => {
+test("default corvette design uses section modules and five utility slots", () => {
   const design = createDefaultShipDesign(1, "corvette", 2100);
+  const layout = getShipDesignLayout(design);
   const stats = calculateShipDesignStats(design);
   const weaponKinds = stats.combat.weaponMounts.map((mount) => mount.kind).sort();
 
-  assert.equal(design.weaponModuleIds.length, 3);
-  assert.equal(design.defenseModuleIds.length, 4);
-  assert.equal(design.utilityModuleId, "utility_ion_propulsors");
-  assert.deepEqual(weaponKinds, ["laser", "missile", "pointDefense"].sort());
+  assert.deepEqual(design.weaponSectionModuleIds, ["weapon_section_corvette_swarmer"]);
+  assert.deepEqual(design.defenseSectionModuleIds, ["defense_section_corvette_swarmer"]);
+  assert.deepEqual(layout.weaponSlots.map((slot) => slot.size), ["small", "small", "medium"]);
+  assert.equal(layout.defenseSlots.length, 2);
+  assert.equal(design.utilityModuleIds.length, 5);
+  assert.equal(design.utilityModuleIds.includes("utility_ion_propulsors"), false);
+  assert.deepEqual(weaponKinds, ["laser", "laser", "missile"].sort());
   assert.ok(stats.combat.maxHull > 0);
   assert.ok(stats.combat.maxShield > 0);
-  assert.ok(stats.combat.maxArmor > 0);
 });
 
-test("optical targeting utility extends weapon range bands", () => {
-  const design = {
-    ...createDefaultShipDesign(1, "corvette", 2100),
-    utilityModuleId: "utility_optical_array",
-  };
-  const stats = calculateShipDesignStats(design);
-  const missile = stats.combat.weaponMounts.find((mount) => mount.kind === "missile");
+test("tanker corvette sections define large and medium weapon slots plus four defenses", () => {
+  const normalized = normalizeShipDesign({
+    id: "tanker",
+    ownerId: 7,
+    shipKind: "corvette",
+    name: "Tanker Corvette",
+    weaponSectionModuleIds: ["weapon_section_corvette_tanker"],
+    defenseSectionModuleIds: ["defense_section_corvette_tanker"],
+    weaponModuleIds: ["weapon_missile_rack_large", "weapon_laser_cannon_medium"],
+    defenseModuleIds: ["defense_shield_generator"],
+    utilityModuleIds: ["utility_fire_control"],
+  }, 7, 2100);
+  const layout = getShipDesignLayout(normalized);
 
-  assert.equal(missile?.maxRangeBand, "extreme");
-  assert.equal(stats.combat.sensorRange, 4);
+  assert.deepEqual(layout.weaponSlots.map((slot) => slot.size), ["large", "medium"]);
+  assert.equal(layout.defenseSlots.length, 4);
+  assert.equal(normalized.weaponModuleIds.length, 2);
+  assert.equal(normalized.defenseModuleIds.length, 4);
+  assert.equal(normalized.utilityModuleIds.length, 5);
 });
 
-test("ship design normalization preserves required corvette slot counts", () => {
+test("corvette core selection owns the matching defense section", () => {
+  const normalized = normalizeShipDesign({
+    id: "swarmer",
+    ownerId: 7,
+    shipKind: "corvette",
+    name: "Swarmer Corvette",
+    weaponSectionModuleIds: ["weapon_section_corvette_swarmer"],
+    defenseSectionModuleIds: ["defense_section_corvette_tanker"],
+  }, 7, 2100);
+
+  assert.deepEqual(normalized.weaponSectionModuleIds, ["weapon_section_corvette_swarmer"]);
+  assert.deepEqual(normalized.defenseSectionModuleIds, ["defense_section_corvette_swarmer"]);
+  assert.equal(getShipDesignLayout(normalized).defenseSlots.length, 2);
+});
+
+test("weapon normalization respects selected section slot sizes", () => {
   const normalized = normalizeShipDesign({
     id: "custom",
     ownerId: 7,
     shipKind: "corvette",
     name: "Custom Corvette",
-    weaponModuleIds: ["weapon_missile_rack"],
+    weaponSectionModuleIds: ["weapon_section_corvette_swarmer"],
+    weaponModuleIds: ["weapon_missile_rack_large", "weapon_point_defense", "weapon_missile_rack"],
     defenseModuleIds: ["defense_reinforced_hull"],
     utilityModuleId: "utility_fire_control",
   }, 7, 2100);
 
-  assert.equal(normalized.weaponModuleIds.length, 3);
-  assert.equal(normalized.defenseModuleIds.length, 4);
-  assert.equal(normalized.utilityModuleId, "utility_fire_control");
+  assert.equal(normalized.weaponModuleIds[0], "weapon_laser_cannon");
+  assert.equal(normalized.weaponModuleIds[1], "weapon_point_defense");
+  assert.equal(normalized.weaponModuleIds[2], "weapon_missile_rack");
+  assert.equal(normalized.defenseModuleIds.length, 2);
+  assert.equal(normalized.utilityModuleIds[0], "utility_fire_control");
+});
+
+test("optical targeting utility extends weapon range bands", () => {
+  const design = normalizeShipDesign({
+    ...createDefaultShipDesign(1, "corvette", 2100),
+    utilityModuleIds: [
+      "utility_optical_array",
+      "utility_fire_control",
+      "utility_reactor_capacitor",
+      "utility_repair_drones",
+      "utility_shield_capacitor",
+    ],
+  }, 1, 2100);
+  const stats = calculateShipDesignStats(design);
+  const missile = stats.combat.weaponMounts.find((mount) => mount.kind === "missile");
+
+  assert.equal(missile?.maxRangeBand, "extreme");
+  assert.equal(stats.combat.sensorRange, 4);
 });

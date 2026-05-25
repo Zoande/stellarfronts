@@ -5,6 +5,7 @@ export type AdminCommandCategory =
   | "navigation"
   | "ownership"
   | "economy"
+  | "technology"
   | "designs"
   | "fleets"
   | "doctrine"
@@ -81,6 +82,7 @@ export const ADMIN_COMMAND_DEFINITIONS: AdminCommandDefinition[] = [
   command("where", "help", "where <entityId>", "Find where an entity is located."),
   command("combat_status", "help", "combat_status [system=<id|current>]", "Summarize fleet/starbase combat state."),
   command("economy_status", "help", "economy_status <owner|me|all>", "Summarize faction economy state."),
+  command("tech_status", "technology", "tech_status <owner|me|all>", "Summarize faction technology progress."),
   command("state_summary", "help", "state_summary", "Summarize global game state."),
 
   command("tick_size", "time", "tick_size <days>", "Set game days advanced per simulation tick."),
@@ -127,9 +129,13 @@ export const ADMIN_COMMAND_DEFINITIONS: AdminCommandDefinition[] = [
   command("build_district_now", "economy", "build_district_now <planetId|selected> <districtKind>", "Build a district immediately."),
   command("build_planet_building_now", "economy", "build_planet_building_now <planetId|selected> <area> <slotIndex> <buildingKind> [subDistrictIndex]", "Build a planet building immediately."),
 
-  command("create_design", "designs", "create_design <owner|me> <shipKind> name=\"<name>\" weapons=<ids> defenses=<ids> utility=<id|null>", "Create a ship design."),
+  command("set_active_tech", "technology", "set_active_tech <owner|me> <techId>", "Set the active research technology."),
+  command("add_tech_progress", "technology", "add_tech_progress <owner|me> <techId> <amount>", "Add active research progress to a technology."),
+  command("complete_tech", "technology", "complete_tech <owner|me> <techId>", "Complete a technology immediately."),
+
+  command("create_design", "designs", "create_design <owner|me> <shipKind> name=\"<name>\" weapon_sections=<ids> weapons=<ids> defenses=<ids> utility=<ids|null>", "Create a ship design."),
   command("clone_design", "designs", "clone_design <designId> <owner|me> [name=\"<name>\"]", "Clone a ship design."),
-  command("set_design_modules", "designs", "set_design_modules <designId> weapons=<ids> defenses=<ids> utility=<id|null>", "Change ship design modules."),
+  command("set_design_modules", "designs", "set_design_modules <designId> weapon_sections=<ids> weapons=<ids> defenses=<ids> utility=<ids|null>", "Change ship design modules."),
   command("delete_design", "designs", "delete_design <designId> [--confirm]", "Delete a ship design.", { destructive: true }),
 
   command("create_fleet", "fleets", "create_fleet <systemId|selected|current> <owner|me> [x,z] [name=\"<name>\"]", "Create an empty fleet."),

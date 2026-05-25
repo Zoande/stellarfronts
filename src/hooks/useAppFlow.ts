@@ -34,7 +34,7 @@ export interface UseAppFlowResult {
   handleBackToLogin: () => void;
   handleSignupSubmit: (username: string, password: string) => Promise<void>;
   handleLogout: () => Promise<void>;
-  handleStartGameFromHome: () => void;
+  handleStartGameFromHome: (gameId: string) => void;
   homeTransitionTitle: string;
   handleHomeTransitionHidden: () => void;
 }
@@ -269,9 +269,9 @@ export function useAppFlow(): UseAppFlowResult {
     });
   };
 
-  const handleStartGameFromHome = () => {
+  const handleStartGameFromHome = (gameId: string) => {
     if (typeof window !== 'undefined') {
-      window.history.pushState({}, '', '/game');
+      window.history.pushState({}, '', `/game/${encodeURIComponent(gameId)}`);
     }
     setAuth((prev) => ({
       ...prev,

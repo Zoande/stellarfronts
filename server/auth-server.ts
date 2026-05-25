@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { rm } from 'node:fs/promises';
 import {
   authStore,
   clearDevSessionCookie,
@@ -9,7 +10,8 @@ import {
   serializeDevSessionCookie,
   serializeSessionCookie,
 } from './auth-store';
-import type { Credentials } from '../src/auth/types';
+import { getGameStateDirectory } from './game-state-path';
+import type { AuthAccount, Credentials } from '../src/auth/types';
 
 const PORT = Number(process.env.AUTH_SERVER_PORT ?? 8788);
 
@@ -72,13 +74,18 @@ function applyCors(request: IncomingMessage, response: ServerResponse): void {
   response.setHeader('Access-Control-Allow-Origin', origin);
   response.setHeader('Access-Control-Allow-Credentials', 'true');
   response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  response.setHeader('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
   response.setHeader('Vary', 'Origin');
 }
 
 function isDevRequestAuthorized(request: IncomingMessage): boolean {
   const token = parseDevSessionTokenFromCookie(request.headers.cookie);
   return token ? authStore.isDevSessionTokenValid(token) : false;
+}
+
+function getAuthenticatedAccount(request: IncomingMessage): AuthAccount | null {
+  const token = parseSessionTokenFromCookie(request.headers.cookie);
+  return token ? authStore.getAccountFromSessionToken(token) : null;
 }
 
 async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -98,9 +105,39 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (request.method === 'GET' && url.pathname === '/api/me') {
-    const token = parseSessionTokenFromCookie(request.headers.cookie);
-    const account = token ? authStore.getAccountFromSessionToken(token) : null;
+    const account = getAuthenticatedAccount(request);
     writeJson(response, 200, { account });
+    return;
+  }
+
+  if (request.method === 'GET' && url.pathname === '/api/games') {
+    const account = getAuthenticatedAccount(request);
+    if (!account) {
+      writeJson(response, 401, { error: 'Authentication required' });
+      return;
+    }
+
+    writeJson(response, 200, { games: authStore.getGameSummariesForAccount(account) });
+    return;
+  }
+
+  const joinGameMatch = url.pathname.match(/^\/api\/games\/([a-z0-9]+)\/join$/i);
+  if (request.method === 'POST' && joinGameMatch) {
+    const account = getAuthenticatedAccount(request);
+    if (!account) {
+      writeJson(response, 401, { error: 'Authentication required' });
+      return;
+    }
+
+    const body = await readJsonBody<{ countryName?: unknown; flagDesign?: unknown }>(request);
+    const countryName = typeof body.countryName === 'string' ? body.countryName : '';
+    const membership = authStore.joinGame(account, joinGameMatch[1], countryName, body.flagDesign);
+    const game = authStore.getGameSummaryForAccount(joinGameMatch[1], account);
+    if (!game) {
+      writeJson(response, 404, { error: 'Game not found' });
+      return;
+    }
+    writeJson(response, membership ? 201 : 200, { game, membership });
     return;
   }
 
@@ -161,6 +198,35 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
 
     writeJson(response, 200, authStore.getDevStats());
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/dev/games') {
+    if (!isDevRequestAuthorized(request)) {
+      writeJson(response, 401, { error: 'Developer session required' });
+      return;
+    }
+
+    const body = await readJsonBody<{ name?: unknown }>(request);
+    const name = typeof body.name === 'string' ? body.name : '';
+    writeJson(response, 201, { game: authStore.createGame(name) });
+    return;
+  }
+
+  const deleteDevGameMatch = url.pathname.match(/^\/api\/dev\/games\/([a-z0-9]+)$/i);
+  if (request.method === 'DELETE' && deleteDevGameMatch) {
+    if (!isDevRequestAuthorized(request)) {
+      writeJson(response, 401, { error: 'Developer session required' });
+      return;
+    }
+
+    const deleted = authStore.deleteGame(deleteDevGameMatch[1]);
+    if (!deleted) {
+      writeJson(response, 404, { error: 'Game not found' });
+      return;
+    }
+    await rm(getGameStateDirectory(deleted.id), { recursive: true, force: true });
+    writeJson(response, 200, { ok: true, game: deleted });
     return;
   }
 

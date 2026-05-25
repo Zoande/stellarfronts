@@ -15,6 +15,7 @@ import {
   getHabitabilityUpkeepMultiplier,
   isBuildingCompatible,
   JOB_DEFINITIONS,
+  PEOPLE_PER_MONTHLY_UNIT,
   PLANET_FEATURE_DEFINITIONS,
   progressPlanetConstructionQueue,
   recalculatePlanetStateEconomy,
@@ -119,10 +120,10 @@ test("resource deltas and deficits are computed from assigned population", () =>
   const economy = calculatePlanetEconomy(planet);
 
   assert.ok(economy.production.food > 0);
-  assert.equal(economy.upkeep.food, 1_000);
+  assert.equal(economy.upkeep.food, (planet.population / PEOPLE_PER_MONTHLY_UNIT) * 1.1);
   assert.equal(economy.net.food, economy.production.food - economy.upkeep.food);
-  assert.equal(economy.upkeep.goods, 50);
-  assert.equal(economy.deficit.goods, 50);
+  assert.equal(economy.upkeep.goods, 80);
+  assert.equal(economy.deficit.goods, economy.upkeep.goods);
   assert.ok(economy.stability < 50);
   assert.ok(economy.crime > 0);
 });
@@ -373,6 +374,6 @@ test("construction queue completes districts and buildings over time", () => {
 });
 
 test("building mineral costs are exposed for server validation and UI", () => {
-  assert.equal(BUILDING_MINERAL_COSTS.housingComplex, 450);
+  assert.equal(BUILDING_MINERAL_COSTS.housingComplex, BUILDING_DEFINITIONS.housingComplex.mineralCost);
   assert.ok(BUILDING_MINERAL_COSTS.alloyFoundries > BUILDING_MINERAL_COSTS.housingComplex);
 });
