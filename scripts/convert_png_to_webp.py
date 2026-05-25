@@ -13,6 +13,7 @@ SOURCE_DIR = ROOT / "source_materials"
 PLANET_QUALITY = 80
 BANNER_QUALITY = 30
 ICON_QUALITY = 50
+BRANDING_QUALITY = 80
 WEBP_METHOD = 6
 SIDEBAR_ICON_CANVAS = 1024
 SIDEBAR_ICON_PADDING = 10
@@ -40,6 +41,14 @@ TARGETS = [
         "dirs": [
             ROOT / "public" / "textures" / "planet-banners",
             ROOT / "public" / "textures" / "starbase",
+        ],
+        "files": [],
+    },
+    {
+        "label": "branding",
+        "quality": BRANDING_QUALITY,
+        "dirs": [
+            ROOT / "public" / "branding",
         ],
         "files": [],
     },
@@ -162,6 +171,11 @@ def move_to_source_materials(png_path: Path, overwrite: bool) -> Path:
 
 
 def get_output_path(source_path: Path) -> Path:
+    if "branding" in source_path.parts or source_path.name in {"stellarfrontslogo.png", "stellarfrontslogonotext.png"}:
+        branding_dir = ROOT / "public" / "branding"
+        branding_dir.mkdir(parents=True, exist_ok=True)
+        return branding_dir / source_path.with_suffix(".webp").name
+
     icons_dir = ROOT / "public" / "textures" / "sidebar-icons"
     icons_dir.mkdir(parents=True, exist_ok=True)
     if source_path.name == "side_bar_fleet icon.png":
