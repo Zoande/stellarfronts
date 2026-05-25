@@ -8,6 +8,7 @@ import {
 } from "../game/GameTime";
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
+import type { FlagDesign } from "../flags/flagTypes";
 
 export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
 export type HudSidebarItemKey =
@@ -35,6 +36,7 @@ export interface HudState {
   toggles: HudVisualToggles;
   clock?: GameClock;
   economy?: FactionEconomyState | null;
+  flagDesign?: FlagDesign | null;
 }
 
 export interface HudCallbacks {
@@ -704,7 +706,6 @@ export class HudOverlay {
   private readonly clockEl: HTMLDivElement;
   private readonly resourceEl: HTMLDivElement;
   private readonly sidebarEl: HTMLDivElement;
-  private readonly factionFlagSvg: string;
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
   private readonly toggleButtons: Record<HudToggleKey, HTMLButtonElement>;
@@ -713,17 +714,12 @@ export class HudOverlay {
   private clockShellVisible = false;
   private connectedSignature: string | null = null;
   private resourceSignature = "";
+  private flagSignature = "";
+  private factionFlagSvg = "";
 
   constructor(callbacks: HudCallbacks) {
     this.callbacks = callbacks;
     ensureHudStyles();
-    const flagDesign = createFlagDesign({ seed: `${Date.now()}-${Math.random()}` });
-    this.factionFlagSvg = renderFlagSvg(flagDesign, {
-      size: 34,
-      className: "spaceHudFactionFlagSvg",
-      title: "Faction flag",
-      idPrefix: "hud-faction-flag",
-    });
 
     this.root = document.createElement("div");
     this.root.id = "spaceHudRoot";
@@ -833,6 +829,18 @@ export class HudOverlay {
       }
     }
     if (state.economy) {
+      const flagDesign = state.flagDesign ?? createFlagDesign({ seed: "hud-faction-flag" });
+      const nextFlagSignature = JSON.stringify(flagDesign);
+      if (this.flagSignature !== nextFlagSignature) {
+        this.flagSignature = nextFlagSignature;
+        this.factionFlagSvg = renderFlagSvg(flagDesign, {
+          size: 34,
+          className: "spaceHudFactionFlagSvg",
+          title: "Faction flag",
+          idPrefix: "hud-faction-flag",
+        });
+        this.resourceSignature = "";
+      }
       const nextResourceSignature = JSON.stringify({
         stockpiles: state.economy.stockpiles,
         monthlyDelta: state.economy.monthlyDelta,

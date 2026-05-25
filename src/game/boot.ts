@@ -581,6 +581,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   function updateHud(): void {
     if (!hud) return;
     const connectedSystems = currentSystemStar ? getConnectedSystems(currentSystemStar.id) : [];
+    const perspective = snapshot.perspective;
+    const currentFaction = perspective.mode === "faction"
+      ? snapshot.factions.find((faction) => faction.id === perspective.factionId) ?? null
+      : null;
     hud.update({
       title: currentSystemStar ? `${currentSystemStar.name} System` : "Galaxy Map",
       canExitSystem: currentSystemStar !== null,
@@ -588,6 +592,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       toggles: visualToggles,
       clock: snapshot.clock,
       economy: getCurrentFactionEconomy(),
+      flagDesign: currentFaction?.flagDesign ?? null,
     });
   }
 
@@ -616,6 +621,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     if (activeGalaxyScene) {
       activeGalaxyScene.setClockYear(getRenderClockYear());
       if (isFull || has("visibility")) {
+        activeGalaxyScene.setFactions(snapshot.factions);
         activeGalaxyScene.setVisibleStarIds(snapshot.visibleStarIds);
         activeGalaxyScene.setKnownStarIds(snapshot.knownStarIds);
         activeGalaxyScene.setStarOwnerships(expandStarOwnership());
@@ -683,6 +689,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         activeSystemScene.setTechnology(getCurrentFactionTechnology());
       }
       if (isFull || has("visibility")) {
+        activeSystemScene.setFactions(snapshot.factions);
         activeSystemScene.setStarOwnerships(expandStarOwnership());
       }
     }

@@ -7,6 +7,14 @@ import { FACTION_COUNT } from '../src/data/Factions';
 import { GALAXY_MAP } from '../src/data/GalaxyMap';
 import { generateStarMap } from '../src/data/StarMap';
 import type { GalaxyPerspective } from '../src/data/Factions';
+import {
+  FLAG_COLORS,
+  FLAG_CONTAINERS,
+  FLAG_PATTERNS,
+  FLAG_SYMBOLS,
+  createFlagDesign,
+} from '../src/flags/flagGenerator';
+import type { FlagDesign } from '../src/flags/flagTypes';
 import type {
   AuthAccount,
   AccountType,
@@ -83,6 +91,7 @@ interface GameSummaryRow extends GameRow {
   controlled_countries: number;
   faction_id: number | null;
   country_name: string | null;
+  flag_design: string | null;
   joined_at: number | null;
   last_entered_at: number | null;
 }
@@ -92,6 +101,7 @@ interface MembershipRow {
   account_id: number;
   faction_id: number;
   country_name: string;
+  flag_design: string | null;
   joined_at: number;
 }
 
@@ -106,6 +116,57 @@ export interface StoredGame {
 class AuthError extends Error {
   constructor(message: string, public readonly statusCode = 400) {
     super(message);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function pickCatalogItem<T extends { id: string }>(items: T[], id: unknown): T | null {
+  if (typeof id !== 'string') return null;
+  return items.find((item) => item.id === id) ?? null;
+}
+
+function getNestedId(value: unknown, key: string): unknown {
+  if (!isRecord(value)) return undefined;
+  const nested = value[key];
+  if (isRecord(nested)) return nested.id;
+  return undefined;
+}
+
+function sanitizeFlagDesignInput(input: unknown): FlagDesign | null {
+  if (!isRecord(input)) return null;
+
+  const container = pickCatalogItem(FLAG_CONTAINERS, getNestedId(input, 'container') ?? input.containerId);
+  const backgroundColor = pickCatalogItem(FLAG_COLORS, getNestedId(input, 'backgroundColor') ?? input.colorId ?? input.backgroundColorId);
+  const accentColor = pickCatalogItem(FLAG_COLORS, getNestedId(input, 'accentColor') ?? input.accentColorId);
+  const pattern = pickCatalogItem(FLAG_PATTERNS, getNestedId(input, 'pattern') ?? input.patternId);
+  const primarySymbol = pickCatalogItem(FLAG_SYMBOLS, getNestedId(input, 'primarySymbol') ?? input.primarySymbolId);
+  const secondarySymbolInput = getNestedId(input, 'secondarySymbol') ?? input.secondarySymbolId;
+  const secondarySymbol = secondarySymbolInput === undefined || secondarySymbolInput === null || secondarySymbolInput === ''
+    ? undefined
+    : pickCatalogItem(FLAG_SYMBOLS, secondarySymbolInput) ?? undefined;
+
+  if (!container || !backgroundColor || !accentColor || !pattern || !primarySymbol) return null;
+  if (secondarySymbolInput && !secondarySymbol) return null;
+
+  return {
+    container,
+    backgroundColor,
+    accentColor,
+    pattern,
+    primarySymbol,
+    secondarySymbol,
+  };
+}
+
+function parseStoredFlagDesign(value: string | null): FlagDesign | null {
+  if (!value) return null;
+  try {
+    return sanitizeFlagDesignInput(JSON.parse(value));
+  } catch {
+    return null;
   }
 }
 
@@ -253,6 +314,7 @@ export class AuthStore {
         account_id INTEGER NOT NULL,
         faction_id INTEGER NOT NULL,
         country_name TEXT NOT NULL,
+        flag_design TEXT,
         joined_at INTEGER NOT NULL,
         PRIMARY KEY(game_id, account_id),
         UNIQUE(game_id, faction_id),
@@ -275,6 +337,11 @@ export class AuthStore {
       CREATE INDEX IF NOT EXISTS idx_game_memberships_account_id ON game_memberships(account_id);
       CREATE INDEX IF NOT EXISTS idx_game_visits_account_id ON game_visits(account_id, last_entered_at);
     `);
+
+    const membershipColumns = this.db.prepare(`PRAGMA table_info(game_memberships)`).all() as Array<{ name: string }>;
+    if (!membershipColumns.some((column) => column.name === 'flag_design')) {
+      this.db.exec(`ALTER TABLE game_memberships ADD COLUMN flag_design TEXT`);
+    }
 
     this.db.prepare(`
       UPDATE accounts
@@ -374,13 +441,14 @@ export class AuthStore {
         COUNT(all_members.account_id) AS controlled_countries,
         own_members.faction_id,
         own_members.country_name,
+        own_members.flag_design,
         own_members.joined_at,
         visits.last_entered_at
       FROM games g
       LEFT JOIN game_memberships all_members ON all_members.game_id = g.id
       LEFT JOIN game_memberships own_members ON own_members.game_id = g.id AND own_members.account_id = ?
       LEFT JOIN game_visits visits ON visits.game_id = g.id AND visits.account_id = ?
-      GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.joined_at, visits.last_entered_at
+      GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.flag_design, own_members.joined_at, visits.last_entered_at
       ORDER BY COALESCE(visits.last_entered_at, 0) DESC, g.created_at DESC, g.id ASC
     `).all(account.id, account.id) as GameSummaryRow[];
     return rows.map((row) => this.toGameSummary(row, account));
@@ -392,7 +460,7 @@ export class AuthStore {
 
   getGameMembership(gameId: string, accountId: number): GameMembership | null {
     const row = this.db.prepare(`
-      SELECT game_id, account_id, faction_id, country_name, joined_at
+      SELECT game_id, account_id, faction_id, country_name, flag_design, joined_at
       FROM game_memberships
       WHERE game_id = ? AND account_id = ?
     `).get(gameId, accountId) as MembershipRow | undefined;
@@ -401,7 +469,7 @@ export class AuthStore {
 
   listGameMemberships(gameId: string): GameMembership[] {
     const rows = this.db.prepare(`
-      SELECT game_id, account_id, faction_id, country_name, joined_at
+      SELECT game_id, account_id, faction_id, country_name, flag_design, joined_at
       FROM game_memberships
       WHERE game_id = ?
       ORDER BY faction_id ASC
@@ -409,7 +477,7 @@ export class AuthStore {
     return rows.map((row) => this.toMembership(row));
   }
 
-  joinGame(account: AuthAccount, gameId: string, countryNameInput: string): GameMembership | null {
+  joinGame(account: AuthAccount, gameId: string, countryNameInput: string, flagDesignInput?: unknown): GameMembership | null {
     if (this.isPrivilegedGameAccount(account)) {
       if (!this.getGameById(gameId)) throw new AuthError('Game not found', 404);
       return null;
@@ -443,10 +511,12 @@ export class AuthStore {
 
       const factionId = availableFactionIds[Math.floor(Math.random() * availableFactionIds.length)];
       const joinedAt = Date.now();
+      const flagDesign = sanitizeFlagDesignInput(flagDesignInput)
+        ?? createFlagDesign({ seed: `${game.id}:${account.id}:${countryName}` });
       this.db.prepare(`
-        INSERT INTO game_memberships (game_id, account_id, faction_id, country_name, joined_at)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(game.id, account.id, factionId, countryName, joinedAt);
+        INSERT INTO game_memberships (game_id, account_id, faction_id, country_name, flag_design, joined_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(game.id, account.id, factionId, countryName, JSON.stringify(flagDesign), joinedAt);
       return this.getGameMembership(game.id, account.id);
     })();
     if (!membership) {
@@ -893,6 +963,7 @@ export class AuthStore {
       accountId: row.account_id,
       factionId: row.faction_id,
       countryName: row.country_name,
+      flagDesign: parseStoredFlagDesign(row.flag_design),
       joinedAt: row.joined_at,
     };
   }
@@ -906,6 +977,7 @@ export class AuthStore {
         account_id: account.id,
         faction_id: row.faction_id,
         country_name: row.country_name,
+        flag_design: row.flag_design,
         joined_at: row.joined_at,
       });
     const controlledCountries = Number(row.controlled_countries ?? 0);

@@ -8,6 +8,7 @@ import type {
   GameSummary,
   JoinGameResponse,
 } from './types';
+import type { FlagDesign } from '@/flags/flagTypes';
 
 const AUTH_SERVER_URL = import.meta.env.VITE_AUTH_SERVER_URL ?? 'http://localhost:8788';
 
@@ -71,8 +72,8 @@ export async function getGames(): Promise<GameSummary[]> {
   return result.games;
 }
 
-export async function joinGame(gameId: string, countryName: string): Promise<JoinGameResponse> {
-  return requestJson<JoinGameResponse>(`/api/games/${encodeURIComponent(gameId)}/join`, { countryName });
+export async function joinGame(gameId: string, countryName: string, flagDesign?: FlagDesign): Promise<JoinGameResponse> {
+  return requestJson<JoinGameResponse>(`/api/games/${encodeURIComponent(gameId)}/join`, { countryName, flagDesign });
 }
 
 export async function createDevGame(name: string): Promise<void> {

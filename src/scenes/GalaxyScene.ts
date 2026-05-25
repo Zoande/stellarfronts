@@ -2341,6 +2341,11 @@ export class GalaxyScene implements IGameScene {
     if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
+  setFactions(factions: FactionInfo[]): void {
+    this.factions = factions;
+    if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
+  }
+
   setServerFleets(fleets: ServerFleet[]): void {
     this.serverFleets = fleets;
     this.playerShipSystemIds = new Set(

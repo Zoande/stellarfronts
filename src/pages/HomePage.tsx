@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { getGames, joinGame } from '@/auth/client';
 import type { AuthAccount, GameSummary } from '@/auth/types';
+import { FlagJoinForm } from '@/components/FlagJoinForm';
+import type { FlagDesign } from '@/flags/flagTypes';
 import '../styles/Home.css';
 
 interface HomePageProps {
@@ -95,7 +97,6 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
   const [gamesError, setGamesError] = useState('');
   const [continuePage, setContinuePage] = useState(0);
   const [joinTarget, setJoinTarget] = useState<GameSummary | null>(null);
-  const [countryName, setCountryName] = useState('');
   const [joinError, setJoinError] = useState('');
   const [joinBusy, setJoinBusy] = useState(false);
 
@@ -150,18 +151,16 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
       onContinuePlaying(game.id);
       return;
     }
-    setCountryName('');
     setJoinError('');
     setJoinTarget(game);
   };
 
-  const handleJoin = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const handleJoin = async (selectedCountryName: string, flagDesign: FlagDesign) => {
     if (!joinTarget || joinBusy) return;
     try {
       setJoinBusy(true);
       setJoinError('');
-      const result = await joinGame(joinTarget.id, countryName);
+      const result = await joinGame(joinTarget.id, selectedCountryName, flagDesign);
       setJoinTarget(null);
       setGames((current) => current.map((game) => (game.id === result.game.id ? result.game : game)));
       onContinuePlaying(result.game.id);
@@ -353,27 +352,15 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
 
       {joinTarget && (
         <div className="home-overlay-backdrop">
-          <form className="home-overlay home-join-form" onSubmit={handleJoin}>
-            <h3>Join {joinTarget.name}</h3>
-            <p>Name the country you will command.</p>
-            <label htmlFor="country-name">Country name</label>
-            <input
-              id="country-name"
-              value={countryName}
-              maxLength={48}
-              autoFocus
-              onChange={(event) => setCountryName(event.target.value)}
-            />
-            {joinError && <div className="home-join-error">{joinError}</div>}
-            <div className="home-overlay-actions">
-              <button type="button" className="home-secondary-btn" onClick={() => setJoinTarget(null)}>
-                Cancel
-              </button>
-              <button type="submit" className="home-launch-btn" disabled={joinBusy}>
-                {joinBusy ? 'Joining' : 'Claim Country'}
-              </button>
-            </div>
-          </form>
+          <FlagJoinForm
+            className="home-overlay"
+            gameName={joinTarget.name}
+            busy={joinBusy}
+            error={joinError}
+            submitLabel="Claim Country"
+            onCancel={() => setJoinTarget(null)}
+            onSubmit={handleJoin}
+          />
         </div>
       )}
     </div>

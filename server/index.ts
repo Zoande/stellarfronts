@@ -6753,9 +6753,17 @@ function touchMembershipNames(): void {
   let changed = false;
   for (const membership of authStore.listGameMemberships(game.id)) {
     const faction = state.factions.find((candidate) => candidate.id === membership.factionId);
-    if (!faction || faction.name === membership.countryName) continue;
-    faction.name = membership.countryName;
-    changed = true;
+    if (!faction) continue;
+    if (faction.name !== membership.countryName) {
+      faction.name = membership.countryName;
+      changed = true;
+    }
+    const currentFlag = JSON.stringify(faction.flagDesign ?? null);
+    const nextFlag = JSON.stringify(membership.flagDesign ?? null);
+    if (currentFlag !== nextFlag) {
+      faction.flagDesign = membership.flagDesign;
+      changed = true;
+    }
   }
   if (!changed) return;
   hasDirtyState = true;

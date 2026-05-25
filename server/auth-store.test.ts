@@ -33,6 +33,7 @@ test("multi-game auth store claims generated countries per game", () => {
   assert.ok(second);
   assert.notEqual(first.factionId, second.factionId);
   assert.equal(first.countryName, second.countryName);
+  assert.ok(first.flagDesign?.container.id);
   assert.deepEqual(store.getGamePerspective(colorAccounts[0], game.id), {
     mode: "faction",
     factionId: first.factionId,

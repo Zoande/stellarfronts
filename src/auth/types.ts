@@ -1,3 +1,5 @@
+import type { FlagDesign } from '../flags/flagTypes';
+
 export type AccountType = 'observer' | 'user' | 'admin';
 
 export interface AuthAccount {
@@ -118,6 +120,7 @@ export interface GameMembership {
   accountId: number;
   factionId: number;
   countryName: string;
+  flagDesign: FlagDesign | null;
   joinedAt: number;
 }
 

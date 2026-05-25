@@ -267,7 +267,7 @@ export class SystemScene implements IGameScene {
   private activeFleetAction: ShipAction | null = null;
   private systemActionTargetRoots: Array<{ root: TransformNode; target: SystemActionTarget; meshes: Mesh[] }> = [];
   private systemActionMarkerMaterial: StandardMaterial | null = null;
-  private readonly factionFlagSvgCache = new Map<number, string>();
+  private readonly factionFlagSvgCache = new Map<string, string>();
   private pointerObserver: Observer<PointerInfo> | null = null;
   private starOccluded = false;
   private debugLogOccluder = false;
@@ -1802,14 +1802,17 @@ export class SystemScene implements IGameScene {
   }
 
   private getFactionFlagSvg(ownerId: number): string {
-    const cached = this.factionFlagSvgCache.get(ownerId);
+    const faction = this.getFaction(ownerId);
+    const design = faction?.flagDesign ?? createFlagDesign({ seed: `system-entity-${ownerId}` });
+    const cacheKey = `${ownerId}:${JSON.stringify(design)}`;
+    const cached = this.factionFlagSvgCache.get(cacheKey);
     if (cached) return cached;
-    const svg = renderFlagSvg(createFlagDesign({ seed: `system-entity-${ownerId}` }), {
+    const svg = renderFlagSvg(design, {
       size: 26,
       className: "systemEntityFlagSvg",
       idPrefix: `system-entity-flag-${ownerId}`,
     });
-    this.factionFlagSvgCache.set(ownerId, svg);
+    this.factionFlagSvgCache.set(cacheKey, svg);
     return svg;
   }
 
@@ -4258,6 +4261,13 @@ export class SystemScene implements IGameScene {
     this.serverShips = ships;
     this.refreshShipVisuals();
     this.refreshSystemEntityCards();
+  }
+
+  setFactions(factions: FactionInfo[]): void {
+    this.factions = factions;
+    this.factionFlagSvgCache.clear();
+    this.refreshSystemEntityCards();
+    if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
   setShipDesigns(shipDesigns: ShipDesign[]): void {

@@ -3,7 +3,9 @@ import { getGames, joinGame } from '@/auth/client';
 import type { AccountType } from '@/auth/types';
 import type { GameSummary } from '@/auth/types';
 import { GameLogoutButton } from '@/components/GameLogoutButton';
+import { FlagJoinForm } from '@/components/FlagJoinForm';
 import { LoadingScreen } from '@/components/LoadingScreen';
+import type { FlagDesign } from '@/flags/flagTypes';
 import '../styles/Game.css';
 
 interface GamePageProps {
@@ -28,7 +30,6 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
   const [entryMode, setEntryMode] = useState<EntryMode>('checking');
   const [entryGame, setEntryGame] = useState<GameSummary | null>(null);
   const [entryError, setEntryError] = useState('');
-  const [countryName, setCountryName] = useState('');
   const [joinBusy, setJoinBusy] = useState(false);
 
   const clearBootHideTimer = () => {
@@ -142,13 +143,12 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
     };
   }, [accountType, entryMode, gameId, username]);
 
-  const handleJoin = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const handleJoin = async (selectedCountryName: string, flagDesign: FlagDesign) => {
     if (!entryGame || joinBusy) return;
     try {
       setJoinBusy(true);
       setEntryError('');
-      const result = await joinGame(entryGame.id, countryName);
+      const result = await joinGame(entryGame.id, selectedCountryName, flagDesign);
       setEntryGame(result.game);
       setEntryMode('ready');
     } catch (error) {
@@ -177,31 +177,30 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
       {bootError && (
         <div className="game-error-banner">{bootError}</div>
       )}
-      {entryMode !== 'ready' && (
+      {entryMode === 'checking' && (
+        <LoadingScreen
+          theme="game"
+          subtitle="Galaxy Command"
+          title="Entering Command View"
+          progress={22}
+          detail="Checking game access"
+          isVisible
+          zIndex={205}
+        />
+      )}
+      {entryMode !== 'ready' && entryMode !== 'checking' && (
         <div className="game-entry-backdrop">
-          {entryMode === 'checking' ? (
-            <section className="game-entry-panel">
-              <div className="game-entry-kicker">Galaxy Command</div>
-              <h1>Checking Game Access</h1>
-            </section>
-          ) : entryMode === 'join' && entryGame ? (
-            <form className="game-entry-panel game-join-panel" onSubmit={handleJoin}>
-              <div className="game-entry-kicker">Join Game</div>
-              <h1>{entryGame.name}</h1>
-              <label htmlFor="game-country-name">Country name</label>
-              <input
-                id="game-country-name"
-                value={countryName}
-                maxLength={48}
-                autoFocus
-                onChange={(event) => setCountryName(event.target.value)}
-              />
-              {entryError && <div className="game-entry-error">{entryError}</div>}
-              <div className="game-entry-actions">
-                <button type="button" onClick={() => window.location.assign('/home')}>Home</button>
-                <button type="submit" disabled={joinBusy}>{joinBusy ? 'Joining' : 'Claim Country'}</button>
-              </div>
-            </form>
+          {entryMode === 'join' && entryGame ? (
+            <FlagJoinForm
+              className="game-entry-panel game-join-panel"
+              gameName={entryGame.name}
+              busy={joinBusy}
+              error={entryError}
+              cancelLabel="Home"
+              submitLabel="Claim Country"
+              onCancel={() => window.location.assign('/home')}
+              onSubmit={handleJoin}
+            />
           ) : (
             <section className="game-entry-panel">
               <div className="game-entry-kicker">Game Access</div>
