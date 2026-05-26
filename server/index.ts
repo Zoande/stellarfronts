@@ -109,6 +109,8 @@ import type {
   GameClock,
   GameUpdate,
   GameSnapshot,
+  GameDetailPayload,
+  GameDetailScope,
   ServerFleet,
   FleetRetreatDestination,
   FleetMovementPlan,
@@ -121,6 +123,7 @@ import type {
   ServerEvent,
   ServerShip,
   ServerStarbase,
+  ServerStarbaseSummary,
   ServerCombatContact,
   ServerUpdateField,
   ShipTransitPhase,
@@ -268,11 +271,17 @@ interface GameState {
   clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number; lastProcessedLeaderDay: number };
 }
 
+interface DetailSubscription {
+  scope: GameDetailScope;
+  id: string | number | null;
+  lastRevision: string | null;
+}
+
 interface ClientSession {
   socket: WebSocket;
   account: AuthAccount;
   perspective: GalaxyPerspective;
-  openPlanetId?: string | null;
+  detailSubscriptions: Map<string, DetailSubscription>;
   sentInitialSnapshot: boolean;
 }
 
@@ -323,6 +332,10 @@ let state: GameState;
 let lastSaveAt = 0;
 let hasDirtyState = false;
 let runtimeIdCounter = 0;
+
+function createDetailKey(scope: GameDetailScope, id: string | number | null | undefined): string {
+  return `${scope}:${id ?? ""}`;
+}
 
 function syncClockSpeedFields(): void {
   state.clock.tickSizeDays = Math.max(0.000001, Number(state.clock.tickSizeDays) || DEFAULT_TICK_SIZE_DAYS);
@@ -1022,13 +1035,8 @@ function queuePlanetDetailRefresh(planetId: string): void {
 
 function flushPlanetDetailRefreshes(): void {
   if (pendingPlanetDetailRefreshes.size === 0) return;
-  const planetIds = new Set(pendingPlanetDetailRefreshes);
   pendingPlanetDetailRefreshes.clear();
-  for (const client of clients) {
-    const planetId = client.openPlanetId;
-    if (!planetId || !planetIds.has(planetId)) continue;
-    sendPlanetDetails(client.socket, client.perspective, planetId);
-  }
+  broadcastSubscribedDetails();
 }
 
 function normalizeResourceCounts(counts?: Partial<ResourceCounts>): ResourceCounts {
@@ -2061,12 +2069,44 @@ function toOwnershipEntries(ownership: number[]): Array<[number, number]> {
   return entries;
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .sort((a, b) => a.localeCompare(b))
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
+    .join(",")}}`;
+}
+
+function createRevision(payload: unknown): string {
+  const input = stableStringify(payload);
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function summarizeStarbase(starbase: ServerStarbase): ServerStarbaseSummary {
+  const {
+    economy: _economy,
+    buildingSlots: _buildingSlots,
+    constructionQueue: _constructionQueue,
+    shipQueue: _shipQueue,
+    ...summary
+  } = starbase;
+  return summary;
+}
+
 function createSnapshot(perspective: GalaxyPerspective): GameSnapshot {
   const visibleState = createVisibleState(perspective);
   const knownSet = getKnownSet(perspective);
 
   return {
     type: "snapshot",
+    protocolVersion: 2,
     perspective,
     ...visibleState,
     stars: createVisibleStars(perspective, knownSet),
@@ -2078,6 +2118,7 @@ function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField
   const knownSet = getKnownSet(perspective);
   const update: GameUpdate = {
     type: "update",
+    protocolVersion: 2,
     perspective,
     changed,
   };
@@ -2142,7 +2183,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
         : [],
     };
   });
-  const starbases = visibleSet
+  const visibleStarbases = visibleSet
     ? state.starbases.filter((starbase) => visibleSet.has(starbase.starId))
     : state.starbases;
   const fleets = state.fleets.filter((fleet) => isFleetVisible(fleet, visibleSet, perspective));
@@ -2194,7 +2235,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     ships,
     shipDesigns,
     fleets,
-    starbases,
+    starbases: visibleStarbases.map(summarizeStarbase),
     technologies: getVisibleTechnologyViews(perspective),
     leaders,
     recentCombatContacts,
@@ -2221,6 +2262,7 @@ function broadcastUpdates(changed: ServerUpdateField[]): void {
   for (const client of clients) {
     sendEvent(client.socket, createUpdate(client.perspective, deduped));
   }
+  broadcastSubscribedDetails();
 }
 
 function reject(socket: WebSocket, message: string): void {
@@ -3214,6 +3256,233 @@ function sendPlanetDetails(socket: WebSocket, perspective: GalaxyPerspective, pl
     planet,
     planetState,
   });
+}
+
+function canAccessStarbase(perspective: GalaxyPerspective, starbase: ServerStarbase): boolean {
+  return canAccessStar(perspective, starbase.starId);
+}
+
+function getVisibleFullStarbases(perspective: GalaxyPerspective): ServerStarbase[] {
+  const visibleSet = getVisibleSet(perspective);
+  return visibleSet
+    ? state.starbases.filter((starbase) => visibleSet.has(starbase.starId))
+    : state.starbases;
+}
+
+function getVisibleFullFleets(perspective: GalaxyPerspective): ServerFleet[] {
+  const visibleSet = getVisibleSet(perspective);
+  return state.fleets.filter((fleet) => isFleetVisible(fleet, visibleSet, perspective));
+}
+
+function getVisibleFullShips(perspective: GalaxyPerspective, fleets = getVisibleFullFleets(perspective)): ServerShip[] {
+  const visibleFleetIds = new Set(fleets.map((fleet) => fleet.id));
+  return state.ships.filter((ship) => visibleFleetIds.has(ship.fleetId));
+}
+
+function createVisibleDetailState(perspective: GalaxyPerspective) {
+  const visibleState = createVisibleState(perspective);
+  const fleets = getVisibleFullFleets(perspective);
+  return {
+    ...visibleState,
+    fleets,
+    ships: getVisibleFullShips(perspective, fleets),
+    starbases: getVisibleFullStarbases(perspective),
+  };
+}
+
+function createDetailPayload(
+  perspective: GalaxyPerspective,
+  scope: GameDetailScope,
+  id: string | number | null | undefined,
+): { payload: GameDetailPayload; revision: string; normalizedId: string | number | null } | { error: string } {
+  if (scope === "system") {
+    const starId = Number(id);
+    if (!Number.isInteger(starId) || !canAccessStar(perspective, starId)) return { error: "System is not available." };
+    const payload = {
+      star: state.stars[starId],
+      planetStates: state.planetStates.filter((planetState) => planetState.starId === starId),
+    };
+    return { payload, revision: createRevision(payload), normalizedId: starId };
+  }
+
+  if (scope === "planet") {
+    const planetId = String(id ?? "");
+    const planetState = getPlanetState(planetId);
+    if (!planetState || !canAccessPlanet(perspective, planetState)) return { error: "Planet is not available." };
+    const planet = getPlanetConfig(planetState);
+    if (!planet) return { error: "Planet details are unavailable." };
+    const payload = { starId: planetState.starId, planet, planetState };
+    return { payload, revision: createRevision(payload), normalizedId: planetId };
+  }
+
+  if (scope === "starbase") {
+    const starbaseId = String(id ?? "");
+    const starbase = state.starbases.find((candidate) => candidate.id === starbaseId);
+    if (!starbase || !canAccessStarbase(perspective, starbase)) return { error: "Starbase is not available." };
+    const payload = { starbase };
+    return { payload, revision: createRevision(payload), normalizedId: starbaseId };
+  }
+
+  if (scope === "fleet") {
+    const fleetId = String(id ?? "");
+    const fleets = getVisibleFullFleets(perspective);
+    const fleet = fleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet) return { error: "Fleet is not available." };
+    const payload = {
+      fleet,
+      ships: getVisibleFullShips(perspective, fleets).filter((ship) => ship.fleetId === fleet.id),
+    };
+    return { payload, revision: createRevision(payload), normalizedId: fleetId };
+  }
+
+  if (scope === "fleetManager") {
+    const detailState = createVisibleDetailState(perspective);
+    const payload = {
+      fleets: detailState.fleets,
+      ships: detailState.ships,
+      shipDesigns: detailState.shipDesigns,
+      starbases: detailState.starbases,
+      technologies: detailState.technologies,
+      leaders: detailState.leaders,
+      factionEconomies: detailState.factionEconomies,
+    };
+    return { payload, revision: createRevision(payload), normalizedId: null };
+  }
+
+  if (scope === "technology") {
+    const detailState = createVisibleDetailState(perspective);
+    const payload = {
+      technologies: detailState.technologies,
+      factionEconomies: detailState.factionEconomies,
+    };
+    return { payload, revision: createRevision(payload), normalizedId: null };
+  }
+
+  if (scope === "leaders") {
+    const detailState = createVisibleDetailState(perspective);
+    const payload = {
+      leaders: detailState.leaders,
+      fleets: detailState.fleets,
+      planetStates: detailState.planetStates,
+    };
+    return { payload, revision: createRevision(payload), normalizedId: null };
+  }
+
+  if (scope === "selection") {
+    const detailState = createVisibleDetailState(perspective);
+    const payload = {
+      fleets: detailState.fleets,
+      ships: detailState.ships,
+      starbases: detailState.starbases,
+      leaders: detailState.leaders,
+    };
+    return { payload, revision: createRevision(payload), normalizedId: null };
+  }
+
+  if (scope === "hud") {
+    const detailState = createVisibleState(perspective);
+    const payload = {
+      clock: detailState.clock,
+      factionEconomies: detailState.factionEconomies,
+      habitedPlanetSystemIds: detailState.habitedPlanetSystemIds,
+      starOwnership: detailState.starOwnership,
+    };
+    return { payload, revision: createRevision(payload), normalizedId: null };
+  }
+
+  return { error: "Details are not available." };
+}
+
+function sendDetailEvent(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  scope: GameDetailScope,
+  id: string | number | null | undefined,
+  knownRevision?: string | null,
+): string | null {
+  const detail = createDetailPayload(perspective, scope, id);
+  if ("error" in detail) {
+    reject(socket, detail.error);
+    return null;
+  }
+  const matchesKnownRevision = !!knownRevision && knownRevision === detail.revision;
+  sendEvent(socket, {
+    type: "detail",
+    scope,
+    id: detail.normalizedId,
+    revision: detail.revision,
+    status: matchesKnownRevision ? "notModified" : "full",
+    payload: matchesKnownRevision ? undefined : detail.payload,
+  });
+  return detail.revision;
+}
+
+function handleRequestDetails(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  scope: GameDetailScope,
+  id: string | number | null | undefined,
+  knownRevision?: string | null,
+): void {
+  sendDetailEvent(socket, perspective, scope, id, knownRevision);
+}
+
+function handleSubscribeDetails(
+  session: ClientSession,
+  scope: GameDetailScope,
+  id: string | number | null | undefined,
+  knownRevision?: string | null,
+): void {
+  const detail = createDetailPayload(session.perspective, scope, id);
+  if ("error" in detail) {
+    reject(session.socket, detail.error);
+    return;
+  }
+  const key = createDetailKey(scope, detail.normalizedId);
+  session.detailSubscriptions.set(key, {
+    scope,
+    id: detail.normalizedId,
+    lastRevision: detail.revision,
+  });
+  const matchesKnownRevision = !!knownRevision && knownRevision === detail.revision;
+  sendEvent(session.socket, {
+    type: "detail",
+    scope,
+    id: detail.normalizedId,
+    revision: detail.revision,
+    status: matchesKnownRevision ? "notModified" : "full",
+    payload: matchesKnownRevision ? undefined : detail.payload,
+  });
+}
+
+function handleUnsubscribeDetails(
+  session: ClientSession,
+  scope: GameDetailScope,
+  id: string | number | null | undefined,
+): void {
+  session.detailSubscriptions.delete(createDetailKey(scope, id));
+}
+
+function broadcastSubscribedDetails(): void {
+  for (const client of clients) {
+    for (const [key, subscription] of Array.from(client.detailSubscriptions.entries())) {
+      const detail = createDetailPayload(client.perspective, subscription.scope, subscription.id);
+      if ("error" in detail) {
+        client.detailSubscriptions.delete(key);
+        continue;
+      }
+      if (detail.revision === subscription.lastRevision) continue;
+      subscription.lastRevision = detail.revision;
+      sendEvent(client.socket, {
+        type: "detail",
+        scope: subscription.scope,
+        id: detail.normalizedId,
+        revision: detail.revision,
+        status: "full",
+        payload: detail.payload,
+      });
+    }
+  }
 }
 
 function getPlanetDistrictLimits(planetState: PlanetState) {
@@ -6844,8 +7113,19 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "requestPlanetDetails") {
-    session.openPlanetId = command.planetId;
     sendPlanetDetails(session.socket, session.perspective, command.planetId);
+    return;
+  }
+  if (command.type === "requestDetails") {
+    handleRequestDetails(session.socket, session.perspective, command.scope, command.id, command.knownRevision);
+    return;
+  }
+  if (command.type === "subscribeDetails") {
+    handleSubscribeDetails(session, command.scope, command.id, command.knownRevision);
+    return;
+  }
+  if (command.type === "unsubscribeDetails") {
+    handleUnsubscribeDetails(session, command.scope, command.id);
     return;
   }
   if (command.type === "retreatFleet") {
@@ -6926,7 +7206,7 @@ function attachClient(socket: WebSocket, account: AuthAccount, perspective: Gala
     socket,
     account,
     perspective,
-    openPlanetId: null,
+    detailSubscriptions: new Map(),
     sentInitialSnapshot: false,
   };
   clients.add(session);

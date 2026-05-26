@@ -81,6 +81,7 @@ export interface FleetManagerPanelData {
   clockYear: number;
   technology?: FactionTechnologyView | null;
   onFleetCommand?: (command: ClientCommand) => void;
+  onClose?: () => void;
 }
 
 const STYLE_ID = "fleet-manager-panel-style";
@@ -199,6 +200,7 @@ export class FleetManagerPanel {
   }
 
   public close(): void {
+    const onClose = this.currentData?.onClose;
     this.onPointerUp();
     this.clearPendingRefresh();
     this.interactionGate.clear();
@@ -210,6 +212,7 @@ export class FleetManagerPanel {
     this.addShipsOpen = false;
     this.selectedDesignId = null;
     this.designerDraft = null;
+    onClose?.();
   }
 
   public dispose(): void {

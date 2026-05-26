@@ -28,7 +28,18 @@ import { OPEN_LEADERS_PANEL_EVENT } from "@/ui/leaderEvents";
 import type { LeaderAssignmentTarget, OpenLeadersPanelEventDetail } from "@/ui/leaderEvents";
 import { AdminCommandPanel } from "@/ui/AdminCommandPanel";
 import { GameServerClient } from "./GameServerClient";
-import type { ClientCommand, GameSnapshot, ServerFleet, ServerUpdateField } from "./GameProtocol";
+import type {
+  ClientCommand,
+  FleetManagerDetailPayload,
+  GameSnapshot,
+  LeadersDetailPayload,
+  PlanetDetailPayload,
+  ServerFleet,
+  ServerStarbase,
+  ServerUpdateField,
+  StarbaseDetailPayload,
+  TechnologyDetailPayload,
+} from "./GameProtocol";
 import { isLocalAdminCommand, parseAdminCommand } from "./AdminCommands";
 import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY, estimateClockYear } from "./GameTime";
@@ -72,6 +83,14 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let leadersPanel: LeadersPanel | null = null;
   let adminCommandPanel: AdminCommandPanel | null = null;
   let leadersPanelAssignmentTarget: LeaderAssignmentTarget | null = null;
+  let fleetManagerDetail: FleetManagerDetailPayload | null = null;
+  let technologyDetail: TechnologyDetailPayload | null = null;
+  let leadersDetail: LeadersDetailPayload | null = null;
+  let releaseFleetManagerDetail: (() => void) | null = null;
+  let releaseTechnologyDetail: (() => void) | null = null;
+  let releaseLeadersDetail: (() => void) | null = null;
+  const releaseStarbaseDetails = new Map<string, () => void>();
+  const releasePlanetDetails = new Map<string, () => void>();
   let selectedFleetIds = new Set<string>();
 
   const visualToggles: HudVisualToggles = {
@@ -117,7 +136,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     (() => {
       const perspectiveFactionId = snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : null;
       if (perspectiveFactionId === null) return null;
-      return snapshot.technologies.find((technology) => technology.factionId === perspectiveFactionId) ?? null;
+      return technologyDetail?.technologies.find((technology) => technology.factionId === perspectiveFactionId)
+        ?? snapshot.technologies.find((technology) => technology.factionId === perspectiveFactionId)
+        ?? null;
     })()
   );
   const getCurrentFactionName = (): string | undefined => {
@@ -242,21 +263,31 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     });
   };
   const getFleetManagerData = () => ({
-    fleets: snapshot.fleets,
-    ships: snapshot.ships,
-    shipDesigns: snapshot.shipDesigns,
-    starbases: snapshot.starbases,
+    fleets: fleetManagerDetail?.fleets ?? snapshot.fleets,
+    ships: fleetManagerDetail?.ships ?? snapshot.ships,
+    shipDesigns: fleetManagerDetail?.shipDesigns ?? snapshot.shipDesigns,
+    starbases: fleetManagerDetail?.starbases ?? [],
     stars: snapshot.stars,
     factions: snapshot.factions,
     clockYear: getRenderClockYear(),
     playerFactionId: getPlayerFactionId(),
-    technology: getCurrentFactionTechnology(),
+    technology: fleetManagerDetail?.technologies.find((technology) => technology.factionId === getPlayerFactionId())
+      ?? getCurrentFactionTechnology(),
     onFleetCommand: (command: ClientCommand) => server.send(command),
+    onClose: () => {
+      releaseFleetManagerDetail?.();
+      releaseFleetManagerDetail = null;
+    },
   });
   const getTechnologyPanelData = () => ({
-    technology: getCurrentFactionTechnology(),
+    technology: technologyDetail?.technologies.find((technology) => technology.factionId === getPlayerFactionId())
+      ?? getCurrentFactionTechnology(),
     factionName: getCurrentFactionName(),
     onTechnologyCommand: (command: ClientCommand) => server.send(command),
+    onClose: () => {
+      releaseTechnologyDetail?.();
+      releaseTechnologyDetail = null;
+    },
   });
   const sendLeaderCommand = (command: ClientCommand): void => {
     server.send(command);
@@ -289,20 +320,32 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     applySnapshotToActiveScene(["leaders"]);
   };
   const getLeadersPanelData = () => ({
-    leaders: snapshot.leaders,
-    fleets: snapshot.fleets,
+    leaders: leadersDetail?.leaders ?? snapshot.leaders,
+    fleets: leadersDetail?.fleets ?? snapshot.fleets,
     stars: snapshot.stars,
-    planetStates: snapshot.planetStates,
+    planetStates: leadersDetail?.planetStates ?? snapshot.planetStates,
     factions: snapshot.factions,
     playerFactionId: getPlayerFactionId(),
     factionName: getCurrentFactionName(),
     clockYear: getRenderClockYear(),
     assignmentTarget: leadersPanelAssignmentTarget,
     onLeaderCommand: sendLeaderCommand,
+    onClose: () => {
+      releaseLeadersDetail?.();
+      releaseLeadersDetail = null;
+    },
   });
   const openFleetManager = (): void => {
     if (!fleetManagerPanel) {
       fleetManagerPanel = new FleetManagerPanel();
+    }
+    if (!releaseFleetManagerDetail) {
+      releaseFleetManagerDetail = server.subscribeDetail<FleetManagerDetailPayload>("fleetManager", null, (event) => {
+        if (event.payload && "fleets" in event.payload && "shipDesigns" in event.payload) {
+          fleetManagerDetail = event.payload;
+          fleetManagerPanel?.refresh(getFleetManagerData());
+        }
+      });
     }
     fleetManagerPanel.show(getFleetManagerData());
   };
@@ -310,12 +353,31 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     if (!technologyPanel) {
       technologyPanel = new TechnologyPanel();
     }
+    if (!releaseTechnologyDetail) {
+      releaseTechnologyDetail = server.subscribeDetail<TechnologyDetailPayload>("technology", null, (event) => {
+        if (event.payload && "technologies" in event.payload) {
+          technologyDetail = event.payload;
+          technologyPanel?.refresh(getTechnologyPanelData());
+          applySnapshotToActiveScene(["technologies"]);
+        }
+      });
+    }
     technologyPanel.show(getTechnologyPanelData());
   };
   const openLeadersPanel = (assignmentTarget: LeaderAssignmentTarget | null = null): void => {
     leadersPanelAssignmentTarget = assignmentTarget;
     if (!leadersPanel) {
       leadersPanel = new LeadersPanel();
+    }
+    if (!releaseLeadersDetail) {
+      releaseLeadersDetail = server.subscribeDetail<LeadersDetailPayload>("leaders", null, (event) => {
+        if (event.payload && "leaders" in event.payload) {
+          leadersDetail = event.payload;
+          leadersPanel?.refresh(getLeadersPanelData());
+          activeGalaxyScene?.setLeaders(event.payload.leaders);
+          activeSystemScene?.setLeaders(event.payload.leaders);
+        }
+      });
     }
     leadersPanel.show(getLeadersPanelData());
   };
@@ -600,6 +662,46 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     server.send(command);
   }
 
+  function releaseStarbaseDetail(starbaseId: string): void {
+    releaseStarbaseDetails.get(starbaseId)?.();
+    releaseStarbaseDetails.delete(starbaseId);
+  }
+
+  function releasePlanetDetail(planetId: string): void {
+    releasePlanetDetails.get(planetId)?.();
+    releasePlanetDetails.delete(planetId);
+  }
+
+  function subscribePlanetDetail(planetId: string): void {
+    if (releasePlanetDetails.has(planetId)) return;
+    const release = server.subscribeDetail<PlanetDetailPayload>("planet", planetId, (event) => {
+      if (!event.payload || !("planetState" in event.payload)) return;
+      const star = cachePlanetDetails(event.payload.starId, event.payload.planet, event.payload.planetState);
+      if (!star) return;
+      if (activeSystemScene && currentSystemStar?.id === event.payload.starId) {
+        activeSystemScene.refreshPlanetDetails(event.payload.planet, event.payload.planetState);
+      }
+      activeGalaxyScene?.refreshPlanetDetails(event.payload.planet, event.payload.planetState);
+      updateHud();
+    });
+    releasePlanetDetails.set(planetId, release);
+  }
+
+  function requestStarbaseDetails(starbaseId: string): Promise<ServerStarbase | null> {
+    const cached = server.getCachedDetail<StarbaseDetailPayload>("starbase", starbaseId);
+    if (!releaseStarbaseDetails.has(starbaseId)) {
+      const release = server.subscribeDetail<StarbaseDetailPayload>("starbase", starbaseId, (event) => {
+        if (!event.payload || !("starbase" in event.payload)) return;
+        activeGalaxyScene?.refreshStarbaseDetails(event.payload.starbase);
+        activeSystemScene?.refreshStarbaseDetails(event.payload.starbase);
+      });
+      releaseStarbaseDetails.set(starbaseId, release);
+    }
+    if (cached?.starbase) return Promise.resolve(cached.starbase);
+    return server.requestDetail<StarbaseDetailPayload>("starbase", starbaseId)
+      .then((event) => (event.payload && "starbase" in event.payload ? event.payload.starbase : null));
+  }
+
   function applySnapshotToActiveScene(changed?: ServerUpdateField[]): void {
     const isFull = !changed;
     const has = (field: ServerUpdateField): boolean => isFull || changed.includes(field);
@@ -703,10 +805,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       || has("starbases")
       || has("visibility")
     ) {
-      refreshFleetManager();
+      if (!releaseFleetManagerDetail) refreshFleetManager();
     }
     if (isFull || has("technologies") || has("factionEconomies")) {
-      refreshTechnologyPanel();
+      if (!releaseTechnologyDetail) refreshTechnologyPanel();
     }
     if (
       isFull
@@ -715,7 +817,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       || has("planetStates")
       || has("visibility")
     ) {
-      refreshLeadersPanel();
+      if (!releaseLeadersDetail) refreshLeadersPanel();
     }
   }
 
@@ -773,6 +875,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       onFleetCommand: (command) => server.send(command),
       onSelectedFleetIdsChange: setSelectedFleetIds,
       onPlanetCommand: sendPlanetCommand,
+      onReleasePlanetDetails: releasePlanetDetail,
+      onRequestStarbaseDetails: requestStarbaseDetails,
+      onReleaseStarbaseDetails: releaseStarbaseDetail,
       onOpenHabitedPlanet: (starId) => openFirstHabitedPlanetFromGalaxy(starId),
       onGameplayFrame: updateSmoothGameplayFrame,
     };
@@ -834,10 +939,14 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           technology: getCurrentFactionTechnology(),
           onPlanetCommand: sendPlanetCommand,
           onFleetCommand: (command) => server.send(command),
+          onReleasePlanetDetails: releasePlanetDetail,
+          onRequestStarbaseDetails: requestStarbaseDetails,
+          onReleaseStarbaseDetails: releaseStarbaseDetail,
           onGameplayFrame: updateSmoothGameplayFrame,
           onSelectedFleetIdsChange: setSelectedFleetIds,
           onRequestFleetActionInGalaxy: requestFleetActionInGalaxy,
           onRequestPlanetDetails: async (planetId) => {
+            subscribePlanetDetail(planetId);
             const planetDetails = await server.requestPlanetDetails(planetId);
             cachePlanetDetails(planetDetails.starId, planetDetails.planet, planetDetails.planetState);
             return {
@@ -861,6 +970,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     cacheSystemDetails(systemDetails.star, systemDetails.planetStates);
     const habitedState = systemDetails.planetStates.find((planetState) => planetState.isHabited);
     if (!habitedState) return;
+    subscribePlanetDetail(habitedState.id);
     const planetDetails = await server.requestPlanetDetails(habitedState.id);
     const star = cachePlanetDetails(planetDetails.starId, planetDetails.planet, planetDetails.planetState)
       ?? systemDetails.star;
@@ -941,6 +1051,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     fleetManagerPanel?.dispose();
     technologyPanel?.dispose();
     leadersPanel?.dispose();
+    for (const release of releaseStarbaseDetails.values()) release();
+    releaseStarbaseDetails.clear();
+    for (const release of releasePlanetDetails.values()) release();
+    releasePlanetDetails.clear();
     adminCommandPanel?.dispose();
     server.dispose();
     mgr.dispose();

@@ -68,6 +68,7 @@ export interface CelestialObjectPanelData {
   orbitFleetId?: string | null;
   assignedLeader?: LeaderState | null;
   canManageLeaders?: boolean;
+  onClose?: (objectId: string, kind: CelestialObjectKind) => void;
 }
 
 const STYLE_ID = "celestial-object-panel-style";
@@ -300,6 +301,7 @@ export class CelestialObjectPanel {
   public show(data: CelestialObjectPanelData): void {
     const previousData = this.currentData;
     if (this.currentData?.objectId !== data.objectId) {
+      if (this.currentData) this.currentData.onClose?.(this.currentData.objectId, this.currentData.kind);
       this.activeTab = "surface";
       this.selectedJob = null;
       this.expandedJobClasses = this.createDefaultExpandedJobClasses();
@@ -407,6 +409,9 @@ export class CelestialObjectPanel {
   }
 
   public close(): void {
+    const closingObjectId = this.currentData?.objectId ?? null;
+    const closingKind = this.currentData?.kind ?? null;
+    const onClose = this.currentData?.onClose;
     this.hideTooltip();
     this.clearPendingRefresh();
     this.interactionGate.clear();
@@ -419,6 +424,7 @@ export class CelestialObjectPanel {
     this.featureTrayOpen = false;
     this.activeTab = "surface";
     this.onPointerUp();
+    if (closingObjectId && closingKind) onClose?.(closingObjectId, closingKind);
   }
 
   public dispose(): void {

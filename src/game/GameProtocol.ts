@@ -97,6 +97,88 @@ export interface ServerStarbase {
   shipQueue: StarbaseShipQueueItem[];
 }
 
+export type ServerStarbaseSummary = Omit<
+  ServerStarbase,
+  "economy" | "buildingSlots" | "constructionQueue" | "shipQueue"
+>;
+
+export type GameDetailScope =
+  | "system"
+  | "planet"
+  | "starbase"
+  | "fleet"
+  | "fleetManager"
+  | "technology"
+  | "leaders"
+  | "selection"
+  | "hud";
+
+export interface SystemDetailPayload {
+  star: ServerStar;
+  planetStates: PlanetState[];
+}
+
+export interface PlanetDetailPayload {
+  starId: number;
+  planet: PlanetConfig;
+  planetState: PlanetState;
+}
+
+export interface StarbaseDetailPayload {
+  starbase: ServerStarbase;
+}
+
+export interface FleetDetailPayload {
+  fleet: ServerFleet;
+  ships: ServerShip[];
+}
+
+export interface FleetManagerDetailPayload {
+  fleets: ServerFleet[];
+  ships: ServerShip[];
+  shipDesigns: ShipDesign[];
+  starbases: ServerStarbase[];
+  technologies: FactionTechnologyView[];
+  leaders: LeaderState[];
+  factionEconomies: FactionEconomyState[];
+}
+
+export interface TechnologyDetailPayload {
+  technologies: FactionTechnologyView[];
+  factionEconomies: FactionEconomyState[];
+}
+
+export interface LeadersDetailPayload {
+  leaders: LeaderState[];
+  fleets: ServerFleet[];
+  planetStates: PlanetState[];
+}
+
+export interface SelectionDetailPayload {
+  fleets: ServerFleet[];
+  ships: ServerShip[];
+  starbases: ServerStarbase[];
+  leaders: LeaderState[];
+}
+
+export interface HudDetailPayload {
+  clock: GameClock;
+  factionEconomies: FactionEconomyState[];
+  habitedPlanetSystemIds: number[];
+  starOwnership: Array<[number, number]>;
+}
+
+export type GameDetailPayload =
+  | SystemDetailPayload
+  | PlanetDetailPayload
+  | StarbaseDetailPayload
+  | FleetDetailPayload
+  | FleetManagerDetailPayload
+  | TechnologyDetailPayload
+  | LeadersDetailPayload
+  | SelectionDetailPayload
+  | HudDetailPayload;
+
 export type ShipSystemPosition = SystemPosition;
 
 export interface ShipHyperlanePosition {
@@ -436,6 +518,26 @@ export interface RequestPlanetDetailsCommand {
   planetId: string;
 }
 
+export interface RequestDetailsCommand {
+  type: "requestDetails";
+  scope: GameDetailScope;
+  id?: string | number | null;
+  knownRevision?: string | null;
+}
+
+export interface SubscribeDetailsCommand {
+  type: "subscribeDetails";
+  scope: GameDetailScope;
+  id?: string | number | null;
+  knownRevision?: string | null;
+}
+
+export interface UnsubscribeDetailsCommand {
+  type: "unsubscribeDetails";
+  scope: GameDetailScope;
+  id?: string | number | null;
+}
+
 export interface JoinCommand {
   type: "join";
 }
@@ -471,6 +573,9 @@ export type ClientCommand =
   | SetUrbanSubDistrictCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand
+  | RequestDetailsCommand
+  | SubscribeDetailsCommand
+  | UnsubscribeDetailsCommand
   | RetreatFleetCommand
   | RetreatFleetToCommand
   | EmergencyRetreatFleetToCommand
@@ -481,6 +586,7 @@ export type ClientCommand =
 
 export interface GameSnapshot {
   type: "snapshot";
+  protocolVersion?: 2;
   perspective: GalaxyPerspective;
   clock: GameClock;
   stars: ServerStar[];
@@ -495,7 +601,7 @@ export interface GameSnapshot {
   ships: ServerShip[];
   shipDesigns: ShipDesign[];
   fleets: ServerFleet[];
-  starbases: ServerStarbase[];
+  starbases: ServerStarbaseSummary[];
   technologies: FactionTechnologyView[];
   leaders: LeaderState[];
   recentCombatContacts: ServerCombatContact[];
@@ -503,6 +609,7 @@ export interface GameSnapshot {
 
 export interface GameUpdate {
   type: "update";
+  protocolVersion?: 2;
   perspective: GalaxyPerspective;
   changed: ServerUpdateField[];
   clock?: GameClock;
@@ -518,7 +625,7 @@ export interface GameUpdate {
   ships?: ServerShip[];
   shipDesigns?: ShipDesign[];
   fleets?: ServerFleet[];
-  starbases?: ServerStarbase[];
+  starbases?: ServerStarbaseSummary[];
   technologies?: FactionTechnologyView[];
   leaders?: LeaderState[];
   recentCombatContacts?: ServerCombatContact[];
@@ -548,6 +655,15 @@ export interface PlanetDetailsEvent {
   planetState: PlanetState;
 }
 
+export interface GameDetailEvent {
+  type: "detail";
+  scope: GameDetailScope;
+  id?: string | number | null;
+  revision: string;
+  status: "full" | "notModified";
+  payload?: GameDetailPayload;
+}
+
 export type ServerEvent =
   | GameSnapshot
   | GameUpdate
@@ -555,4 +671,5 @@ export type ServerEvent =
   | AdminCommandResult
   | ServerInfoEvent
   | SystemDetailsEvent
-  | PlanetDetailsEvent;
+  | PlanetDetailsEvent
+  | GameDetailEvent;

@@ -41,7 +41,7 @@ import type { ShipDesign } from "../data/ShipDesigns";
 import { computeStarbasePower } from "../game/combatPower";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
-import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase, ServerStarbaseSummary } from "../game/GameProtocol";
 import type { FactionTechnologyView } from "../data/Technology";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 
@@ -75,7 +75,7 @@ export interface GalaxySceneOptions {
   shipDesigns?: ShipDesign[];
   starbaseSystemIds?: Iterable<number>;
   promotedStarbaseSystemIds?: Iterable<number>;
-  starbases?: ServerStarbase[];
+  starbases?: ServerStarbaseSummary[];
   planetStates?: PlanetState[];
   leaders?: LeaderState[];
   technology?: FactionTechnologyView | null;
@@ -86,6 +86,9 @@ export interface GalaxySceneOptions {
   onFleetCommand?: (command: ClientCommand) => void;
   onSelectedFleetIdsChange?: (fleetIds: string[]) => void;
   onPlanetCommand?: (command: ClientCommand) => void;
+  onReleasePlanetDetails?: (planetId: string) => void;
+  onRequestStarbaseDetails?: (starbaseId: string) => Promise<ServerStarbase | null>;
+  onReleaseStarbaseDetails?: (starbaseId: string) => void;
   onOpenHabitedPlanet?: (starId: number) => void | Promise<void>;
 }
 
@@ -935,7 +938,7 @@ export class GalaxyScene implements IGameScene {
   private serverFleets: ServerFleet[] = [];
   private serverShips: ServerShip[] = [];
   private shipDesigns: ShipDesign[] = [];
-  private starbases: ServerStarbase[] = [];
+  private starbases: ServerStarbaseSummary[] = [];
   private planetStates: PlanetState[] = [];
   private leaders: LeaderState[] = [];
   private hasExplicitHabitedPlanetSystemIds = false;
@@ -2275,6 +2278,9 @@ export class GalaxyScene implements IGameScene {
       assignedLeader: this.getAssignedLeader("planet", planet.id),
       canManageLeaders: this.starOwnership[star.id] === this.playerFactionId,
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+      onClose: (objectId, kind) => {
+        if (kind === "planet") this.options.onReleasePlanetDetails?.(objectId);
+      },
     });
   }
 
@@ -2294,13 +2300,18 @@ export class GalaxyScene implements IGameScene {
       ownerColor: owner?.color,
       status: starbase?.status ?? "online",
       power: this.formatStarbasePower(starbase),
-      starbase,
       technology: this.options.technology,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
+      onClose: (starbaseId) => this.options.onReleaseStarbaseDetails?.(starbaseId),
     });
+    if (starbase) {
+      void this.options.onRequestStarbaseDetails?.(starbase.id).then((detail) => {
+        if (detail) this.starbasePanel.refreshStarbase(detail);
+      });
+    }
   }
 
-  private formatStarbasePower(starbase?: ServerStarbase): string {
+  private formatStarbasePower(starbase?: ServerStarbaseSummary): string {
     if (!starbase) return "0K";
     const power = computeStarbasePower(starbase);
     return power >= 1_000_000 ? `${(power / 1_000_000).toFixed(1)}M` : `${Math.round(power / 1000)}K`;
@@ -2632,16 +2643,17 @@ export class GalaxyScene implements IGameScene {
     this.starField?.setStarbaseSystemIds(this.promotedStarbaseSystemIds);
   }
 
-  setServerStarbases(starbases: ServerStarbase[]): void {
+  setServerStarbases(starbases: ServerStarbaseSummary[]): void {
     this.starbases = starbases;
     this.setPromotedStarbaseSystemIds(this.getPromotedStarbaseSystemIds());
-    for (const starbase of starbases) {
-      this.starbasePanel?.refreshStarbase(starbase);
-    }
     if (this.activeShipAction) {
       this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
     }
+  }
+
+  refreshStarbaseDetails(starbase: ServerStarbase): void {
+    this.starbasePanel?.refreshStarbase(starbase);
   }
 
   private getPromotedStarbaseSystemIds(): number[] {

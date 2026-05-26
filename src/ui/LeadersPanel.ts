@@ -22,6 +22,7 @@ export interface LeadersPanelData {
   clockYear: number;
   assignmentTarget?: LeaderAssignmentTarget | null;
   onLeaderCommand?: (command: ClientCommand) => void;
+  onClose?: () => void;
 }
 
 type LeaderTab = "all" | "civilian" | "military";
@@ -95,12 +96,14 @@ export class LeadersPanel {
   }
 
   public close(): void {
+    const onClose = this.currentData?.onClose;
     this.onPointerUp();
     this.clearPendingRefresh();
     this.interactionGate.clear();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
+    onClose?.();
   }
 
   public dispose(): void {

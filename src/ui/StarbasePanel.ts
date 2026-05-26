@@ -31,6 +31,7 @@ export interface StarbasePanelData {
   starbase?: ServerStarbase;
   technology?: FactionTechnologyView | null;
   onStarbaseCommand?: (command: ClientCommand) => void;
+  onClose?: (starbaseId: string) => void;
 }
 
 const STYLE_ID = "starbase-panel-style";
@@ -84,6 +85,7 @@ export class StarbasePanel {
 
   public show(data: StarbasePanelData): void {
     if (this.currentData?.id !== data.id) {
+      if (this.currentData) this.currentData.onClose?.(this.currentData.id);
       this.activeTab = "starbase";
       this.buildingPickerSlotIndex = null;
     }
@@ -107,6 +109,8 @@ export class StarbasePanel {
   }
 
   public close(): void {
+    const closingId = this.currentData?.id ?? null;
+    const onClose = this.currentData?.onClose;
     this.onPointerUp();
     this.clearPendingRefresh();
     this.interactionGate.clear();
@@ -114,6 +118,7 @@ export class StarbasePanel {
     this.panelElement = null;
     this.currentData = null;
     this.activeTab = "starbase";
+    if (closingId) onClose?.(closingId);
   }
 
   public refreshStarbase(starbase: ServerStarbase): void {
@@ -152,8 +157,7 @@ export class StarbasePanel {
       });
     });
     this.panelElement.querySelector<HTMLButtonElement>("[data-sb-upgrade]")?.addEventListener("click", () => {
-      if (!data.starbase) return;
-      data.onStarbaseCommand?.({ type: "upgradeStarbase", starbaseId: data.starbase.id });
+      data.onStarbaseCommand?.({ type: "upgradeStarbase", starbaseId: data.id });
     });
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-building-slot]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -169,12 +173,12 @@ export class StarbasePanel {
     });
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-pick-building]").forEach((button) => {
       button.addEventListener("click", () => {
-        if (!data.starbase || this.buildingPickerSlotIndex === null) return;
+        if (this.buildingPickerSlotIndex === null) return;
         const buildingKind = button.dataset.sbPickBuilding as StarbaseBuildingKind | undefined;
         if (!buildingKind) return;
         data.onStarbaseCommand?.({
           type: "buildStarbaseBuilding",
-          starbaseId: data.starbase.id,
+          starbaseId: data.id,
           slotIndex: this.buildingPickerSlotIndex,
           buildingKind,
         });
@@ -182,12 +186,11 @@ export class StarbasePanel {
     });
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-build-ship]").forEach((button) => {
       button.addEventListener("click", () => {
-        if (!data.starbase) return;
         const shipKind = button.dataset.sbBuildShip as keyof typeof STARBASE_SHIP_DEFINITIONS | undefined;
         if (!shipKind) return;
         data.onStarbaseCommand?.({
           type: "buildStarbaseShip",
-          starbaseId: data.starbase.id,
+          starbaseId: data.id,
           shipKind,
         });
       });

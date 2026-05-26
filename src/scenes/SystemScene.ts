@@ -63,7 +63,15 @@ import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
-import type { ClientCommand, FleetOrbitTarget, ServerCombatContact, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type {
+  ClientCommand,
+  FleetOrbitTarget,
+  ServerCombatContact,
+  ServerFleet,
+  ServerShip,
+  ServerStarbase,
+  ServerStarbaseSummary,
+} from "../game/GameProtocol";
 import type { FactionTechnologyView } from "../data/Technology";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { getFleetTacticalRadius, getLayeredFleetFormationPosition } from "../game/tacticalFormation";
@@ -114,7 +122,7 @@ export interface SystemSceneOptions {
   shipDesigns?: ShipDesign[];
   recentCombatContacts?: ServerCombatContact[];
   starbaseSystemIds?: number[];
-  starbases?: ServerStarbase[];
+  starbases?: ServerStarbaseSummary[];
   factions?: FactionInfo[];
   starOwnership?: number[];
   playerFactionId?: number;
@@ -132,6 +140,9 @@ export interface SystemSceneOptions {
   onPlanetCommand?: (command: ClientCommand) => void;
   onFleetCommand?: (command: ClientCommand) => void;
   onRequestPlanetDetails?: (planetId: string) => Promise<{ planet: PlanetConfig; planetState: PlanetState }>;
+  onReleasePlanetDetails?: (planetId: string) => void;
+  onRequestStarbaseDetails?: (starbaseId: string) => Promise<ServerStarbase | null>;
+  onReleaseStarbaseDetails?: (starbaseId: string) => void;
 }
 
 const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
@@ -196,7 +207,7 @@ export class SystemScene implements IGameScene {
   private shipDesigns: ShipDesign[];
   private recentCombatContacts: ServerCombatContact[];
   private starbaseSystemIds: Set<number>;
-  private starbases: ServerStarbase[];
+  private starbases: ServerStarbaseSummary[];
   private factions: FactionInfo[];
   private starOwnership: number[];
   private playerFactionId: number;
@@ -1586,7 +1597,7 @@ export class SystemScene implements IGameScene {
       });
   }
 
-  private getStarbasesInCurrentSystem(): ServerStarbase[] {
+  private getStarbasesInCurrentSystem(): ServerStarbaseSummary[] {
     return this.starbases.filter((starbase) => starbase.starId === this.star.id);
   }
 
@@ -1813,7 +1824,7 @@ export class SystemScene implements IGameScene {
     this.beginFleetAction(action);
   }
 
-  private openStarbasePanel(starbase: ServerStarbase): void {
+  private openStarbasePanel(starbase: ServerStarbaseSummary): void {
     const owner = this.getFaction(starbase.ownerId);
     this.clearFleetSelection();
     this.starbasePanel.show({
@@ -1824,9 +1835,12 @@ export class SystemScene implements IGameScene {
       ownerColor: owner?.color,
       status: starbase.status,
       power: this.formatStarbasePower(starbase),
-      starbase,
       technology: this.options.technology,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
+      onClose: (starbaseId) => this.options.onReleaseStarbaseDetails?.(starbaseId),
+    });
+    void this.options.onRequestStarbaseDetails?.(starbase.id).then((detail) => {
+      if (detail) this.starbasePanel.refreshStarbase(detail);
     });
   }
 
@@ -1890,7 +1904,7 @@ export class SystemScene implements IGameScene {
     return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : `${Math.round(value / 1000)}K`;
   }
 
-  private formatStarbasePower(starbase: ServerStarbase): string {
+  private formatStarbasePower(starbase: ServerStarbaseSummary): string {
     const power = computeStarbasePower(starbase);
     return power >= 1_000_000 ? `${(power / 1_000_000).toFixed(1)}M` : `${Math.round(power / 1000)}K`;
   }
@@ -3154,7 +3168,7 @@ export class SystemScene implements IGameScene {
     this.starbaseRangeRing?.setEnabled(this.starsVisible && range > 0);
   }
 
-  private getStarbaseMaxWeaponRange(starbase: ServerStarbase): number {
+  private getStarbaseMaxWeaponRange(starbase: ServerStarbaseSummary): number {
     const mounts = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.combat.weaponMounts ?? [];
     return mounts.reduce((max, mount) => {
       const range = this.rangeBandToSystemDistance(mount.maxRangeBand ?? "close");
@@ -4114,6 +4128,9 @@ export class SystemScene implements IGameScene {
       assignedLeader: this.getAssignedLeader("planet", panelPlanet.id),
       canManageLeaders: this.getCurrentStarOwnerId() === this.playerFactionId,
       onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+      onClose: (objectId, kind) => {
+        if (kind === "planet") this.options.onReleasePlanetDetails?.(objectId);
+      },
     });
   }
 
@@ -4375,13 +4392,14 @@ export class SystemScene implements IGameScene {
     this.refreshSystemEntityCards();
   }
 
-  setServerStarbases(starbases: ServerStarbase[]): void {
+  setServerStarbases(starbases: ServerStarbaseSummary[]): void {
     this.starbases = starbases;
-    for (const starbase of starbases) {
-      this.starbasePanel?.refreshStarbase(starbase);
-    }
     this.refreshStarbaseCombatRangeRing();
     this.refreshSystemEntityCards();
+  }
+
+  refreshStarbaseDetails(starbase: ServerStarbase): void {
+    this.starbasePanel?.refreshStarbase(starbase);
   }
 
   setPlanetStates(planetStates: PlanetState[]): void {

@@ -29,6 +29,7 @@ export interface TechnologyPanelData {
   technology: FactionTechnologyView | null;
   factionName?: string;
   onTechnologyCommand?: (command: ClientCommand) => void;
+  onClose?: () => void;
 }
 
 const STYLE_ID = "technology-panel-style";
@@ -130,12 +131,14 @@ export class TechnologyPanel {
   }
 
   public close(): void {
+    const onClose = this.currentData?.onClose;
     this.onPointerUp();
     this.clearPendingRefresh();
     this.interactionGate.clear();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
+    onClose?.();
   }
 
   public dispose(): void {

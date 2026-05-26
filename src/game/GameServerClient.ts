@@ -4,21 +4,32 @@ import type {
 } from "./AdminCommands";
 import type {
   ClientCommand,
+  GameDetailEvent,
+  GameDetailPayload,
+  GameDetailScope,
   GameSnapshot,
+  PlanetDetailPayload,
   PlanetDetailsEvent,
   ServerEvent,
   ServerUpdateField,
+  SystemDetailPayload,
   SystemDetailsEvent,
 } from "./GameProtocol";
 
 type SnapshotHandler = (snapshot: GameSnapshot, changed?: ServerUpdateField[]) => void;
 type MessageHandler = (message: string, ok: boolean) => void;
 type PlanetDetailsHandler = (event: PlanetDetailsEvent) => void;
+type DetailHandler<T extends GameDetailPayload = GameDetailPayload> = (event: GameDetailEvent & { payload?: T }) => void;
 type AdminCommandHandler = (event: AdminCommandResult) => void;
 type PendingRequest<T> = {
   resolve: (event: T) => void;
   reject: (error: Error) => void;
 };
+
+interface CachedDetail {
+  event: GameDetailEvent;
+  payload?: GameDetailPayload;
+}
 
 function withClientClockSync<T extends { clock?: GameSnapshot["clock"] }>(event: T): T {
   if (!event.clock) return event;
@@ -46,15 +57,22 @@ function appendGameId(baseUrl: string, gameId?: string): string {
   return url.toString();
 }
 
+function createDetailKey(scope: GameDetailScope, id?: string | number | null): string {
+  return `${scope}:${id ?? ""}`;
+}
+
 export class GameServerClient {
   private socket: WebSocket | null = null;
   private latestSnapshot: GameSnapshot | null = null;
   private snapshotHandlers = new Set<SnapshotHandler>();
   private messageHandlers = new Set<MessageHandler>();
   private planetDetailsHandlers = new Set<PlanetDetailsHandler>();
+  private detailHandlers = new Map<string, Set<DetailHandler>>();
   private adminCommandHandlers = new Set<AdminCommandHandler>();
   private systemDetailsRequests = new Map<number, PendingRequest<SystemDetailsEvent>>();
   private planetDetailsRequests = new Map<string, PendingRequest<PlanetDetailsEvent>>();
+  private detailRequests = new Map<string, PendingRequest<GameDetailEvent>>();
+  private detailCache = new Map<string, CachedDetail>();
   private adminCommandRequests = new Map<string, PendingRequest<AdminCommandResult>>();
 
   constructor(gameId?: string, private readonly url = getWebSocketUrl(gameId)) {}
@@ -137,6 +155,27 @@ export class GameServerClient {
           return;
         }
 
+        if (parsed.type === "detail") {
+          const key = createDetailKey(parsed.scope, parsed.id);
+          const cached = this.detailCache.get(key);
+          const event: GameDetailEvent = parsed.status === "notModified" && cached
+            ? { ...parsed, payload: cached.payload }
+            : parsed;
+          if (event.status === "full" && event.payload) {
+            this.detailCache.set(key, { event, payload: event.payload });
+          } else if (event.status === "notModified" && cached) {
+            this.detailCache.set(key, { event, payload: cached.payload });
+          }
+
+          const pending = this.detailRequests.get(key);
+          if (pending) {
+            this.detailRequests.delete(key);
+            pending.resolve(event);
+          }
+          for (const handler of this.detailHandlers.get(key) ?? []) handler(event);
+          return;
+        }
+
         if (parsed.type === "commandResult") {
           for (const handler of this.messageHandlers) handler(parsed.message, parsed.ok);
           if (!parsed.ok) {
@@ -194,11 +233,76 @@ export class GameServerClient {
   }
 
   requestSystemDetails(starId: number): Promise<SystemDetailsEvent> {
-    return this.requestDetails(this.systemDetailsRequests, starId, { type: "requestSystemDetails", starId });
+    const cached = this.getCachedDetail<SystemDetailPayload>("system", starId);
+    return this.requestDetail<SystemDetailPayload>("system", starId).then((event) => {
+      const payload = event.payload ?? cached;
+      if (!payload || !("star" in payload)) throw new Error("System details are unavailable.");
+      return { type: "systemDetails", star: payload.star, planetStates: payload.planetStates };
+    });
   }
 
   requestPlanetDetails(planetId: string): Promise<PlanetDetailsEvent> {
-    return this.requestDetails(this.planetDetailsRequests, planetId, { type: "requestPlanetDetails", planetId });
+    const cached = this.getCachedDetail<PlanetDetailPayload>("planet", planetId);
+    return this.requestDetail<PlanetDetailPayload>("planet", planetId).then((event) => {
+      const payload = event.payload ?? cached;
+      if (!payload || !("planetState" in payload)) throw new Error("Planet details are unavailable.");
+      return {
+        type: "planetDetails",
+        starId: payload.starId,
+        planet: payload.planet,
+        planetState: payload.planetState,
+      };
+    });
+  }
+
+  requestDetail<T extends GameDetailPayload>(
+    scope: GameDetailScope,
+    id?: string | number | null,
+  ): Promise<GameDetailEvent & { payload?: T }> {
+    const key = createDetailKey(scope, id);
+    const cached = this.detailCache.get(key);
+    return this.requestDetails(this.detailRequests, key, {
+      type: "requestDetails",
+      scope,
+      id,
+      knownRevision: cached?.event.revision ?? null,
+    }).then((event) => event as GameDetailEvent & { payload?: T });
+  }
+
+  subscribeDetail<T extends GameDetailPayload>(
+    scope: GameDetailScope,
+    id: string | number | null | undefined,
+    handler: DetailHandler<T>,
+  ): () => void {
+    const normalizedId = id ?? null;
+    const key = createDetailKey(scope, normalizedId);
+    const handlers = this.detailHandlers.get(key) ?? new Set<DetailHandler>();
+    handlers.add(handler as DetailHandler);
+    this.detailHandlers.set(key, handlers);
+
+    const cached = this.detailCache.get(key);
+    if (cached) {
+      window.setTimeout(() => handler(cached.event as GameDetailEvent & { payload?: T }), 0);
+    }
+    this.send({
+      type: "subscribeDetails",
+      scope,
+      id: normalizedId,
+      knownRevision: cached?.event.revision ?? null,
+    });
+
+    return () => {
+      const current = this.detailHandlers.get(key);
+      current?.delete(handler as DetailHandler);
+      if (current && current.size === 0) {
+        this.detailHandlers.delete(key);
+        this.send({ type: "unsubscribeDetails", scope, id: normalizedId });
+      }
+    };
+  }
+
+  getCachedDetail<T extends GameDetailPayload>(scope: GameDetailScope, id?: string | number | null): T | null {
+    return (this.detailCache.get(createDetailKey(scope, id))?.payload as T | undefined) ?? null;
   }
 
   getSnapshot(): GameSnapshot | null {
@@ -219,6 +323,7 @@ export class GameServerClient {
     this.snapshotHandlers.clear();
     this.messageHandlers.clear();
     this.planetDetailsHandlers.clear();
+    this.detailHandlers.clear();
     this.adminCommandHandlers.clear();
     this.rejectAllPendingRequests(new Error("Game server client disposed."));
     this.socket?.close();
@@ -282,15 +387,23 @@ export class GameServerClient {
     if (!adminEntry.done) {
       this.adminCommandRequests.delete(adminEntry.value[0]);
       adminEntry.value[1].reject(error);
+      return;
+    }
+    const detailEntry = this.detailRequests.entries().next();
+    if (!detailEntry.done) {
+      this.detailRequests.delete(detailEntry.value[0]);
+      detailEntry.value[1].reject(error);
     }
   }
 
   private rejectAllPendingRequests(error: Error): void {
     for (const [, pending] of this.systemDetailsRequests) pending.reject(error);
     for (const [, pending] of this.planetDetailsRequests) pending.reject(error);
+    for (const [, pending] of this.detailRequests) pending.reject(error);
     for (const [, pending] of this.adminCommandRequests) pending.reject(error);
     this.systemDetailsRequests.clear();
     this.planetDetailsRequests.clear();
+    this.detailRequests.clear();
     this.adminCommandRequests.clear();
   }
 }
