@@ -18,7 +18,7 @@ import {
   getRequiredTechIdsForStarbaseBuilding,
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
-import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 
 export interface StarbasePanelData {
   id: string;
@@ -53,6 +53,9 @@ export class StarbasePanel {
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
   private buildingPickerSlotIndex: number | null = null;
+  private pendingRefreshData: StarbasePanelData | null = null;
+  private pendingRefreshTimer: number | null = null;
+  private readonly interactionGate = new PanelInteractionGate();
 
   private readonly onPointerMove = (ev: PointerEvent): void => {
     if (!this.isDragging || !this.panelElement) return;
@@ -91,6 +94,7 @@ export class StarbasePanel {
       this.panelElement.className = "starbasePanel";
       this.root.appendChild(this.panelElement);
     }
+    this.interactionGate.bind(this.panelElement);
 
     const accent = data.ownerColor
       ? `rgba(${Math.round(data.ownerColor[0] * 255)}, ${Math.round(data.ownerColor[1] * 255)}, ${Math.round(data.ownerColor[2] * 255)}, 0.95)`
@@ -104,6 +108,8 @@ export class StarbasePanel {
 
   public close(): void {
     this.onPointerUp();
+    this.clearPendingRefresh();
+    this.interactionGate.clear();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
@@ -112,7 +118,14 @@ export class StarbasePanel {
 
   public refreshStarbase(starbase: ServerStarbase): void {
     if (!this.currentData || this.currentData.id !== starbase.id) return;
-    this.show({ ...this.currentData, starbase });
+    const nextData = { ...this.currentData, starbase };
+    this.currentData = nextData;
+    if (this.shouldDeferRefresh()) {
+      this.pendingRefreshData = nextData;
+      this.schedulePendingRefresh();
+      return;
+    }
+    this.show(nextData);
   }
 
   public dispose(): void {
@@ -185,6 +198,33 @@ export class StarbasePanel {
     if (!this.panelElement) return;
     this.panelElement.style.left = `${this.position.x}px`;
     this.panelElement.style.top = `${this.position.y}px`;
+  }
+
+  private shouldDeferRefresh(): boolean {
+    return this.isDragging || this.interactionGate.isBusy(this.panelElement);
+  }
+
+  private schedulePendingRefresh(delayMs = 120): void {
+    if (this.pendingRefreshTimer !== null) return;
+    this.pendingRefreshTimer = window.setTimeout(() => {
+      this.pendingRefreshTimer = null;
+      if (!this.pendingRefreshData || !this.panelElement) return;
+      if (this.shouldDeferRefresh()) {
+        this.schedulePendingRefresh();
+        return;
+      }
+      const data = this.pendingRefreshData;
+      this.pendingRefreshData = null;
+      this.show(data);
+    }, delayMs);
+  }
+
+  private clearPendingRefresh(): void {
+    if (this.pendingRefreshTimer !== null) {
+      window.clearTimeout(this.pendingRefreshTimer);
+      this.pendingRefreshTimer = null;
+    }
+    this.pendingRefreshData = null;
   }
 
   private render(data: StarbasePanelData): string {

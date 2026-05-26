@@ -66,7 +66,7 @@ import { computeCombatPowerFromStats, computeFleetPower, computeShipPower } from
 import { getFleetTacticalRadius } from "../game/tacticalFormation";
 import {
   captureScrollState,
-  hasFocusedFormControl,
+  PanelInteractionGate,
   restoreScrollStateSoon,
 } from "./panelDomState";
 
@@ -126,6 +126,7 @@ export class FleetManagerPanel {
   private isDragging = false;
   private pendingRefreshData: FleetManagerPanelData | null = null;
   private pendingRefreshTimer: number | null = null;
+  private readonly interactionGate = new PanelInteractionGate();
   private shipPreviewCanvas: HTMLCanvasElement | null = null;
   private shipPreviewEngine: Engine | null = null;
   private shipPreviewScene: Scene | null = null;
@@ -169,6 +170,7 @@ export class FleetManagerPanel {
       this.panelElement.className = "fleetManagerPanel";
       this.root.appendChild(this.panelElement);
     }
+    this.interactionGate.bind(this.panelElement);
 
     const accent = data.playerFactionId !== null
       ? this.colorToCss(this.getFaction(data, data.playerFactionId)?.color, 0.95)
@@ -199,6 +201,7 @@ export class FleetManagerPanel {
   public close(): void {
     this.onPointerUp();
     this.clearPendingRefresh();
+    this.interactionGate.clear();
     this.disposeShipPreview();
     this.panelElement?.remove();
     this.panelElement = null;
@@ -214,7 +217,7 @@ export class FleetManagerPanel {
   }
 
   private shouldDeferRefresh(): boolean {
-    return this.isDragging || hasFocusedFormControl(this.panelElement);
+    return this.isDragging || this.interactionGate.isBusy(this.panelElement);
   }
 
   private schedulePendingRefresh(delayMs = 120): void {

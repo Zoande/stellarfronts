@@ -48,7 +48,7 @@ import {
   getRequiredTechIdsForBuilding,
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
-import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 import { requestOpenLeadersPanel } from "./leaderEvents";
 
 export type CelestialObjectKind = "planet" | "star";
@@ -197,6 +197,19 @@ export class CelestialObjectPanel {
   private position = { x: 24, y: 70 };
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
+  private pendingPlanetRefresh: {
+    planetId: string;
+    planetState: PlanetState;
+    objectDetails: CelestialObjectDetails;
+    isHabited: boolean;
+  } | null = null;
+  private pendingLeaderRefresh: {
+    objectId: string;
+    assignedLeader: LeaderState | null;
+    canManageLeaders?: boolean;
+  } | null = null;
+  private pendingRefreshTimer: number | null = null;
+  private readonly interactionGate = new PanelInteractionGate();
 
   private readonly onPointerMove = (ev: PointerEvent): void => {
     if (!this.isDragging || !this.panelElement) return;
@@ -306,6 +319,7 @@ export class CelestialObjectPanel {
       this.panelElement.className = "celestialObjectPanel";
       this.root.appendChild(this.panelElement);
     }
+    this.interactionGate.bind(this.panelElement);
 
     this.hideTooltip();
     this.panelElement.style.setProperty("--object-accent", data.accentColor ?? "rgba(102, 236, 199, 0.95)");
@@ -322,6 +336,11 @@ export class CelestialObjectPanel {
     isHabited: boolean,
   ): void {
     if (!this.currentData || this.currentData.objectId !== planetId) return;
+    if (this.panelElement && this.shouldDeferRefresh()) {
+      this.pendingPlanetRefresh = { planetId, planetState, objectDetails, isHabited };
+      this.schedulePendingRefresh();
+      return;
+    }
     const nextData: CelestialObjectPanelData = {
       ...this.currentData,
       isHabited,
@@ -352,6 +371,11 @@ export class CelestialObjectPanel {
     canManageLeaders?: boolean,
   ): void {
     if (!this.currentData || this.currentData.objectId !== objectId) return;
+    if (this.panelElement && this.shouldDeferRefresh()) {
+      this.pendingLeaderRefresh = { objectId, assignedLeader, canManageLeaders };
+      this.schedulePendingRefresh();
+      return;
+    }
     const nextData = {
       ...this.currentData,
       assignedLeader,
@@ -384,6 +408,8 @@ export class CelestialObjectPanel {
 
   public close(): void {
     this.hideTooltip();
+    this.clearPendingRefresh();
+    this.interactionGate.clear();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
@@ -1094,6 +1120,50 @@ export class CelestialObjectPanel {
     if (this.clickBoundElements.has(element)) return;
     this.clickBoundElements.add(element);
     element.addEventListener("click", handler);
+  }
+
+  private shouldDeferRefresh(): boolean {
+    return this.isDragging || this.interactionGate.isBusy(this.panelElement);
+  }
+
+  private schedulePendingRefresh(delayMs = 120): void {
+    if (this.pendingRefreshTimer !== null) return;
+    this.pendingRefreshTimer = window.setTimeout(() => {
+      this.pendingRefreshTimer = null;
+      if (!this.panelElement) return;
+      if (this.shouldDeferRefresh()) {
+        this.schedulePendingRefresh();
+        return;
+      }
+      const planetRefresh = this.pendingPlanetRefresh;
+      const leaderRefresh = this.pendingLeaderRefresh;
+      this.pendingPlanetRefresh = null;
+      this.pendingLeaderRefresh = null;
+      if (planetRefresh) {
+        this.refreshPlanetState(
+          planetRefresh.planetId,
+          planetRefresh.planetState,
+          planetRefresh.objectDetails,
+          planetRefresh.isHabited,
+        );
+      }
+      if (leaderRefresh) {
+        this.refreshAssignedLeader(
+          leaderRefresh.objectId,
+          leaderRefresh.assignedLeader,
+          leaderRefresh.canManageLeaders,
+        );
+      }
+    }, delayMs);
+  }
+
+  private clearPendingRefresh(): void {
+    if (this.pendingRefreshTimer !== null) {
+      window.clearTimeout(this.pendingRefreshTimer);
+      this.pendingRefreshTimer = null;
+    }
+    this.pendingPlanetRefresh = null;
+    this.pendingLeaderRefresh = null;
   }
 
   private applyPosition(): void {

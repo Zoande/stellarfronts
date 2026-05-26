@@ -8,7 +8,7 @@ import {
 } from "../data/Leaders";
 import type { LeaderClass, LeaderState } from "../data/Leaders";
 import type { ClientCommand, ServerFleet } from "../game/GameProtocol";
-import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 import type { LeaderAssignmentTarget } from "./leaderEvents";
 
 export interface LeadersPanelData {
@@ -38,6 +38,9 @@ export class LeadersPanel {
   private position = { x: 38, y: 52 };
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
+  private pendingRefreshData: LeadersPanelData | null = null;
+  private pendingRefreshTimer: number | null = null;
+  private readonly interactionGate = new PanelInteractionGate();
 
   private readonly onPointerMove = (ev: PointerEvent): void => {
     if (!this.isDragging || !this.panelElement) return;
@@ -73,6 +76,7 @@ export class LeadersPanel {
       this.panelElement.className = "leadersPanel";
       this.root.appendChild(this.panelElement);
     }
+    this.interactionGate.bind(this.panelElement);
     this.panelElement.innerHTML = this.render(data);
     this.applyPosition();
     this.bindEvents(data);
@@ -81,11 +85,19 @@ export class LeadersPanel {
 
   public refresh(data: LeadersPanelData): void {
     if (!this.panelElement) return;
+    this.currentData = data;
+    if (this.shouldDeferRefresh()) {
+      this.pendingRefreshData = data;
+      this.schedulePendingRefresh();
+      return;
+    }
     this.show(data);
   }
 
   public close(): void {
     this.onPointerUp();
+    this.clearPendingRefresh();
+    this.interactionGate.clear();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
@@ -103,6 +115,33 @@ export class LeadersPanel {
     this.selectedLeaderId = visible.find((leader) => (
       target && leader.class === target.requiredClass && leader.status !== "dead"
     ))?.id ?? visible[0]?.id ?? null;
+  }
+
+  private shouldDeferRefresh(): boolean {
+    return this.isDragging || this.interactionGate.isBusy(this.panelElement);
+  }
+
+  private schedulePendingRefresh(delayMs = 120): void {
+    if (this.pendingRefreshTimer !== null) return;
+    this.pendingRefreshTimer = window.setTimeout(() => {
+      this.pendingRefreshTimer = null;
+      if (!this.pendingRefreshData || !this.panelElement) return;
+      if (this.shouldDeferRefresh()) {
+        this.schedulePendingRefresh();
+        return;
+      }
+      const data = this.pendingRefreshData;
+      this.pendingRefreshData = null;
+      this.show(data);
+    }, delayMs);
+  }
+
+  private clearPendingRefresh(): void {
+    if (this.pendingRefreshTimer !== null) {
+      window.clearTimeout(this.pendingRefreshTimer);
+      this.pendingRefreshTimer = null;
+    }
+    this.pendingRefreshData = null;
   }
 
   private bindEvents(data: LeadersPanelData): void {
