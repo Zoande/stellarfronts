@@ -11,7 +11,7 @@ export type StarbaseBuildingKind =
   | "alloyAssemblyDock"
   | "researchAnnex"
   | "logisticsDepot";
-export type StarbaseShipKind = "corvette";
+export type StarbaseShipKind = "corvette" | "constructionShip";
 
 export type WeaponKind = "laser" | "missile" | "pointDefense";
 
@@ -363,7 +363,7 @@ export const STARBASE_BUILDING_DEFINITIONS: Record<StarbaseBuildingKind, Starbas
   },
 };
 
-export const STARBASE_SHIP_KINDS: StarbaseShipKind[] = ["corvette"];
+export const STARBASE_SHIP_KINDS: StarbaseShipKind[] = ["corvette", "constructionShip"];
 
 export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDefinition> = {
   corvette: {
@@ -383,6 +383,25 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
       evasion: 0.2,
       sensorRange: 3,
       weaponMounts: [createLaserMount({ damage: 12, barrels: 2, accuracy: 0.82 })],
+    },
+  },
+  constructionShip: {
+    kind: "constructionShip",
+    label: "Construction Ship",
+    className: "Pioneer-class",
+    description: "Utility hull fitted for deep-space construction and starbase deployment.",
+    speed: 0.85,
+    buildDays: 8,
+    alloyUpkeepPerDay: 16,
+    crewDemand: 700,
+    upkeep: resources({ energy: 1, alloys: 0.16 }),
+    combat: {
+      maxShield: 80,
+      maxArmor: 50,
+      maxHull: 140,
+      evasion: 0.08,
+      sensorRange: 3,
+      weaponMounts: [],
     },
   },
 };

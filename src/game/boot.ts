@@ -762,6 +762,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           server.send({ type: "moveFleet", fleetId, targetStarId });
         } else if (action === "build") {
           server.send({ type: "buildStarbase", fleetId, targetStarId });
+        } else if (action === "attack") {
+          server.send({ type: "attackSystem", fleetId, targetStarId });
         } else if (action === "retreatTo") {
           server.send({ type: "retreatFleetTo", fleetId, targetStarId });
         } else if (action === "emergencyRetreatTo") {

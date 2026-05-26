@@ -105,7 +105,7 @@ export interface ShipHyperlanePosition {
   progress: number;
 }
 
-export type FleetOrderType = "move" | "build" | "orbit" | "merge" | "retreat" | null;
+export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "merge" | "retreat" | null;
 
 export type FleetOrbitTargetKind = "star" | "planet" | "starbase" | "hyperlane" | "fleet";
 
@@ -407,6 +407,12 @@ export interface AttackTargetCommand {
   targetKind: "fleet" | "starbase";
 }
 
+export interface AttackSystemCommand {
+  type: "attackSystem";
+  fleetId: string;
+  targetStarId: number;
+}
+
 export interface SetFleetCombatSettingsCommand {
   type: "setFleetCombatSettings";
   fleetId: string;
@@ -469,6 +475,7 @@ export type ClientCommand =
   | RetreatFleetToCommand
   | EmergencyRetreatFleetToCommand
   | AttackTargetCommand
+  | AttackSystemCommand
   | SetFleetCombatSettingsCommand
   | IssueFleetTacticalOrderCommand;
 

@@ -925,6 +925,11 @@ export class SystemScene implements IGameScene {
       this.clearFleetAction();
       return;
     }
+    if (action === "build") {
+      this.options.onRequestFleetActionInGalaxy?.(fleetId, "build");
+      this.clearFleetAction();
+      return;
+    }
     if (action === "retreat") {
       this.options.onFleetCommand?.({
         type: "issueFleetTacticalOrder",
@@ -955,7 +960,11 @@ export class SystemScene implements IGameScene {
       return;
     }
     if (action === "attack") {
-      this.issueBasicAttack(fleetId);
+      if (this.hasLocalHostileTarget(fleetId)) {
+        this.issueBasicAttack(fleetId);
+      } else {
+        this.options.onRequestFleetActionInGalaxy?.(fleetId, "attack");
+      }
       this.clearFleetAction();
       return;
     }
@@ -1068,6 +1077,19 @@ export class SystemScene implements IGameScene {
         targetId: hostileStarbase.id,
       });
     }
+  }
+
+  private hasLocalHostileTarget(fleetId: string): boolean {
+    const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+    if (!fleet) return false;
+    return this.serverFleets.some((candidate) => (
+      candidate.id !== fleet.id
+      && candidate.currentStarId === fleet.currentStarId
+      && candidate.ownerId !== fleet.ownerId
+    )) || this.starbases.some((candidate) => (
+      candidate.starId === fleet.currentStarId
+      && candidate.ownerId !== fleet.ownerId
+    ));
   }
 
   private rebuildSystemActionTargetMarkers(): void {
@@ -1619,12 +1641,22 @@ export class SystemScene implements IGameScene {
     this.refreshFleetMarkers();
   }
 
+  private fleetCanBuildStarbase(fleet: ServerFleet | null | undefined): boolean {
+    if (!fleet || fleet.ownerId !== this.playerFactionId) return false;
+    return this.getShipsForFleet(fleet.id).some((ship) => ship.shipKind === "constructionShip" && ship.hull > 0);
+  }
+
+  private getFleetActions(fleet: ServerFleet): ShipAction[] {
+    const secondary: ShipAction = this.fleetCanBuildStarbase(fleet) ? "build" : "attack";
+    return ["move", secondary, "hold", "guard", "retreat", "retreatTo", "emergencyRetreatTo", "merge"];
+  }
+
   private createFleetSelectionData(fleet: ServerFleet): SelectionData {
     const owner = this.getFaction(fleet.ownerId);
     const ships = this.getShipsForFleet(fleet.id);
     const shipCount = fleet.shipIds.length || ships.length || 1;
     const defense = this.getFleetDefense(fleet.id);
-    const actions: ShipAction[] = ["move", "attack", "hold", "guard", "retreat", "retreatTo", "emergencyRetreatTo", "build", "merge"];
+    const actions = this.getFleetActions(fleet);
     const doctrine = fleet.combatSettings
       ? `${fleet.combatStance} | ${fleet.combatSettings.behavior} | retreat ${fleet.combatSettings.retreatPolicy}`
       : this.formatFleetNavigationDetail(fleet);
@@ -1689,6 +1721,7 @@ export class SystemScene implements IGameScene {
         const shipCode = `${this.formatFactionShipPrefix(owner, ship.ownerId)}S-${String(index + 1).padStart(2, "0")}`;
         return {
           id: ship.id,
+          shipKind: ship.shipKind,
           name: `${shipCode} ${this.formatShipDisplayName(design, hull?.baseClassName ?? hull?.label ?? ship.shipKind)}`,
           designName: design?.name ?? `${hull?.baseClassName ?? hull?.label ?? ship.shipKind}-class`,
           className: hull?.label ?? this.formatPolicyLikeValue(ship.shipKind),

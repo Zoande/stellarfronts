@@ -1464,7 +1464,7 @@ function normalizeFleet(
   const phase = (fleet.phase ?? "idle") as ShipTransitPhase;
   const targetStarId = Number.isInteger(fleet.targetStarId) ? Number(fleet.targetStarId) : null;
   const formation = isFleetFormation(fleet.formation) ? fleet.formation : "line";
-  const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "orbit" || fleet.orderType === "merge" || fleet.orderType === "retreat"
+  const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "attack" || fleet.orderType === "orbit" || fleet.orderType === "merge" || fleet.orderType === "retreat"
     ? fleet.orderType
     : null;
   const shipIds = Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [];
@@ -1599,6 +1599,31 @@ function syncFleetMembership(nextState: GameState): boolean {
   return changed;
 }
 
+function syncSystemOwnershipFromStarbases(nextState = state): boolean {
+  const ownerByStar = new Array(nextState.stars.length).fill(-1);
+  for (const starbase of nextState.starbases) {
+    if (!Number.isInteger(starbase.starId) || starbase.starId < 0 || starbase.starId >= ownerByStar.length) continue;
+    ownerByStar[starbase.starId] = starbase.ownerId;
+  }
+
+  let changed = nextState.starOwnership.length !== ownerByStar.length;
+  for (let starId = 0; starId < ownerByStar.length; starId += 1) {
+    if ((nextState.starOwnership[starId] ?? -1) !== ownerByStar[starId]) {
+      changed = true;
+      break;
+    }
+  }
+  if (changed) {
+    nextState.starOwnership = ownerByStar;
+  }
+  return changed;
+}
+
+function fleetHasConstructionShip(fleet: Pick<GameFleet, "shipIds">): boolean {
+  const shipIds = new Set(fleet.shipIds);
+  return state.ships.some((ship) => shipIds.has(ship.id) && ship.shipKind === "constructionShip" && ship.hull > 0);
+}
+
 function syncShipsForDesign(nextState: GameState, design: ShipDesign): boolean {
   let changed = false;
   for (const ship of nextState.ships) {
@@ -1715,15 +1740,29 @@ function createInitialState(): GameState {
     STARBASE_SHIP_KINDS.map((shipKind) => createDefaultShipDesign(faction.id, shipKind, GAME_START_YEAR))
   ));
   const ships: GameShip[] = [];
-  const fleets = factions.map<GameFleet>((faction) => {
-    const fleetId = `fleet-${faction.id}-1`;
-    const design = resolveShipDesign(shipDesigns, faction.id, "corvette");
-    const ship = createShipFromDesign(faction.id, fleetId, design, `ship-${faction.id}-1`);
-    ships.push(ship);
-    const fleet = createFleet(faction.id, faction.homeStarId, [ship.id], fleetId);
-    fleet.phaseStartedAtYear = GAME_START_YEAR;
-    fleet.speed = ship.speed;
-    return fleet;
+  const fleets = factions.flatMap<GameFleet>((faction) => {
+    const combatFleetId = `fleet-${faction.id}-1`;
+    const corvetteDesign = resolveShipDesign(shipDesigns, faction.id, "corvette");
+    const corvette = createShipFromDesign(faction.id, combatFleetId, corvetteDesign, `ship-${faction.id}-1`);
+    ships.push(corvette);
+    const combatFleet = createFleet(faction.id, faction.homeStarId, [corvette.id], combatFleetId);
+    combatFleet.phaseStartedAtYear = GAME_START_YEAR;
+    combatFleet.speed = corvette.speed;
+
+    const constructionFleetId = `fleet-${faction.id}-construction-1`;
+    const constructionDesign = resolveShipDesign(shipDesigns, faction.id, "constructionShip");
+    const constructionShip = createShipFromDesign(
+      faction.id,
+      constructionFleetId,
+      constructionDesign,
+      `ship-${faction.id}-construction-1`,
+    );
+    ships.push(constructionShip);
+    const constructionFleet = createFleet(faction.id, faction.homeStarId, [constructionShip.id], constructionFleetId);
+    constructionFleet.phaseStartedAtYear = GAME_START_YEAR;
+    constructionFleet.speed = constructionShip.speed;
+
+    return [combatFleet, constructionFleet];
   });
 
   const now = Date.now();
@@ -1760,6 +1799,7 @@ function createInitialState(): GameState {
       lastProcessedLeaderDay: startLeaderDay,
     },
   };
+  syncSystemOwnershipFromStarbases(created);
   recalculatePlanetEconomies(created);
   refreshFactionEconomyDeltas(created);
   refreshDiscovery(created);
@@ -1809,6 +1849,7 @@ async function loadState(): Promise<GameState> {
     if (syncFleetMembership(parsed)) {
       hasDirtyState = true;
     }
+    const ownershipChanged = syncSystemOwnershipFromStarbases(parsed);
     const metadataChanged = normalizeCelestialObjectDetails(parsed.stars);
     const habitationChanged = ensureHabitedHomePlanets(
       parsed.stars,
@@ -1838,7 +1879,7 @@ async function loadState(): Promise<GameState> {
     recalculatePlanetEconomies(parsed);
     refreshFactionEconomyDeltas(parsed);
     const planetStateApplied = applyPlanetStatesToStars(parsed.stars, parsed.planetStates);
-    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || leadersChanged || homeStarbaseChanged) {
+    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || leadersChanged || homeStarbaseChanged || ownershipChanged) {
       hasDirtyState = true;
     }
     refreshDiscovery(parsed);
@@ -2545,6 +2586,40 @@ function startMoveOrder(
   startPositionOrder(fleet, targetStarId, "move", destination.position, destination.orbitTarget, routeOverride);
 }
 
+function startAttackSystemOrder(fleet: GameFleet, targetStarId: number): void {
+  const hostileStarbase = state.starbases.find((starbase) => (
+    starbase.starId === targetStarId
+    && isHostileOwner(fleet.ownerId, starbase.ownerId)
+  ));
+  const hostileFleet = state.fleets.find((candidate) => (
+    candidate.id !== fleet.id
+    && candidate.currentStarId === targetStarId
+    && isHostileOwner(fleet.ownerId, candidate.ownerId)
+  ));
+  const destination = hostileStarbase
+    ? {
+      position: cloneSystemPosition(hostileStarbase.systemPosition ?? getSystemStarbasePosition()),
+      orbitTarget: createStarbaseOrbitTarget(hostileStarbase),
+    }
+    : hostileFleet
+      ? {
+        position: getFleetAuthoritativeSystemPosition(hostileFleet),
+        orbitTarget: {
+          kind: "fleet" as const,
+          starId: hostileFleet.currentStarId,
+          targetFleetId: hostileFleet.id,
+          position: getFleetAuthoritativeSystemPosition(hostileFleet),
+        },
+      }
+      : getDefaultMoveDestination(targetStarId);
+
+  startPositionOrder(fleet, targetStarId, "attack", destination.position, destination.orbitTarget);
+  fleet.currentTacticalOrder = { type: "attack", issuedAtYear: state.clock.year };
+  if (fleet.combatStance === "passive" || fleet.combatStance === "evade") {
+    fleet.combatStance = "aggressive";
+  }
+}
+
 function startBuildOrder(fleet: GameFleet, targetStarId: number): void {
   const starPosition = getSystemStarOrbitPosition();
   if (isFleetOrbitingStar(fleet, targetStarId)) {
@@ -2746,7 +2821,8 @@ function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, fleetId:
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
   if (!isFleetAvailableForOrders(fleet)) return reject(socket, "Fleet is already busy.");
-  if (getKnownOwnership(factionId, targetStarId) !== -1) return reject(socket, "Can only build in unowned systems.");
+  if (!Number.isInteger(targetStarId) || targetStarId < 0 || targetStarId >= state.stars.length) return reject(socket, "Invalid target system.");
+  if (!fleetHasConstructionShip(fleet)) return reject(socket, "Requires a construction ship.");
   if (state.starbases.some((starbase) => starbase.starId === targetStarId)) return reject(socket, "System already has a starbase.");
   try {
     startBuildOrder(fleet, targetStarId);
@@ -2988,6 +3064,30 @@ function handleAttackTarget(
   hasDirtyState = true;
   accept(socket, "Attack order accepted.");
   broadcastUpdates(["fleets"]);
+}
+
+function handleAttackSystem(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  fleetId: string,
+  targetStarId: number,
+): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const fleet = state.fleets.find((candidate) => candidate.id === fleetId);
+  if (!fleet) return reject(socket, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (!isFleetAvailableForOrders(fleet)) return reject(socket, "Fleet is already busy.");
+  if (!Number.isInteger(targetStarId) || targetStarId < 0 || targetStarId >= state.stars.length) return reject(socket, "Invalid target system.");
+  try {
+    startAttackSystemOrder(fleet, targetStarId);
+    hasDirtyState = true;
+    refreshDiscovery();
+    accept(socket, "Attack order accepted.");
+    broadcastUpdates(["clock", "fleets", "visibility"]);
+  } catch (error) {
+    reject(socket, error instanceof Error ? error.message : "Attack order rejected.");
+  }
 }
 
 function getOwnedFleetForCombatCommand(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): GameFleet | null {
@@ -3695,6 +3795,8 @@ function completeFleetOrder(fleet: GameFleet): void {
       };
       state.starbases.push(starbase);
       state.starOwnership[starId] = fleet.ownerId;
+      syncSystemOwnershipFromStarbases();
+      refreshFactionEconomyDeltas();
     }
     finalOrbitTarget = createStarbaseOrbitTarget(starbase);
     fleet.systemPosition = finalOrbitTarget.position;
@@ -4378,14 +4480,36 @@ function recordContinuousCombatContact(contact: Omit<ServerCombatContact, "id" |
   state.recentCombatContacts = state.recentCombatContacts.slice(-RECENT_COMBAT_CONTACT_HISTORY);
 }
 
+function captureStarbase(starbase: ServerStarbase, ownerId: number): boolean {
+  if (starbase.ownerId === ownerId) return false;
+  starbase.ownerId = ownerId;
+  starbase.status = "online";
+  starbase.shield = 0;
+  starbase.armor = 0;
+  starbase.hull = Math.max(1, Math.round(starbase.maxHull * 0.25));
+  starbase.lastShieldDamageAtYear = null;
+  starbase.weaponCooldowns = {};
+  state.starOwnership[starbase.starId] = ownerId;
+  syncSystemOwnershipFromStarbases();
+  refreshFactionEconomyDeltas();
+  return true;
+}
+
 function fireFleetWeaponsAtTarget(
   actor: Extract<ContinuousCombatActor, { kind: "fleet" }>,
   target: ContinuousCombatActor,
   shipsById: Map<string, GameShip>,
-): { shipsChanged: boolean; starbasesChanged: boolean; contactsChanged: boolean } {
+): { shipsChanged: boolean; starbasesChanged: boolean; contactsChanged: boolean; factionEconomiesChanged: boolean } {
   let shipsChanged = false;
   let starbasesChanged = false;
   let contactsChanged = false;
+  let factionEconomiesChanged = false;
+  if (target.kind === "fleet" && !isHostileOwner(actor.ownerId, target.fleet.ownerId)) {
+    return { shipsChanged, starbasesChanged, contactsChanged, factionEconomiesChanged };
+  }
+  if (target.kind === "starbase" && !isHostileOwner(actor.ownerId, target.starbase.ownerId)) {
+    return { shipsChanged, starbasesChanged, contactsChanged, factionEconomiesChanged };
+  }
   const distance = effectiveActorDistance(actor, target);
   const attackMultiplier = getFleetAttackMultiplier(state, actor.fleet);
   for (const ship of getFleetLivingShips(actor.fleet, shipsById)) {
@@ -4414,6 +4538,7 @@ function fireFleetWeaponsAtTarget(
       let armorDamage = 0;
       let hullDamage = 0;
       let destroyed = false;
+      let capturedStarbase = false;
       if (roll.hit) {
         const shieldAdjustedMount = target.kind === "fleet" && targetLayer.shield > 0
           ? { ...mount, damage: mount.damage / Math.max(0.25, getFleetShieldMultiplier(state, target.fleet)) }
@@ -4428,6 +4553,10 @@ function fireFleetWeaponsAtTarget(
           shipsChanged = true;
         } else if (target.kind === "starbase") {
           target.starbase.lastShieldDamageAtYear = state.clock.year;
+          if (destroyed) {
+            capturedStarbase = captureStarbase(target.starbase, actor.ownerId);
+            factionEconomiesChanged ||= capturedStarbase;
+          }
           starbasesChanged = true;
         }
       }
@@ -4451,9 +4580,12 @@ function fireFleetWeaponsAtTarget(
         targetPosition: cloneSystemPosition(target.position),
       });
       contactsChanged = true;
+      if (capturedStarbase) {
+        return { shipsChanged, starbasesChanged, contactsChanged, factionEconomiesChanged };
+      }
     }
   }
-  return { shipsChanged, starbasesChanged, contactsChanged };
+  return { shipsChanged, starbasesChanged, contactsChanged, factionEconomiesChanged };
 }
 
 function fireStarbaseWeaponsAtTarget(
@@ -4521,12 +4653,14 @@ function processContinuousFleetCombat(elapsedGameHours: number, elapsedGameDays:
   shipsChanged: boolean;
   fleetsChanged: boolean;
   starbasesChanged: boolean;
+  factionEconomiesChanged: boolean;
   visibilityChanged: boolean;
 } {
   let combatContactsChanged = false;
   let shipsChanged = false;
   let fleetsChanged = false;
   let starbasesChanged = false;
+  let factionEconomiesChanged = false;
   let visibilityChanged = false;
   const shipsById = new Map(state.ships.map((ship) => [ship.id, ship]));
   decrementWeaponCooldowns(elapsedGameHours);
@@ -4556,6 +4690,7 @@ function processContinuousFleetCombat(elapsedGameHours: number, elapsedGameDays:
       const result = fireFleetWeaponsAtTarget(actor, target, shipsById);
       shipsChanged ||= result.shipsChanged;
       starbasesChanged ||= result.starbasesChanged;
+      factionEconomiesChanged ||= result.factionEconomiesChanged;
       combatContactsChanged ||= result.contactsChanged;
       if (result.contactsChanged) {
         actor.fleet.combatStatus = "firing";
@@ -4563,6 +4698,7 @@ function processContinuousFleetCombat(elapsedGameHours: number, elapsedGameDays:
       }
       continue;
     }
+    if (actor.ownerId !== actor.starbase.ownerId || actor.starbase.hull <= 0) continue;
     const target = selectStarbaseCombatTarget(actor, actors, shipsById);
     if (!target) continue;
     const result = fireStarbaseWeaponsAtTarget(actor, target, shipsById);
@@ -4582,7 +4718,7 @@ function processContinuousFleetCombat(elapsedGameHours: number, elapsedGameDays:
   if (combatContactsChanged || shipsChanged || fleetsChanged || starbasesChanged) {
     hasDirtyState = true;
   }
-  return { combatContactsChanged, shipsChanged, fleetsChanged, starbasesChanged, visibilityChanged };
+  return { combatContactsChanged, shipsChanged, fleetsChanged, starbasesChanged, factionEconomiesChanged, visibilityChanged };
 }
 
 function fleetUpdateSignature(): string {
@@ -4980,6 +5116,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
   if (combatResult.shipsChanged) changed.add("ships");
   if (combatResult.fleetsChanged) changed.add("fleets");
   if (combatResult.starbasesChanged) changed.add("starbases");
+  if (combatResult.factionEconomiesChanged) changed.add("factionEconomies");
   if (combatResult.visibilityChanged) {
     changed.add("visibility");
   }
@@ -6301,13 +6438,18 @@ async function executeAdminCommand(
       const starbase = createAdminStarbase(starId, owner, level);
       state.starbases.push(starbase);
       state.starOwnership[starId] = owner;
+      syncSystemOwnershipFromStarbases();
+      refreshFactionEconomyDeltas();
       refreshDiscovery();
-      return changedResult("Starbase created.", ["starbases", "visibility"], [{ id: starbase.id, owner, system: starId, level }]);
+      return changedResult("Starbase created.", ["starbases", "factionEconomies", "visibility"], [{ id: starbase.id, owner, system: starId, level }]);
     }
     case "delete_starbase": {
       const starbase = resolveStarbaseToken(parsed.args[0], context);
       state.starbases = state.starbases.filter((candidate) => candidate.id !== starbase.id);
-      return changedResult("Starbase deleted.", ["starbases", "visibility"]);
+      syncSystemOwnershipFromStarbases();
+      refreshFactionEconomyDeltas();
+      refreshDiscovery();
+      return changedResult("Starbase deleted.", ["starbases", "factionEconomies", "visibility"]);
     }
     case "upgrade_starbase_now": {
       const starbase = resolveStarbaseToken(parsed.args[0], context);
@@ -6726,6 +6868,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "attackTarget") {
     handleAttackTarget(session.socket, session.perspective, command.fleetId, command.targetId, command.targetKind);
+    return;
+  }
+  if (command.type === "attackSystem") {
+    handleAttackSystem(session.socket, session.perspective, command.fleetId, command.targetStarId);
     return;
   }
   if (command.type === "setFleetCombatSettings") {

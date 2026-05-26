@@ -230,6 +230,50 @@ function ensureActionMenuStyles(): void {
   border-color: rgba(90, 100, 112, 0.38);
   color: rgba(160, 168, 178, 0.58);
 }
+
+.spaceBuildPicker {
+  position: fixed;
+  z-index: 81;
+  width: 220px;
+  border: 1px solid rgba(102, 236, 199, 0.72);
+  border-radius: 5px;
+  background: linear-gradient(180deg, rgba(13, 29, 29, 0.98), rgba(6, 14, 18, 0.98));
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.5);
+  padding: 8px;
+  pointer-events: auto;
+  font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
+}
+
+.spaceBuildPickerTitle {
+  padding: 6px 8px 8px;
+  color: rgba(205, 255, 239, 0.95);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border-bottom: 1px solid rgba(102, 236, 199, 0.36);
+  margin-bottom: 6px;
+}
+
+.spaceBuildPickerBtn {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid rgba(102, 236, 199, 0.48);
+  border-radius: 4px;
+  background: rgba(10, 41, 34, 0.94);
+  color: rgba(226, 255, 246, 0.96);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.spaceBuildPickerBtn:hover {
+  border-color: rgba(139, 255, 219, 0.9);
+  background: rgba(16, 58, 47, 0.98);
+}
 `;
   document.head.appendChild(style);
 }
@@ -904,6 +948,7 @@ export class GalaxyScene implements IGameScene {
   private activeShipAction: ShipAction | null = null;
   private targetableStarIds = new Set<number>();
   private actionMenuElement: HTMLDivElement | null = null;
+  private buildPickerElement: HTMLDivElement | null = null;
   private galacticCoreMeshes: Mesh[] = [];
   private galacticCoreSpinSpeeds: number[] = [];
   private hoveredStarId = -1;
@@ -1544,9 +1589,31 @@ export class GalaxyScene implements IGameScene {
       ?? (this.selectedCommandShipStarId >= 0 ? this.selectedCommandShipStarId : this.playerShipStarId);
   }
 
+  private getSelectedCommandFleet(): ServerFleet | null {
+    return this.selectedCommandShipId
+      ? this.serverFleets.find((fleet) => fleet.id === this.selectedCommandShipId) ?? null
+      : null;
+  }
+
+  private fleetCanBuildStarbase(fleet: ServerFleet | null | undefined): boolean {
+    if (!fleet || fleet.ownerId !== this.playerFactionId) return false;
+    return this.getShipsForFleet(fleet.id).some((ship) => ship.shipKind === "constructionShip" && ship.hull > 0);
+  }
+
+  private getFleetActions(fleet: ServerFleet | null | undefined): ShipAction[] {
+    const secondary: ShipAction = this.fleetCanBuildStarbase(fleet) ? "build" : "attack";
+    return ["move", secondary, "merge", "retreat", "retreatTo", "emergencyRetreatTo"];
+  }
+
+  private hasHostilePresenceAtStar(starId: number): boolean {
+    const owner = this.starOwnership[starId] ?? -1;
+    if (owner >= 0 && owner !== this.playerFactionId) return true;
+    return this.starbases.some((starbase) => starbase.starId === starId && starbase.ownerId !== this.playerFactionId)
+      || this.serverFleets.some((fleet) => fleet.currentStarId === starId && fleet.ownerId !== this.playerFactionId);
+  }
+
   private getReachableStarIds(action: ShipAction): Set<number> {
     const reachable = new Set<number>();
-    if (action === "attack") return reachable;
     if (action === "emergencyRetreatTo") {
       if (this.knownStarIds === null) {
         this.stars.forEach((star) => reachable.add(star.id));
@@ -1571,11 +1638,6 @@ export class GalaxyScene implements IGameScene {
         if (reachable.has(neighbor)) continue;
         if (!this.isStarKnownToPerspective(neighbor)) continue;
 
-        if (action !== "retreatTo") {
-          const owner = this.starOwnership[neighbor] ?? -1;
-          if (owner >= 0 && owner !== this.playerFactionId) continue;
-        }
-
         reachable.add(neighbor);
         queue.push(neighbor);
       }
@@ -1586,9 +1648,15 @@ export class GalaxyScene implements IGameScene {
       return reachable;
     }
 
+    if (action === "attack") {
+      for (const starId of Array.from(reachable)) {
+        if (!this.hasHostilePresenceAtStar(starId)) reachable.delete(starId);
+      }
+      return reachable;
+    }
+
     for (const starId of Array.from(reachable)) {
-      const owner = this.starOwnership[starId] ?? -1;
-      if (owner !== -1 || this.starbaseSystemIds.has(starId)) {
+      if (this.starbaseSystemIds.has(starId)) {
         reachable.delete(starId);
       }
     }
@@ -1624,11 +1692,19 @@ export class GalaxyScene implements IGameScene {
     }
 
     if (action === "attack") {
-      if (this.selectedCommandShipId) this.issueBasicAttack(this.selectedCommandShipId);
-      this.clearShipAction();
+      this.activateShipActionTargeting("attack");
       return;
     }
 
+    if (action === "build") {
+      this.openBuildPicker(() => this.activateShipActionTargeting("build"));
+      return;
+    }
+
+    this.activateShipActionTargeting(action);
+  }
+
+  private activateShipActionTargeting(action: ShipAction): void {
     if (this.activeShipAction === action) {
       this.clearShipAction();
       return;
@@ -1740,7 +1816,45 @@ export class GalaxyScene implements IGameScene {
     }
   }
 
+  private openBuildPicker(onSelectStarbase: () => void): void {
+    ensureActionMenuStyles();
+    this.closeActionMenu();
+    this.closeBuildPicker();
+
+    const panel = document.createElement("div");
+    panel.className = "spaceBuildPicker";
+    panel.style.left = "18px";
+    panel.style.bottom = "278px";
+
+    const title = document.createElement("div");
+    title.className = "spaceBuildPickerTitle";
+    title.textContent = "Build";
+    panel.appendChild(title);
+
+    const starbaseButton = document.createElement("button");
+    starbaseButton.type = "button";
+    starbaseButton.className = "spaceBuildPickerBtn";
+    starbaseButton.textContent = "Starbase";
+    starbaseButton.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this.closeBuildPicker();
+      onSelectStarbase();
+    });
+    panel.appendChild(starbaseButton);
+
+    panel.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    panel.addEventListener("click", (ev) => ev.stopPropagation());
+    document.body.appendChild(panel);
+    this.buildPickerElement = panel;
+  }
+
+  private closeBuildPicker(): void {
+    this.buildPickerElement?.remove();
+    this.buildPickerElement = null;
+  }
+
   private clearShipAction(): void {
+    this.closeBuildPicker();
     this.activeShipAction = null;
     this.targetableStarIds.clear();
     this.starField.setHighlightedStarIds([]);
@@ -1781,14 +1895,15 @@ export class GalaxyScene implements IGameScene {
     title.textContent = star.name;
     menu.appendChild(title);
 
+    const commandFleet = this.getSelectedCommandFleet();
+    const secondaryAction: ShipAction = this.fleetCanBuildStarbase(commandFleet) ? "build" : "attack";
     const actions: Array<{ action: ShipAction; label: string }> = [
       { action: "move", label: "Move" },
-      { action: "build", label: "Build" },
-      { action: "attack", label: "Attack" },
+      { action: secondaryAction, label: secondaryAction === "build" ? "Build" : "Attack" },
     ];
 
     for (const item of actions) {
-      const canIssue = item.action !== "attack" && this.getReachableStarIds(item.action).has(star.id);
+      const canIssue = this.getReachableStarIds(item.action).has(star.id);
       const button = document.createElement("button");
       button.type = "button";
       button.className = "spaceActionMenuBtn";
@@ -1798,10 +1913,6 @@ export class GalaxyScene implements IGameScene {
         clickEv.stopPropagation();
         if (!canIssue) return;
         this.closeActionMenu();
-        if (item.action === "attack") {
-          console.info("Attack command is a placeholder.");
-          return;
-        }
         this.options.onShipCommand?.(item.action, star.id, this.selectedCommandShipId ?? undefined);
       });
       menu.appendChild(button);
@@ -1910,7 +2021,7 @@ export class GalaxyScene implements IGameScene {
     const fleetSize = fleet.shipIds.length || fleetShips.length || 1;
     const defense = this.getFleetDefense(fleet.id);
     const engaged = fleet.combatStatus === "engaging" || fleet.combatStatus === "firing" || fleet.combatStatus === "retreating";
-    const actions: ShipAction[] = ["move", "attack", "merge", "retreat", "retreatTo", "emergencyRetreatTo"];
+    const actions = this.getFleetActions(fleet);
     return {
       type: "fleet",
       id: fleet.id,
@@ -1970,6 +2081,7 @@ export class GalaxyScene implements IGameScene {
         const shipCode = `${this.formatFactionShipPrefix(owner, ship.ownerId)}S-${String(index + 1).padStart(2, "0")}`;
         return {
           id: ship.id,
+          shipKind: ship.shipKind,
           name: `${shipCode} ${this.formatShipDisplayName(design, hull?.baseClassName ?? hull?.label ?? ship.shipKind)}`,
           designName: design?.name ?? `${hull?.baseClassName ?? hull?.label ?? ship.shipKind}-class`,
           className: hull?.label ?? this.formatPolicyLikeValue(ship.shipKind),
@@ -2066,7 +2178,7 @@ export class GalaxyScene implements IGameScene {
       const engaged = serverFleet?.combatStatus === "engaging"
         || serverFleet?.combatStatus === "firing"
         || serverFleet?.combatStatus === "retreating";
-      const actions: ShipAction[] = ["move", "attack", "merge", "retreat", "retreatTo", "emergencyRetreatTo"];
+      const actions = this.getFleetActions(serverFleet);
 
       if (canCommand) {
         this.selectedShip = true;
@@ -2379,6 +2491,10 @@ export class GalaxyScene implements IGameScene {
     }
     this.starField?.setPlayerShipSystemIds(this.playerShipSystemIds);
     this.starField?.setShipIconStyles(this.getShipIconStyles());
+    if (this.activeShipAction) {
+      this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
+      this.starField?.setHighlightedStarIds(this.targetableStarIds);
+    }
   }
 
   setClockYear(year: number): void {
@@ -2505,8 +2621,8 @@ export class GalaxyScene implements IGameScene {
 
   setStarbaseSystemIds(starIds: Iterable<number>): void {
     this.starbaseSystemIds = new Set(starIds);
-    if (this.activeShipAction === "build") {
-      this.targetableStarIds = this.getReachableStarIds("build");
+    if (this.activeShipAction) {
+      this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
     }
   }
@@ -2521,6 +2637,10 @@ export class GalaxyScene implements IGameScene {
     this.setPromotedStarbaseSystemIds(this.getPromotedStarbaseSystemIds());
     for (const starbase of starbases) {
       this.starbasePanel?.refreshStarbase(starbase);
+    }
+    if (this.activeShipAction) {
+      this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
+      this.starField?.setHighlightedStarIds(this.targetableStarIds);
     }
   }
 
@@ -2537,6 +2657,10 @@ export class GalaxyScene implements IGameScene {
       starId,
       this.isStarKnownToPerspective(starId) ? owner : -1,
     );
+    if (this.activeShipAction) {
+      this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
+      this.starField?.setHighlightedStarIds(this.targetableStarIds);
+    }
   }
 
   setStarOwnerships(ownerByStar: number[]): void {
@@ -2552,6 +2676,10 @@ export class GalaxyScene implements IGameScene {
       this.starOwnership.push(-1);
     }
     this.ownershipRenderer?.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
+    if (this.activeShipAction) {
+      this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
+      this.starField?.setHighlightedStarIds(this.targetableStarIds);
+    }
   }
 
   captureViewState(): GalaxyViewState | null {
@@ -2570,6 +2698,7 @@ export class GalaxyScene implements IGameScene {
 
   dispose(): void {
     this.closeActionMenu();
+    this.closeBuildPicker();
     if (this.pointerObserver) {
       this.scene.onPointerObservable.remove(this.pointerObserver);
       this.pointerObserver = null;

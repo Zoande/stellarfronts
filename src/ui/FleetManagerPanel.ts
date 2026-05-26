@@ -20,6 +20,7 @@ import "@babylonjs/loaders/OBJ/objFileLoader";
 import type { FactionInfo } from "../data/Factions";
 import {
   STARBASE_SHIP_DEFINITIONS,
+  STARBASE_SHIP_KINDS,
   countStarbaseShipyards,
 } from "../data/Starbase";
 import type { StarbaseShipKind } from "../data/Starbase";
@@ -1202,7 +1203,7 @@ export class FleetManagerPanel {
       list.push(design);
       groups.set(design.shipKind, list);
     }
-    const orderedKinds: StarbaseShipKind[] = ["corvette"];
+    const orderedKinds: StarbaseShipKind[] = STARBASE_SHIP_KINDS;
     return orderedKinds.map((shipKind) => {
       const designs = (groups.get(shipKind) ?? []).sort((a, b) => a.name.localeCompare(b.name));
       if (designs.length === 0) return "";
