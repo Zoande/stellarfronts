@@ -51,12 +51,25 @@ const operations = [
   },
 ];
 
+function isTrustedStellarfrontsHost(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return normalized === 'stellarfronts.com' || normalized.endsWith('.stellarfronts.com');
+}
+
 export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPageProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState('');
+  const isTrustedOrigin = typeof window === 'undefined'
+    ? true
+    : isTrustedStellarfrontsHost(window.location.hostname);
+  const secureBadgeClassName = `secure-badge${isTrustedOrigin ? '' : ' secure-badge--warning'}`;
+  const secureBadgeLabel = isTrustedOrigin ? 'Secure connection' : 'Unrecognized host';
+  const secureBadgeTitle = isTrustedOrigin
+    ? undefined
+    : 'This login is not running on an official StellarFronts domain.';
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -204,9 +217,9 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
                   <span aria-hidden="true" />
                   Remember me
                 </label>
-                <span className="secure-badge">
+                <span className={secureBadgeClassName} title={secureBadgeTitle}>
                   <i aria-hidden="true" />
-                  Secure connection
+                  {secureBadgeLabel}
                 </span>
               </div>
 

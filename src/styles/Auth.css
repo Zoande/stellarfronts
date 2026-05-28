@@ -1113,6 +1113,10 @@ body {
   white-space: nowrap;
 }
 
+.secure-badge--warning {
+  color: rgba(255, 190, 92, 0.92);
+}
+
 .secure-badge i {
   width: 13px;
   height: 15px;
@@ -1121,6 +1125,11 @@ body {
   border-top-width: 3px;
   border-radius: 5px 5px 6px 6px;
   box-shadow: 0 0 12px rgba(97, 221, 167, 0.34);
+}
+
+.secure-badge--warning i {
+  border-color: #ffbe5c;
+  box-shadow: 0 0 12px rgba(255, 190, 92, 0.38);
 }
 
 .auth-panel--login .form-error {
