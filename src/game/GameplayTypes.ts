@@ -5,6 +5,7 @@ export type ShipAction =
   | "build"
   | "attack"
   | "merge"
+  | "stop"
   | "retreat"
   | "retreatTo"
   | "emergencyRetreatTo"

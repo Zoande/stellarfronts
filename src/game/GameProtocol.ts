@@ -30,7 +30,7 @@ import type {
 } from "./CombatTypes";
 import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 
-export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat" | "retreatTo" | "emergencyRetreatTo";
+export type ShipAction = "move" | "build" | "attack" | "merge" | "stop" | "retreat" | "retreatTo" | "emergencyRetreatTo";
 
 export type FleetFormation = "line" | "vanguard" | "echelon" | "defensive";
 
@@ -366,6 +366,11 @@ export interface MergeFleetsCommand {
   sourceFleetIds: string[];
 }
 
+export interface StopFleetCommand {
+  type: "stopFleet";
+  fleetId: string;
+}
+
 export interface SetSpeedCommand {
   type: "setSpeedMultiplier";
   multiplier: number;
@@ -556,6 +561,7 @@ export type ClientCommand =
   | BuildCommand
   | OrbitPlanetCommand
   | MergeFleetsCommand
+  | StopFleetCommand
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand

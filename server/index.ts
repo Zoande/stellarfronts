@@ -2361,6 +2361,20 @@ function getFleetAuthoritativeSystemPosition(fleet: GameFleet, year = state.cloc
       };
     }
   }
+  if (fleet.movementPlan) {
+    const segment = fleet.movementPlan.segments.find((candidate) => (
+      year >= candidate.startYear && year < candidate.endYear
+    ));
+    if (segment) {
+      const progress = Math.max(
+        0,
+        Math.min(1, (year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear)),
+      );
+      return interpolateSystemPosition(segment.from, segment.to, progress);
+    }
+    const finalSegment = fleet.movementPlan.segments[fleet.movementPlan.segments.length - 1];
+    if (finalSegment) return cloneSystemPosition(finalSegment.to);
+  }
   return cloneSystemPosition(fleet.systemPosition ?? systemCenterPosition());
 }
 
@@ -2410,11 +2424,39 @@ function isFleetAvailableForOrders(fleet: GameFleet): boolean {
   return fleet.phase === "idle" || fleet.phase === "orbitingPlanet" || fleet.phase === "orbiting";
 }
 
+function canFleetAcceptReplacementOrder(fleet: GameFleet): boolean {
+  return fleet.phase !== "missingInAction" && fleet.combatStatus !== "destroyed" && fleet.shipIds.length > 0;
+}
+
 function clearFleetOrbit(fleet: GameFleet): void {
   fleet.orbitTargetPlanetId = null;
   fleet.orbitOffset = null;
   fleet.orbitTarget = null;
   fleet.mergeTargetFleetId = null;
+}
+
+function clearFleetCombatIntent(fleet: GameFleet): void {
+  fleet.retreatState = null;
+  fleet.currentTacticalOrder = null;
+  fleet.currentTargetId = null;
+  fleet.currentTargetKind = null;
+  if (fleet.combatStatus !== "destroyed") fleet.combatStatus = "idle";
+}
+
+function prepareFleetForReplacementOrder(fleet: GameFleet): void {
+  fleet.systemPosition = getFleetAuthoritativeSystemPosition(fleet);
+  fleet.targetStarId = null;
+  fleet.route = [fleet.currentStarId];
+  fleet.routeIndex = 0;
+  fleet.orderType = null;
+  fleet.hyperlanePosition = null;
+  fleet.movementPlan = null;
+  fleet.mergeTargetFleetId = null;
+  clearFleetOrbit(fleet);
+  clearFleetCombatIntent(fleet);
+  setFleetPhase(fleet, "idle");
+  fleet.phaseProgress = 0;
+  fleet.phaseElapsedMs = 0;
 }
 
 function applyFleetOrbitTarget(fleet: GameFleet, orbitTarget: FleetOrbitTarget | null): void {
@@ -2844,8 +2886,9 @@ function handleMove(
   const fleet = resolveFleetForCommand(fleetId, shipId);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!isFleetAvailableForOrders(fleet)) return reject(socket, "Fleet is already busy.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
   try {
+    prepareFleetForReplacementOrder(fleet);
     startMoveOrder(fleet, targetStarId, targetSystemPosition, orbitTarget);
     hasDirtyState = true;
     refreshDiscovery();
@@ -2862,11 +2905,12 @@ function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, fleetId:
   const fleet = resolveFleetForCommand(fleetId, shipId);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!isFleetAvailableForOrders(fleet)) return reject(socket, "Fleet is already busy.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
   if (!Number.isInteger(targetStarId) || targetStarId < 0 || targetStarId >= state.stars.length) return reject(socket, "Invalid target system.");
   if (!fleetHasConstructionShip(fleet)) return reject(socket, "Requires a construction ship.");
   if (state.starbases.some((starbase) => starbase.starId === targetStarId)) return reject(socket, "System already has a starbase.");
   try {
+    prepareFleetForReplacementOrder(fleet);
     startBuildOrder(fleet, targetStarId);
     hasDirtyState = true;
     refreshDiscovery();
@@ -2883,8 +2927,9 @@ function handleOrbitPlanet(socket: WebSocket, perspective: GalaxyPerspective, fl
   const fleet = resolveFleetForCommand(fleetId, undefined);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!isFleetAvailableForOrders(fleet)) return reject(socket, "Fleet is already busy.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
   try {
+    prepareFleetForReplacementOrder(fleet);
     startOrbitOrder(fleet, planetId);
     hasDirtyState = true;
     refreshDiscovery();
@@ -2926,6 +2971,7 @@ function handleMergeFleets(
   let mergedCount = 0;
   let movingCount = 0;
   for (const fleet of sourceFleets) {
+    prepareFleetForReplacementOrder(fleet);
     startMergeSourceOrder(fleet, targetFleet);
     if (state.fleets.some((candidate) => candidate.id === fleet.id)) {
       movingCount += 1;
@@ -2937,6 +2983,21 @@ function handleMergeFleets(
   hasDirtyState = true;
   accept(socket, movingCount > 0 ? `Merge rendezvous ordered for ${movingCount} fleet(s).` : `Merged ${mergedCount} fleet(s).`);
   broadcastUpdates(["clock", "ships", "fleets", "visibility"]);
+}
+
+function handleStopFleet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const fleet = state.fleets.find((candidate) => candidate.id === fleetId);
+  if (!fleet) return reject(socket, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (fleet.phase === "missingInAction") return reject(socket, "Fleet is missing in action.");
+
+  clearFleetMovementNow(fleet);
+  hasDirtyState = true;
+  refreshDiscovery();
+  accept(socket, "Fleet stopped.");
+  broadcastUpdates(["clock", "fleets", "visibility"]);
 }
 
 function handleRetreatFleet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): void {
@@ -3092,6 +3153,7 @@ function handleAttackTarget(
   if (targetOwnerId === undefined || targetStarId === undefined) return reject(socket, "Target not found.");
   if (targetStarId !== fleet.currentStarId) return reject(socket, "Target is not in the same system.");
   if (!isHostileOwner(fleet.ownerId, targetOwnerId)) return reject(socket, "Target is not hostile.");
+  prepareFleetForReplacementOrder(fleet);
   fleet.currentTacticalOrder = {
     type: "attack",
     targetId,
@@ -3119,9 +3181,10 @@ function handleAttackSystem(
   const fleet = state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!isFleetAvailableForOrders(fleet)) return reject(socket, "Fleet is already busy.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
   if (!Number.isInteger(targetStarId) || targetStarId < 0 || targetStarId >= state.stars.length) return reject(socket, "Invalid target system.");
   try {
+    prepareFleetForReplacementOrder(fleet);
     startAttackSystemOrder(fleet, targetStarId);
     hasDirtyState = true;
     refreshDiscovery();
@@ -3195,6 +3258,9 @@ function handleIssueFleetTacticalOrder(
   if (order.type === "move" && !order.targetPosition) return reject(socket, "Move orders require a system position.");
   if (order.type === "attack" && (!order.targetId || !order.targetKind)) return reject(socket, "Attack orders require a target.");
   if (order.type === "guard" && !order.targetPosition && !order.guardPosition) return reject(socket, "Guard orders require a position.");
+  if (order.type !== "retreat") {
+    prepareFleetForReplacementOrder(fleet);
+  }
   fleet.currentTacticalOrder = order;
   if (order.type === "hold") fleet.combatStance = "holdPosition";
   if (order.type === "guard") fleet.combatStance = "guardArea";
@@ -5651,15 +5717,17 @@ function removeDestroyedShips(): boolean {
 }
 
 function clearFleetMovementNow(fleet: GameFleet): void {
+  const currentPosition = getFleetAuthoritativeSystemPosition(fleet);
+  fleet.systemPosition = currentPosition;
   fleet.targetStarId = null;
   fleet.route = [fleet.currentStarId];
   fleet.routeIndex = 0;
   fleet.orderType = null;
-  fleet.retreatState = null;
   fleet.hyperlanePosition = null;
   fleet.movementPlan = null;
   fleet.mergeTargetFleetId = null;
-  fleet.currentTacticalOrder = null;
+  clearFleetOrbit(fleet);
+  clearFleetCombatIntent(fleet);
   setFleetPhase(fleet, "idle");
   fleet.phaseProgress = 0;
   fleet.phaseElapsedMs = 0;
@@ -7046,6 +7114,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "mergeFleets") {
     handleMergeFleets(session.socket, session.perspective, command.targetFleetId, command.sourceFleetIds);
+    return;
+  }
+  if (command.type === "stopFleet") {
+    handleStopFleet(session.socket, session.perspective, command.fleetId);
     return;
   }
   if (command.type === "buildDistrict") {

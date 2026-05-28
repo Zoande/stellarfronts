@@ -159,6 +159,15 @@ const PLAYER_SHIP_TRAIL_MIN_DISTANCE = 0.01;
 const PLAYER_SHIP_TRAIL_MAX_SEGMENT_DISTANCE = 2.5;
 const PLAYER_SHIP_TRAIL_RADIUS = 0.06;
 const PLAYER_SHIP_TRAIL_START_ALPHA = 0.72;
+const TACTICAL_SHIP_TRAIL_SAMPLE_INTERVAL = 0.055;
+const TACTICAL_SHIP_TRAIL_TTL = 1.45;
+const TACTICAL_SHIP_TRAIL_MIN_DISTANCE = 0.025;
+const TACTICAL_SHIP_TRAIL_MAX_SEGMENT_DISTANCE = 3.2;
+const TACTICAL_SHIP_TRAIL_RADIUS = 0.026;
+const TACTICAL_SHIP_TRAIL_START_ALPHA = 0.58;
+const TACTICAL_SHIP_TRAIL_MAX_SEGMENTS_PER_SHIP = 32;
+const FLEET_VISUAL_STACK_KEY_SIZE = 0.18;
+const FLEET_VISUAL_SEPARATION_DISTANCE = 1.05;
 const SELECTED_FLEET_ROUTE_LINE_Y_OFFSET = 0.08;
 const SYSTEM_ACTION_MARKER_COLOR = new Color3(0.18, 1.0, 0.9);
 const SYSTEM_ACTION_MARKER_PULSE_SPEED = 4.2;
@@ -176,7 +185,6 @@ const STAR_BANNER_DIR = "/textures/planet-banners";
 
 const TACTICAL_SHIP_TARGET_SIZE = 0.65;
 const TACTICAL_BEAM_TTL = 0.45;
-const FLEET_MARKER_Y_OFFSET = 0.04;
 const TACTICAL_RING_SEGMENTS = 144;
 
 const STAR_BANNER_TEXTURES: Record<StarType, string> = {
@@ -247,6 +255,9 @@ export class SystemScene implements IGameScene {
   private tacticalShipTemplatePromise: Promise<void> | null = null;
   private shipVisualRoots = new Map<string, TransformNode>();
   private shipVisualTargets = new Map<string, Vector3>();
+  private shipVisualTrailTimers = new Map<string, number>();
+  private shipVisualLastTrailPositions = new Map<string, Vector3>();
+  private shipVisualTrailSegments = new Map<string, Array<{ mesh: Mesh; material: StandardMaterial; age: number; ttl: number }>>();
   private fleetRoots = new Map<string, TransformNode>();
   private fleetTargets = new Map<string, Vector3>();
   private fleetMaterials = new Map<string, StandardMaterial>();
@@ -612,12 +623,15 @@ export class SystemScene implements IGameScene {
       for (const [shipId, root] of this.shipVisualRoots) {
         const target = this.shipVisualTargets.get(shipId);
         if (!target) continue;
+        const previousPosition = root.position.clone();
         root.position.x = root.position.x + (target.x - root.position.x) * moveT;
         root.position.y = root.position.y + (target.y - root.position.y) * moveT;
         root.position.z = root.position.z + (target.z - root.position.z) * moveT;
-        root.rotation.y += dt * 0.35;
+        this.updateShipVisualHeading(root, previousPosition, root.position, dt);
+        this.updateShipVisualTrail(shipId, dt, previousPosition, root.position);
       }
     }
+    this.updateShipVisualTrailFades(dt);
 
     if (this.fleetRoots.size > 0) {
       const moveT = Math.min(1, dt * 3.8);
@@ -627,8 +641,6 @@ export class SystemScene implements IGameScene {
         root.position.x = root.position.x + (target.x - root.position.x) * moveT;
         root.position.y = root.position.y + (target.y - root.position.y) * moveT;
         root.position.z = root.position.z + (target.z - root.position.z) * moveT;
-        const ring = root.getChildMeshes().find((mesh) => mesh.name.startsWith("fleetMarkerRing-"));
-        if (ring) ring.rotation.z += dt * 0.22;
       }
     }
 
@@ -842,6 +854,163 @@ export class SystemScene implements IGameScene {
     this.playerShipTrailTimer = 0;
   }
 
+  private updateShipVisualHeading(
+    root: TransformNode,
+    previousPosition: Vector3,
+    currentPosition: Vector3,
+    deltaTime: number,
+  ): void {
+    const dx = currentPosition.x - previousPosition.x;
+    const dz = currentPosition.z - previousPosition.z;
+    if (Math.hypot(dx, dz) < 0.002) return;
+
+    const targetYaw = Math.atan2(dx, dz) + PLAYER_SHIP_MODEL_YAW_OFFSET;
+    const currentYaw = root.rotation.y;
+    const yawDelta = Math.atan2(Math.sin(targetYaw - currentYaw), Math.cos(targetYaw - currentYaw));
+    const turn = Math.min(1, deltaTime * PLAYER_SHIP_TURN_RATE);
+    root.rotation.set(
+      PLAYER_SHIP_MODEL_PITCH,
+      currentYaw + yawDelta * turn,
+      PLAYER_SHIP_MODEL_ROLL,
+    );
+  }
+
+  private updateShipVisualTrail(
+    shipId: string,
+    deltaTime: number,
+    previousPosition: Vector3,
+    currentPosition: Vector3,
+  ): void {
+    const root = this.shipVisualRoots.get(shipId);
+    if (!root?.isEnabled()) {
+      this.shipVisualLastTrailPositions.delete(shipId);
+      this.shipVisualTrailTimers.delete(shipId);
+      return;
+    }
+
+    const movedThisFrame = Vector3.Distance(previousPosition, currentPosition);
+    if (movedThisFrame < 0.001) return;
+
+    const nextTimer = (this.shipVisualTrailTimers.get(shipId) ?? 0) + deltaTime;
+    this.shipVisualTrailTimers.set(shipId, nextTimer);
+    if (!this.shipVisualLastTrailPositions.has(shipId)) {
+      this.shipVisualLastTrailPositions.set(shipId, previousPosition.clone());
+    }
+    const lastPosition = this.shipVisualLastTrailPositions.get(shipId);
+    if (!lastPosition) return;
+
+    const distance = Vector3.Distance(lastPosition, currentPosition);
+    if (distance > TACTICAL_SHIP_TRAIL_MAX_SEGMENT_DISTANCE) {
+      this.shipVisualLastTrailPositions.set(shipId, currentPosition.clone());
+      this.shipVisualTrailTimers.set(shipId, 0);
+      return;
+    }
+    if (nextTimer < TACTICAL_SHIP_TRAIL_SAMPLE_INTERVAL || distance < TACTICAL_SHIP_TRAIL_MIN_DISTANCE) return;
+
+    this.createShipVisualTrailSegment(shipId, lastPosition, currentPosition);
+    this.shipVisualLastTrailPositions.set(shipId, currentPosition.clone());
+    this.shipVisualTrailTimers.set(shipId, 0);
+  }
+
+  private updateShipVisualTrailFades(deltaTime: number): void {
+    if (this.shipVisualTrailSegments.size === 0) return;
+    for (const [shipId, segments] of Array.from(this.shipVisualTrailSegments.entries())) {
+      const nextSegments: typeof segments = [];
+      for (const segment of segments) {
+        segment.age += deltaTime;
+        const life = Math.max(0, 1 - segment.age / segment.ttl);
+        segment.material.alpha = TACTICAL_SHIP_TRAIL_START_ALPHA * Math.pow(life, 1.4);
+        if (segment.age < segment.ttl) {
+          nextSegments.push(segment);
+        } else {
+          this.glowLayer.removeIncludedOnlyMesh(segment.mesh);
+          segment.mesh.dispose();
+          segment.material.dispose();
+        }
+      }
+      if (nextSegments.length > 0) {
+        this.shipVisualTrailSegments.set(shipId, nextSegments);
+      } else {
+        this.shipVisualTrailSegments.delete(shipId);
+      }
+    }
+  }
+
+  private createShipVisualTrailSegment(shipId: string, from: Vector3, to: Vector3): void {
+    const palette = this.getShipTrailPalette(shipId);
+    const path = [
+      new Vector3(from.x, from.y - 0.1, from.z),
+      new Vector3(to.x, to.y - 0.1, to.z),
+    ];
+    const material = new StandardMaterial(`shipTrailSegmentMat-${shipId}`, this.scene);
+    material.diffuseColor = palette.diffuse;
+    material.emissiveColor = palette.emissive;
+    material.specularColor = Color3.Black();
+    material.disableLighting = true;
+    material.alpha = TACTICAL_SHIP_TRAIL_START_ALPHA;
+    material.transparencyMode = Material.MATERIAL_ALPHABLEND;
+
+    const mesh = MeshBuilder.CreateTube(
+      `shipTrailSegment-${shipId}`,
+      {
+        path,
+        radius: TACTICAL_SHIP_TRAIL_RADIUS,
+        tessellation: 6,
+        cap: Mesh.NO_CAP,
+      },
+      this.scene,
+    );
+    mesh.material = material;
+    mesh.isPickable = false;
+    mesh.alwaysSelectAsActiveMesh = true;
+    this.glowLayer.addIncludedOnlyMesh(mesh);
+
+    const segments = this.shipVisualTrailSegments.get(shipId) ?? [];
+    segments.push({ mesh, material, age: 0, ttl: TACTICAL_SHIP_TRAIL_TTL });
+    while (segments.length > TACTICAL_SHIP_TRAIL_MAX_SEGMENTS_PER_SHIP) {
+      const oldest = segments.shift();
+      if (!oldest) break;
+      this.glowLayer.removeIncludedOnlyMesh(oldest.mesh);
+      oldest.mesh.dispose();
+      oldest.material.dispose();
+    }
+    this.shipVisualTrailSegments.set(shipId, segments);
+  }
+
+  private getShipTrailPalette(shipId: string): { diffuse: Color3; emissive: Color3 } {
+    const ship = this.serverShips.find((candidate) => candidate.id === shipId);
+    if (ship?.shipKind === "constructionShip") {
+      return {
+        diffuse: new Color3(0.42, 0.16, 0.02),
+        emissive: new Color3(1.0, 0.45, 0.08),
+      };
+    }
+    return {
+      diffuse: new Color3(0.02, 0.14, 0.38),
+      emissive: new Color3(0.08, 0.68, 1.0),
+    };
+  }
+
+  private disposeShipVisualTrail(shipId: string): void {
+    const segments = this.shipVisualTrailSegments.get(shipId) ?? [];
+    for (const segment of segments) {
+      this.glowLayer.removeIncludedOnlyMesh(segment.mesh);
+      segment.mesh.dispose();
+      segment.material.dispose();
+    }
+    this.shipVisualTrailSegments.delete(shipId);
+    this.shipVisualLastTrailPositions.delete(shipId);
+    this.shipVisualTrailTimers.delete(shipId);
+  }
+
+  private disposeAllShipVisualTrails(): void {
+    for (const shipId of Array.from(this.shipVisualTrailSegments.keys())) {
+      this.disposeShipVisualTrail(shipId);
+    }
+    this.shipVisualLastTrailPositions.clear();
+    this.shipVisualTrailTimers.clear();
+  }
+
   private updateSelectedFleetRouteLine(): void {
     const route = this.getSelectedFleetRouteLinePoints();
     if (!route) {
@@ -929,6 +1098,11 @@ export class SystemScene implements IGameScene {
 
     if (action === "merge") {
       this.mergeSelectedFleets();
+      return;
+    }
+    if (action === "stop") {
+      this.options.onFleetCommand?.({ type: "stopFleet", fleetId });
+      this.clearFleetAction();
       return;
     }
     if (action === "retreatTo" || action === "emergencyRetreatTo") {
@@ -1576,7 +1750,7 @@ export class SystemScene implements IGameScene {
   }
 
   private getVisibleFleetViews(): TacticalFleetView[] {
-    return this.getFleetsInCurrentSystem()
+    const views = this.getFleetsInCurrentSystem()
       .filter((fleet) => fleet.shipIds.length > 0)
       .map((fleet) => {
         const defense = this.getFleetDefense(fleet.id);
@@ -1595,6 +1769,52 @@ export class SystemScene implements IGameScene {
           maxWeaponRange: fleet.maxWeaponRange ?? 0,
         };
       });
+    return this.applyFleetVisualSeparation(views);
+  }
+
+  private applyFleetVisualSeparation(views: TacticalFleetView[]): TacticalFleetView[] {
+    const groups = new Map<string, TacticalFleetView[]>();
+    for (const view of views) {
+      const key = [
+        Math.round(view.position.x / FLEET_VISUAL_STACK_KEY_SIZE),
+        Math.round(view.position.z / FLEET_VISUAL_STACK_KEY_SIZE),
+      ].join(":");
+      const group = groups.get(key) ?? [];
+      group.push(view);
+      groups.set(key, group);
+    }
+
+    const offsets = new Map<string, { x: number; z: number }>();
+    for (const [key, group] of groups) {
+      if (group.length <= 1) continue;
+      const sorted = group.slice().sort((a, b) => a.id.localeCompare(b.id));
+      const baseAngle = ((this.hashString(key) % 360) / 360) * Math.PI * 2;
+      const firstRingCount = Math.min(sorted.length, 8);
+      for (let index = 0; index < sorted.length; index += 1) {
+        const ringIndex = Math.floor(index / 8);
+        const ringOffsetIndex = index % 8;
+        const ringCount = ringIndex === 0 ? firstRingCount : Math.min(8, sorted.length - ringIndex * 8);
+        const radius = FLEET_VISUAL_SEPARATION_DISTANCE * (sorted.length === 2 ? 0.62 : 0.92 + ringIndex * 0.72);
+        const angle = baseAngle + (ringOffsetIndex / Math.max(1, ringCount)) * Math.PI * 2;
+        offsets.set(sorted[index].id, {
+          x: Math.cos(angle) * radius,
+          z: Math.sin(angle) * radius,
+        });
+      }
+    }
+
+    return views.map((view) => {
+      const offset = offsets.get(view.id);
+      if (!offset) return view;
+      return {
+        ...view,
+        position: {
+          ...view.position,
+          x: view.position.x + offset.x,
+          z: view.position.z + offset.z,
+        },
+      };
+    });
   }
 
   private getStarbasesInCurrentSystem(): ServerStarbaseSummary[] {
@@ -1659,7 +1879,7 @@ export class SystemScene implements IGameScene {
 
   private getFleetActions(fleet: ServerFleet): ShipAction[] {
     const secondary: ShipAction = this.fleetCanBuildStarbase(fleet) ? "build" : "attack";
-    return ["move", secondary, "hold", "guard", "retreat", "retreatTo", "emergencyRetreatTo", "merge"];
+    return ["move", secondary, "stop", "hold", "guard", "retreat", "retreatTo", "emergencyRetreatTo", "merge"];
   }
 
   private createFleetSelectionData(fleet: ServerFleet): SelectionData {
@@ -3022,6 +3242,7 @@ export class SystemScene implements IGameScene {
     const clone = this.tacticalShipTemplate.clone(`shipVisual-${shipId}`, null);
     if (!clone) return null;
     clone.setEnabled(this.starsVisible);
+    clone.rotation.set(PLAYER_SHIP_MODEL_PITCH, 0, PLAYER_SHIP_MODEL_ROLL);
     for (const mesh of clone.getChildMeshes()) {
       mesh.isPickable = true;
     }
@@ -3056,17 +3277,10 @@ export class SystemScene implements IGameScene {
     for (const view of views) {
       const existingRoot = this.fleetRoots.get(view.id);
       const root = existingRoot ?? this.createFleetMarker(view);
-      const target = new Vector3(view.position.x, SYSTEM_FLEET_Y + FLEET_MARKER_Y_OFFSET, view.position.z);
+      const target = new Vector3(view.position.x, SYSTEM_FLEET_Y + 0.25, view.position.z);
       if (!existingRoot) root.position.copyFrom(target);
       this.fleetTargets.set(view.id, target);
       root.setEnabled(this.starsVisible);
-      const selected = view.id === this.selectedFleetId || this.selectedFleetIds.has(view.id);
-      root.scaling.setAll(selected ? 1.08 : 1);
-      const ring = root.getChildMeshes().find((mesh) => mesh.name.startsWith("fleetMarkerRing-"));
-      if (ring) {
-        ring.setEnabled(selected && this.starsVisible);
-        ring.scaling.set(Math.max(1, view.tacticalRadius), 1, Math.max(1, view.tacticalRadius));
-      }
       root.metadata = { fleetId: view.id, view };
     }
   }
@@ -3074,37 +3288,6 @@ export class SystemScene implements IGameScene {
   private createFleetMarker(view: TacticalFleetView): TransformNode {
     const root = new TransformNode(`fleetMarker-${view.id}`, this.scene);
     root.metadata = { fleetId: view.id, view };
-    const owner = this.getFaction(view.ownerId);
-    const color = owner?.color
-      ? new Color3(owner.color[0], owner.color[1], owner.color[2])
-      : new Color3(0.55, 0.84, 1);
-    const material = new StandardMaterial(`fleetMarkerMat-${view.id}`, this.scene);
-    material.diffuseColor = color.scale(0.18);
-    material.emissiveColor = color.scale(0.24);
-    material.specularColor = Color3.Black();
-    material.alpha = 0.3;
-    material.disableLighting = true;
-    this.fleetMaterials.set(view.id, material);
-
-    const core = MeshBuilder.CreateSphere(`fleetMarkerCore-${view.id}`, { diameter: 0.32, segments: 10 }, this.scene);
-    core.parent = root;
-    core.position.y = -0.14;
-    core.material = material;
-    core.isPickable = true;
-    core.metadata = { fleetId: view.id };
-
-    const ring = MeshBuilder.CreateTorus(`fleetMarkerRing-${view.id}`, {
-      diameter: 2,
-      thickness: 0.045,
-      tessellation: 48,
-    }, this.scene);
-    ring.parent = root;
-    ring.position.y = -0.14;
-    ring.material = material;
-    ring.isPickable = true;
-    ring.metadata = { fleetId: view.id };
-    ring.setEnabled(false);
-
     this.fleetRoots.set(view.id, root);
     return root;
   }
@@ -3214,6 +3397,7 @@ export class SystemScene implements IGameScene {
       }
       this.shipVisualRoots.clear();
       this.shipVisualTargets.clear();
+      this.disposeAllShipVisualTrails();
       this.refreshFleetMarkers([]);
       if (this.playerShipRoot) {
         this.playerShipRoot.setEnabled(this.starsVisible);
@@ -3227,6 +3411,7 @@ export class SystemScene implements IGameScene {
           root.dispose();
           this.shipVisualRoots.delete(shipId);
           this.shipVisualTargets.delete(shipId);
+          this.disposeShipVisualTrail(shipId);
         }
       }
 
@@ -4461,6 +4646,8 @@ export class SystemScene implements IGameScene {
       root.dispose();
     }
     this.shipVisualRoots.clear();
+    this.shipVisualTargets.clear();
+    this.disposeAllShipVisualTrails();
     for (const [, root] of this.fleetRoots) {
       root.dispose();
     }

@@ -1605,7 +1605,7 @@ export class GalaxyScene implements IGameScene {
 
   private getFleetActions(fleet: ServerFleet | null | undefined): ShipAction[] {
     const secondary: ShipAction = this.fleetCanBuildStarbase(fleet) ? "build" : "attack";
-    return ["move", secondary, "merge", "retreat", "retreatTo", "emergencyRetreatTo"];
+    return ["move", secondary, "stop", "merge", "retreat", "retreatTo", "emergencyRetreatTo"];
   }
 
   private hasHostilePresenceAtStar(starId: number): boolean {
@@ -1683,6 +1683,14 @@ export class GalaxyScene implements IGameScene {
 
     if (action === "merge") {
       this.mergeSelectedFleetWithSelectedFleets();
+      return;
+    }
+
+    if (action === "stop") {
+      if (this.selectedCommandShipId) {
+        this.options.onFleetCommand?.({ type: "stopFleet", fleetId: this.selectedCommandShipId });
+      }
+      this.clearShipAction();
       return;
     }
 
