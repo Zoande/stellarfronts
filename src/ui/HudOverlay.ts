@@ -1006,6 +1006,7 @@ export class HudOverlay {
       const nextResourceSignature = JSON.stringify({
         stockpiles: state.economy.stockpiles,
         monthlyDelta: state.economy.monthlyDelta,
+        marketMonthlyDelta: state.economy.marketMonthlyDelta ?? null,
         resourcePlanets: state.resourcePlanets ?? [],
       });
       if (this.resourceSignature !== nextResourceSignature) {
@@ -1015,7 +1016,7 @@ export class HudOverlay {
           const monthlyDelta = state.economy?.monthlyDelta[resource] ?? 0;
           const delta = monthlyDelta / GAME_HOURS_PER_MONTH;
           return `
-            <div class="spaceHudResourceItem" data-hud-tooltip="${escapeHtml(this.renderResourceTooltip(resource, stockpile, monthlyDelta, state.resourcePlanets ?? []))}">
+            <div class="spaceHudResourceItem" data-hud-tooltip="${escapeHtml(this.renderResourceTooltip(resource, stockpile, monthlyDelta, state.economy?.marketMonthlyDelta?.[resource] ?? 0, state.resourcePlanets ?? []))}">
               <span class="spaceHudResourceIcon ${resource}">${RESOURCE_ICON_LABELS[resource]}</span>
               <span class="spaceHudResourceText">
                 <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
@@ -1085,19 +1086,22 @@ export class HudOverlay {
     resource: ResourceKind,
     stockpile: number,
     monthlyDelta: number,
+    marketMonthlyDelta: number,
     planets: HudResourcePlanetSummary[],
   ): string {
     const hourlyDelta = monthlyDelta / GAME_HOURS_PER_MONTH;
+    const hasMarketDelta = Math.abs(marketMonthlyDelta) > 0.0001;
     const planetRows = planets
       .filter((planet) => Math.abs(planet.net[resource]) > 0.0001 || Math.abs(planet.production[resource]) > 0.0001 || Math.abs(planet.upkeep[resource]) > 0.0001)
       .sort((a, b) => Math.abs(b.net[resource]) - Math.abs(a.net[resource]));
     return `
       <div class="spaceHudTooltipTitle">${escapeHtml(RESOURCE_LABELS[resource])}</div>
-      <p>Faction stockpile and income from known owned planets.</p>
+      <p>Faction stockpile and projected income from owned planets${hasMarketDelta ? " plus automatic market trades" : ""}.</p>
       <div class="spaceHudTooltipGrid">
         ${this.renderTooltipGridItem("Stockpile", formatCompactNumber(stockpile))}
         ${this.renderTooltipGridItem("Monthly Net", formatSignedCompactNumber(monthlyDelta))}
         ${this.renderTooltipGridItem("Hourly Net", formatDelta(hourlyDelta))}
+        ${hasMarketDelta ? this.renderTooltipGridItem("Market Auto", `${formatSignedCompactNumber(marketMonthlyDelta)}/mo`) : ""}
         ${this.renderTooltipGridItem("Planets", String(planetRows.length))}
       </div>
       <div class="spaceHudTooltipSectionTitle">Planet Net</div>

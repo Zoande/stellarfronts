@@ -4358,6 +4358,32 @@ export class SystemScene implements IGameScene {
     return this.planetStates.find((planetState) => planetState.id === planetId);
   }
 
+  showPlanetDetails(planet: PlanetConfig, planetState: PlanetState): void {
+    this.planetStates = this.planetStates.filter((candidate) => candidate.id !== planetState.id);
+    this.planetStates.push(planetState);
+    this.star.system.planets[planetState.planetIndex] = planet;
+    this.planetConfigs = this.star.system.planets;
+    this.objectPanel.show({
+      kind: "planet",
+      objectId: planet.id,
+      name: planet.name,
+      subtitle: `${this.star.name} System`,
+      isHabited: planet.isHabited === true,
+      objectDetails: planet.objectDetails,
+      planetState,
+      imageUrl: this.getPlanetTextureUrl(planet),
+      accentColor: "rgba(102, 236, 199, 0.95)",
+      technology: this.options.technology,
+      orbitFleetId: this.getOrbitCapableFleetId(),
+      assignedLeader: this.getAssignedLeader("planet", planet.id),
+      canManageLeaders: this.getCurrentStarOwnerId() === this.playerFactionId,
+      onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+      onClose: (objectId, kind) => {
+        if (kind === "planet") this.options.onReleasePlanetDetails?.(objectId);
+      },
+    });
+  }
+
   private getPlanetTextureUrl(planet: PlanetConfig): string {
     const cfg = PLANET_TYPES[planet.type];
     const variation = String(planet.textureVariation + 1).padStart(2, "0");

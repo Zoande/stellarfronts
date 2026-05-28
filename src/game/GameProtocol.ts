@@ -5,8 +5,15 @@ import type {
   DistrictKind,
   FactionEconomyState,
   PlanetState,
+  ResourceKind,
   UrbanSubDistrictKind,
 } from "../data/Economy";
+import type {
+  MarketPlayerStats,
+  MarketAutoTradeOrder,
+  MarketPriceSnapshot,
+  MarketTransactionRecord,
+} from "../data/Market";
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
@@ -67,6 +74,7 @@ export type ServerUpdateField =
   | "starbases"
   | "technologies"
   | "leaders"
+  | "market"
   | "combatContacts";
 
 export interface ServerStar extends StarData {}
@@ -108,6 +116,8 @@ export type GameDetailScope =
   | "starbase"
   | "fleet"
   | "fleetManager"
+  | "planetManager"
+  | "market"
   | "technology"
   | "leaders"
   | "selection"
@@ -143,6 +153,55 @@ export interface FleetManagerDetailPayload {
   factionEconomies: FactionEconomyState[];
 }
 
+export interface PlanetManagerPlanetEntry {
+  starId: number;
+  starName: string;
+  ownerId: number;
+  planet: PlanetConfig;
+  planetState: PlanetState;
+}
+
+export interface PlanetManagerDetailPayload {
+  planets: PlanetManagerPlanetEntry[];
+  leaders: LeaderState[];
+  factionEconomies: FactionEconomyState[];
+}
+
+export type MarketTrend = "up" | "down" | "flat";
+
+export interface MarketResourceQuote {
+  resourceId: ResourceKind;
+  basePrice: number;
+  currentPrice: number;
+  liquidity: number;
+  temporaryPressure: number;
+  persistentPressure: number;
+  marketEnabled: boolean;
+  lastUpdatedAt: number;
+  finalQuotePrice: number;
+  buyPrice: number;
+  sellPrice: number;
+  marketFee: number;
+  ownedAmount: number;
+  productionPerHour: number;
+  consumptionPerHour: number;
+  internalSupply: number;
+  internalDemand: number;
+  playerInternalModifier: number;
+  totalExportsEnergy: number;
+  totalImportsEnergy: number;
+  priceHistory: MarketPriceSnapshot[];
+  trend: MarketTrend;
+}
+
+export interface MarketDetailPayload {
+  resources: MarketResourceQuote[];
+  playerStats: MarketPlayerStats | null;
+  autoTrades: MarketAutoTradeOrder[];
+  transactions: MarketTransactionRecord[];
+  marketFee: number;
+}
+
 export interface TechnologyDetailPayload {
   technologies: FactionTechnologyView[];
   factionEconomies: FactionEconomyState[];
@@ -174,6 +233,8 @@ export type GameDetailPayload =
   | StarbaseDetailPayload
   | FleetDetailPayload
   | FleetManagerDetailPayload
+  | PlanetManagerDetailPayload
+  | MarketDetailPayload
   | TechnologyDetailPayload
   | LeadersDetailPayload
   | SelectionDetailPayload
@@ -513,6 +574,25 @@ export interface IssueFleetTacticalOrderCommand {
   order: FleetTacticalOrder;
 }
 
+export interface MarketTradeCommand {
+  type: "marketTrade";
+  resourceId: ResourceKind;
+  tradeType: "buy" | "sell";
+  amount: number;
+}
+
+export interface AddMarketAutoTradeCommand {
+  type: "addMarketAutoTrade";
+  resourceId: ResourceKind;
+  tradeType: "auto_buy" | "auto_sell";
+  amountPerHour: number;
+}
+
+export interface RemoveMarketAutoTradeCommand {
+  type: "removeMarketAutoTrade";
+  orderId: string;
+}
+
 export interface RequestSystemDetailsCommand {
   type: "requestSystemDetails";
   starId: number;
@@ -577,6 +657,9 @@ export type ClientCommand =
   | AssignLeaderCommand
   | DismissLeaderCommand
   | SetUrbanSubDistrictCommand
+  | MarketTradeCommand
+  | AddMarketAutoTradeCommand
+  | RemoveMarketAutoTradeCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand
   | RequestDetailsCommand
