@@ -1115,6 +1115,53 @@ body {
 
 .secure-badge--warning {
   color: rgba(255, 190, 92, 0.92);
+  position: relative;
+}
+
+.secure-badge--warning::before,
+.secure-badge--warning::after {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  pointer-events: none;
+}
+
+.secure-badge--warning::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 12px;
+  border: 6px solid transparent;
+  border-top-color: rgba(12, 18, 28, 0.96);
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.45));
+}
+
+.secure-badge--warning::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 14px);
+  right: 0;
+  width: min(320px, 70vw);
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 190, 92, 0.45);
+  border-radius: 8px;
+  background: rgba(12, 18, 28, 0.96);
+  color: rgba(247, 235, 213, 0.94);
+  font-size: 11px;
+  line-height: 1.5;
+  text-transform: none;
+  letter-spacing: 0;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.45);
+  white-space: normal;
+  z-index: 40;
+}
+
+.secure-badge--warning:hover::before,
+.secure-badge--warning:hover::after,
+.secure-badge--warning:focus-visible::before,
+.secure-badge--warning:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .secure-badge i {

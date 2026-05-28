@@ -56,6 +56,10 @@ function isTrustedStellarfrontsHost(hostname: string): boolean {
   return normalized === 'stellarfronts.com' || normalized.endsWith('.stellarfronts.com');
 }
 
+const untrustedHostWarning =
+  'You are not on an official StellarFronts domain. Credentials could be stolen. ' +
+  'Switch to https://stellarfronts.com or a trusted subdomain unless you intended to use a local or test host.';
+
 export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPageProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -67,9 +71,10 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
     : isTrustedStellarfrontsHost(window.location.hostname);
   const secureBadgeClassName = `secure-badge${isTrustedOrigin ? '' : ' secure-badge--warning'}`;
   const secureBadgeLabel = isTrustedOrigin ? 'Secure connection' : 'Unrecognized host';
-  const secureBadgeTitle = isTrustedOrigin
+  const secureBadgeTooltip = isTrustedOrigin ? undefined : untrustedHostWarning;
+  const secureBadgeAriaLabel = isTrustedOrigin
     ? undefined
-    : 'This login is not running on an official StellarFronts domain.';
+    : `${secureBadgeLabel}. ${secureBadgeTooltip}`;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -217,7 +222,12 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
                   <span aria-hidden="true" />
                   Remember me
                 </label>
-                <span className={secureBadgeClassName} title={secureBadgeTitle}>
+                <span
+                  className={secureBadgeClassName}
+                  data-tooltip={secureBadgeTooltip}
+                  aria-label={secureBadgeAriaLabel}
+                  tabIndex={secureBadgeTooltip ? 0 : undefined}
+                >
                   <i aria-hidden="true" />
                   {secureBadgeLabel}
                 </span>
