@@ -1064,8 +1064,11 @@ function buildCookieAttributes(): string {
   return attrs;
 }
 
-export function serializeSessionCookie(token: string): string {
+export function serializeSessionCookie(token: string, options?: { rememberMe?: boolean }): string {
   const attrs = buildCookieAttributes();
+  if (options?.rememberMe === false) {
+    return `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; ${attrs}`;
+  }
   return `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; ${attrs}; Max-Age=${SESSION_TTL_MS / 1000}`;
 }
 

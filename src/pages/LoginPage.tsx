@@ -2,7 +2,7 @@ import { useState } from 'react';
 import '../styles/Auth.css';
 
 interface LoginPageProps {
-  onLoginSubmit: (username: string, password: string) => Promise<void>;
+  onLoginSubmit: (username: string, password: string, rememberMe: boolean) => Promise<void>;
   onSignupClick: () => void;
 }
 
@@ -55,7 +55,7 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [isCompact, setIsCompact] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -66,22 +66,14 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
     }
     try {
       setError('');
-      await onLoginSubmit(username, password);
+      await onLoginSubmit(username, password, rememberMe);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Login failed');
     }
   };
 
-  const handleExperienceScroll = (event: React.UIEvent<HTMLElement>) => {
-    const nextIsCompact = event.currentTarget.scrollTop > 120;
-    setIsCompact((current) => (current === nextIsCompact ? current : nextIsCompact));
-  };
-
   return (
-    <main
-      className={`auth-experience ${isCompact ? 'auth-experience--scrolled' : ''}`}
-      onScroll={handleExperienceScroll}
-    >
+    <main className="auth-experience">
       <div className="auth-scanlines" aria-hidden="true" />
       <div className="auth-route auth-route--one" aria-hidden="true" />
       <div className="auth-route auth-route--two" aria-hidden="true" />
@@ -132,7 +124,7 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
         </div>
 
         <aside className="auth-sticky-rail" aria-label="Login form">
-          <div className={`auth-panel auth-panel--login ${isCompact ? 'auth-panel--compact' : ''}`}>
+          <div className="auth-panel auth-panel--login">
             <div className="auth-panel__glow" aria-hidden="true" />
             <div className="auth-header auth-header--login">
               <img
@@ -204,7 +196,11 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
 
               <div className="auth-options-row">
                 <label className="remember-toggle">
-                  <input type="checkbox" defaultChecked />
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(event) => setRememberMe(event.target.checked)}
+                  />
                   <span aria-hidden="true" />
                   Remember me
                 </label>

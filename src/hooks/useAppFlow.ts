@@ -29,7 +29,7 @@ export interface UseAppFlowResult {
   handleAuthBackgroundProgress: (progress: number, detail: string) => void;
   handleAuthBackgroundReady: () => void;
   handleAuthStartupLoadingHidden: () => void;
-  handleLoginSubmit: (username: string, password: string) => Promise<void>;
+  handleLoginSubmit: (username: string, password: string, rememberMe: boolean) => Promise<void>;
   handleSignupClick: () => void;
   handleBackToLogin: () => void;
   handleSignupSubmit: (username: string, password: string) => Promise<void>;
@@ -209,8 +209,8 @@ export function useAppFlow(): UseAppFlowResult {
     });
   };
 
-  const handleLoginSubmit = async (username: string, password: string) => {
-    const account = await loginRequest({ username, password });
+  const handleLoginSubmit = async (username: string, password: string, rememberMe: boolean) => {
+    const account = await loginRequest({ username, password, rememberMe });
     startHomeTransition(account.username, 'login', 'Login accepted');
     setAuth({
       isLoggedIn: true,

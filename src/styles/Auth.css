@@ -199,6 +199,22 @@ body {
   transition: all 0.2s;
 }
 
+.form-input:-webkit-autofill,
+.form-input:-webkit-autofill:hover,
+.form-input:-webkit-autofill:focus,
+.form-input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--stellar-text);
+  caret-color: var(--stellar-text);
+  box-shadow: 0 0 0 999px rgba(20, 27, 36, 0.96) inset;
+  transition: background-color 9999s ease-out 0s;
+}
+
+.form-input:autofill {
+  -webkit-text-fill-color: var(--stellar-text);
+  caret-color: var(--stellar-text);
+  box-shadow: 0 0 0 999px rgba(20, 27, 36, 0.96) inset;
+}
+
 .form-input:hover,
 .code-input:hover {
   border-color: var(--stellar-border-strong);
@@ -494,6 +510,7 @@ body {
   z-index: 3;
   pointer-events: none;
   opacity: 0.16;
+  will-change: transform, opacity;
   background:
     repeating-linear-gradient(
       180deg,
@@ -515,6 +532,7 @@ body {
   transform: rotate(-12deg);
   overflow: hidden;
   animation: authRouteOrbit 28s linear infinite;
+  will-change: transform, opacity;
 }
 
 .auth-route::before {
@@ -540,6 +558,7 @@ body {
   -webkit-mask-composite: xor;
   mask-composite: exclude;
   animation: authRouteGradientSpin 9s linear infinite;
+  will-change: transform, opacity;
 }
 
 .auth-route--one {
@@ -625,6 +644,7 @@ body {
     drop-shadow(0 0 18px rgba(112, 184, 255, 0.48))
     drop-shadow(0 0 38px rgba(30, 132, 215, 0.22));
   animation: authLogoBreathe 5.5s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .auth-frontier-line {
@@ -729,6 +749,7 @@ body {
   background: #61dda7;
   box-shadow: 0 0 14px rgba(97, 221, 167, 0.8);
   animation: authPulse 1.9s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .auth-signal:nth-child(2) .auth-signal__pulse {
@@ -845,6 +866,7 @@ body {
     linear-gradient(180deg, rgba(112, 184, 255, 0.12), transparent 28%);
   transform: translateX(-120%);
   animation: authPanelSweep 8s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .auth-panel--login::after {
@@ -891,6 +913,7 @@ body {
   flex: 0 0 auto;
   filter: drop-shadow(0 0 16px rgba(112, 184, 255, 0.6));
   animation: authLogoBreathe 5.5s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 .auth-header--login::before {
@@ -1181,6 +1204,8 @@ body {
   margin: 0 auto;
   padding: 72px 0;
   border-top: 1px solid rgba(136, 151, 171, 0.22);
+  content-visibility: auto;
+  contain-intrinsic-size: auto 900px;
 }
 
 .auth-info-band--systems {
