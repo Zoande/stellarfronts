@@ -20,7 +20,7 @@ import type { PlanetState } from "@/data/Economy";
 import type { GalaxySceneOptions, GalaxyViewState } from "@/scenes/GalaxyScene";
 import { buildHyperlaneAdjacency } from "@/data/Hyperlanes";
 import { HudOverlay } from "@/ui/HudOverlay";
-import type { HudConnectedSystem, HudSidebarItemKey, HudVisualToggles } from "@/ui/HudOverlay";
+import type { HudConnectedSystem, HudResourcePlanetSummary, HudSidebarItemKey, HudVisualToggles } from "@/ui/HudOverlay";
 import { FleetManagerPanel } from "@/ui/FleetManagerPanel";
 import { TechnologyPanel } from "@/ui/TechnologyPanel";
 import { LeadersPanel } from "@/ui/LeadersPanel";
@@ -148,6 +148,27 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const getPlayerFactionId = (): number | null => (
     snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : null
   );
+  const getCurrentFactionResourcePlanets = (): HudResourcePlanetSummary[] => {
+    const factionId = getPlayerFactionId();
+    if (factionId === null) return [];
+    const ownerByStar = expandStarOwnership();
+    return snapshot.planetStates
+      .filter((planetState) => planetState.isHabited && (ownerByStar[planetState.starId] ?? -1) === factionId)
+      .map((planetState) => {
+        const star = snapshot.stars[planetState.starId];
+        const planet = star?.system.planets[planetState.planetIndex];
+        return {
+          id: planetState.id,
+          name: planet?.name ?? `Planet ${planetState.planetIndex + 1}`,
+          starName: star?.name ?? `System ${planetState.starId}`,
+          population: planetState.population,
+          production: planetState.economy.production,
+          upkeep: planetState.economy.upkeep,
+          net: planetState.economy.net,
+          deficit: planetState.economy.deficit,
+        };
+      });
+  };
   const createAdminContext = (): AdminCommandContext => ({
     currentStarId: currentSystemStar?.id ?? null,
     selectedFleetId: selectedFleetIds.values().next().value ?? null,
@@ -654,6 +675,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       toggles: visualToggles,
       clock: snapshot.clock,
       economy: getCurrentFactionEconomy(),
+      resourcePlanets: getCurrentFactionResourcePlanets(),
       flagDesign: currentFaction?.flagDesign ?? null,
     });
   }

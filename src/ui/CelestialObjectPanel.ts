@@ -50,6 +50,7 @@ import {
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 import { requestOpenLeadersPanel } from "./leaderEvents";
+import { FloatingTooltipManager } from "./FloatingTooltipManager";
 
 export type CelestialObjectKind = "planet" | "star";
 
@@ -89,6 +90,17 @@ interface EconomyFlowEntry {
   resource: EconomyFlowResource;
   amount: number;
   direction: "input" | "output" | "effect";
+}
+
+interface TooltipGroupContribution {
+  group: PopGroup;
+  amount: number;
+}
+
+interface TooltipJobContribution {
+  job: JobKind;
+  amount: number;
+  groups: TooltipGroupContribution[];
 }
 
 const DISTRICTS: Array<{ kind: DistrictKind; label: string; code: string }> = [
@@ -184,13 +196,12 @@ export class CelestialObjectPanel {
   private expandedJobClasses = this.createDefaultExpandedJobClasses();
   private buildingPickerTarget: { area: BuildingSlotArea; slotIndex: number; subDistrictIndex?: number } | null = null;
   private featureTrayOpen = false;
-  private tooltipElement: HTMLDivElement | null = null;
-  private tooltipAnchor: HTMLElement | null = null;
-  private tooltipShowTimer: number | null = null;
-  private tooltipStickTimer: number | null = null;
-  private tooltipHideTimer: number | null = null;
-  private tooltipSticky = false;
-  private readonly tooltipBoundElements = new WeakSet<HTMLElement>();
+  private readonly tooltips = new FloatingTooltipManager({
+    selector: "[data-co-tooltip]",
+    datasetKey: "coTooltip",
+    className: "coTooltip",
+    width: 320,
+  });
   private readonly clickBoundElements = new WeakSet<HTMLElement>();
   private readonly keyedBuildingIconCache = new Map<string, string>();
   private clockYear = 2100;
@@ -428,7 +439,7 @@ export class CelestialObjectPanel {
   }
 
   public dispose(): void {
-    this.hideTooltip();
+    this.tooltips.dispose();
     this.close();
   }
 
@@ -1179,15 +1190,7 @@ export class CelestialObjectPanel {
   }
 
   private bindTooltips(root: ParentNode | null = this.panelElement): void {
-    if (!root) return;
-    this.queryAllIncludingRoot<HTMLElement>(root, "[data-co-tooltip]").forEach((anchor) => {
-      if (this.tooltipBoundElements.has(anchor)) return;
-      this.tooltipBoundElements.add(anchor);
-      anchor.addEventListener("pointerenter", () => this.scheduleTooltip(anchor));
-      anchor.addEventListener("pointerleave", () => this.scheduleTooltipHide());
-      anchor.addEventListener("focus", () => this.scheduleTooltip(anchor));
-      anchor.addEventListener("blur", () => this.scheduleTooltipHide());
-    });
+    this.tooltips.bind(root);
   }
 
   private initializeDynamicMedia(root: ParentNode): void {
@@ -1392,72 +1395,8 @@ export class CelestialObjectPanel {
     }
   }
 
-  private scheduleTooltip(anchor: HTMLElement): void {
-    this.clearTooltipTimers();
-    this.tooltipAnchor = anchor;
-    this.tooltipSticky = false;
-    this.tooltipShowTimer = window.setTimeout(() => {
-      this.showTooltip(anchor);
-    }, 180);
-    this.tooltipStickTimer = window.setTimeout(() => {
-      if (this.tooltipAnchor !== anchor) return;
-      this.tooltipSticky = true;
-      this.tooltipElement?.classList.add("sticky");
-    }, 850);
-  }
-
-  private scheduleTooltipHide(): void {
-    this.clearTooltipTimers();
-    this.tooltipHideTimer = window.setTimeout(() => {
-      const hoveringAnchor = Boolean(this.tooltipAnchor?.matches(":hover"));
-      const hoveringTooltip = Boolean(this.tooltipElement?.matches(":hover"));
-      if (hoveringAnchor || hoveringTooltip) {
-        this.scheduleTooltipHide();
-        return;
-      }
-      this.hideTooltip();
-    }, this.tooltipSticky ? 120 : 60);
-  }
-
-  private showTooltip(anchor: HTMLElement): void {
-    const content = anchor.dataset.coTooltip;
-    if (!content) return;
-    if (!this.tooltipElement) {
-      this.tooltipElement = document.createElement("div");
-      this.tooltipElement.className = "coTooltip";
-      document.body.appendChild(this.tooltipElement);
-      this.tooltipElement.addEventListener("pointerleave", () => this.scheduleTooltipHide());
-      this.tooltipElement.addEventListener("pointerenter", () => {
-        if (this.tooltipHideTimer !== null) window.clearTimeout(this.tooltipHideTimer);
-      });
-    }
-    this.tooltipElement.innerHTML = content;
-    this.tooltipElement.classList.toggle("sticky", this.tooltipSticky);
-    const rect = anchor.getBoundingClientRect();
-    const width = 320;
-    const left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.right + 12));
-    const fallbackLeft = Math.max(8, rect.left - width - 12);
-    this.tooltipElement.style.width = `${width}px`;
-    this.tooltipElement.style.left = `${left + width > window.innerWidth - 8 ? fallbackLeft : left}px`;
-    this.tooltipElement.style.top = `${Math.max(8, Math.min(window.innerHeight - 160, rect.top))}px`;
-    this.tooltipElement.classList.add("visible");
-  }
-
   private hideTooltip(): void {
-    this.clearTooltipTimers();
-    this.tooltipElement?.remove();
-    this.tooltipElement = null;
-    this.tooltipAnchor = null;
-    this.tooltipSticky = false;
-  }
-
-  private clearTooltipTimers(): void {
-    if (this.tooltipShowTimer !== null) window.clearTimeout(this.tooltipShowTimer);
-    if (this.tooltipStickTimer !== null) window.clearTimeout(this.tooltipStickTimer);
-    if (this.tooltipHideTimer !== null) window.clearTimeout(this.tooltipHideTimer);
-    this.tooltipShowTimer = null;
-    this.tooltipStickTimer = null;
-    this.tooltipHideTimer = null;
+    this.tooltips.hide();
   }
 
   private render(data: CelestialObjectPanelData): string {
@@ -1510,11 +1449,11 @@ export class CelestialObjectPanel {
     const habitability = habitabilityValue === null ? "?%" : `${habitabilityValue}%`;
     return `
       <div class="coSummaryGrid" data-co-summary-grid>
-        ${this.renderSummaryStat("habitability", "Habitability", habitability)}
+        ${this.renderSummaryStat("habitability", "Habitability", habitability, data.planetState ? this.renderHabitabilityTooltip(data.planetState) : undefined)}
         ${this.renderSummaryStat("population", "Habited", data.isHabited ? "Yes" : "No")}
         ${this.renderSummaryStat("size", "Size", String(details.size))}
-        ${data.planetState ? this.renderSummaryStat("housing", "Housing", this.formatPeople(data.planetState.economy.housing)) : ""}
-        ${data.planetState ? this.renderSummaryStat("amenities", "Amenities", this.formatCompact(data.planetState.economy.amenities)) : ""}
+        ${data.planetState ? this.renderSummaryStat("housing", "Housing", this.formatPeople(data.planetState.economy.housing), this.renderHousingTooltip(data.planetState)) : ""}
+        ${data.planetState ? this.renderSummaryStat("amenities", "Amenities", this.formatCompact(data.planetState.economy.amenities), this.renderAmenitiesTooltip(data.planetState)) : ""}
       </div>
     `;
   }
@@ -1548,9 +1487,10 @@ export class CelestialObjectPanel {
     `;
   }
 
-  private renderSummaryStat(icon: string, label: string, value: string): string {
+  private renderSummaryStat(icon: string, label: string, value: string, tooltip?: string): string {
+    const tooltipAttribute = tooltip ? ` data-co-tooltip="${this.tooltipAttr(tooltip)}"` : "";
     return `
-      <div class="coSummaryStat">
+      <div class="coSummaryStat"${tooltipAttribute}>
         ${this.renderStatIcon(icon)}
         <span>${this.escapeHtml(label)}</span>
         <strong>${this.escapeHtml(value)}</strong>
@@ -1577,19 +1517,20 @@ export class CelestialObjectPanel {
 
     return `
       <div class="coResourceStrip" data-co-resource-strip>
-        ${this.renderResourceStripStat("stability", "Stability", `${economy.stability.toFixed(0)}%`, this.getHighStatTone(economy.stability))}
+        ${this.renderResourceStripStat("stability", "Stability", `${economy.stability.toFixed(0)}%`, this.getHighStatTone(economy.stability), this.renderStabilityTooltip(planetState))}
         ${this.renderResourceStripStat("population", "Pop", this.formatPeople(planetState.population))}
-        ${this.renderResourceStripStat("happiness", "Happiness", `${economy.happiness.toFixed(0)}%`, this.getHighStatTone(economy.happiness))}
-        ${this.renderResourceStripStat("crime", "Crime", `${economy.crime.toFixed(0)}%`, this.getCrimeTone(economy.crime))}
-        ${this.renderResourceStripStat("amenities", "Amenities Balance", this.formatSignedCompact(support.amenityBalance), this.getNeedBalanceTone(support.amenityRatio))}
-        ${this.renderResourceStripStat("housing", "Housing Balance", this.formatSignedPeople(support.housingBalance), this.getNeedBalanceTone(support.housingRatio))}
+        ${this.renderResourceStripStat("happiness", "Happiness", `${economy.happiness.toFixed(0)}%`, this.getHighStatTone(economy.happiness), this.renderHappinessTooltip(planetState))}
+        ${this.renderResourceStripStat("crime", "Crime", `${economy.crime.toFixed(0)}%`, this.getCrimeTone(economy.crime), this.renderCrimeTooltip(planetState))}
+        ${this.renderResourceStripStat("amenities", "Amenities Balance", this.formatSignedCompact(support.amenityBalance), this.getNeedBalanceTone(support.amenityRatio), this.renderAmenitiesTooltip(planetState))}
+        ${this.renderResourceStripStat("housing", "Housing Balance", this.formatSignedPeople(support.housingBalance), this.getNeedBalanceTone(support.housingRatio), this.renderHousingTooltip(planetState))}
       </div>
     `;
   }
 
-  private renderResourceStripStat(icon: string, label: string, value: string, tone = "neutral"): string {
+  private renderResourceStripStat(icon: string, label: string, value: string, tone = "neutral", tooltip?: string): string {
+    const tooltipAttribute = tooltip ? ` data-co-tooltip="${this.tooltipAttr(tooltip)}"` : "";
     return `
-      <span class="coResourceStripItem coTone-${tone}" data-co-resource-stat="${this.escapeHtml(icon)}">
+      <span class="coResourceStripItem coTone-${tone}" data-co-resource-stat="${this.escapeHtml(icon)}"${tooltipAttribute}>
         ${this.renderStatIcon(icon)}
         <small>${this.escapeHtml(label)}</small>
         <strong>${this.escapeHtml(value)}</strong>
@@ -1905,12 +1846,12 @@ export class CelestialObjectPanel {
           </div>
         </div>
         <div class="coOverviewGrid">
-          ${this.renderOverviewStat("unemployment", "Unemployment", this.formatPeople(economy.unemployedPopulation))}
-          ${this.renderOverviewStat("growth", "Growth / week", this.formatSignedPeople(weeklyGrowth))}
-          ${this.renderOverviewStat("districts", "Districts", `${districtUsed}/${districtLimit}`)}
-          ${this.renderOverviewStat("happiness", "Happiness", `${economy.happiness.toFixed(0)}%`, this.getHighStatTone(economy.happiness))}
-          ${this.renderOverviewStat("housing", "Housing", this.formatPeople(economy.housing), this.getNeedBalanceTone(support.housingRatio))}
-          ${this.renderOverviewStat("amenities", "Amenities", this.formatCompact(economy.amenities), this.getNeedBalanceTone(support.amenityRatio))}
+          ${this.renderOverviewStat("unemployment", "Unemployment", this.formatPeople(economy.unemployedPopulation), "neutral", this.renderUnemploymentTooltip(planetState))}
+          ${this.renderOverviewStat("growth", "Growth / week", this.formatSignedPeople(weeklyGrowth), "neutral", this.renderGrowthTooltip(planetState))}
+          ${this.renderOverviewStat("districts", "Districts", `${districtUsed}/${districtLimit}`, "neutral", this.renderDistrictCapacityTooltip(data, districtUsed, districtLimit))}
+          ${this.renderOverviewStat("happiness", "Happiness", `${economy.happiness.toFixed(0)}%`, this.getHighStatTone(economy.happiness), this.renderHappinessTooltip(planetState))}
+          ${this.renderOverviewStat("housing", "Housing", this.formatPeople(economy.housing), this.getNeedBalanceTone(support.housingRatio), this.renderHousingTooltip(planetState))}
+          ${this.renderOverviewStat("amenities", "Amenities", this.formatCompact(economy.amenities), this.getNeedBalanceTone(support.amenityRatio), this.renderAmenitiesTooltip(planetState))}
         </div>
         ${this.renderConstructionQueue(data)}
         <div class="coOverviewActions">
@@ -1921,9 +1862,10 @@ export class CelestialObjectPanel {
     `;
   }
 
-  private renderOverviewStat(icon: string, label: string, value: string, tone = "neutral"): string {
+  private renderOverviewStat(icon: string, label: string, value: string, tone = "neutral", tooltip?: string): string {
+    const tooltipAttribute = tooltip ? ` data-co-tooltip="${this.tooltipAttr(tooltip)}"` : "";
     return `
-      <div class="coOverviewStat coTone-${tone}" data-co-overview-stat="${this.escapeHtml(icon)}">
+      <div class="coOverviewStat coTone-${tone}" data-co-overview-stat="${this.escapeHtml(icon)}"${tooltipAttribute}>
         ${this.renderStatIcon(icon)}
         <span>${this.escapeHtml(label)}</span>
         <strong>${this.escapeHtml(value)}</strong>
@@ -2025,6 +1967,585 @@ export class CelestialObjectPanel {
       default:
         return ["No effects"];
     }
+  }
+
+  private renderHabitabilityTooltip(planetState: PlanetState): string {
+    const effective = getEffectiveSpeciesHabitability(planetState);
+    const base = planetState.habitability ?? 0;
+    const modifierDelta = effective - base;
+    const rows = [
+      this.renderTooltipGridItem("Base Planet", `${base}%`),
+      this.renderTooltipGridItem("Effective", `${effective}%`),
+      this.renderTooltipGridItem("Modifiers", this.formatSignedPercent(modifierDelta)),
+      this.renderTooltipGridItem("Production", `${this.formatMultiplier(getHabitabilityProductionMultiplier(effective))}x`),
+      this.renderTooltipGridItem("Upkeep", `${this.formatMultiplier(getHabitabilityUpkeepMultiplier(effective))}x`),
+    ];
+    return `
+      <div class="coTooltipTitle">Habitability</div>
+      <p>Species habitability affects happiness, job production, and resource upkeep.</p>
+      <div class="coTooltipGrid">${rows.join("")}</div>
+      ${this.renderModifierSection(planetState, (target) => target.startsWith("habitability:"))}
+    `;
+  }
+
+  private renderHousingTooltip(planetState: PlanetState): string {
+    const support = this.getPlanetSupportMetrics(planetState);
+    const sourceRows = this.getHousingSourceRows(planetState);
+    const rawHousing = sourceRows.reduce((sum, row) => sum + row.amount, 0);
+    const modifierDelta = planetState.economy.housing - rawHousing;
+    const sourceTooltip = this.renderFlatBreakdownTooltip(
+      "Housing Sources",
+      sourceRows.concat(Math.abs(modifierDelta) > 0.5 ? [{ label: "Modifiers", amount: modifierDelta }] : []),
+      (value) => this.formatSignedPeople(value),
+    );
+    return `
+      <div class="coTooltipTitle">Housing</div>
+      <p>Housing is compared against total population to calculate overcrowding pressure and happiness.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Housing", this.formatPeople(planetState.economy.housing), sourceTooltip)}
+        ${this.renderTooltipGridItem("Usage", this.formatPeople(planetState.population), this.renderPopulationUsageTooltip("Housing Usage", planetState, (group) => group.population))}
+        ${this.renderTooltipGridItem("Balance", this.formatSignedPeople(support.housingBalance))}
+        ${this.renderTooltipGridItem("Ratio", `${(support.housingRatio * 100).toFixed(0)}%`)}
+      </div>
+    `;
+  }
+
+  private renderAmenitiesTooltip(planetState: PlanetState): string {
+    const support = this.getPlanetSupportMetrics(planetState);
+    const productionRows = this.getAmenityProductionContributions(planetState);
+    const rawProduction = productionRows.reduce((sum, row) => sum + row.amount, 0);
+    const modifierDelta = planetState.economy.amenities - rawProduction;
+    const productionTooltip = this.renderJobContributionTooltip(
+      "Amenities Production",
+      productionRows.concat(Math.abs(modifierDelta) > 0.0001 ? [{
+        job: "administrator",
+        amount: modifierDelta,
+        groups: [],
+      }] : []),
+      (value) => this.formatSignedCompact(value),
+      modifierDelta,
+    );
+    const usageTooltip = this.renderPopulationUsageTooltip(
+      "Amenities Usage",
+      planetState,
+      (group) => group.population / PEOPLE_PER_MONTHLY_UNIT,
+      (value) => this.formatCompact(value),
+    );
+    return `
+      <div class="coTooltipTitle">Amenities</div>
+      <p>Amenities production is compared against one amenity required per 1M population.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Production", this.formatCompact(planetState.economy.amenities), productionTooltip)}
+        ${this.renderTooltipGridItem("Usage", this.formatCompact(planetState.population / PEOPLE_PER_MONTHLY_UNIT), usageTooltip)}
+        ${this.renderTooltipGridItem("Balance", this.formatSignedCompact(support.amenityBalance))}
+        ${this.renderTooltipGridItem("Ratio", `${(support.amenityRatio * 100).toFixed(0)}%`)}
+      </div>
+    `;
+  }
+
+  private renderHappinessTooltip(planetState: PlanetState): string {
+    const support = this.getPlanetSupportMetrics(planetState);
+    const totalPopulation = this.getPopGroupPopulation(planetState);
+    const unemploymentRatio = totalPopulation > 0 ? planetState.economy.unemployedPopulation / totalPopulation : 0;
+    const habitability = this.getWeightedGroupValue(planetState, (group) => this.getHabitabilityHappinessModifier(group.habitability));
+    const jobPenalty = this.getWeightedGroupValue(planetState, (group) => this.getJobHappinessPenalty(group.job));
+    const housing = this.getHousingHappinessModifier(support.housingRatio);
+    const amenities = this.getAmenitiesHappinessModifier(support.amenityRatio);
+    const employment = this.getEmploymentHappinessModifier(unemploymentRatio);
+    const stability = this.getStabilityHappinessModifier(planetState.economy.stability);
+    const expected = 50 + habitability + housing + amenities + employment + stability + jobPenalty;
+    const modifiers = planetState.economy.happiness - expected;
+    const groupTooltip = this.renderPopulationHappinessTooltip(planetState);
+    return `
+      <div class="coTooltipTitle">Average Happiness</div>
+      <p>Weighted average happiness across all population groups.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Average", `${planetState.economy.happiness.toFixed(1)}%`, groupTooltip)}
+        ${this.renderTooltipGridItem("Base", "50%")}
+        ${this.renderTooltipGridItem("Habitability", this.formatSignedPercent(habitability))}
+        ${this.renderTooltipGridItem("Housing", this.formatSignedPercent(housing))}
+        ${this.renderTooltipGridItem("Amenities", this.formatSignedPercent(amenities))}
+        ${this.renderTooltipGridItem("Employment", this.formatSignedPercent(employment))}
+        ${this.renderTooltipGridItem("Stability", this.formatSignedPercent(stability))}
+        ${this.renderTooltipGridItem("Job Effects", this.formatSignedPercent(jobPenalty))}
+        ${this.renderTooltipGridItem("Modifiers", this.formatSignedPercent(modifiers))}
+      </div>
+    `;
+  }
+
+  private renderCrimeTooltip(planetState: PlanetState): string {
+    const pressureRows = this.getCrimePressureContributions(planetState);
+    const jobRows = this.getCrimeJobEffectContributions(planetState);
+    const pressure = pressureRows.reduce((sum, row) => sum + row.amount, 0);
+    const jobEffects = jobRows.reduce((sum, row) => sum + row.amount, 0);
+    const beforeModifiers = pressure + jobEffects;
+    const modifiers = planetState.economy.crime - beforeModifiers;
+    return `
+      <div class="coTooltipTitle">Crime</div>
+      <p>Low happiness creates crime pressure. Enforcers reduce it, while criminals increase it.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Final Crime", `${planetState.economy.crime.toFixed(1)}%`)}
+        ${this.renderTooltipGridItem("Happiness Pressure", `${pressure.toFixed(1)}%`, this.renderJobContributionTooltip("Crime Pressure", pressureRows, (value) => `${value.toFixed(1)}%`))}
+        ${this.renderTooltipGridItem("Job Effects", this.formatSignedPercent(jobEffects), this.renderJobContributionTooltip("Crime Job Effects", jobRows, (value) => this.formatSignedPercent(value)))}
+        ${this.renderTooltipGridItem("Modifiers", this.formatSignedPercent(modifiers))}
+      </div>
+    `;
+  }
+
+  private renderStabilityTooltip(planetState: PlanetState): string {
+    const support = this.getPlanetSupportMetrics(planetState);
+    const totalPopulation = this.getPopGroupPopulation(planetState);
+    const unemploymentRatio = totalPopulation > 0 ? planetState.economy.unemployedPopulation / totalPopulation : 0;
+    const highHappinessStability = this.getWeightedGroupValue(planetState, (group) => Math.max(0, group.happiness - 80) / 20 * 15);
+    const highHappiness = highHappinessStability * 0.6;
+    const crime = -planetState.economy.crime * 0.55;
+    const housing = -Math.max(0, 1 - support.housingRatio) * 34;
+    const amenities = -Math.max(0, 1 - support.amenityRatio) * 34;
+    const unemployment = -unemploymentRatio * 24;
+    const lowHappiness = -Math.max(0, (55 - planetState.economy.happiness) / 55) * 24;
+    const beforeModifiers = 58 + highHappiness + crime + housing + amenities + unemployment + lowHappiness;
+    const modifiers = planetState.economy.stability - beforeModifiers;
+    return `
+      <div class="coTooltipTitle">Stability</div>
+      <p>Stability summarizes social order and affects planetary production.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Final Stability", `${planetState.economy.stability.toFixed(1)}%`)}
+        ${this.renderTooltipGridItem("Base Control", "58%")}
+        ${this.renderTooltipGridItem("Avg Happiness", `${planetState.economy.happiness.toFixed(1)}%`, this.renderPopulationHappinessTooltip(planetState))}
+        ${this.renderTooltipGridItem("High Happiness", this.formatSignedPercent(highHappiness))}
+        ${this.renderTooltipGridItem("Crime", this.formatSignedPercent(crime), this.renderCrimeTooltip(planetState))}
+        ${this.renderTooltipGridItem("Housing Shortfall", this.formatSignedPercent(housing))}
+        ${this.renderTooltipGridItem("Amenities Shortfall", this.formatSignedPercent(amenities), this.renderAmenitiesTooltip(planetState))}
+        ${this.renderTooltipGridItem("Unemployment", this.formatSignedPercent(unemployment), this.renderUnemploymentTooltip(planetState))}
+        ${this.renderTooltipGridItem("Low Happiness", this.formatSignedPercent(lowHappiness))}
+        ${this.renderTooltipGridItem("Modifiers", this.formatSignedPercent(modifiers))}
+      </div>
+      <div class="coTooltipSectionTitle">Production Effect</div>
+      <div class="coTooltipList">${this.renderTooltipListRow("Job production multiplier", `${this.formatMultiplier(this.getStabilityProductionMultiplier(planetState.economy.stability))}x`)}</div>
+    `;
+  }
+
+  private renderResourceEconomyTooltip(planetState: PlanetState, resource: ResourceKind): string {
+    const economy = planetState.economy;
+    const productionRows = this.getResourceProductionContributions(planetState, resource);
+    const upkeepRows = this.getResourceUpkeepContributions(planetState, resource);
+    return `
+      <div class="coTooltipTitle">${this.escapeHtml(RESOURCE_LABELS[resource])}</div>
+      <p>Monthly planetary ${this.escapeHtml(RESOURCE_LABELS[resource].toLowerCase())} balance from jobs and population upkeep.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Net", this.formatSignedCompact(economy.net[resource]))}
+        ${this.renderTooltipGridItem("Production", this.formatCompact(economy.production[resource]), this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Production`, productionRows, (value) => this.formatSignedCompact(value)))}
+        ${this.renderTooltipGridItem("Upkeep", this.formatCompact(economy.upkeep[resource]), this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Upkeep`, upkeepRows, (value) => this.formatCompact(value)))}
+        ${this.renderTooltipGridItem("Deficit", economy.deficit[resource] > 0 ? this.formatCompact(economy.deficit[resource]) : "0")}
+      </div>
+    `;
+  }
+
+  private renderUnemploymentTooltip(planetState: PlanetState): string {
+    const unemployed = planetState.economy.popGroups.filter((group) => group.job === "unemployed");
+    const criminal = planetState.economy.popGroups.filter((group) => group.job === "criminal");
+    return `
+      <div class="coTooltipTitle">Unemployment</div>
+      <p>Population without productive jobs can reduce happiness and can become criminal population as crime rises.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Unemployed", this.formatPeople(planetState.economy.unemployedPopulation), this.renderGroupListTooltip("Unemployed Population", unemployed, (group) => this.formatPeople(group.population)))}
+        ${this.renderTooltipGridItem("Criminals", this.formatPeople(criminal.reduce((sum, group) => sum + group.population, 0)), this.renderGroupListTooltip("Criminal Population", criminal, (group) => this.formatPeople(group.population)))}
+        ${this.renderTooltipGridItem("Employed", this.formatPeople(planetState.economy.employedPopulation))}
+        ${this.renderTooltipGridItem("Total Pop", this.formatPeople(planetState.population))}
+      </div>
+    `;
+  }
+
+  private renderGrowthTooltip(planetState: PlanetState): string {
+    const growth = planetState.economy.populationGrowth;
+    const weeklyGrowth = Math.round(growth.netPerQuarter * (7 / 120));
+    return `
+      <div class="coTooltipTitle">Population Growth</div>
+      <p>Growth is calculated quarterly and shown as an estimated weekly change in the overview.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Growth / Week", this.formatSignedPeople(weeklyGrowth))}
+        ${this.renderTooltipGridItem("Growth / Quarter", this.formatSignedPeople(growth.netPerQuarter))}
+        ${this.renderTooltipGridItem("Quarter Rate", `${(growth.ratePerQuarter * 100).toFixed(3)}%`)}
+        ${this.renderTooltipGridItem("Capacity", this.formatPeople(growth.capacity))}
+        ${this.renderTooltipGridItem("Housing", this.formatSignedPercent(growth.factors.housing * 100))}
+        ${this.renderTooltipGridItem("Amenities", this.formatSignedPercent(growth.factors.amenities * 100), this.renderAmenitiesTooltip(planetState))}
+        ${this.renderTooltipGridItem("Stability", this.formatSignedPercent(growth.factors.stability * 100), this.renderStabilityTooltip(planetState))}
+        ${this.renderTooltipGridItem("Crime", this.formatSignedPercent(growth.factors.crime * 100), this.renderCrimeTooltip(planetState))}
+        ${this.renderTooltipGridItem("Employment", this.formatSignedPercent(growth.factors.employment * 100), this.renderUnemploymentTooltip(planetState))}
+        ${this.renderTooltipGridItem("Capacity", this.formatSignedPercent(growth.factors.capacity * 100))}
+      </div>
+    `;
+  }
+
+  private renderDistrictCapacityTooltip(data: CelestialObjectPanelData, districtUsed: number, districtLimit: number): string {
+    const planetState = data.planetState;
+    const rows = DISTRICTS.map((district) => {
+      const used = planetState?.builtDistricts[district.kind] ?? data.objectDetails.builtDistricts[district.kind];
+      const limit = data.objectDetails.districtLimits[district.kind];
+      return this.renderTooltipListRow(district.label, `${used}/${limit}`, this.renderDistrictTooltip(district.kind));
+    }).join("");
+    return `
+      <div class="coTooltipTitle">District Capacity</div>
+      <p>Built districts compared against this planet's available district limits.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Used", String(districtUsed))}
+        ${this.renderTooltipGridItem("Limit", String(districtLimit))}
+      </div>
+      <div class="coTooltipSectionTitle">Districts</div>
+      <div class="coTooltipList">${rows}</div>
+    `;
+  }
+
+  private renderTooltipGridItem(label: string, value: string, tooltip?: string): string {
+    return `<div><span>${this.escapeHtml(label)}</span>${this.renderTooltipValue(value, tooltip)}</div>`;
+  }
+
+  private renderTooltipListRow(label: string, value: string, tooltip?: string): string {
+    return `<span class="coTooltipListRow"><em>${this.escapeHtml(label)}</em>${this.renderTooltipValue(value, tooltip)}</span>`;
+  }
+
+  private renderTooltipValue(value: string, tooltip?: string): string {
+    if (!tooltip) return `<strong>${this.escapeHtml(value)}</strong>`;
+    return `<button class="coTooltipDrill" type="button" data-co-tooltip="${this.tooltipAttr(tooltip)}">${this.escapeHtml(value)}</button>`;
+  }
+
+  private renderFlatBreakdownTooltip(
+    title: string,
+    rows: Array<{ label: string; amount: number }>,
+    formatter: (value: number) => string,
+  ): string {
+    const visibleRows = rows.filter((row) => Math.abs(row.amount) > 0.0001);
+    return `
+      <div class="coTooltipTitle">${this.escapeHtml(title)}</div>
+      <div class="coTooltipList">
+        ${visibleRows.length
+          ? visibleRows.map((row) => this.renderTooltipListRow(row.label, formatter(row.amount))).join("")
+          : '<span>No active contribution</span>'}
+      </div>
+    `;
+  }
+
+  private renderJobContributionTooltip(
+    title: string,
+    rows: TooltipJobContribution[],
+    formatter: (value: number) => string,
+    modifierDelta?: number,
+  ): string {
+    const visibleRows = rows
+      .filter((row) => Math.abs(row.amount) > 0.0001)
+      .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+    return `
+      <div class="coTooltipTitle">${this.escapeHtml(title)}</div>
+      <div class="coTooltipList">
+        ${visibleRows.length
+          ? visibleRows.map((row) => {
+            const isModifierRow = row.groups.length === 0 && modifierDelta !== undefined && Math.abs(row.amount - modifierDelta) < 0.0001;
+            const label = isModifierRow ? "Modifiers" : JOB_LABELS[row.job];
+            const nested = row.groups.length > 0 ? this.renderGroupContributionTooltip(label, row.groups, formatter) : undefined;
+            return this.renderTooltipListRow(label, formatter(row.amount), nested);
+          }).join("")
+          : '<span>No active contribution</span>'}
+      </div>
+    `;
+  }
+
+  private renderGroupContributionTooltip(
+    title: string,
+    rows: TooltipGroupContribution[],
+    formatter: (value: number) => string,
+  ): string {
+    return `
+      <div class="coTooltipTitle">${this.escapeHtml(title)}</div>
+      <div class="coTooltipList">
+        ${rows.length
+          ? rows
+            .slice()
+            .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+            .map(({ group, amount }) => this.renderTooltipListRow(
+              `${group.speciesName} ${JOB_LABELS[group.job]} (${this.formatPeople(group.population)})`,
+              formatter(amount),
+            ))
+            .join("")
+          : '<span>No population contribution</span>'}
+      </div>
+    `;
+  }
+
+  private renderGroupListTooltip(title: string, groups: PopGroup[], formatter: (group: PopGroup) => string): string {
+    return `
+      <div class="coTooltipTitle">${this.escapeHtml(title)}</div>
+      <div class="coTooltipList">
+        ${groups.length
+          ? groups.map((group) => this.renderTooltipListRow(
+            `${group.speciesName} ${JOB_LABELS[group.job]} (${this.formatPeople(group.population)})`,
+            formatter(group),
+          )).join("")
+          : '<span>No population in this category</span>'}
+      </div>
+    `;
+  }
+
+  private renderPopulationUsageTooltip(
+    title: string,
+    planetState: PlanetState,
+    getAmount: (group: PopGroup) => number = (group) => group.population,
+    formatter: (value: number) => string = (value) => this.formatPeople(value),
+  ): string {
+    const groups = planetState.economy.popGroups.map((group) => ({ group, amount: getAmount(group) }));
+    return this.renderGroupContributionTooltip(title, groups, formatter);
+  }
+
+  private renderPopulationHappinessTooltip(planetState: PlanetState): string {
+    return `
+      <div class="coTooltipTitle">Population Happiness</div>
+      <div class="coTooltipList">
+        ${planetState.economy.popGroups.length
+          ? planetState.economy.popGroups
+            .slice()
+            .sort((a, b) => b.population - a.population)
+            .map((group) => this.renderTooltipListRow(
+              `${group.speciesName} ${JOB_LABELS[group.job]} (${this.formatPeople(group.population)})`,
+              `${group.happiness}%`,
+            ))
+            .join("")
+          : '<span>No population groups</span>'}
+      </div>
+    `;
+  }
+
+  private renderModifierSection(planetState: PlanetState, predicate: (target: PlanetModifierTarget) => boolean): string {
+    const modifiers = planetState.economy.activeModifiers.filter((modifier) => predicate(modifier.target));
+    if (modifiers.length === 0) return "";
+    return `
+      <div class="coTooltipSectionTitle">Modifiers</div>
+      <div class="coTooltipList">
+        ${modifiers.map((modifier) => this.renderTooltipListRow(
+          modifier.label,
+          modifier.operation === "multiply" ? `${this.formatSignedPercent(modifier.value * 100)} multiplier` : this.formatSignedCompact(modifier.value),
+        )).join("")}
+      </div>
+    `;
+  }
+
+  private getHousingSourceRows(planetState: PlanetState): Array<{ label: string; amount: number }> {
+    const rows: Array<{ label: string; amount: number }> = [
+      { label: "City Districts", amount: planetState.builtDistricts.city * 1_600_000_000 },
+    ];
+    const subDistrictTotals = new Map<UrbanSubDistrictKind, number>();
+    for (const subDistrict of planetState.urbanSubDistricts) {
+      let amount = 0;
+      if (subDistrict.kind === "residential") amount = planetState.builtDistricts.city * 1_100_000_000;
+      if (subDistrict.kind !== "residential") amount = -planetState.builtDistricts.city * 500_000_000;
+      subDistrictTotals.set(subDistrict.kind, (subDistrictTotals.get(subDistrict.kind) ?? 0) + amount);
+      for (const building of subDistrict.buildings) {
+        if (!building) continue;
+        const housing = BUILDING_DEFINITIONS[building]?.housing ?? 0;
+        if (housing) rows.push({ label: BUILDING_LABELS[building], amount: housing });
+      }
+    }
+    for (const [kind, amount] of subDistrictTotals) rows.push({ label: URBAN_SUB_DISTRICT_LABELS[kind], amount });
+    for (const building of planetState.buildings.city) {
+      if (!building) continue;
+      const housing = BUILDING_DEFINITIONS[building]?.housing ?? 0;
+      if (housing) rows.push({ label: BUILDING_LABELS[building], amount: housing });
+    }
+    return rows;
+  }
+
+  private getAmenityProductionContributions(planetState: PlanetState): TooltipJobContribution[] {
+    return this.getGroupedContributions(planetState, (group) => this.getGroupAmenityProduction(planetState, group));
+  }
+
+  private getResourceProductionContributions(planetState: PlanetState, resource: ResourceKind): TooltipJobContribution[] {
+    return this.getGroupedContributions(planetState, (group) => this.getGroupResourceProduction(planetState, group, resource));
+  }
+
+  private getResourceUpkeepContributions(planetState: PlanetState, resource: ResourceKind): TooltipJobContribution[] {
+    return this.getGroupedContributions(planetState, (group) => this.getGroupResourceUpkeep(planetState, group, resource));
+  }
+
+  private getCrimePressureContributions(planetState: PlanetState): TooltipJobContribution[] {
+    const totalPopulation = this.getPopGroupPopulation(planetState);
+    return this.getGroupedContributions(planetState, (group) => (
+      totalPopulation > 0
+        ? this.getHappinessCrimePressure(group.happiness) * (group.population / totalPopulation)
+        : 0
+    ));
+  }
+
+  private getCrimeJobEffectContributions(planetState: PlanetState): TooltipJobContribution[] {
+    return this.getGroupedContributions(planetState, (group) => -this.getGroupCrimeReduction(planetState, group));
+  }
+
+  private getGroupedContributions(
+    planetState: PlanetState,
+    getAmount: (group: PopGroup) => number,
+  ): TooltipJobContribution[] {
+    const rows = new Map<JobKind, TooltipJobContribution>();
+    for (const group of planetState.economy.popGroups) {
+      const amount = getAmount(group);
+      if (Math.abs(amount) <= 0.0001) continue;
+      const existing = rows.get(group.job) ?? { job: group.job, amount: 0, groups: [] };
+      existing.amount += amount;
+      existing.groups.push({ group, amount });
+      rows.set(group.job, existing);
+    }
+    return this.getAllJobs().map((job) => rows.get(job)).filter((row): row is TooltipJobContribution => Boolean(row));
+  }
+
+  private getGroupAmenityProduction(planetState: PlanetState, group: PopGroup): number {
+    if (group.job === "unemployed") return 0;
+    const amenities = JOB_DEFINITIONS[group.job].amenities ?? 0;
+    if (amenities === 0) return 0;
+    const base = (group.population / PEOPLE_PER_MONTHLY_UNIT) * amenities;
+    return this.applyPlanetModifiers(
+      base,
+      planetState.economy.activeModifiers,
+      `jobAmenities:${group.job}` as PlanetModifierTarget,
+    ) * getHabitabilityProductionMultiplier(group.habitability);
+  }
+
+  private getGroupResourceProduction(planetState: PlanetState, group: PopGroup, resource: ResourceKind): number {
+    if (group.job === "unemployed") return 0;
+    const amount = JOB_DEFINITIONS[group.job].output?.[resource] ?? 0;
+    if (amount === 0) return 0;
+    const units = group.population / PEOPLE_PER_MONTHLY_UNIT;
+    const generic = this.applyPlanetModifiers(units * amount, planetState.economy.activeModifiers, "jobOutput");
+    return this.applyPlanetModifiers(
+      generic,
+      planetState.economy.activeModifiers,
+      `jobOutput:${group.job}:${resource}` as PlanetModifierTarget,
+    ) * this.getGroupProductionMultiplier(planetState, group);
+  }
+
+  private getGroupResourceUpkeep(planetState: PlanetState, group: PopGroup, resource: ResourceKind): number {
+    const units = group.population / PEOPLE_PER_MONTHLY_UNIT;
+    let amount = 0;
+    if (group.job !== "unemployed") {
+      const jobUpkeep = JOB_DEFINITIONS[group.job].upkeep?.[resource] ?? 0;
+      if (jobUpkeep !== 0) {
+        const generic = this.applyPlanetModifiers(units * jobUpkeep, planetState.economy.activeModifiers, "jobUpkeep");
+        amount += this.applyPlanetModifiers(
+          generic,
+          planetState.economy.activeModifiers,
+          `jobUpkeep:${group.job}:${resource}` as PlanetModifierTarget,
+        ) * getHabitabilityUpkeepMultiplier(group.habitability);
+      }
+    }
+    if (resource === "goods") {
+      const goodsUpkeep = group.job === "unemployed" ? 0.025 : this.getClassGoodsUpkeep(group.class);
+      amount += this.applyPlanetModifiers(
+        units * goodsUpkeep,
+        planetState.economy.activeModifiers,
+        `goodsUpkeep:${group.class}` as PlanetModifierTarget,
+      ) * getHabitabilityUpkeepMultiplier(group.habitability);
+    }
+    if (resource === "food") {
+      amount += this.applyPlanetModifiers(
+        units * 1.1 * getHabitabilityUpkeepMultiplier(group.habitability),
+        planetState.economy.activeModifiers,
+        "popUpkeep:food",
+      );
+    }
+    return amount;
+  }
+
+  private getGroupCrimeReduction(planetState: PlanetState, group: PopGroup): number {
+    if (group.job === "unemployed") return 0;
+    const crimeReduction = JOB_DEFINITIONS[group.job].crimeReduction ?? 0;
+    if (crimeReduction === 0) return 0;
+    return (group.population / PEOPLE_PER_MONTHLY_UNIT) * crimeReduction * this.getGroupProductionMultiplier(planetState, group);
+  }
+
+  private getGroupProductionMultiplier(planetState: PlanetState, group: PopGroup): number {
+    return getHabitabilityProductionMultiplier(group.habitability)
+      * this.getStabilityProductionMultiplier(planetState.economy.stability);
+  }
+
+  private getPopGroupPopulation(planetState: PlanetState): number {
+    return planetState.economy.popGroups.reduce((sum, group) => sum + group.population, 0);
+  }
+
+  private getWeightedGroupValue(planetState: PlanetState, getValue: (group: PopGroup) => number): number {
+    const totalPopulation = this.getPopGroupPopulation(planetState);
+    if (totalPopulation <= 0) return 0;
+    return planetState.economy.popGroups.reduce((sum, group) => (
+      sum + getValue(group) * group.population
+    ), 0) / totalPopulation;
+  }
+
+  private applyPlanetModifiers(value: number, modifiers: PlanetState["economy"]["activeModifiers"], target: PlanetModifierTarget): number {
+    let next = value;
+    for (const modifier of modifiers) {
+      if (modifier.target === target && modifier.operation === "add") next += modifier.value;
+    }
+    for (const modifier of modifiers) {
+      if (modifier.target === target && modifier.operation === "multiply") next *= 1 + modifier.value;
+    }
+    return next;
+  }
+
+  private getAllJobs(): JobKind[] {
+    return JOB_FILL_ORDER.concat("criminal", "unemployed");
+  }
+
+  private getHousingHappinessModifier(housingRatio: number): number {
+    if (!Number.isFinite(housingRatio)) return 0;
+    if (housingRatio >= 1) return Math.max(0, Math.min(20, (housingRatio - 1) / 0.5 * 20));
+    if (housingRatio <= 0.1) return -40;
+    return this.interpolate(housingRatio, 0.1, 1, -40, 0);
+  }
+
+  private getAmenitiesHappinessModifier(amenityRatio: number): number {
+    if (!Number.isFinite(amenityRatio)) return 0;
+    return Math.max(-10, Math.min(10, (amenityRatio - 1) * 10));
+  }
+
+  private getEmploymentHappinessModifier(unemploymentRatio: number): number {
+    return Math.max(-28, Math.min(5, 5 - unemploymentRatio * 40));
+  }
+
+  private getHabitabilityHappinessModifier(habitability: number): number {
+    if (habitability <= 80) return this.interpolate(habitability, 0, 80, -30, 0);
+    return this.interpolate(habitability, 80, 100, 0, 30);
+  }
+
+  private getStabilityHappinessModifier(stability: number): number {
+    if (stability < 50) return -(50 - stability) * 0.3;
+    if (stability > 75) return Math.min(5, (stability - 75) * 0.08);
+    return 0;
+  }
+
+  private getStabilityProductionMultiplier(stability: number): number {
+    if (stability <= 50) return this.interpolate(stability, 0, 50, 0.35, 1);
+    return this.interpolate(stability, 50, 100, 1, 1.25);
+  }
+
+  private getHappinessCrimePressure(happiness: number): number {
+    if (happiness >= 100) return 0;
+    if (happiness >= 80) return (100 - happiness) * 0.25;
+    return 5 + ((80 - happiness) / 80) * 95;
+  }
+
+  private getJobHappinessPenalty(job: JobKind): number {
+    if (job === "unemployed") return -25;
+    if (job === "criminal") return -18;
+    return 0;
+  }
+
+  private interpolate(value: number, inputMin: number, inputMax: number, outputMin: number, outputMax: number): number {
+    if (inputMax === inputMin) return outputMin;
+    const t = Math.max(0, Math.min(1, (value - inputMin) / (inputMax - inputMin)));
+    return outputMin + (outputMax - outputMin) * t;
+  }
+
+  private formatSignedPercent(value: number): string {
+    const rounded = Math.round(value * 10) / 10;
+    return `${rounded >= 0 ? "+" : ""}${rounded}%`;
+  }
+
+  private formatMultiplier(value: number): string {
+    return value.toFixed(2).replace(/0$/, "").replace(/\.0$/, "");
   }
 
   private renderBuildingTooltip(
@@ -2131,8 +2652,10 @@ export class CelestialObjectPanel {
             title="Cancel construction"
           >X</button>
         ` : ""}
-        <strong>${this.escapeHtml(item.label)}</strong>
-        <span data-co-queue-days>${this.formatConstructionDays(item.remainingDays)} remaining</span>
+        <div class="coQueueItemMain">
+          <strong title="${this.escapeHtml(item.label)}">${this.escapeHtml(item.label)}</strong>
+          <span data-co-queue-days>${this.formatConstructionDays(item.remainingDays)} remaining</span>
+        </div>
         <small>${item.mineralCost} minerals</small>
         <div class="coQueueProgress"><span data-co-queue-progress-fill style="width:${this.getConstructionProgressPercent(item)}"></span></div>
       </div>
@@ -2143,11 +2666,11 @@ export class CelestialObjectPanel {
     const netRows = RESOURCE_KINDS.map((resource) => {
       const value = planetState.economy.net[resource];
       const className = value >= 0 ? "positive" : "negative";
-      return this.renderProductionToken(resource, RESOURCE_LABELS[resource], this.formatSignedCompact(value), className);
+      return this.renderProductionToken(resource, RESOURCE_LABELS[resource], this.formatSignedCompact(value), className, this.renderResourceEconomyTooltip(planetState, resource));
     }).join("");
     const deficits = RESOURCE_KINDS
       .filter((resource) => planetState.economy.deficit[resource] > 0)
-      .map((resource) => this.renderProductionToken(resource, RESOURCE_LABELS[resource], `-${this.formatCompact(planetState.economy.deficit[resource])}`, "negative"))
+      .map((resource) => this.renderProductionToken(resource, RESOURCE_LABELS[resource], `-${this.formatCompact(planetState.economy.deficit[resource])}`, "negative", this.renderResourceEconomyTooltip(planetState, resource)))
       .join("");
 
     return `
@@ -2160,9 +2683,10 @@ export class CelestialObjectPanel {
     `;
   }
 
-  private renderProductionToken(icon: string, label: string, value: string, className: string): string {
+  private renderProductionToken(icon: string, label: string, value: string, className: string, tooltip?: string): string {
+    const tooltipAttribute = tooltip ? ` data-co-tooltip="${this.tooltipAttr(tooltip)}"` : "";
     return `
-      <span class="coProductionToken ${className}">
+      <span class="coProductionToken ${className}"${tooltipAttribute}>
         ${this.renderStatIcon(icon)}
         <span>${this.escapeHtml(label)}</span>
         <strong>${this.escapeHtml(value)}</strong>
@@ -3976,8 +4500,10 @@ export class CelestialObjectPanel {
 .coQueueItem {
   position: relative;
   display: grid;
-  gap: 2px;
-  padding-right: 28px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 5px 8px;
+  padding-right: 32px;
 }
 
 .coQueueCancel {
@@ -4004,10 +4530,12 @@ export class CelestialObjectPanel {
   color: #ffe2e2;
 }
 
+.coQueueItemMain,
 .coQueueItem strong,
 .coQueueItem span,
 .coQueueItem small {
   display: block;
+  min-width: 0;
 }
 
 .coQueueItem strong {
@@ -4024,7 +4552,17 @@ export class CelestialObjectPanel {
   font-size: 10px;
 }
 
+.coQueueItem small {
+  justify-self: end;
+  max-width: 92px;
+  padding-top: 1px;
+  color: rgba(232, 246, 241, 0.78);
+  text-align: right;
+  white-space: nowrap;
+}
+
 .coQueueProgress {
+  grid-column: 1 / -1;
   height: 4px;
   overflow: hidden;
   border: 1px solid rgba(248, 218, 103, 0.34);
@@ -4595,6 +5133,10 @@ export class CelestialObjectPanel {
   line-height: 1.35;
 }
 
+[data-co-tooltip] {
+  cursor: help;
+}
+
 .coTooltip.visible {
   opacity: 1;
 }
@@ -4644,6 +5186,45 @@ export class CelestialObjectPanel {
 .coTooltipGrid strong {
   margin-top: 3px;
   color: #ffe989;
+}
+
+.coTooltipList span.coTooltipListRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.coTooltipListRow em {
+  min-width: 0;
+  color: rgba(211, 235, 229, 0.78);
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.coTooltipDrill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #ffe989;
+  font: inherit;
+  font-weight: 900;
+  line-height: 1.25;
+  text-align: right;
+  cursor: help;
+}
+
+.coTooltipDrill:hover,
+.coTooltipDrill:focus-visible {
+  color: #ffffff;
+  text-decoration: underline;
+  outline: none;
 }
 
 .coTooltipSectionTitle {

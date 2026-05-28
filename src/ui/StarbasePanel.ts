@@ -326,8 +326,10 @@ export class StarbasePanel {
                   const progress = Math.max(0, Math.min(100, ((totalDays - remainingDays) / totalDays) * 100));
                   return `
                     <div class="sbQueueItem">
-                      <strong>${this.escapeHtml(item.label ?? "Starbase Order")}</strong>
-                      <span>${Math.ceil(remainingDays)} days remaining</span>
+                      <div class="sbQueueItemMain">
+                        <strong title="${this.escapeHtml(item.label ?? "Starbase Order")}">${this.escapeHtml(item.label ?? "Starbase Order")}</strong>
+                        <span>${Math.ceil(remainingDays)} days remaining</span>
+                      </div>
                       <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
                     </div>
                   `;
@@ -402,11 +404,14 @@ export class StarbasePanel {
                 const waitingVerb = item.kind === "upgrade" ? "Upgrade queued" : "Waiting";
                 return `
                   <div class="sbShipQueueItem ${isActive ? "active" : ""}">
-                    <div>
-                      <strong>${this.escapeHtml(item.label)}</strong>
+                    <div class="sbShipQueueMain">
+                      <strong title="${this.escapeHtml(item.label)}">${this.escapeHtml(item.label)}</strong>
                       <span>${isActive ? verb : waitingVerb} | ${Math.ceil(item.remainingDays)}d</span>
                     </div>
-                    <small>${this.renderDailyDemand(item.resourceUpkeepPerDay)} / day | ${this.renderInlineCost(item.cost)}</small>
+                    <div class="sbShipQueueCosts">
+                      <small><span>Demand</span><strong>${this.renderDailyDemand(item.resourceUpkeepPerDay)} / day</strong></small>
+                      <small><span>Cost</span><strong>${this.renderInlineCost(item.cost)}</strong></small>
+                    </div>
                     <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
                   </div>
                 `;
@@ -1050,14 +1055,29 @@ export class StarbasePanel {
 }
 
 .sbQueueItem {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
   padding: 8px;
   border: 1px solid rgba(255, 224, 123, 0.34);
   background: rgba(42, 31, 11, 0.58);
 }
 
+.sbQueueItemMain {
+  min-width: 0;
+}
+
 .sbQueueItem strong,
 .sbQueueItem span {
   display: block;
+  min-width: 0;
+}
+
+.sbQueueItem strong {
+  color: #ffe989;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sbQueueBar {
@@ -1203,9 +1223,10 @@ export class StarbasePanel {
 
 .sbShipQueueItem {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  padding: 7px;
+  min-width: 0;
+  padding: 8px;
   border: 1px solid rgba(103, 255, 221, 0.2);
   background: rgba(1, 8, 10, 0.46);
 }
@@ -1219,10 +1240,22 @@ export class StarbasePanel {
 .sbShipQueueItem span,
 .sbShipQueueItem small {
   display: block;
+  min-width: 0;
+}
+
+.sbShipQueueMain {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 
 .sbShipQueueItem strong {
+  min-width: 0;
   font-size: 12px;
+  color: #eafff8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sbShipQueueItem span,
@@ -1231,8 +1264,37 @@ export class StarbasePanel {
   font-size: 10px;
 }
 
+.sbShipQueueCosts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.sbShipQueueCosts small {
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid rgba(103, 255, 221, 0.16);
+  background: rgba(0, 0, 0, 0.2);
+  line-height: 1.25;
+}
+
+.sbShipQueueCosts small > span {
+  margin-bottom: 2px;
+  color: rgba(206, 232, 226, 0.44);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sbShipQueueCosts small > strong {
+  color: rgba(232, 255, 247, 0.84);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .sbShipQueueItem .sbQueueBar {
-  grid-column: 1 / span 2;
   margin-top: 0;
 }
 

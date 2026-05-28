@@ -1,6 +1,6 @@
 import type { GameClock } from "../game/GameProtocol";
 import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
-import type { FactionEconomyState } from "../data/Economy";
+import type { FactionEconomyState, ResourceCounts, ResourceKind } from "../data/Economy";
 import {
   GAME_HOURS_PER_MONTH,
   gameYearToDateTime,
@@ -9,6 +9,7 @@ import {
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
 import type { FlagDesign } from "../flags/flagTypes";
+import { FloatingTooltipManager } from "./FloatingTooltipManager";
 
 export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
 export type HudSidebarItemKey =
@@ -36,7 +37,19 @@ export interface HudState {
   toggles: HudVisualToggles;
   clock?: GameClock;
   economy?: FactionEconomyState | null;
+  resourcePlanets?: HudResourcePlanetSummary[];
   flagDesign?: FlagDesign | null;
+}
+
+export interface HudResourcePlanetSummary {
+  id: string;
+  name: string;
+  starName: string;
+  population: number;
+  production: ResourceCounts;
+  upkeep: ResourceCounts;
+  net: ResourceCounts;
+  deficit: ResourceCounts;
 }
 
 export interface HudCallbacks {
@@ -421,7 +434,7 @@ const HUD_STYLE = `
   background:
     linear-gradient(180deg, rgba(8, 33, 24, 0.96), rgba(4, 13, 12, 0.98)),
     radial-gradient(circle at 30% 0%, rgba(90, 255, 195, 0.12), transparent 18rem);
-  pointer-events: none;
+  pointer-events: auto;
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 -1px 0 rgba(117, 255, 208, 0.08);
 }
 
@@ -456,6 +469,7 @@ const HUD_STYLE = `
   border-right: 1px solid rgba(94, 173, 142, 0.35);
   background: linear-gradient(90deg, rgba(16, 58, 43, 0.26), rgba(4, 12, 12, 0.12));
   padding: 3px 8px 3px 7px;
+  cursor: help;
 }
 
 .spaceHudResourceIcon {
@@ -509,6 +523,126 @@ const HUD_STYLE = `
 
 .spaceHudResourceDelta.negative {
   color: rgba(255, 129, 111, 0.95);
+}
+
+.spaceHudTooltip {
+  position: fixed;
+  z-index: 9999;
+  max-height: min(440px, calc(100vh - 24px));
+  overflow-y: auto;
+  opacity: 0;
+  pointer-events: auto;
+  padding: 10px;
+  border: 1px solid rgba(135, 255, 225, 0.78);
+  background:
+    linear-gradient(180deg, rgba(8, 31, 29, 0.98), rgba(3, 11, 13, 0.98)),
+    radial-gradient(circle at 20% 0%, rgba(103, 255, 221, 0.14), transparent 12rem);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(204, 255, 239, 0.08);
+  color: #e8fff7;
+  font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.spaceHudTooltip.visible {
+  opacity: 1;
+}
+
+.spaceHudTooltip.sticky {
+  border-color: rgba(248, 218, 103, 0.9);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55), 0 0 18px rgba(248, 218, 103, 0.16);
+}
+
+.spaceHudTooltipTitle {
+  margin-bottom: 6px;
+  color: #eafff8;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.spaceHudTooltip p {
+  margin: 0 0 8px;
+  color: rgba(211, 235, 229, 0.78);
+}
+
+.spaceHudTooltipGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  margin: 8px 0;
+}
+
+.spaceHudTooltipGrid div,
+.spaceHudTooltipList span {
+  padding: 5px;
+  border: 1px solid rgba(103, 255, 221, 0.26);
+  background: rgba(6, 26, 26, 0.58);
+}
+
+.spaceHudTooltipGrid span,
+.spaceHudTooltipGrid strong {
+  display: block;
+}
+
+.spaceHudTooltipGrid span,
+.spaceHudTooltipSectionTitle {
+  color: rgba(202, 225, 219, 0.68);
+  font-size: 10px;
+}
+
+.spaceHudTooltipGrid strong {
+  margin-top: 3px;
+  color: #ffe989;
+}
+
+.spaceHudTooltipSectionTitle {
+  margin: 9px 0 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.spaceHudTooltipList {
+  display: grid;
+  gap: 4px;
+}
+
+.spaceHudTooltipList span.spaceHudTooltipListRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.spaceHudTooltipListRow em {
+  min-width: 0;
+  color: rgba(211, 235, 229, 0.78);
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spaceHudTooltipDrill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  max-width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #ffe989;
+  font: inherit;
+  font-weight: 900;
+  line-height: 1.25;
+  text-align: right;
+  cursor: help;
+}
+
+.spaceHudTooltipDrill:hover,
+.spaceHudTooltipDrill:focus-visible {
+  color: #ffffff;
+  text-decoration: underline;
+  outline: none;
 }
 
 .spaceHudClockLabel {
@@ -694,9 +828,31 @@ function formatCompactNumber(value: number): string {
   return `${sign}${abs.toFixed(abs >= 100 ? 0 : 1)}`;
 }
 
+function formatSignedCompactNumber(value: number): string {
+  return `${value >= 0 ? "+" : ""}${formatCompactNumber(value)}`;
+}
+
+function formatPeople(value: number): string {
+  const sign = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `${sign}${(abs / 1_000_000_000).toFixed(abs >= 10_000_000_000 ? 0 : 1)}B`;
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}K`;
+  return `${sign}${Math.round(abs)}`;
+}
+
 function formatDelta(value: number): string {
   const sign = value >= 0 ? "+" : "";
   return `${sign}${formatCompactNumber(value)}/hr`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 export class HudOverlay {
@@ -716,6 +872,12 @@ export class HudOverlay {
   private resourceSignature = "";
   private flagSignature = "";
   private factionFlagSvg = "";
+  private readonly tooltips = new FloatingTooltipManager({
+    selector: "[data-hud-tooltip]",
+    datasetKey: "hudTooltip",
+    className: "spaceHudTooltip",
+    width: 320,
+  });
 
   constructor(callbacks: HudCallbacks) {
     this.callbacks = callbacks;
@@ -844,14 +1006,16 @@ export class HudOverlay {
       const nextResourceSignature = JSON.stringify({
         stockpiles: state.economy.stockpiles,
         monthlyDelta: state.economy.monthlyDelta,
+        resourcePlanets: state.resourcePlanets ?? [],
       });
       if (this.resourceSignature !== nextResourceSignature) {
         const flag = `<div class="spaceHudFactionFlag">${this.factionFlagSvg}</div>`;
         const resources = RESOURCE_KINDS.map((resource) => {
           const stockpile = state.economy?.stockpiles[resource] ?? 0;
-          const delta = (state.economy?.monthlyDelta[resource] ?? 0) / GAME_HOURS_PER_MONTH;
+          const monthlyDelta = state.economy?.monthlyDelta[resource] ?? 0;
+          const delta = monthlyDelta / GAME_HOURS_PER_MONTH;
           return `
-            <div class="spaceHudResourceItem">
+            <div class="spaceHudResourceItem" data-hud-tooltip="${escapeHtml(this.renderResourceTooltip(resource, stockpile, monthlyDelta, state.resourcePlanets ?? []))}">
               <span class="spaceHudResourceIcon ${resource}">${RESOURCE_ICON_LABELS[resource]}</span>
               <span class="spaceHudResourceText">
                 <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
@@ -862,10 +1026,12 @@ export class HudOverlay {
           `;
         }).join("");
         this.resourceEl.innerHTML = `${flag}${resources}`;
+        this.tooltips.bind(this.resourceEl);
         this.resourceSignature = nextResourceSignature;
       }
     } else {
       if (this.resourceSignature) {
+        this.tooltips.hide();
         this.resourceEl.innerHTML = "";
         this.resourceSignature = "";
       }
@@ -911,7 +1077,67 @@ export class HudOverlay {
 
   dispose(): void {
     this.stopClockAnimation();
+    this.tooltips.dispose();
     this.root.remove();
+  }
+
+  private renderResourceTooltip(
+    resource: ResourceKind,
+    stockpile: number,
+    monthlyDelta: number,
+    planets: HudResourcePlanetSummary[],
+  ): string {
+    const hourlyDelta = monthlyDelta / GAME_HOURS_PER_MONTH;
+    const planetRows = planets
+      .filter((planet) => Math.abs(planet.net[resource]) > 0.0001 || Math.abs(planet.production[resource]) > 0.0001 || Math.abs(planet.upkeep[resource]) > 0.0001)
+      .sort((a, b) => Math.abs(b.net[resource]) - Math.abs(a.net[resource]));
+    return `
+      <div class="spaceHudTooltipTitle">${escapeHtml(RESOURCE_LABELS[resource])}</div>
+      <p>Faction stockpile and income from known owned planets.</p>
+      <div class="spaceHudTooltipGrid">
+        ${this.renderTooltipGridItem("Stockpile", formatCompactNumber(stockpile))}
+        ${this.renderTooltipGridItem("Monthly Net", formatSignedCompactNumber(monthlyDelta))}
+        ${this.renderTooltipGridItem("Hourly Net", formatDelta(hourlyDelta))}
+        ${this.renderTooltipGridItem("Planets", String(planetRows.length))}
+      </div>
+      <div class="spaceHudTooltipSectionTitle">Planet Net</div>
+      <div class="spaceHudTooltipList">
+        ${planetRows.length
+          ? planetRows.map((planet) => this.renderTooltipListRow(
+            `${planet.name} (${planet.starName})`,
+            `${formatSignedCompactNumber(planet.net[resource])}/mo`,
+            this.renderPlanetResourceTooltip(resource, planet),
+          )).join("")
+          : '<span>No known planet contribution</span>'}
+      </div>
+    `;
+  }
+
+  private renderPlanetResourceTooltip(resource: ResourceKind, planet: HudResourcePlanetSummary): string {
+    return `
+      <div class="spaceHudTooltipTitle">${escapeHtml(planet.name)}</div>
+      <p>${escapeHtml(planet.starName)} system resource breakdown.</p>
+      <div class="spaceHudTooltipGrid">
+        ${this.renderTooltipGridItem("Population", formatPeople(planet.population))}
+        ${this.renderTooltipGridItem("Net", `${formatSignedCompactNumber(planet.net[resource])}/mo`)}
+        ${this.renderTooltipGridItem("Production", `${formatCompactNumber(planet.production[resource])}/mo`)}
+        ${this.renderTooltipGridItem("Upkeep", `${formatCompactNumber(planet.upkeep[resource])}/mo`)}
+        ${this.renderTooltipGridItem("Deficit", planet.deficit[resource] > 0 ? `${formatCompactNumber(planet.deficit[resource])}/mo` : "0")}
+      </div>
+    `;
+  }
+
+  private renderTooltipGridItem(label: string, value: string): string {
+    return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`;
+  }
+
+  private renderTooltipListRow(label: string, value: string, tooltip?: string): string {
+    return `<span class="spaceHudTooltipListRow"><em>${escapeHtml(label)}</em>${this.renderTooltipValue(value, tooltip)}</span>`;
+  }
+
+  private renderTooltipValue(value: string, tooltip?: string): string {
+    if (!tooltip) return `<strong>${escapeHtml(value)}</strong>`;
+    return `<button class="spaceHudTooltipDrill" type="button" data-hud-tooltip="${escapeHtml(tooltip)}">${escapeHtml(value)}</button>`;
   }
 
   private ensureClockAnimation(): void {
