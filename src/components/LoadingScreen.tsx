@@ -26,6 +26,10 @@ export function LoadingScreen({
 }: LoadingScreenProps) {
   const clampedProgress = Math.max(0, Math.min(100, progress));
   const [shouldRender, setShouldRender] = useState(true);
+  const stages = theme === 'auth'
+    ? ['Decode assets', 'Align relay', 'Warm models', 'Open bridge']
+    : ['Connect', 'Synchronize', 'Load systems', 'Enter sector'];
+  const activeStageIndex = Math.min(stages.length - 1, Math.floor((clampedProgress / 100) * stages.length));
 
   useEffect(() => {
     if (isVisible) {
@@ -54,20 +58,40 @@ export function LoadingScreen({
       aria-hidden={!isVisible}
     >
       <div className="loading-screen__backdrop">
-        <div className="loading-screen__orb loading-screen__orb--one" />
-        <div className="loading-screen__orb loading-screen__orb--two" />
+        <div className="loading-screen__stars" />
+        <div className="loading-screen__route loading-screen__route--wide" />
+        <div className="loading-screen__route loading-screen__route--near" />
         <div className="loading-screen__grid" />
       </div>
       <div className="loading-screen__panel">
         <div className="loading-screen__visual" aria-hidden="true">
-          <div className="loading-screen__planet" />
-          <div className="loading-screen__ring" />
-          <div className="loading-screen__spark loading-screen__spark--one" />
-          <div className="loading-screen__spark loading-screen__spark--two" />
+          <img
+            className="loading-screen__insignia"
+            src="/branding/stellarfrontslogonotext-transparent.png"
+            alt=""
+            width="160"
+            height="160"
+          />
+          <div className="loading-screen__relay" />
+          <img
+            className="loading-screen__ship"
+            src="/textures/own_ship_icon.webp"
+            alt=""
+            width="160"
+            height="100"
+          />
+          <div className="loading-screen__scan" />
+          <div className="loading-screen__beacon loading-screen__beacon--one" />
+          <div className="loading-screen__beacon loading-screen__beacon--two" />
         </div>
         <div className="loading-screen__content">
           <div className="loading-screen__eyebrow">{subtitle}</div>
           <h1 className="loading-screen__title">{title}</h1>
+          <div className="loading-screen__meta" aria-label="Loading status">
+            <span>Secure relay</span>
+            <span>Asset stream</span>
+            <span>Command UI</span>
+          </div>
           <div
             className="loading-screen__bar"
             role="progressbar"
@@ -79,6 +103,17 @@ export function LoadingScreen({
           </div>
           <div className="loading-screen__detail">{detail}</div>
           <div className="loading-screen__percent">{Math.round(clampedProgress)}%</div>
+          <ol className="loading-screen__stages" aria-label="Loading stages">
+            {stages.map((stage, index) => (
+              <li
+                key={stage}
+                className={index <= activeStageIndex ? 'loading-screen__stage loading-screen__stage--active' : 'loading-screen__stage'}
+              >
+                <span>{String(index + 1).padStart(2, '0')}</span>
+                {stage}
+              </li>
+            ))}
+          </ol>
         </div>
       </div>
     </div>

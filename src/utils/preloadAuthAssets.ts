@@ -41,6 +41,15 @@ type PreloadStep = {
 
 const preloadSteps: PreloadStep[] = [
   {
+    detail: 'Loading command branding and login interface assets',
+    load: () => Promise.all([
+      loadImage('/branding/stellarfrontslogo.webp'),
+      loadImage('/branding/stellarfrontslogonotext-transparent.png'),
+      loadImage('/textures/own_ship_icon.webp'),
+      loadImage('/flag-previews/aurora-vanguard.webp'),
+    ]).then(() => undefined),
+  },
+  {
     detail: 'Decoding star glow and surface textures',
     load: () => Promise.all([
       loadImage('/textures/star.glow.webp'),
@@ -54,6 +63,9 @@ const preloadSteps: PreloadStep[] = [
       loadImage('/textures/rocky_planet.webp'),
       loadImage('/textures/ice_planet.webp'),
       loadImage('/textures/planets/Arid/Arid_01-1024x512.webp'),
+      loadImage('/textures/planet-banners/Grassland_banner_city.webp'),
+      loadImage('/textures/planet-banners/Star_A_banner.webp'),
+      loadImage('/textures/starbase/Starbase_banner.webp'),
     ]).then(() => undefined),
   },
   {
