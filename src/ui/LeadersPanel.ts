@@ -6,6 +6,8 @@ import {
   getLeaderTraitDefinition,
   leaderXpForLevel,
 } from "../data/Leaders";
+import { getGovernmentPositionDefinition } from "../data/Government";
+import type { GovernmentPositionId } from "../data/Government";
 import type { LeaderClass, LeaderState } from "../data/Leaders";
 import type { ClientCommand, ServerFleet } from "../game/GameProtocol";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
@@ -387,6 +389,10 @@ export class LeadersPanel {
 
   private getAssignmentLabel(leader: LeaderState, data: LeadersPanelData): string {
     if (!leader.assignment) return leader.status === "pool" ? "Candidate" : "No assignment";
+    if (leader.assignment.kind === "government") {
+      const position = getGovernmentPositionDefinition(leader.assignment.targetId as GovernmentPositionId);
+      return position ? `${position.title} cabinet` : "Government position missing";
+    }
     if (leader.assignment.kind === "fleet") {
       const fleet = data.fleets.find((candidate) => candidate.id === leader.assignment?.targetId);
       if (!fleet) return "Assigned fleet missing";

@@ -219,6 +219,23 @@ import {
 } from "../src/data/Leaders";
 import type { LeaderAssignment, LeaderClass, LeaderFleetEffects, LeaderState } from "../src/data/Leaders";
 import {
+  createInitialGovernmentState,
+  createInitialGovernmentStates,
+  GOVERNMENT_LAW_BY_ID,
+  getGovernmentLawOption,
+  getGovernmentPositionDefinition,
+  getSelectedGovernmentLawOptions,
+  normalizeGovernmentStatesForFactions,
+} from "../src/data/Government";
+import type {
+  FactionGovernmentState,
+  GovernmentEffect,
+  GovernmentLawId,
+  GovernmentLawOption,
+  GovernmentPositionDefinition,
+  GovernmentPositionId,
+} from "../src/data/Government";
+import {
   ADMIN_COMMAND_DEFINITIONS,
   formatAdminCommandHelp,
   getAdminCommandDefinition,
@@ -277,11 +294,12 @@ interface GameFleet extends ServerFleet {
 interface GameShip extends ServerShip {}
 
 interface GameState {
-  schemaVersion: 17;
+  schemaVersion: 18;
   stars: StarData[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
   factionTechnologies: FactionTechState[];
+  governments: FactionGovernmentState[];
   market: MarketState;
   leaders: LeaderState[];
   hyperlanes: Array<[number, number]>;
@@ -473,7 +491,10 @@ function calculateFactionMonthlyDelta(nextState: GameState, factionId: number) {
     if (ship.ownerId !== factionId || ship.hull <= 0) continue;
     const design = resolveShipDesign(nextState.shipDesigns, ship.ownerId, ship.shipKind, ship.designId);
     const fleet = nextState.fleets.find((candidate) => candidate.id === ship.fleetId) ?? null;
-    const upkeepMultiplier = fleet ? getFleetLeaderEffects(nextState, fleet.id).upkeepMultiplier : 1;
+    const upkeepMultiplier = fleet
+      ? getFleetLeaderEffects(nextState, fleet.id).upkeepMultiplier
+        * getGovernmentFleetEffects(nextState, fleet.ownerId).upkeepMultiplier
+      : getGovernmentFleetEffects(nextState, ship.ownerId).upkeepMultiplier;
     delta = addResourceCounts(delta, scaleResourceCounts(calculateShipDesignStats(design).upkeep, -upkeepMultiplier));
   }
   return delta;
@@ -610,6 +631,160 @@ function getAssignedLeader(
   )) ?? null;
 }
 
+interface GovernmentEffectInstance {
+  sourceId: string;
+  label: string;
+  effect: GovernmentEffect;
+  scale: number;
+}
+
+function getFactionGovernment(nextState: GameState, factionId: number): FactionGovernmentState {
+  return nextState.governments.find((government) => government.factionId === factionId)
+    ?? createInitialGovernmentState(factionId);
+}
+
+function getAssignedGovernmentLeader(
+  nextState: GameState,
+  factionId: number,
+  positionId: GovernmentPositionId,
+): LeaderState | null {
+  return nextState.leaders.find((leader) => (
+    leader.factionId === factionId
+    && leader.status === "recruited"
+    && leader.assignment?.kind === "government"
+    && leader.assignment.targetId === positionId
+  )) ?? null;
+}
+
+function addGovernmentEffectInstances(
+  instances: GovernmentEffectInstance[],
+  sourceId: string,
+  label: string,
+  effects: GovernmentEffect[],
+  scale = 1,
+): void {
+  effects.forEach((effect, index) => {
+    instances.push({
+      sourceId: `${sourceId}-${index}`,
+      label,
+      effect,
+      scale,
+    });
+  });
+}
+
+function getGovernmentEffectInstances(nextState: GameState, factionId: number): GovernmentEffectInstance[] {
+  const instances: GovernmentEffectInstance[] = [];
+  const government = getFactionGovernment(nextState, factionId);
+  for (const { law, option } of getSelectedGovernmentLawOptions(government)) {
+    addGovernmentEffectInstances(instances, `law-${law.id}-${option.id}`, `${law.name}: ${option.name}`, option.effects);
+  }
+
+  for (const position of Object.values(getGovernmentPositionDefinitionMap())) {
+    const leader = getAssignedGovernmentLeader(nextState, factionId, position.id);
+    if (!leader || leader.class !== position.requiredClass) continue;
+    addGovernmentEffectInstances(
+      instances,
+      `cabinet-${position.id}-${leader.id}-level`,
+      `${position.title}: ${leader.name}`,
+      position.levelEffects,
+      Math.max(1, leader.level),
+    );
+    const leaderScale = getLeaderLevelScale(leader);
+    for (const traitId of leader.traits) {
+      const trait = getLeaderTraitDefinition(traitId);
+      for (const traitEffect of trait.governmentEffects ?? []) {
+        if (traitEffect.positionId && traitEffect.positionId !== "any" && traitEffect.positionId !== position.id) continue;
+        addGovernmentEffectInstances(
+          instances,
+          `cabinet-${position.id}-${leader.id}-${trait.id}`,
+          `${leader.name}: ${trait.name}`,
+          traitEffect.effects,
+          leaderScale,
+        );
+      }
+    }
+  }
+  return instances;
+}
+
+function getGovernmentPositionDefinitionMap(): Record<GovernmentPositionId, GovernmentPositionDefinition> {
+  return {
+    president: getGovernmentPositionDefinition("president")!,
+    headOfResearch: getGovernmentPositionDefinition("headOfResearch")!,
+    headOfDevelopment: getGovernmentPositionDefinition("headOfDevelopment")!,
+    ministerOfDefense: getGovernmentPositionDefinition("ministerOfDefense")!,
+  };
+}
+
+function getGovernmentPlanetModifiers(nextState: GameState, factionId: number): PlanetModifier[] {
+  const modifiers: PlanetModifier[] = [];
+  for (const instance of getGovernmentEffectInstances(nextState, factionId)) {
+    const effect = instance.effect;
+    if (effect.type !== "planetModifier") continue;
+    modifiers.push({
+        id: `government-${instance.sourceId}-${effect.target}`,
+        label: instance.label,
+        source: `government:${factionId}`,
+        target: effect.target,
+        operation: effect.operation,
+        value: effect.value * instance.scale,
+    });
+  }
+  return modifiers;
+}
+
+function getGovernmentFleetEffects(nextState: GameState, factionId: number): Required<LeaderFleetEffects> {
+  const totals: Required<LeaderFleetEffects> = {
+    attackMultiplier: 1,
+    speedMultiplier: 1,
+    shieldMultiplier: 1,
+    upkeepMultiplier: 1,
+    evasionBonus: 0,
+  };
+  for (const instance of getGovernmentEffectInstances(nextState, factionId)) {
+    if (instance.effect.type !== "fleetModifier") continue;
+    const value = instance.effect.value * instance.scale;
+    if (instance.effect.target === "attack") totals.attackMultiplier += value;
+    if (instance.effect.target === "speed") totals.speedMultiplier += value;
+    if (instance.effect.target === "shield") totals.shieldMultiplier += value;
+    if (instance.effect.target === "upkeep") totals.upkeepMultiplier += value;
+    if (instance.effect.target === "evasion") totals.evasionBonus += value;
+  }
+  return {
+    attackMultiplier: clamp(totals.attackMultiplier, 0.25, 2.5),
+    speedMultiplier: clamp(totals.speedMultiplier, 0.25, 2.5),
+    shieldMultiplier: clamp(totals.shieldMultiplier, 0.25, 2.5),
+    upkeepMultiplier: clamp(totals.upkeepMultiplier, 0.25, 2.5),
+    evasionBonus: clamp(totals.evasionBonus, -0.25, 0.25),
+  };
+}
+
+function getGovernmentResearchSpeedMultiplier(nextState: GameState, factionId: number): number {
+  let multiplier = 1;
+  for (const instance of getGovernmentEffectInstances(nextState, factionId)) {
+    if (instance.effect.type === "researchSpeed") {
+      multiplier += instance.effect.value * instance.scale;
+    }
+  }
+  return clamp(multiplier, 0.25, 3);
+}
+
+function getGovernmentResearchAllocation(nextState: GameState, factionId: number): { activeFraction: number; passiveFraction: number } {
+  let activeFraction = ACTIVE_RESEARCH_FRACTION;
+  let passiveFraction = PASSIVE_RESEARCH_FRACTION;
+  for (const instance of getGovernmentEffectInstances(nextState, factionId)) {
+    if (instance.effect.type !== "researchAllocation") continue;
+    activeFraction = instance.effect.activeFraction;
+    passiveFraction = instance.effect.passiveFraction;
+  }
+  const total = Math.max(0.000001, activeFraction + passiveFraction);
+  return {
+    activeFraction: clamp(activeFraction / total, 0, 1),
+    passiveFraction: clamp(passiveFraction / total, 0, 1),
+  };
+}
+
 function getPlanetLeaderModifiers(nextState: GameState, planetState: PlanetState, ownerId: number): PlanetModifier[] {
   const leader = getAssignedLeader(nextState, "planet", planetState.id);
   if (!leader || leader.factionId !== ownerId || leader.class !== "civilian") return [];
@@ -662,17 +837,20 @@ function getFleetLeaderEffects(nextState: GameState, fleetId: string): Required<
 
 function getFleetSpeedMultiplier(nextState: GameState, fleet: Pick<ServerFleet, "id" | "ownerId">): number {
   return getFactionFleetShortageEffects(nextState, fleet.ownerId).speedMultiplier
-    * getFleetLeaderEffects(nextState, fleet.id).speedMultiplier;
+    * getFleetLeaderEffects(nextState, fleet.id).speedMultiplier
+    * getGovernmentFleetEffects(nextState, fleet.ownerId).speedMultiplier;
 }
 
 function getFleetAttackMultiplier(nextState: GameState, fleet: Pick<ServerFleet, "id" | "ownerId">): number {
   return getFactionFleetShortageEffects(nextState, fleet.ownerId).attackMultiplier
-    * getFleetLeaderEffects(nextState, fleet.id).attackMultiplier;
+    * getFleetLeaderEffects(nextState, fleet.id).attackMultiplier
+    * getGovernmentFleetEffects(nextState, fleet.ownerId).attackMultiplier;
 }
 
 function getFleetShieldMultiplier(nextState: GameState, fleet: Pick<ServerFleet, "id" | "ownerId">): number {
   return getFactionFleetShortageEffects(nextState, fleet.ownerId).shieldMultiplier
-    * getFleetLeaderEffects(nextState, fleet.id).shieldMultiplier;
+    * getFleetLeaderEffects(nextState, fleet.id).shieldMultiplier
+    * getGovernmentFleetEffects(nextState, fleet.ownerId).shieldMultiplier;
 }
 
 function refreshFactionEconomyDeltas(nextState = state): void {
@@ -786,6 +964,7 @@ function getPlanetTechnologyModifiers(nextState: GameState, planetState: PlanetS
   return ownerId >= 0
     ? [
       ...getTechnologyPlanetModifiers(nextState, ownerId),
+      ...getGovernmentPlanetModifiers(nextState, ownerId),
       ...getFactionShortagePlanetModifiers(nextState, ownerId),
       ...getPlanetLeaderModifiers(nextState, planetState, ownerId),
     ]
@@ -804,7 +983,8 @@ function getFactionStarbaseShipBuildSpeedMultiplier(nextState: GameState, factio
 
 function getFactionResearchPerHour(factionId: number): number {
   const economy = getFactionEconomy(factionId);
-  return BASELINE_RESEARCH_PER_HOUR + Math.max(0, (economy?.monthlyDelta.research ?? 0) / GAME_HOURS_PER_MONTH);
+  const base = BASELINE_RESEARCH_PER_HOUR + Math.max(0, (economy?.monthlyDelta.research ?? 0) / GAME_HOURS_PER_MONTH);
+  return base * getGovernmentResearchSpeedMultiplier(state, factionId);
 }
 
 function countOwnedPlanetBuildings(factionId: number, buildingKind: BuildingKind): number {
@@ -1000,8 +1180,9 @@ function applyTechnologyResearchForFaction(factionId: number, elapsedHours: numb
   const context = buildResearchContext(factionId);
   let changed = ensureActiveTechnology(techState);
   const researchPool = Math.max(0, researchPerHour) * elapsedHours;
-  changed = applyActiveResearchPool(techState, context, researchPool * ACTIVE_RESEARCH_FRACTION) || changed;
-  changed = applyPassiveResearchPool(techState, context, researchPool * PASSIVE_RESEARCH_FRACTION) || changed;
+  const allocation = getGovernmentResearchAllocation(state, factionId);
+  changed = applyActiveResearchPool(techState, context, researchPool * allocation.activeFraction) || changed;
+  changed = applyPassiveResearchPool(techState, context, researchPool * allocation.passiveFraction) || changed;
   changed = ensureActiveTechnology(techState) || changed;
   if (changed) {
     hasDirtyState = true;
@@ -1013,13 +1194,14 @@ function createFactionTechnologyView(factionId: number): FactionTechnologyView {
   const techState = getFactionTechnology(state, factionId) ?? normalizeFactionTechState(factionId, undefined);
   const context = buildResearchContext(factionId);
   const researchPerHour = getFactionResearchPerHour(factionId);
+  const allocation = getGovernmentResearchAllocation(state, factionId);
   return {
     factionId,
     activeTechId: techState.activeTechId,
     completedTechIds: [...techState.completedTechIds],
     researchPerHour,
-    activeResearchPerHour: researchPerHour * ACTIVE_RESEARCH_FRACTION,
-    passiveResearchPerHour: researchPerHour * PASSIVE_RESEARCH_FRACTION,
+    activeResearchPerHour: researchPerHour * allocation.activeFraction,
+    passiveResearchPerHour: researchPerHour * allocation.passiveFraction,
     technologies: TECHNOLOGY_DEFINITIONS.map((tech) => {
       const progress = techState.progressByTechId[tech.id] ?? createEmptyTechProgress(isTechnologyCompleted(techState, tech.id));
       const missingPrerequisites = getMissingPrerequisites(tech, techState);
@@ -1830,11 +2012,12 @@ function createInitialState(): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 17,
+    schemaVersion: 18,
     stars,
     planetStates,
     factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
     factionTechnologies: factions.map((faction) => normalizeFactionTechState(faction.id, undefined)),
+    governments: createInitialGovernmentStates(factions.map((faction) => faction.id)),
     market: createInitialMarketState(factions.map((faction) => faction.id), startHour, GAME_START_YEAR),
     leaders: createInitialLeaders(factions.map((faction) => faction.id), startLeaderDay, GAME_START_YEAR),
     hyperlanes,
@@ -1871,7 +2054,7 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(statePath, "utf8");
     const parsed = JSON.parse(raw) as GameState;
-    parsed.schemaVersion = 17;
+    parsed.schemaVersion = 18;
     delete (parsed as GameState & { battles?: unknown }).battles;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
@@ -1937,6 +2120,12 @@ async function loadState(): Promise<GameState> {
     const normalizedFactionTechnologies = normalizeFactionTechnologies(parsed);
     const factionTechnologiesChanged = JSON.stringify(parsed.factionTechnologies ?? []) !== JSON.stringify(normalizedFactionTechnologies);
     parsed.factionTechnologies = normalizedFactionTechnologies;
+    const normalizedGovernments = normalizeGovernmentStatesForFactions(
+      parsed.factions.map((faction) => faction.id),
+      parsed.governments,
+    );
+    const governmentsChanged = JSON.stringify(parsed.governments ?? []) !== JSON.stringify(normalizedGovernments);
+    parsed.governments = normalizedGovernments;
     const normalizedLeaders = normalizeLeadersForFactions(
       parsed.factions.map((faction) => faction.id),
       parsed.leaders,
@@ -1948,7 +2137,7 @@ async function loadState(): Promise<GameState> {
     recalculatePlanetEconomies(parsed);
     refreshFactionEconomyDeltas(parsed);
     const planetStateApplied = applyPlanetStatesToStars(parsed.stars, parsed.planetStates);
-    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || leadersChanged || homeStarbaseChanged || ownershipChanged) {
+    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || governmentsChanged || leadersChanged || homeStarbaseChanged || ownershipChanged) {
       hasDirtyState = true;
     }
     refreshDiscovery(parsed);
@@ -2223,6 +2412,9 @@ function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField
   if (changed.includes("leaders")) {
     update.leaders = visibleState.leaders;
   }
+  if (changed.includes("governments")) {
+    update.governments = visibleState.governments;
+  }
   if (changed.includes("combatContacts") || changed.includes("visibility")) {
     update.recentCombatContacts = visibleState.recentCombatContacts;
   }
@@ -2264,6 +2456,9 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
   const factionEconomies = perspective.mode === "faction"
     ? state.factionEconomies.filter((economy) => economy.factionId === perspective.factionId)
     : [];
+  const governments = perspective.mode === "faction"
+    ? state.governments.filter((government) => government.factionId === perspective.factionId)
+    : state.governments;
   const leaders = perspective.mode === "faction"
     ? state.leaders.filter((leader) => leader.factionId === perspective.factionId && leader.status !== "dead")
     : state.leaders.filter((leader) => leader.status !== "dead");
@@ -2299,6 +2494,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     starbases: visibleStarbases.map(summarizeStarbase),
     technologies: getVisibleTechnologyViews(perspective),
     leaders,
+    governments,
     recentCombatContacts,
     planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
     factionEconomies,
@@ -3459,7 +3655,10 @@ function calculateFactionResourceFlow(nextState: GameState, factionId: number): 
     if (ship.ownerId !== factionId || ship.hull <= 0) continue;
     const design = resolveShipDesign(nextState.shipDesigns, ship.ownerId, ship.shipKind, ship.designId);
     const fleet = nextState.fleets.find((candidate) => candidate.id === ship.fleetId) ?? null;
-    const upkeepMultiplier = fleet ? getFleetLeaderEffects(nextState, fleet.id).upkeepMultiplier : 1;
+    const upkeepMultiplier = fleet
+      ? getFleetLeaderEffects(nextState, fleet.id).upkeepMultiplier
+        * getGovernmentFleetEffects(nextState, fleet.ownerId).upkeepMultiplier
+      : getGovernmentFleetEffects(nextState, ship.ownerId).upkeepMultiplier;
     const upkeep = scaleResourceCounts(calculateShipDesignStats(design).upkeep, upkeepMultiplier);
     for (const resource of RESOURCE_KINDS) {
       consumption[resource] += Math.max(0, upkeep[resource]);
@@ -3725,6 +3924,20 @@ function createDetailPayload(
       leaders: detailState.leaders,
       fleets: detailState.fleets,
       planetStates: detailState.planetStates,
+    };
+    return { payload, revision: createRevision(payload), normalizedId: null };
+  }
+
+  if (scope === "government") {
+    const detailState = createVisibleDetailState(perspective);
+    const factionId = perspective.mode === "faction" ? perspective.factionId : null;
+    const payload = {
+      government: factionId === null
+        ? null
+        : detailState.governments.find((government) => government.factionId === factionId) ?? null,
+      leaders: detailState.leaders,
+      technologies: detailState.technologies,
+      factionEconomies: detailState.factionEconomies,
     };
     return { payload, revision: createRevision(payload), normalizedId: null };
   }
@@ -5279,7 +5492,8 @@ function getShipEvasionForFleetCombat(ship: GameShip, fleet: GameFleet): number 
   const stats = calculateShipDesignStats(getShipDesignForShip(ship));
   const bonus = FORMATION_EVASION_BONUS[fleet.formation] ?? 0;
   const leaderBonus = getFleetLeaderEffects(state, fleet.id).evasionBonus;
-  return clamp(stats.combat.evasion + bonus + leaderBonus, 0, 0.9);
+  const governmentBonus = getGovernmentFleetEffects(state, fleet.ownerId).evasionBonus;
+  return clamp(stats.combat.evasion + bonus + leaderBonus + governmentBonus, 0, 0.9);
 }
 
 function chooseTargetShip(targetFleet: GameFleet, shipsById: Map<string, GameShip>): GameShip | null {
@@ -5963,6 +6177,7 @@ function processLeaderDays(targetDay: number): {
   leadersChanged: boolean;
   planetEconomiesChanged: boolean;
   fleetEffectsChanged: boolean;
+  governmentEffectsChanged: boolean;
 } {
   const previousDay = state.clock.lastProcessedLeaderDay ?? targetDay;
   const days = Math.max(0, targetDay - previousDay);
@@ -5970,17 +6185,18 @@ function processLeaderDays(targetDay: number): {
   if (days <= 0) {
     const expectedPoolCount = factionIds.length * LEADER_POOL_PER_CLASS * 2;
     if (state.leaders.filter((leader) => leader.status === "pool").length >= expectedPoolCount) {
-      return { leadersChanged: false, planetEconomiesChanged: false, fleetEffectsChanged: false };
+      return { leadersChanged: false, planetEconomiesChanged: false, fleetEffectsChanged: false, governmentEffectsChanged: false };
     }
     state.leaders = refreshLeaderPool(state.leaders, factionIds, targetDay, state.clock.year);
     state.clock.lastProcessedLeaderDay = targetDay;
     hasDirtyState = true;
-    return { leadersChanged: true, planetEconomiesChanged: false, fleetEffectsChanged: false };
+    return { leadersChanged: true, planetEconomiesChanged: false, fleetEffectsChanged: false, governmentEffectsChanged: false };
   }
 
   let leadersChanged = false;
   let planetEconomiesChanged = false;
   let fleetEffectsChanged = false;
+  let governmentEffectsChanged = false;
   const ageIncrease = days / GAME_DAYS_PER_YEAR;
   for (const leader of state.leaders) {
     if (leader.status !== "recruited") continue;
@@ -5993,6 +6209,7 @@ function processLeaderDays(targetDay: number): {
     if (leader.level !== previousLevel && leader.assignment) {
       if (leader.assignment.kind === "planet") planetEconomiesChanged = true;
       if (leader.assignment.kind === "fleet") fleetEffectsChanged = true;
+      if (leader.assignment.kind === "government") governmentEffectsChanged = true;
     }
 
     const dailyDeathChance = getLeaderDailyDeathChance(leader.age, leader.lifespan);
@@ -6005,19 +6222,20 @@ function processLeaderDays(targetDay: number): {
     leadersChanged = true;
     if (oldAssignment?.kind === "planet") planetEconomiesChanged = true;
     if (oldAssignment?.kind === "fleet") fleetEffectsChanged = true;
+    if (oldAssignment?.kind === "government") governmentEffectsChanged = true;
   }
 
   state.leaders = refreshLeaderPool(state.leaders, factionIds, targetDay, state.clock.year);
   state.clock.lastProcessedLeaderDay = targetDay;
   leadersChanged = true;
   hasDirtyState = true;
-  if (planetEconomiesChanged) {
+  if (planetEconomiesChanged || governmentEffectsChanged) {
     recalculatePlanetEconomies();
     refreshFactionEconomyDeltas();
   } else if (fleetEffectsChanged) {
     refreshFactionEconomyDeltas();
   }
-  return { leadersChanged, planetEconomiesChanged, fleetEffectsChanged };
+  return { leadersChanged, planetEconomiesChanged, fleetEffectsChanged, governmentEffectsChanged };
 }
 
 function advanceState(now: number): Set<ServerUpdateField> {
@@ -6081,6 +6299,13 @@ function advanceState(now: number): Set<ServerUpdateField> {
   if (leaderResult.fleetEffectsChanged) {
     changed.add("fleets");
     changed.add("factionEconomies");
+  }
+  if (leaderResult.governmentEffectsChanged) {
+    changed.add("governments");
+    changed.add("planetStates");
+    changed.add("factionEconomies");
+    changed.add("fleets");
+    changed.add("technologies");
   }
 
   if (processPlanetConstruction(elapsedGameDays)) {
@@ -7542,6 +7767,43 @@ function handleSetActiveTechnology(
   broadcastUpdates(["technologies"]);
 }
 
+function isGovernmentLawOptionUnlocked(factionId: number, option: GovernmentLawOption): boolean {
+  if (!option.requiresTechId) return true;
+  const techState = getFactionTechnology(state, factionId);
+  return Boolean(techState && isTechnologyCompleted(techState, option.requiresTechId));
+}
+
+function handleSetGovernmentLaw(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  lawId: GovernmentLawId,
+  optionId: string,
+): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const law = GOVERNMENT_LAW_BY_ID[lawId];
+  const option = law ? getGovernmentLawOption(lawId, optionId) : undefined;
+  if (!law || !option) return reject(socket, "Government law option not found.");
+  if (!isGovernmentLawOptionUnlocked(factionId, option)) {
+    const required = option.requiresTechId ? TECHNOLOGY_BY_ID[option.requiresTechId]?.name ?? option.requiresTechId : "required technology";
+    return reject(socket, `Requires ${required}.`);
+  }
+  let government = state.governments.find((candidate) => candidate.factionId === factionId);
+  if (!government) {
+    government = createInitialGovernmentState(factionId);
+    state.governments.push(government);
+  }
+  if (government.selectedLawOptionIds[lawId] === option.id) {
+    return accept(socket, `${law.name} already uses ${option.name}.`);
+  }
+  government.selectedLawOptionIds[lawId] = option.id;
+  recalculatePlanetEconomies();
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  accept(socket, `${law.name} set to ${option.name}.`);
+  broadcastUpdates(["governments", "planetStates", "factionEconomies", "fleets", "technologies"]);
+}
+
 function validateLeaderCommand(socket: WebSocket, perspective: GalaxyPerspective, leaderId: string): {
   leader: LeaderState;
   factionId: number;
@@ -7566,6 +7828,22 @@ function validateLeaderAssignment(
   assignment: LeaderAssignment | null,
 ): boolean {
   if (!assignment) return true;
+  if (assignment.kind === "government") {
+    const position = getGovernmentPositionDefinition(assignment.targetId as GovernmentPositionId);
+    if (!position) {
+      reject(socket, "Government position not found.");
+      return false;
+    }
+    if (position.requiredClass !== leaderClass) {
+      reject(socket, `${formatLeaderClass(leaderClass)} cannot take that government position.`);
+      return false;
+    }
+    return true;
+  }
+  if (assignment.kind !== "planet" && assignment.kind !== "fleet") {
+    reject(socket, "Leader assignment target is invalid.");
+    return false;
+  }
   if (getLeaderAssignmentClass(assignment.kind) !== leaderClass) {
     reject(socket, `${formatLeaderClass(leaderClass)} cannot take that assignment.`);
     return false;
@@ -7653,6 +7931,11 @@ function handleAssignLeader(
     refreshFactionEconomyDeltas();
     changed.push("fleets", "factionEconomies");
   }
+  if (previousAssignment?.kind === "government" || assignment?.kind === "government") {
+    recalculatePlanetEconomies();
+    refreshFactionEconomyDeltas();
+    changed.push("governments", "planetStates", "factionEconomies", "fleets", "technologies");
+  }
   accept(socket, assignment ? `${leader.name} assigned.` : `${leader.name} unassigned.`);
   commitLeaderChange(changed);
 }
@@ -7679,6 +7962,11 @@ function handleDismissLeader(socket: WebSocket, perspective: GalaxyPerspective, 
     refreshFactionEconomyDeltas();
     changed.push("fleets", "factionEconomies");
   }
+  if (oldAssignment?.kind === "government") {
+    recalculatePlanetEconomies();
+    refreshFactionEconomyDeltas();
+    changed.push("governments", "planetStates", "factionEconomies", "fleets", "technologies");
+  }
   accept(socket, `${leader.name} dismissed.`);
   commitLeaderChange(changed);
 }
@@ -7697,6 +7985,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "setActiveTechnology") {
     handleSetActiveTechnology(session.socket, session.perspective, command.techId);
+    return;
+  }
+  if (command.type === "setGovernmentLaw") {
+    handleSetGovernmentLaw(session.socket, session.perspective, command.lawId, command.optionId);
     return;
   }
   if (command.type === "recruitLeader") {

@@ -25,6 +25,7 @@ import type {
 import type { ShipDesign } from "../data/ShipDesigns";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import type { LeaderAssignment, LeaderState } from "../data/Leaders";
+import type { FactionGovernmentState, GovernmentLawId, GovernmentLawOptionId } from "../data/Government";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type {
@@ -74,6 +75,7 @@ export type ServerUpdateField =
   | "starbases"
   | "technologies"
   | "leaders"
+  | "governments"
   | "market"
   | "combatContacts";
 
@@ -120,6 +122,7 @@ export type GameDetailScope =
   | "market"
   | "technology"
   | "leaders"
+  | "government"
   | "selection"
   | "hud";
 
@@ -213,6 +216,13 @@ export interface LeadersDetailPayload {
   planetStates: PlanetState[];
 }
 
+export interface GovernmentDetailPayload {
+  government: FactionGovernmentState | null;
+  leaders: LeaderState[];
+  technologies: FactionTechnologyView[];
+  factionEconomies: FactionEconomyState[];
+}
+
 export interface SelectionDetailPayload {
   fleets: ServerFleet[];
   ships: ServerShip[];
@@ -237,6 +247,7 @@ export type GameDetailPayload =
   | MarketDetailPayload
   | TechnologyDetailPayload
   | LeadersDetailPayload
+  | GovernmentDetailPayload
   | SelectionDetailPayload
   | HudDetailPayload;
 
@@ -530,6 +541,12 @@ export interface DismissLeaderCommand {
   leaderId: string;
 }
 
+export interface SetGovernmentLawCommand {
+  type: "setGovernmentLaw";
+  lawId: GovernmentLawId;
+  optionId: GovernmentLawOptionId;
+}
+
 export interface RetreatFleetCommand {
   type: "retreatFleet";
   fleetId: string;
@@ -656,6 +673,7 @@ export type ClientCommand =
   | RecruitLeaderCommand
   | AssignLeaderCommand
   | DismissLeaderCommand
+  | SetGovernmentLawCommand
   | SetUrbanSubDistrictCommand
   | MarketTradeCommand
   | AddMarketAutoTradeCommand
@@ -693,6 +711,7 @@ export interface GameSnapshot {
   starbases: ServerStarbaseSummary[];
   technologies: FactionTechnologyView[];
   leaders: LeaderState[];
+  governments: FactionGovernmentState[];
   recentCombatContacts: ServerCombatContact[];
 }
 
@@ -717,6 +736,7 @@ export interface GameUpdate {
   starbases?: ServerStarbaseSummary[];
   technologies?: FactionTechnologyView[];
   leaders?: LeaderState[];
+  governments?: FactionGovernmentState[];
   recentCombatContacts?: ServerCombatContact[];
 }
 

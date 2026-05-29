@@ -26,6 +26,7 @@ import { PlanetOperationsPanel } from "@/ui/PlanetOperationsPanel";
 import { MarketPanel } from "@/ui/MarketPanel";
 import { TechnologyPanel } from "@/ui/TechnologyPanel";
 import { LeadersPanel } from "@/ui/LeadersPanel";
+import { GovernmentPanel } from "@/ui/GovernmentPanel";
 import { OPEN_LEADERS_PANEL_EVENT } from "@/ui/leaderEvents";
 import type { LeaderAssignmentTarget, OpenLeadersPanelEventDetail } from "@/ui/leaderEvents";
 import { AdminCommandPanel } from "@/ui/AdminCommandPanel";
@@ -34,6 +35,7 @@ import type {
   ClientCommand,
   FleetManagerDetailPayload,
   GameSnapshot,
+  GovernmentDetailPayload,
   LeadersDetailPayload,
   MarketDetailPayload,
   PlanetManagerDetailPayload,
@@ -88,6 +90,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let marketPanel: MarketPanel | null = null;
   let technologyPanel: TechnologyPanel | null = null;
   let leadersPanel: LeadersPanel | null = null;
+  let governmentPanel: GovernmentPanel | null = null;
   let adminCommandPanel: AdminCommandPanel | null = null;
   let leadersPanelAssignmentTarget: LeaderAssignmentTarget | null = null;
   let fleetManagerDetail: FleetManagerDetailPayload | null = null;
@@ -95,11 +98,13 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let marketDetail: MarketDetailPayload | null = null;
   let technologyDetail: TechnologyDetailPayload | null = null;
   let leadersDetail: LeadersDetailPayload | null = null;
+  let governmentDetail: GovernmentDetailPayload | null = null;
   let releaseFleetManagerDetail: (() => void) | null = null;
   let releasePlanetManagerDetail: (() => void) | null = null;
   let releaseMarketDetail: (() => void) | null = null;
   let releaseTechnologyDetail: (() => void) | null = null;
   let releaseLeadersDetail: (() => void) | null = null;
+  let releaseGovernmentDetail: (() => void) | null = null;
   const releaseStarbaseDetails = new Map<string, () => void>();
   const releasePlanetDetails = new Map<string, () => void>();
   let selectedFleetIds = new Set<string>();
@@ -416,6 +421,20 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       releaseLeadersDetail = null;
     },
   });
+  const getCurrentFactionGovernment = () => {
+    const factionId = getPlayerFactionId();
+    if (factionId === null) return null;
+    return governmentDetail?.government
+      ?? snapshot.governments.find((government) => government.factionId === factionId)
+      ?? null;
+  };
+  const sendGovernmentCommand = (command: ClientCommand): void => {
+    if (command.type === "assignLeader") {
+      sendLeaderCommand(command);
+      return;
+    }
+    server.send(command);
+  };
   const openFleetManager = (): void => {
     if (!fleetManagerPanel) {
       fleetManagerPanel = new FleetManagerPanel();
@@ -511,6 +530,44 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
     leadersPanel.show(getLeadersPanelData());
   };
+  const getGovernmentPanelData = () => ({
+    government: getCurrentFactionGovernment(),
+    leaders: governmentDetail?.leaders ?? snapshot.leaders,
+    technology: governmentDetail?.technologies.find((technology) => technology.factionId === getPlayerFactionId())
+      ?? getCurrentFactionTechnology(),
+    factionEconomy: governmentDetail?.factionEconomies.find((economy) => economy.factionId === getPlayerFactionId())
+      ?? getCurrentFactionEconomy(),
+    factions: snapshot.factions,
+    playerFactionId: getPlayerFactionId(),
+    factionName: getCurrentFactionName(),
+    clockYear: getRenderClockYear(),
+    onGovernmentCommand: sendGovernmentCommand,
+    onOpenLeaderAssignment: (target: LeaderAssignmentTarget) => {
+      openLeadersPanel(target);
+    },
+    onClose: () => {
+      releaseGovernmentDetail?.();
+      releaseGovernmentDetail = null;
+    },
+  });
+  const openGovernmentPanel = (): void => {
+    if (!governmentPanel) {
+      governmentPanel = new GovernmentPanel();
+    }
+    if (!releaseGovernmentDetail) {
+      releaseGovernmentDetail = server.subscribeDetail<GovernmentDetailPayload>("government", null, (event) => {
+        if (event.payload && "government" in event.payload) {
+          governmentDetail = event.payload;
+          governmentPanel?.refresh(getGovernmentPanelData());
+          if (event.payload.leaders) {
+            activeGalaxyScene?.setLeaders(event.payload.leaders);
+            activeSystemScene?.setLeaders(event.payload.leaders);
+          }
+        }
+      });
+    }
+    governmentPanel.show(getGovernmentPanelData());
+  };
   const refreshFleetManager = (): void => {
     fleetManagerPanel?.refresh(getFleetManagerData());
   };
@@ -526,9 +583,14 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const refreshLeadersPanel = (): void => {
     leadersPanel?.refresh(getLeadersPanelData());
   };
+  const refreshGovernmentPanel = (): void => {
+    governmentPanel?.refresh(getGovernmentPanelData());
+  };
   const handleSidebarItem = (key: HudSidebarItemKey): void => {
     if (key === "fleets") {
       openFleetManager();
+    } else if (key === "government") {
+      openGovernmentPanel();
     } else if (key === "planets") {
       openPlanetOperations();
     } else if (key === "market") {
@@ -972,6 +1034,15 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     ) {
       if (!releaseLeadersDetail) refreshLeadersPanel();
     }
+    if (
+      isFull
+      || has("governments")
+      || has("leaders")
+      || has("technologies")
+      || has("factionEconomies")
+    ) {
+      if (!releaseGovernmentDetail) refreshGovernmentPanel();
+    }
   }
 
   async function switchScene(factory: () => IGameScene): Promise<void> {
@@ -1221,6 +1292,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     marketPanel?.dispose();
     technologyPanel?.dispose();
     leadersPanel?.dispose();
+    governmentPanel?.dispose();
     for (const release of releaseStarbaseDetails.values()) release();
     releaseStarbaseDetails.clear();
     for (const release of releasePlanetDetails.values()) release();
