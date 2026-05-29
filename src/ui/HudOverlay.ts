@@ -69,13 +69,13 @@ const PLANETS_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_planets_icon.w
 const DIPLOMACY_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_diplomacy_icon.webp";
 const ESPIONAGE_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_espionage_icon.webp";
 const MARKET_SIDEBAR_ICON_URL = "/textures/sidebar-icons/sidebar_market_icon.webp";
-const RESOURCE_ICON_LABELS: Record<string, string> = {
-  food: "FD",
-  minerals: "MN",
-  energy: "EN",
-  goods: "GD",
-  alloys: "AL",
-  research: "RS",
+const RESOURCE_ICON_URLS: Record<ResourceKind, string> = {
+  food: "/textures/resource-icons/full/food.webp",
+  minerals: "/textures/resource-icons/full/minerals.webp",
+  energy: "/textures/resource-icons/full/energy.webp",
+  goods: "/textures/resource-icons/full/goods.webp",
+  alloys: "/textures/resource-icons/full/alloys.webp",
+  research: "/textures/resource-icons/full/research.webp",
 };
 
 const SIDEBAR_ITEMS: Array<{ key: HudSidebarItemKey; label: string; icon?: string; iconUrl?: string }> = [
@@ -483,6 +483,19 @@ const HUD_STYLE = `
   color: #eafff7;
   font-size: 8px;
   font-weight: 900;
+}
+
+.spaceHudResourceIcon.has-image {
+  clip-path: none;
+  border: 0;
+  background: transparent;
+}
+
+.spaceHudResourceIcon.has-image img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
 }
 
 .spaceHudResourceIcon.food { color: #91ff75; background: rgba(37, 83, 28, 0.72); }
@@ -1017,7 +1030,7 @@ export class HudOverlay {
           const delta = monthlyDelta / GAME_HOURS_PER_MONTH;
           return `
             <div class="spaceHudResourceItem" data-hud-tooltip="${escapeHtml(this.renderResourceTooltip(resource, stockpile, monthlyDelta, state.economy?.marketMonthlyDelta?.[resource] ?? 0, state.resourcePlanets ?? []))}">
-              <span class="spaceHudResourceIcon ${resource}">${RESOURCE_ICON_LABELS[resource]}</span>
+              <span class="spaceHudResourceIcon has-image" aria-hidden="true"><img src="${RESOURCE_ICON_URLS[resource]}" alt="" loading="eager" decoding="async" /></span>
               <span class="spaceHudResourceText">
                 <span class="spaceHudResourceLabel">${RESOURCE_LABELS[resource]}</span>
                 <span class="spaceHudResourceValue">${formatCompactNumber(stockpile)}</span>

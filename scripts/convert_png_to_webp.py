@@ -4,6 +4,8 @@ import argparse
 import shutil
 from pathlib import Path
 
+from collections import deque
+
 from PIL import Image
 from PIL import ImageOps
 
@@ -14,10 +16,40 @@ PLANET_QUALITY = 80
 BANNER_QUALITY = 30
 ICON_QUALITY = 50
 BRANDING_QUALITY = 80
+RESOURCE_FULL_QUALITY = 80
+RESOURCE_NOBG_QUALITY = 90
 WEBP_METHOD = 6
 SIDEBAR_ICON_CANVAS = 1024
 SIDEBAR_ICON_PADDING = 10
 SIDEBAR_ICON_WHITE_THRESHOLD = 245
+RESOURCE_NOBG_WHITE_THRESHOLD = 240
+
+RESOURCE_ICON_NAME_MAP = {
+    "mineral": "minerals",
+    "alloy": "alloys",
+}
+
+RESOURCE_FULL_FILES = [
+    "food_full_icon.png",
+    "mineral_full_icon.png",
+    "energy_full_icon.png",
+    "goods_full_icon.png",
+    "alloy_full_icon.png",
+    "research_full_icon.png",
+]
+
+RESOURCE_NOBG_FILES = [
+    "food_nobg_icon.png",
+    "minerals_nobg_icon.png",
+    "energy_nobg_icon.png",
+    "goods_nobg_icon.png",
+    "alloy_nobg_icon.png",
+    "research_nobg_icon.png",
+]
+
+
+def resource_icon_paths(file_names: list[str]) -> list[Path]:
+    return [ROOT / name for name in file_names] + [SOURCE_DIR / name for name in file_names]
 
 TARGETS = [
     {
@@ -74,6 +106,18 @@ TARGETS = [
             SOURCE_DIR / "sidebar_espionage_icon.png",
             SOURCE_DIR / "sidebar_market_icon.png",
         ],
+    },
+    {
+        "label": "resource-full",
+        "quality": RESOURCE_FULL_QUALITY,
+        "dirs": [],
+        "files": resource_icon_paths(RESOURCE_FULL_FILES),
+    },
+    {
+        "label": "resource-nobg",
+        "quality": RESOURCE_NOBG_QUALITY,
+        "dirs": [],
+        "files": resource_icon_paths(RESOURCE_NOBG_FILES),
     },
 ]
 
@@ -152,6 +196,63 @@ def convert_sidebar_icon_to_webp(source_path: Path, dest_path: Path, quality: in
     )
 
 
+def prepare_resource_nobg_icon(source_path: Path) -> Image.Image:
+    with Image.open(source_path) as image:
+        image = to_rgb_or_rgba(image).convert("RGBA")
+
+    pixels = image.load()
+    width, height = image.size
+
+    def is_near_white(color: tuple[int, int, int, int]) -> bool:
+        red, green, blue, alpha = color
+        if alpha == 0:
+            return False
+        return red >= RESOURCE_NOBG_WHITE_THRESHOLD and green >= RESOURCE_NOBG_WHITE_THRESHOLD and blue >= RESOURCE_NOBG_WHITE_THRESHOLD
+
+    queue: deque[tuple[int, int]] = deque()
+    visited = [[False] * width for _ in range(height)]
+
+    def enqueue_if_white(x: int, y: int) -> None:
+        if visited[y][x]:
+            return
+        if not is_near_white(pixels[x, y]):
+            return
+        visited[y][x] = True
+        queue.append((x, y))
+
+    for x in range(width):
+        enqueue_if_white(x, 0)
+        enqueue_if_white(x, height - 1)
+    for y in range(1, height - 1):
+        enqueue_if_white(0, y)
+        enqueue_if_white(width - 1, y)
+
+    while queue:
+        x, y = queue.popleft()
+        red, green, blue, _ = pixels[x, y]
+        pixels[x, y] = (red, green, blue, 0)
+        if x > 0:
+            enqueue_if_white(x - 1, y)
+        if x < width - 1:
+            enqueue_if_white(x + 1, y)
+        if y > 0:
+            enqueue_if_white(x, y - 1)
+        if y < height - 1:
+            enqueue_if_white(x, y + 1)
+
+    return image
+
+
+def convert_resource_nobg_icon_to_webp(source_path: Path, dest_path: Path, quality: int) -> None:
+    image = prepare_resource_nobg_icon(source_path)
+    image.save(
+        dest_path,
+        format="WEBP",
+        quality=quality,
+        method=WEBP_METHOD,
+    )
+
+
 def move_to_source_materials(png_path: Path, overwrite: bool) -> Path:
     if SOURCE_DIR in png_path.parents:
         return png_path
@@ -171,6 +272,9 @@ def move_to_source_materials(png_path: Path, overwrite: bool) -> Path:
 
 
 def get_output_path(source_path: Path) -> Path:
+    resource_output = get_resource_icon_output(source_path)
+    if resource_output is not None:
+        return resource_output
     if "branding" in source_path.parts or source_path.name in {"stellarfrontslogo.png", "stellarfrontslogonotext.png"}:
         branding_dir = ROOT / "public" / "branding"
         branding_dir.mkdir(parents=True, exist_ok=True)
@@ -183,6 +287,23 @@ def get_output_path(source_path: Path) -> Path:
     if source_path.name == "side_bar_tech_icon.png":
         return icons_dir / "side_bar_tech_icon.webp"
     return icons_dir / source_path.with_suffix(".webp").name
+
+
+def get_resource_icon_output(source_path: Path) -> Path | None:
+    name = source_path.name
+    if name.endswith("_full_icon.png"):
+        variant = "full"
+        base = name[: -len("_full_icon.png")]
+    elif name.endswith("_nobg_icon.png"):
+        variant = "nobg"
+        base = name[: -len("_nobg_icon.png")]
+    else:
+        return None
+
+    resource = RESOURCE_ICON_NAME_MAP.get(base, base)
+    resource_dir = ROOT / "public" / "textures" / "resource-icons" / variant
+    resource_dir.mkdir(parents=True, exist_ok=True)
+    return resource_dir / f"{resource}.webp"
 
 
 def process_group(label: str, quality: int, dirs: list[Path], files: list[Path], dry_run: bool, overwrite: bool) -> dict:
@@ -204,6 +325,8 @@ def process_group(label: str, quality: int, dirs: list[Path], files: list[Path],
         source_path = move_to_source_materials(png_path, overwrite)
         if source_path.name.startswith("sidebar_"):
             convert_sidebar_icon_to_webp(source_path, webp_path, effective_quality)
+        elif label == "resource-nobg":
+            convert_resource_nobg_icon_to_webp(source_path, webp_path, effective_quality)
         else:
             convert_to_webp(source_path, webp_path, effective_quality)
         converted += 1

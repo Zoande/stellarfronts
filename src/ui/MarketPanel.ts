@@ -26,13 +26,13 @@ const STYLE_ID = "market-panel-style";
 const MARKET_SCROLL_SELECTORS = [".marketResourceList", ".marketDetailPanel"] as const;
 type MarketGraphRange = "1D" | "7D" | "30D" | "1Y" | "MAX";
 
-const RESOURCE_ICON_LABELS: Record<ResourceKind, string> = {
-  food: "FD",
-  minerals: "MN",
-  energy: "EN",
-  goods: "GD",
-  alloys: "AL",
-  research: "RS",
+const RESOURCE_ICON_URLS: Record<ResourceKind, string> = {
+  food: "/textures/resource-icons/nobg/food.webp",
+  minerals: "/textures/resource-icons/nobg/minerals.webp",
+  energy: "/textures/resource-icons/nobg/energy.webp",
+  goods: "/textures/resource-icons/nobg/goods.webp",
+  alloys: "/textures/resource-icons/nobg/alloys.webp",
+  research: "/textures/resource-icons/nobg/research.webp",
 };
 
 export class MarketPanel {
@@ -406,7 +406,8 @@ export class MarketPanel {
     if (!RESOURCE_KINDS.includes(resource)) {
       return `<span class="marketResourceIcon marketResourceIcon-placeholder ${large ? "large" : ""}" aria-hidden="true"><span>??</span></span>`;
     }
-    return `<span class="marketResourceIcon marketResourceIcon-placeholder ${large ? "large" : ""}" title="${this.escapeAttribute(RESOURCE_LABELS[resource])}" aria-hidden="true"><span>${this.escapeHtml(RESOURCE_ICON_LABELS[resource])}</span></span>`;
+    const iconUrl = RESOURCE_ICON_URLS[resource];
+    return `<span class="marketResourceIcon marketResourceIcon-image ${large ? "large" : ""}" title="${this.escapeAttribute(RESOURCE_LABELS[resource])}" aria-hidden="true"><img src="${iconUrl}" alt="" loading="eager" decoding="async" /></span>`;
   }
 
   private renderResourceEmpty(): string {
@@ -1678,6 +1679,17 @@ export class MarketPanel {
   background:
     linear-gradient(135deg, rgba(69, 245, 231, 0.12), rgba(255, 255, 255, 0.02)),
     rgba(3, 22, 27, 0.78);
+}
+
+.marketResourceIcon-image::before {
+  content: none;
+}
+
+.marketResourceIcon-image img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
 }
 
 .marketResourceIcon span {
