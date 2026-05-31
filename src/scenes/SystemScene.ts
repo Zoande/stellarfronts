@@ -31,6 +31,8 @@ import type { AbstractEngine, AbstractMesh, LinesMesh, Observer, PointerInfo } f
 import "@babylonjs/loaders/OBJ/objFileLoader";
 import "@babylonjs/loaders/glTF";
 import type { IGameScene } from "../SceneManager";
+import { SHIP_MODEL_DEFINITIONS } from "../data/Starbase";
+import type { StarbaseShipKind } from "../data/Starbase";
 import {
   STAR_TYPES,
   StarType,
@@ -244,15 +246,20 @@ export class SystemScene implements IGameScene {
   private playerShipRoot: TransformNode | null = null;
   private playerShipLight: PointLight | null = null;
   private playerShipThrusterMaterial: StandardMaterial | null = null;
+  private playerShipTrailAttachmentPoint: TransformNode | null = null;
+  private playerShipKind: StarbaseShipKind = "corvette";
+  private playerShipFleetId: string | null = null;
   private playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
   private playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
   private playerShipTrailTimer = 0;
   private playerShipLastTrailPosition: Vector3 | null = null;
+  private playerShipLastTrailAttachmentPosition: Vector3 | null = null;
   private playerShipTrailSegments: Array<{ mesh: Mesh; material: StandardMaterial; age: number; ttl: number }> = [];
   private selectedFleetRouteLine: LinesMesh | null = null;
 
-  private tacticalShipTemplate: TransformNode | null = null;
-  private tacticalShipTemplatePromise: Promise<void> | null = null;
+  private tacticalShipTemplates = new Map<StarbaseShipKind, TransformNode>();
+  private tacticalShipTemplatePromises = new Map<StarbaseShipKind, Promise<void>>();
+  private tacticalShipTemplateTrailAttachments = new Map<StarbaseShipKind, TransformNode | null>();
   private shipVisualRoots = new Map<string, TransformNode>();
   private shipVisualTargets = new Map<string, Vector3>();
   private shipVisualTrailTimers = new Map<string, number>();
@@ -387,6 +394,66 @@ export class SystemScene implements IGameScene {
     if (this.playerShipStarId === this.star.id) return true;
     return !!this.shipTransit
       && (this.shipTransit.fromStarId === this.star.id || this.shipTransit.toStarId === this.star.id);
+  }
+
+  private getPlayerShipFleetCandidate(): ServerFleet | null {
+    const fleetsInSystem = this.serverFleets.filter((fleet) => (
+      fleet.currentStarId === this.star.id && fleet.ownerId === this.playerFactionId
+    ));
+    if (fleetsInSystem.length === 0) return null;
+
+    const selectedFleetId = this.getPrimarySelectedFleetId();
+    if (selectedFleetId) {
+      const selectedFleet = fleetsInSystem.find((fleet) => fleet.id === selectedFleetId);
+      if (selectedFleet) return selectedFleet;
+    }
+
+    const constructionFleet = fleetsInSystem.find((fleet) => (
+      this.getShipsForFleet(fleet.id).some((ship) => ship.shipKind === "constructionShip")
+    ));
+    return constructionFleet ?? fleetsInSystem[0];
+  }
+
+  private getPreferredShipForFleet(fleet: ServerFleet): ServerShip | null {
+    const ships = this.getShipsForFleet(fleet.id);
+    return ships.find((ship) => ship.shipKind === "constructionShip") ?? ships[0] ?? null;
+  }
+
+  private disposePlayerShipVisuals(): void {
+    this.disposePlayerShipTrail();
+    this.playerShipRoot?.dispose();
+    this.playerShipRoot = null;
+    this.playerShipFleetId = null;
+    this.playerShipLight?.dispose();
+    this.playerShipLight = null;
+    this.playerShipThrusterMaterial?.dispose();
+    this.playerShipThrusterMaterial = null;
+    this.playerShipTrailAttachmentPoint = null;
+  }
+
+  private async refreshPlayerShipFromSelection(): Promise<void> {
+    if (!this.hasPlayerShipPresence()) return;
+    const fleet = this.getPlayerShipFleetCandidate();
+    if (!fleet) return;
+    const ship = this.getPreferredShipForFleet(fleet);
+    if (!ship) return;
+
+    if (!this.playerShipRoot) {
+      await this.createPlayerShipIfPresent();
+      return;
+    }
+
+    if (ship.shipKind !== this.playerShipKind) {
+      this.disposePlayerShipVisuals();
+      await this.createPlayerShipIfPresent();
+      return;
+    }
+
+    if (fleet.id !== this.playerShipFleetId) {
+      this.playerShipFleetId = fleet.id;
+    }
+    const position = this.getFleetRenderPosition(fleet);
+    this.playerShipTargetPosition.set(position.x, position.y, position.z);
   }
 
   private hasStarbasePresence(): boolean {
@@ -760,23 +827,53 @@ export class SystemScene implements IGameScene {
     const dz = this.playerShipTargetPosition.z - this.playerShipBasePosition.z;
     if (Math.hypot(dx, dz) < 0.02) return;
 
-    const targetYaw = Math.atan2(dx, dz) + PLAYER_SHIP_MODEL_YAW_OFFSET;
+    const modelDef = SHIP_MODEL_DEFINITIONS[this.playerShipKind];
+    const pitch = typeof modelDef.modelPitch === "number" ? modelDef.modelPitch : PLAYER_SHIP_MODEL_PITCH;
+    const roll = typeof modelDef.modelRoll === "number" ? modelDef.modelRoll : PLAYER_SHIP_MODEL_ROLL;
+    const yawOffset = typeof modelDef.modelYawOffset === "number" ? modelDef.modelYawOffset : PLAYER_SHIP_MODEL_YAW_OFFSET;
+
+    const targetYaw = Math.atan2(dx, dz) + yawOffset;
     const currentYaw = this.playerShipRoot.rotation.y;
     const yawDelta = Math.atan2(Math.sin(targetYaw - currentYaw), Math.cos(targetYaw - currentYaw));
     const turn = Math.min(1, deltaTime * PLAYER_SHIP_TURN_RATE);
     this.playerShipRoot.rotation.set(
-      PLAYER_SHIP_MODEL_PITCH,
+      pitch,
       currentYaw + yawDelta * turn,
-      PLAYER_SHIP_MODEL_ROLL,
+      roll,
     );
   }
 
   private updatePlayerShipTrail(deltaTime: number, previousPosition: Vector3, currentPosition: Vector3): void {
     if (!this.playerShipRoot?.isEnabled()) {
       this.playerShipLastTrailPosition = null;
+      this.playerShipLastTrailAttachmentPosition = null;
       return;
     }
     this.playerShipTrailTimer += deltaTime;
+
+    // If attachment present, sample attachment absolute positions directly
+    if (this.playerShipTrailAttachmentPoint?.isEnabled()) {
+      const attachNow = this.getTrailSocketAnchorPosition(
+        this.playerShipTrailAttachmentPoint,
+        SHIP_MODEL_DEFINITIONS[this.playerShipKind],
+      );
+      const prevAttach = this.playerShipLastTrailAttachmentPosition ?? attachNow.clone();
+      const distance = Vector3.Distance(prevAttach, attachNow);
+      if (distance > PLAYER_SHIP_TRAIL_MAX_SEGMENT_DISTANCE) {
+        this.playerShipLastTrailAttachmentPosition = attachNow.clone();
+        this.playerShipTrailTimer = 0;
+        return;
+      }
+      if (this.playerShipTrailTimer < PLAYER_SHIP_TRAIL_SAMPLE_INTERVAL || distance < PLAYER_SHIP_TRAIL_MIN_DISTANCE) return;
+      this.playerShipTrailTimer = 0;
+      this.createPlayerShipTrailSegment(prevAttach, attachNow);
+      this.playerShipLastTrailAttachmentPosition = attachNow.clone();
+      // also update last root position to keep fallback logic consistent
+      this.playerShipLastTrailPosition = currentPosition.clone();
+      return;
+    }
+
+    // Fallback to root-position-based trail sampling
     if (!this.playerShipLastTrailPosition) {
       this.playerShipLastTrailPosition = previousPosition.clone();
     }
@@ -791,7 +888,17 @@ export class SystemScene implements IGameScene {
 
     const direction = currentPosition.subtract(this.playerShipLastTrailPosition);
     if (direction.lengthSquared() < 0.0001) return;
-    this.createPlayerShipTrailSegment(this.playerShipLastTrailPosition, currentPosition);
+
+    let trailStartPos = this.playerShipLastTrailPosition.clone();
+    const modelDef = SHIP_MODEL_DEFINITIONS[this.playerShipKind];
+    if (modelDef.trailOffsetY) {
+      trailStartPos.y += modelDef.trailOffsetY;
+    }
+    let trailEndPos = currentPosition.clone();
+    if (modelDef.trailOffsetY) {
+      trailEndPos.y += modelDef.trailOffsetY;
+    }
+    this.createPlayerShipTrailSegment(trailStartPos, trailEndPos);
     this.playerShipLastTrailPosition = currentPosition.clone();
   }
 
@@ -843,6 +950,33 @@ export class SystemScene implements IGameScene {
     this.playerShipTrailSegments.push({ mesh, material, age: 0, ttl: PLAYER_SHIP_TRAIL_TTL });
   }
 
+  private getTrailSocketAnchorPosition(
+    attachment: TransformNode,
+    modelDef: { trailAxis?: "+X" | "-X" | "+Y" | "-Y" | "+Z" | "-Z"; trailSocketOffset?: number; trailSocketLift?: number },
+  ): Vector3 {
+    // The attachment itself is already the offset anchor; sample its world position directly.
+    return attachment.getAbsolutePosition().clone();
+  }
+
+  private createTrailSocketAnchorNode(
+    attachment: TransformNode,
+    modelDef: { trailAxis?: "+X" | "-X" | "+Y" | "-Y" | "+Z" | "-Z"; trailSocketOffset?: number; trailSocketLift?: number },
+    name: string,
+  ): TransformNode {
+    const anchor = new TransformNode(name, this.scene);
+    anchor.parent = attachment;
+
+    const offset = modelDef.trailSocketOffset ?? 0;
+    const lift = modelDef.trailSocketLift ?? 0;
+    const axis = modelDef.trailAxis ?? "+X";
+    anchor.position.set(
+      axis === "+X" ? offset : axis === "-X" ? -offset : 0,
+      (axis === "+Y" ? offset : axis === "-Y" ? -offset : 0) + lift,
+      axis === "+Z" ? offset : axis === "-Z" ? -offset : 0,
+    );
+    return anchor;
+  }
+
   private disposePlayerShipTrail(): void {
     for (const segment of this.playerShipTrailSegments) {
       this.glowLayer.removeIncludedOnlyMesh(segment.mesh);
@@ -864,14 +998,21 @@ export class SystemScene implements IGameScene {
     const dz = currentPosition.z - previousPosition.z;
     if (Math.hypot(dx, dz) < 0.002) return;
 
-    const targetYaw = Math.atan2(dx, dz) + PLAYER_SHIP_MODEL_YAW_OFFSET;
+    const md = (root.metadata as { shipKind?: StarbaseShipKind } | null) ?? null;
+    const shipKind = md?.shipKind ?? "corvette";
+    const modelDef = SHIP_MODEL_DEFINITIONS[shipKind];
+    const pitch = typeof modelDef.modelPitch === "number" ? modelDef.modelPitch : PLAYER_SHIP_MODEL_PITCH;
+    const roll = typeof modelDef.modelRoll === "number" ? modelDef.modelRoll : PLAYER_SHIP_MODEL_ROLL;
+    const yawOffset = typeof modelDef.modelYawOffset === "number" ? modelDef.modelYawOffset : PLAYER_SHIP_MODEL_YAW_OFFSET;
+
+    const targetYaw = Math.atan2(dx, dz) + yawOffset;
     const currentYaw = root.rotation.y;
     const yawDelta = Math.atan2(Math.sin(targetYaw - currentYaw), Math.cos(targetYaw - currentYaw));
     const turn = Math.min(1, deltaTime * PLAYER_SHIP_TURN_RATE);
     root.rotation.set(
-      PLAYER_SHIP_MODEL_PITCH,
+      pitch,
       currentYaw + yawDelta * turn,
-      PLAYER_SHIP_MODEL_ROLL,
+      roll,
     );
   }
 
@@ -887,7 +1028,33 @@ export class SystemScene implements IGameScene {
       this.shipVisualTrailTimers.delete(shipId);
       return;
     }
+    // If the instance exposed a named trail/socket attachment, sample that node's absolute position
+    const metadata = root.metadata as any;
+    const attachment = metadata?.trailAttachment as TransformNode | null | undefined;
+    if (attachment) {
+      // Sample absolute position directly
+      const ship = this.serverShips.find((candidate) => candidate.id === shipId);
+      const attachNow = this.getTrailSocketAnchorPosition(
+        attachment,
+        SHIP_MODEL_DEFINITIONS[ship?.shipKind ?? "corvette"],
+      );
+      const prevAttach = this.shipVisualLastTrailPositions.get(shipId) ?? attachNow.clone();
+      const distance = Vector3.Distance(prevAttach, attachNow);
+      const nextTimer = (this.shipVisualTrailTimers.get(shipId) ?? 0) + deltaTime;
+      this.shipVisualTrailTimers.set(shipId, nextTimer);
+      if (distance > TACTICAL_SHIP_TRAIL_MAX_SEGMENT_DISTANCE) {
+        this.shipVisualLastTrailPositions.set(shipId, attachNow.clone());
+        this.shipVisualTrailTimers.set(shipId, 0);
+        return;
+      }
+      if (nextTimer < TACTICAL_SHIP_TRAIL_SAMPLE_INTERVAL || distance < TACTICAL_SHIP_TRAIL_MIN_DISTANCE) return;
+      this.createShipVisualTrailSegment(shipId, prevAttach, attachNow);
+      this.shipVisualLastTrailPositions.set(shipId, attachNow.clone());
+      this.shipVisualTrailTimers.set(shipId, 0);
+      return;
+    }
 
+    // Fallback: use world-root positions (existing behavior)
     const movedThisFrame = Vector3.Distance(previousPosition, currentPosition);
     if (movedThisFrame < 0.001) return;
 
@@ -938,10 +1105,39 @@ export class SystemScene implements IGameScene {
 
   private createShipVisualTrailSegment(shipId: string, from: Vector3, to: Vector3): void {
     const palette = this.getShipTrailPalette(shipId);
-    const path = [
-      new Vector3(from.x, from.y - 0.1, from.z),
-      new Vector3(to.x, to.y - 0.1, to.z),
-    ];
+    // Allow model-provided trail axis to nudge the trail slightly along the socket's world direction
+    let start = new Vector3(from.x, from.y - 0.1, from.z);
+    let end = new Vector3(to.x, to.y - 0.1, to.z);
+    const ship = this.serverShips.find((s) => s.id === shipId);
+    const modelDef = SHIP_MODEL_DEFINITIONS[ship?.shipKind ?? "corvette"];
+    if (modelDef.trailAxis) {
+      // try to find instance attachment and compute world axis
+      const root = this.shipVisualRoots.get(shipId);
+      const attachment = (root?.metadata as any)?.trailAttachment as TransformNode | null | undefined;
+      if (attachment) {
+        try {
+          const localAxis = (() => {
+            switch (modelDef.trailAxis) {
+              case "+X": return new Vector3(1, 0, 0);
+              case "-X": return new Vector3(-1, 0, 0);
+              case "+Y": return new Vector3(0, 1, 0);
+              case "-Y": return new Vector3(0, -1, 0);
+              case "+Z": return new Vector3(0, 0, 1);
+              case "-Z": return new Vector3(0, 0, -1);
+              default: return new Vector3(0, 0, 0);
+            }
+          })();
+          const wm = (attachment as any).getWorldMatrix ? (attachment as any).getWorldMatrix() : attachment.computeWorldMatrix(true);
+          const worldDir = Vector3.TransformNormal(localAxis, wm).normalize();
+          const nudge = worldDir.scale(0.08);
+          start = start.add(nudge);
+          end = end.add(nudge);
+        } catch (e) {
+          // ignore fallback to unmodified path
+        }
+      }
+    }
+    const path = [start, end];
     const material = new StandardMaterial(`shipTrailSegmentMat-${shipId}`, this.scene);
     material.diffuseColor = palette.diffuse;
     material.emissiveColor = palette.emissive;
@@ -2035,6 +2231,7 @@ export class SystemScene implements IGameScene {
 
   private notifyFleetSelectionChanged(): void {
     this.options.onSelectedFleetIdsChange?.(Array.from(this.selectedFleetIds));
+    void this.refreshPlayerShipFromSelection();
   }
 
   private handleSelectedFleetAction(action: ShipAction, selection?: SelectionData): void {
@@ -2899,37 +3096,52 @@ export class SystemScene implements IGameScene {
 
     this.playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
     this.playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
-    const primaryFleet = this.serverFleets.find((fleet) => (
-      fleet.currentStarId === this.star.id && fleet.ownerId === this.playerFactionId
-    ));
+    const primaryFleet = this.getPlayerShipFleetCandidate();
     const serverPosition = primaryFleet ? this.getFleetRenderPosition(primaryFleet) : null;
     if (serverPosition) {
       this.playerShipBasePosition.set(serverPosition.x, serverPosition.y, serverPosition.z);
       this.playerShipTargetPosition.copyFrom(this.playerShipBasePosition);
     }
+
+    if (primaryFleet) {
+      const primaryShip = this.getPreferredShipForFleet(primaryFleet);
+      if (primaryShip) {
+        this.playerShipKind = primaryShip.shipKind;
+        this.playerShipFleetId = primaryFleet.id;
+        console.log(`🎨 Player ship kind: ${this.playerShipKind}`);
+      }
+    }
+    
     this.playerShipRoot = new TransformNode("playerShipRoot", this.scene);
     this.playerShipRoot.position = this.playerShipBasePosition.clone();
-    this.playerShipRoot.rotation.set(0.18, -0.7, -0.08);
+    // Apply initial per-model orientation if available
+    const initialModelDef = SHIP_MODEL_DEFINITIONS[this.playerShipKind];
+    const initPitch = typeof initialModelDef.modelPitch === "number" ? initialModelDef.modelPitch : PLAYER_SHIP_MODEL_PITCH;
+    const initRoll = typeof initialModelDef.modelRoll === "number" ? initialModelDef.modelRoll : PLAYER_SHIP_MODEL_ROLL;
+    const initYaw = -0.7 + (typeof initialModelDef.modelYawOffset === "number" ? initialModelDef.modelYawOffset : 0);
+    this.playerShipRoot.rotation.set(initPitch, initYaw, initRoll);
     console.log(`📍 Player ship root position: ${JSON.stringify(this.playerShipBasePosition)}`);
 
     try {
-      console.log(`📦 Importing ${PLAYER_SHIP_MODEL_FILE} from ${PLAYER_SHIP_MODEL_ROOT}`);
+      const modelDef = SHIP_MODEL_DEFINITIONS[this.playerShipKind];
+      console.log(`📦 Importing ${modelDef.modelFile} from ${modelDef.modelPath}`);
       const result = await SceneLoader.ImportMeshAsync(
         "",
-        PLAYER_SHIP_MODEL_ROOT,
-        PLAYER_SHIP_MODEL_FILE,
+        modelDef.modelPath,
+        modelDef.modelFile,
         this.scene,
       );
 
-      console.log(`✓ Loaded ${result.meshes.length} total meshes from OBJ`);
+      console.log(`✓ Loaded ${result.meshes.length} total meshes from ${modelDef.modelFormat.toUpperCase()}`);
+      
       const meshes = result.meshes.filter((mesh) => (
         typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
       ));
       console.log(`✓ Filtered to ${meshes.length} renderable meshes`);
       if (meshes.length === 0) {
-        throw new Error("Fighter_01.obj did not produce renderable meshes.");
+        throw new Error(`${modelDef.modelFile} did not produce renderable meshes.`);
       }
-
+      
       const bounds = this.computeMeshBounds(meshes);
       const maxDimension = Math.max(
         0.001,
@@ -2939,7 +3151,9 @@ export class SystemScene implements IGameScene {
       );
       console.log(`📐 Bounds: min=${JSON.stringify(bounds.min)}, max=${JSON.stringify(bounds.max)}, maxDim=${maxDimension}`);
       const shipScale = PLAYER_SHIP_TARGET_SIZE / maxDimension;
-      console.log(`📏 Scaling to ${PLAYER_SHIP_TARGET_SIZE} world units: scale=${shipScale}`);
+      // Apply a small model-specific scale multiplier for construction ship to correct size
+      const effectiveShipScale = this.playerShipKind === "constructionShip" ? shipScale * 1.3 : shipScale;
+      console.log(`📏 Scaling to ${PLAYER_SHIP_TARGET_SIZE} world units: baseScale=${shipScale}, effectiveScale=${effectiveShipScale}`);
 
       const assetRoot = new TransformNode("playerShipAssetRoot", this.scene);
       assetRoot.parent = this.playerShipRoot;
@@ -2950,10 +3164,31 @@ export class SystemScene implements IGameScene {
         mesh.isPickable = false;
         mesh.alwaysSelectAsActiveMesh = true;
         console.log(`  - Mesh "${mesh.name}": vertices=${mesh.getTotalVertices()}`);
-        this.applyPlayerShipMaterialStyle(mesh.material);
+        if (this.playerShipKind === "corvette") {
+          this.applyPlayerShipMaterialStyle(mesh.material);
+        } else {
+          this.applyBasicShipMaterialStyle(mesh.material);
+        }
       }
 
-      this.playerShipRoot.scaling.setAll(shipScale);
+      // If model supplies a named trail/socket, locate it globally and reparent under our assetRoot so
+      // it will be included with the playerShipRoot and can be sampled for trail VFX.
+      if (modelDef.trailSocketName) {
+        const socket = this.scene.getNodeByName(modelDef.trailSocketName) as TransformNode | null;
+        if (socket) {
+          try {
+            socket.parent = assetRoot;
+          } catch (e) {
+            // ignore
+          }
+          this.playerShipTrailAttachmentPoint = this.createTrailSocketAnchorNode(socket as TransformNode, modelDef, "playerShipTrailAnchor");
+          console.log(`✅ Found trail socket: ${modelDef.trailSocketName}`);
+        } else {
+          console.warn(`⚠️ Trail socket "${modelDef.trailSocketName}" not found, will use offset`);
+        }
+      }
+
+      this.playerShipRoot.scaling.setAll(effectiveShipScale);
       this.createPlayerShipReadabilityLight();
       console.log(`✅ Player ship loaded successfully! Root position: ${JSON.stringify(this.playerShipRoot.position)}, rotation: ${JSON.stringify(this.playerShipRoot.rotation)}`);
     } catch (err) {
@@ -3085,6 +3320,27 @@ export class SystemScene implements IGameScene {
     }
   }
 
+  private applyBasicShipMaterialStyle(material: Material | null): void {
+    if (!material) return;
+
+    if (material instanceof MultiMaterial) {
+      for (const subMaterial of material.subMaterials) {
+        this.applyBasicShipMaterialStyle(subMaterial);
+      }
+      return;
+    }
+
+    if (!(material instanceof StandardMaterial)) {
+      return;
+    }
+
+    material.disableLighting = false;
+    material.diffuseColor = new Color3(0.92, 0.96, 1.0);
+    material.ambientColor = new Color3(0.34, 0.38, 0.44);
+    material.specularColor = new Color3(0.82, 0.86, 0.9);
+    material.specularPower = 120;
+  }
+
   private createPlayerShipTexture(url: string, level = 1.35): Texture {
     const texture = new Texture(url, this.scene);
     texture.level = level;
@@ -3186,22 +3442,24 @@ export class SystemScene implements IGameScene {
     return new Vector3(formed.x, formed.y, formed.z);
   }
 
-  private async ensureTacticalShipTemplate(): Promise<void> {
-    if (this.tacticalShipTemplate) return;
-    if (this.tacticalShipTemplatePromise) return this.tacticalShipTemplatePromise;
-    this.tacticalShipTemplatePromise = (async () => {
+  private async ensureTacticalShipTemplate(shipKind: StarbaseShipKind): Promise<void> {
+    if (this.tacticalShipTemplates.has(shipKind)) return;
+    const pending = this.tacticalShipTemplatePromises.get(shipKind);
+    if (pending) return pending;
+    const promise = (async () => {
       try {
+        const modelDef = SHIP_MODEL_DEFINITIONS[shipKind];
         const result = await SceneLoader.ImportMeshAsync(
           "",
-          PLAYER_SHIP_MODEL_ROOT,
-          PLAYER_SHIP_MODEL_FILE,
+          modelDef.modelPath,
+          modelDef.modelFile,
           this.scene,
         );
         const meshes = result.meshes.filter((mesh) => (
           typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
         ));
         if (meshes.length === 0) {
-          throw new Error("Fighter_01.obj did not produce renderable meshes.");
+          throw new Error(`${modelDef.modelFile} did not produce renderable meshes.`);
         }
 
         const bounds = this.computeMeshBounds(meshes);
@@ -3212,40 +3470,90 @@ export class SystemScene implements IGameScene {
           bounds.max.z - bounds.min.z,
         );
         const shipScale = TACTICAL_SHIP_TARGET_SIZE / maxDimension;
+        // Allow per-model size tweaks; construction ship should be slightly larger
+        const effectiveShipScale = shipKind === "constructionShip" ? shipScale * 1.3 : shipScale;
 
-        const templateRoot = new TransformNode("tacticalShipTemplateRoot", this.scene);
-        const assetRoot = new TransformNode("tacticalShipTemplateAsset", this.scene);
+        const templateRoot = new TransformNode(`tacticalShipTemplateRoot-${shipKind}`, this.scene);
+        const assetRoot = new TransformNode(`tacticalShipTemplateAsset-${shipKind}`, this.scene);
         assetRoot.parent = templateRoot;
         assetRoot.position = bounds.center.scale(-1);
-
         for (const mesh of meshes) {
           mesh.parent = assetRoot;
           mesh.isPickable = false;
           mesh.alwaysSelectAsActiveMesh = true;
-          this.applyPlayerShipMaterialStyle(mesh.material);
+          if (shipKind === "corvette") {
+            this.applyPlayerShipMaterialStyle(mesh.material);
+          } else {
+            this.applyBasicShipMaterialStyle(mesh.material);
+          }
         }
 
-        templateRoot.scaling.setAll(shipScale);
+        // If the model contained a named transform (an empty) for VFX attachment, find it in the scene
+        // and reparent it under our asset root so clones include the socket.
+        let trailAttachment: TransformNode | null = null;
+        if (modelDef.trailSocketName) {
+          const globalNode = this.scene.getNodeByName(modelDef.trailSocketName) as TransformNode | null;
+          if (globalNode) {
+            try {
+              globalNode.parent = assetRoot;
+              trailAttachment = this.createTrailSocketAnchorNode(globalNode, modelDef, `shipVisualTrailAnchor-${shipKind}`);
+            } catch (e) {
+              // ignore reparent errors
+            }
+          }
+        }
+        this.tacticalShipTemplateTrailAttachments.set(shipKind, trailAttachment);
+
+        templateRoot.scaling.setAll(effectiveShipScale);
         templateRoot.setEnabled(false);
-        this.tacticalShipTemplate = templateRoot;
+        this.tacticalShipTemplates.set(shipKind, templateRoot);
       } catch (err) {
         console.warn("Failed to load tactical ship model", err);
-      } finally {
-        this.tacticalShipTemplatePromise = null;
       }
-    })();
-    return this.tacticalShipTemplatePromise;
+    })().finally(() => {
+      this.tacticalShipTemplatePromises.delete(shipKind);
+    });
+    this.tacticalShipTemplatePromises.set(shipKind, promise);
+    return promise;
   }
 
-  private createShipVisualInstance(shipId: string): TransformNode | null {
-    if (!this.tacticalShipTemplate) return null;
-    const clone = this.tacticalShipTemplate.clone(`shipVisual-${shipId}`, null);
+  private createShipVisualInstance(shipId: string, shipKind: StarbaseShipKind): TransformNode | null {
+    const template = this.tacticalShipTemplates.get(shipKind);
+    if (!template) return null;
+    const clone = template.clone(`shipVisual-${shipId}`, null);
     if (!clone) return null;
     clone.setEnabled(this.starsVisible);
-    clone.rotation.set(PLAYER_SHIP_MODEL_PITCH, 0, PLAYER_SHIP_MODEL_ROLL);
+    // Apply per-model orientation overrides if specified
+    const modelDef = SHIP_MODEL_DEFINITIONS[shipKind];
+    const pitch = typeof modelDef.modelPitch === "number" ? modelDef.modelPitch : PLAYER_SHIP_MODEL_PITCH;
+    const roll = typeof modelDef.modelRoll === "number" ? modelDef.modelRoll : PLAYER_SHIP_MODEL_ROLL;
+    const yawOffset = typeof modelDef.modelYawOffset === "number" ? modelDef.modelYawOffset : 0;
+    clone.rotation.set(pitch, yawOffset, roll);
+
+    // Locate per-instance trail/socket in the cloned hierarchy and store on metadata for runtime sampling
+    let instanceTrailAttachment: TransformNode | null = null;
+    if (modelDef.trailSocketName) {
+      const desc = clone.getDescendants();
+      for (const d of desc) {
+        if ((d as any).name === modelDef.trailSocketName) {
+          instanceTrailAttachment = d as TransformNode;
+          break;
+        }
+      }
+    }
+    if (instanceTrailAttachment) {
+      console.log(`🔗 Ship visual ${shipId} (${shipKind}) has trail attachment: ${instanceTrailAttachment.name}, parent=${instanceTrailAttachment.parent?.name ?? 'null'}`);
+      try {
+        console.log(`   attachment ABS pos=${JSON.stringify(instanceTrailAttachment.getAbsolutePosition())}`);
+      } catch (e) {
+        // ignore
+      }
+    }
     for (const mesh of clone.getChildMeshes()) {
       mesh.isPickable = true;
     }
+    // attach initial metadata; more metadata is added later by `setShipVisualMetadata`
+    clone.metadata = { shipId, shipKind, trailAttachment: instanceTrailAttachment } as any;
     this.shipVisualRoots.set(shipId, clone);
     this.shipVisualTargets.set(shipId, clone.position.clone());
     return clone;
@@ -3253,11 +3561,14 @@ export class SystemScene implements IGameScene {
 
   private setShipVisualMetadata(
     root: TransformNode,
-    metadata: { shipId: string; fleetId?: string | null },
+    metadata: { shipId: string; fleetId?: string | null; shipKind?: StarbaseShipKind },
   ): void {
-    root.metadata = metadata;
+    // Merge existing metadata (preserve instance-specific fields like trailAttachment)
+    const prev = (root.metadata as any) ?? {};
+    const merged = { ...prev, ...metadata } as any;
+    root.metadata = merged;
     for (const mesh of root.getChildMeshes()) {
-      mesh.metadata = metadata;
+      mesh.metadata = merged;
       mesh.isPickable = true;
     }
   }
@@ -3379,6 +3690,7 @@ export class SystemScene implements IGameScene {
   private refreshShipVisuals(): void {
     const visibleFleetViews = this.getVisibleFleetViews();
     const liveServerShipIds = new Set(this.serverShips.map((ship) => ship.id));
+    const serverShipById = new Map(this.serverShips.map((ship) => [ship.id, ship]));
     const fleetViewByShipId = new Map<string, TacticalFleetView>();
     for (const fleet of visibleFleetViews) {
       for (const shipId of fleet.shipIds) {
@@ -3388,6 +3700,11 @@ export class SystemScene implements IGameScene {
       }
     }
     const shipIds = new Set(fleetViewByShipId.keys());
+    const shipKinds = new Set<StarbaseShipKind>();
+    for (const shipId of shipIds) {
+      const ship = serverShipById.get(shipId);
+      shipKinds.add(ship?.shipKind ?? "corvette");
+    }
     this.refreshFleetMarkers(visibleFleetViews);
     this.refreshStarbaseCombatRangeRing();
 
@@ -3405,7 +3722,9 @@ export class SystemScene implements IGameScene {
       return;
     }
 
-    void this.ensureTacticalShipTemplate().then(() => {
+    void Promise.all(
+      Array.from(shipKinds, (shipKind) => this.ensureTacticalShipTemplate(shipKind)),
+    ).then(() => {
       for (const [shipId, root] of Array.from(this.shipVisualRoots.entries())) {
         if (!shipIds.has(shipId)) {
           root.dispose();
@@ -3416,8 +3735,17 @@ export class SystemScene implements IGameScene {
       }
 
       for (const [shipId, fleet] of fleetViewByShipId) {
+        const ship = serverShipById.get(shipId);
+        const shipKind = ship?.shipKind ?? "corvette";
         const existingRoot = this.shipVisualRoots.get(shipId);
-        const root = existingRoot ?? this.createShipVisualInstance(shipId);
+        const existingKind = (existingRoot?.metadata as { shipKind?: StarbaseShipKind } | null)?.shipKind;
+        if (existingRoot && existingKind && existingKind !== shipKind) {
+          existingRoot.dispose();
+          this.shipVisualRoots.delete(shipId);
+          this.shipVisualTargets.delete(shipId);
+          this.disposeShipVisualTrail(shipId);
+        }
+        const root = this.shipVisualRoots.get(shipId) ?? this.createShipVisualInstance(shipId, shipKind);
         if (!root) continue;
         const target = this.getGroupShipFormationPosition(`fleet:${fleet.id}`, fleet.position, fleet.shipIds, shipId);
         if (!existingRoot) {
@@ -3426,6 +3754,7 @@ export class SystemScene implements IGameScene {
         this.setShipVisualMetadata(root, {
           shipId,
           fleetId: fleet.id,
+          shipKind,
         });
         this.shipVisualTargets.set(shipId, target);
       }
@@ -4698,8 +5027,11 @@ export class SystemScene implements IGameScene {
     this.disposeSystemActionTargetMarkers();
     this.systemActionMarkerMaterial?.dispose();
     this.systemActionMarkerMaterial = null;
-    this.tacticalShipTemplate?.dispose();
-    this.tacticalShipTemplate = null;
+    for (const template of this.tacticalShipTemplates.values()) {
+      template.dispose();
+    }
+    this.tacticalShipTemplates.clear();
+    this.tacticalShipTemplatePromises.clear();
     this.entityCardLayer?.remove();
     this.entityCardLayer = null;
     this.entityCardNodes.clear();

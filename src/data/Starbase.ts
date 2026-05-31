@@ -363,6 +363,42 @@ export const STARBASE_BUILDING_DEFINITIONS: Record<StarbaseBuildingKind, Starbas
   },
 };
 
+export interface ShipModelDefinition {
+  modelPath: string;
+  modelFile: string;
+  modelFormat: "obj" | "glb";
+  modelPitch?: number;
+  modelRoll?: number;
+  modelYawOffset?: number;
+  trailSocketName?: string;
+  trailAxis?: "+X" | "-X" | "+Y" | "-Y" | "+Z" | "-Z";
+  trailSocketOffset?: number;
+  trailSocketLift?: number;
+  trailOffsetY?: number;
+}
+
+export const SHIP_MODEL_DEFINITIONS: Record<StarbaseShipKind, ShipModelDefinition> = {
+  corvette: {
+    modelPath: "/ships/fighter_01/",
+    modelFile: "Fighter_01.obj",
+    modelFormat: "obj",
+    trailOffsetY: -0.22,
+  },
+  constructionShip: {
+    modelPath: "/ships/construction_ship/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    modelPitch: 0,
+    modelRoll: 0,
+    modelYawOffset: 1.5707963267948966,
+    trailSocketName: "FX_EngineTrail_Main",
+    trailAxis: "+X",
+    trailSocketOffset: 4.0,
+    trailSocketLift: 0.35,
+    trailOffsetY: 0,
+  },
+};
+
 export const STARBASE_SHIP_KINDS: StarbaseShipKind[] = ["corvette", "constructionShip"];
 
 export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDefinition> = {

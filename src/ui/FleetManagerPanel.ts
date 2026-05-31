@@ -17,10 +17,12 @@ import {
 } from "@babylonjs/core";
 import type { AbstractMesh } from "@babylonjs/core";
 import "@babylonjs/loaders/OBJ/objFileLoader";
+import "@babylonjs/loaders/glTF";
 import type { FactionInfo } from "../data/Factions";
 import {
   STARBASE_SHIP_DEFINITIONS,
   STARBASE_SHIP_KINDS,
+  SHIP_MODEL_DEFINITIONS,
   countStarbaseShipyards,
 } from "../data/Starbase";
 import type { StarbaseShipKind } from "../data/Starbase";
@@ -135,6 +137,7 @@ export class FleetManagerPanel {
   private shipPreviewLoadPromise: Promise<void> | null = null;
   private shipPreviewResizeObserver: ResizeObserver | null = null;
   private shipPreviewHost: HTMLElement | null = null;
+  private lastLoadedShipKind: string | null = null;
 
   private readonly onPointerMove = (ev: PointerEvent): void => {
     if (!this.isDragging || !this.panelElement) return;
@@ -331,17 +334,30 @@ export class FleetManagerPanel {
   }
 
   private async loadShipPreviewModel(): Promise<void> {
-    if (!this.shipPreviewScene || this.shipPreviewRoot || this.shipPreviewLoadPromise) {
+    const shipKind = this.designerDraft?.shipKind ?? "corvette";
+    
+    if (!this.shipPreviewScene || this.shipPreviewLoadPromise) {
       return this.shipPreviewLoadPromise ?? Promise.resolve();
+    }
+
+    if (this.shipPreviewRoot && this.lastLoadedShipKind === shipKind) {
+      return;
+    }
+
+    if (this.shipPreviewRoot && this.lastLoadedShipKind !== shipKind) {
+      this.shipPreviewRoot.dispose();
+      this.shipPreviewRoot = null;
     }
 
     const scene = this.shipPreviewScene;
     this.shipPreviewLoadPromise = (async () => {
       try {
+        const modelDef = SHIP_MODEL_DEFINITIONS[shipKind];
+        
         const result = await SceneLoader.ImportMeshAsync(
           "",
-          SHIP_PREVIEW_MODEL_ROOT,
-          SHIP_PREVIEW_MODEL_FILE,
+          modelDef.modelPath,
+          modelDef.modelFile,
           scene,
         );
         if (this.shipPreviewScene !== scene || scene.isDisposed) {
@@ -374,10 +390,11 @@ export class FleetManagerPanel {
           mesh.parent = assetRoot;
           mesh.isPickable = false;
           mesh.alwaysSelectAsActiveMesh = true;
-          this.applyShipPreviewMaterialStyle(mesh.material, scene);
+          this.applyShipPreviewMaterialStyle(mesh.material, scene, shipKind);
         }
 
         this.shipPreviewRoot = root;
+        this.lastLoadedShipKind = shipKind;
       } catch (error) {
         console.warn("[FleetManagerPanel] Failed to load ship preview model.", error);
         if (!scene.isDisposed && this.shipPreviewScene === scene) {
@@ -423,6 +440,7 @@ export class FleetManagerPanel {
     this.shipPreviewScene = null;
     this.shipPreviewRoot = null;
     this.shipPreviewLoadPromise = null;
+    this.lastLoadedShipKind = null;
   }
 
   private computeMeshBounds(meshes: AbstractMesh[]): { min: Vector3; max: Vector3; center: Vector3 } {
@@ -444,12 +462,12 @@ export class FleetManagerPanel {
     return { min, max, center: min.add(max).scale(0.5) };
   }
 
-  private applyShipPreviewMaterialStyle(material: Material | null, scene: Scene): void {
+  private applyShipPreviewMaterialStyle(material: Material | null, scene: Scene, shipKind: string = "corvette"): void {
     if (!material) return;
 
     if (material instanceof MultiMaterial) {
       for (const subMaterial of material.subMaterials) {
-        this.applyShipPreviewMaterialStyle(subMaterial, scene);
+        this.applyShipPreviewMaterialStyle(subMaterial, scene, shipKind);
       }
       return;
     }
@@ -463,41 +481,44 @@ export class FleetManagerPanel {
     material.specularColor = new Color3(0.82, 0.86, 0.9);
     material.emissiveColor = new Color3(0.014, 0.016, 0.019);
 
-    if (name.includes("body")) {
-      material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Body_BaseColor.png`, scene);
-      material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Body_Normal.png`, scene);
-      material.diffuseColor = new Color3(1.02, 1.04, 1.06);
-      material.emissiveColor = new Color3(0.026, 0.028, 0.033);
-      material.specularPower = 110;
-      return;
-    }
+    // For corvette, apply detailed fighter textures
+    if (shipKind === "corvette") {
+      if (name.includes("body")) {
+        material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Body_BaseColor.png`, scene);
+        material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Body_Normal.png`, scene);
+        material.diffuseColor = new Color3(1.02, 1.04, 1.06);
+        material.emissiveColor = new Color3(0.026, 0.028, 0.033);
+        material.specularPower = 110;
+        return;
+      }
 
-    if (name.includes("front")) {
-      material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Front_BaseColor.png`, scene);
-      material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Front_Normal.png`, scene);
-      material.emissiveTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Front_Emissive.png`, scene);
-      material.diffuseColor = new Color3(0.96, 1.0, 1.04);
-      material.emissiveColor = new Color3(0.018, 0.032, 0.052);
-      material.specularPower = 160;
-      return;
-    }
+      if (name.includes("front")) {
+        material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Front_BaseColor.png`, scene);
+        material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Front_Normal.png`, scene);
+        material.emissiveTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Front_Emissive.png`, scene);
+        material.diffuseColor = new Color3(0.96, 1.0, 1.04);
+        material.emissiveColor = new Color3(0.018, 0.032, 0.052);
+        material.specularPower = 160;
+        return;
+      }
 
-    if (name.includes("rear")) {
-      material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Rear_BaseColor.png`, scene);
-      material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Rear_Normal.png`, scene);
-      material.emissiveTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Rear_Emissive.png`, scene);
-      material.diffuseColor = new Color3(0.96, 0.98, 1.0);
-      material.emissiveColor = new Color3(0.055, 0.02, 0.012);
-      material.specularPower = 150;
-      return;
-    }
+      if (name.includes("rear")) {
+        material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Rear_BaseColor.png`, scene);
+        material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Rear_Normal.png`, scene);
+        material.emissiveTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Rear_Emissive.png`, scene);
+        material.diffuseColor = new Color3(0.96, 0.98, 1.0);
+        material.emissiveColor = new Color3(0.055, 0.02, 0.012);
+        material.specularPower = 150;
+        return;
+      }
 
-    if (name.includes("windows")) {
-      material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Windows_BaseColor.png`, scene);
-      material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Windows_Normal.png`, scene);
-      material.diffuseColor = new Color3(0.95, 1.0, 1.05);
-      material.emissiveColor = new Color3(0.035, 0.08, 0.095);
-      material.specularPower = 180;
+      if (name.includes("windows")) {
+        material.diffuseTexture = this.createShipPreviewTexture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Windows_BaseColor.png`, scene);
+        material.bumpTexture = new Texture(`${SHIP_PREVIEW_MODEL_ROOT}textures/Fighter_01_Windows_Normal.png`, scene);
+        material.diffuseColor = new Color3(0.95, 1.0, 1.05);
+        material.emissiveColor = new Color3(0.035, 0.08, 0.095);
+        material.specularPower = 180;
+      }
     }
   }
 

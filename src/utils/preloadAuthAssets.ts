@@ -94,6 +94,10 @@ const preloadSteps: PreloadStep[] = [
       loadImage('/ships/fighter_01/textures/Fighter_01_Windows_Normal.png'),
     ]).then(() => undefined),
   },
+  {
+    detail: 'Fetching the construction ship GLB model',
+    load: () => fetchAsset('/ships/construction_ship/model.glb').then(() => undefined),
+  },
 ];
 
 async function runPreload(): Promise<void> {
