@@ -54,6 +54,7 @@ test("unlock requirements point at existing locked content", () => {
   assert.deepEqual(getRequiredTechIdsForStarbaseBuilding("orbitalFabricator"), ["microgravity_fabrication"]);
   assert.deepEqual(getRequiredTechIdsForShipModule("weapon_point_defense"), ["point_defense_networks"]);
   assert.deepEqual(getRequiredTechIdsForShipSection("weapon_section_corvette_tanker"), ["heavy_corvette_frames"]);
+  assert.deepEqual(getRequiredTechIdsForShipHull("constructionShip"), ["spacefaring_foundations"]);
 });
 
 test("all current buildings, hulls, modules, and sections have a technology mapping", () => {

@@ -49,3 +49,42 @@ export function hasFocusedFormControl(root: HTMLElement | null): boolean {
     && root.contains(active)
     && (active.matches("input, select, textarea") || active.isContentEditable);
 }
+
+export class PanelInteractionGate {
+  private root: HTMLElement | null = null;
+  private holdUntilMs = 0;
+
+  bind(root: HTMLElement): void {
+    if (this.root === root) return;
+    this.root = root;
+    root.addEventListener("pointerdown", this.holdForClick, { capture: true });
+    root.addEventListener("pointerup", this.holdForRelease, { capture: true });
+    root.addEventListener("pointercancel", this.holdForRelease, { capture: true });
+    root.addEventListener("click", this.holdForRelease, { capture: true });
+  }
+
+  isBusy(root: HTMLElement | null): boolean {
+    return hasFocusedFormControl(root) || this.now() < this.holdUntilMs;
+  }
+
+  clear(): void {
+    this.root = null;
+    this.holdUntilMs = 0;
+  }
+
+  private readonly holdForClick = (): void => {
+    this.deferFor(260);
+  };
+
+  private readonly holdForRelease = (): void => {
+    this.deferFor(120);
+  };
+
+  private deferFor(durationMs: number): void {
+    this.holdUntilMs = Math.max(this.holdUntilMs, this.now() + durationMs);
+  }
+
+  private now(): number {
+    return typeof performance !== "undefined" ? performance.now() : Date.now();
+  }
+}

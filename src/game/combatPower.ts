@@ -2,7 +2,7 @@ import { STARBASE_LEVEL_DEFINITIONS, STARBASE_SHIP_DEFINITIONS } from "../data/S
 import type { CombatStats, WeaponMountDefinition } from "../data/Starbase";
 import { calculateShipDesignStats } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
-import type { ServerShip, ServerStarbase } from "./GameProtocol";
+import type { ServerShip, ServerStarbaseSummary } from "./GameProtocol";
 
 export const DEFAULT_ROUNDS_TO_KILL_ESTIMATE = 4;
 
@@ -59,7 +59,7 @@ export function computeFleetPower(
 }
 
 export function computeStarbasePower(
-  starbase: ServerStarbase,
+  starbase: ServerStarbaseSummary,
   roundsToKillEstimate = DEFAULT_ROUNDS_TO_KILL_ESTIMATE,
 ): number {
   const definition = STARBASE_LEVEL_DEFINITIONS[starbase.level] ?? STARBASE_LEVEL_DEFINITIONS.outpost;

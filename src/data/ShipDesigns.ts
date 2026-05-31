@@ -188,6 +188,29 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
       weaponMounts: [],
     },
   },
+  constructionShip: {
+    kind: "constructionShip",
+    label: "Construction Ship",
+    baseClassName: "Pioneer",
+    description: "Utility hull for construction fleets, survey logistics, and starbase deployment.",
+    weaponSectionSlots: 0,
+    defenseSectionSlots: 0,
+    utilitySlots: 3,
+    speed: 0.85,
+    buildDays: 8,
+    alloyUpkeepPerDay: 10,
+    crewDemand: 650,
+    cost: resources({ minerals: 160, alloys: 120 }),
+    upkeep: resources({ energy: 0.9, alloys: 0.1 }),
+    combat: {
+      maxShield: 45,
+      maxArmor: 35,
+      maxHull: 120,
+      evasion: 0.1,
+      sensorRange: 3,
+      weaponMounts: [],
+    },
+  },
 };
 
 export const SHIP_SECTION_MODULE_DEFINITIONS: Record<string, ShipSectionModuleDefinition> = {
@@ -571,10 +594,12 @@ export const SHIP_UTILITY_MODULES = Object.values(SHIP_MODULE_DEFINITIONS)
 
 const DEFAULT_WEAPON_SECTIONS: Record<StarbaseShipKind, string[]> = {
   corvette: ["weapon_section_corvette_swarmer"],
+  constructionShip: [],
 };
 
 const DEFAULT_DEFENSE_SECTIONS: Record<StarbaseShipKind, string[]> = {
   corvette: ["defense_section_corvette_swarmer"],
+  constructionShip: [],
 };
 
 const DEFAULT_UTILITY_MODULES: Record<StarbaseShipKind, string[]> = {
@@ -582,6 +607,11 @@ const DEFAULT_UTILITY_MODULES: Record<StarbaseShipKind, string[]> = {
     "utility_fire_control",
     "utility_optical_array",
     "utility_reactor_capacitor",
+    "utility_repair_drones",
+    "utility_shield_capacitor",
+  ],
+  constructionShip: [
+    "utility_optical_array",
     "utility_repair_drones",
     "utility_shield_capacitor",
   ],

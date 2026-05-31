@@ -20,6 +20,7 @@ export type FleetPolicyValue = CombatStance | FleetBehavior | FleetChasePolicy |
 
 export interface SelectionShipData {
   id: string;
+  shipKind?: string;
   name: string;
   designName: string;
   className: string;
@@ -384,6 +385,12 @@ export class SelectionPanel {
   font-size: 9px;
 }
 
+.fleetSelectionToolBtn.stop {
+  color: #ffd9d6;
+  border-color: rgba(255, 112, 122, 0.58);
+  background: rgba(36, 13, 18, 0.76);
+}
+
 .fleetSelectionTopMeta {
   margin-left: auto;
   align-self: flex-end;
@@ -629,6 +636,12 @@ export class SelectionPanel {
   color: #ff8a93;
   border-color: rgba(230, 67, 88, 0.64);
   background: linear-gradient(180deg, rgba(78, 25, 35, 0.72), rgba(38, 12, 20, 0.78));
+}
+
+.fleetSelectionPrimaryBtn.build {
+  color: #8cf2c4;
+  border-color: rgba(70, 220, 150, 0.62);
+  background: linear-gradient(180deg, rgba(18, 82, 58, 0.72), rgba(8, 38, 30, 0.78));
 }
 
 .fleetSelectionPrimaryBtn.active {
@@ -1115,6 +1128,7 @@ export class SelectionPanel {
       build: "Build",
       attack: "Attack",
       merge: "Merge",
+      stop: "Stop",
       retreat: "Retreat",
       retreatTo: "Retreat To",
       emergencyRetreatTo: "Emergency Retreat",
@@ -1210,11 +1224,17 @@ export class SelectionPanel {
     const ships = data.ships ?? [];
     const shipCount = data.shipCount ?? Math.max(ships.length, 0);
     const selectionKey = this.getSelectionKey(data);
+    const secondaryAction: ShipAction = (data.actions ?? []).includes("build") ? "build" : "attack";
+    const secondaryClass = secondaryAction === "build" ? "fleetSelectionPrimaryBtn build" : "fleetSelectionPrimaryBtn attack";
+    const secondaryLabel = secondaryAction === "build" ? "Build structure" : "Attack target";
+    const secondaryIcon = secondaryAction === "build" ? "build" : "attack";
+    const secondaryText = secondaryAction === "build" ? "BUILD" : "ATTACK";
     panel.dataset.selectionKey = selectionKey;
 
     panel.innerHTML = `
       <div class="fleetSelectionTopStrip">
         ${this.renderFleetActionButton(data, "merge", "fleetSelectionToolBtn", "Merge fleets", "merge")}
+        ${this.renderFleetActionButton(data, "stop", "fleetSelectionToolBtn stop", "Stop fleet", "stop")}
         ${this.renderFleetActionButton(data, "retreat", "fleetSelectionToolBtn retreatText", "Retreat fleet", undefined, "RETREAT")}
         ${this.renderFleetActionButton(data, "retreatTo", "fleetSelectionToolBtn", "Set retreat target", "retreatTarget")}
         ${this.renderFleetPolicyButton(data, selectionKey, "retreatPolicy", "fleetSelectionToolBtn", "Retreat conditions")}
@@ -1239,7 +1259,7 @@ export class SelectionPanel {
         <section class="fleetSelectionCommandStack">
           <div class="fleetSelectionPrimaryRow">
             ${this.renderFleetActionButton(data, "move", "fleetSelectionPrimaryBtn move", "Move fleet", "move", "MOVE")}
-            ${this.renderFleetActionButton(data, "attack", "fleetSelectionPrimaryBtn attack", "Attack target", "attack", "ATTACK")}
+            ${this.renderFleetActionButton(data, secondaryAction, secondaryClass, secondaryLabel, secondaryIcon, secondaryText)}
           </div>
           <div class="fleetSelectionPolicyRow">
             ${this.renderFleetPolicyButton(data, selectionKey, "chase", "fleetSelectionPolicyBtn chase", "Chase policy")}
@@ -1592,11 +1612,13 @@ export class SelectionPanel {
   private renderIcon(name: string): string {
     const icons: Record<string, string> = {
       merge: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h5c3 0 4 2 6 5 2 3 3 5 6 5"/><path d="M4 17h5c2.5 0 4-1.8 5.5-4"/><path d="M18 14l3 3-3 3"/><path d="M18 4l3 3-3 3"/></svg>',
+      stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>',
       retreatTarget: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>',
       retreatCondition: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v4"/><path d="M6 18h12"/><path d="M8 18V9h8v9"/><path d="M5 9h14"/><path d="M8 5h8"/></svg>',
       sliders: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg>',
       move: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6l6 6-6 6"/><path d="M11 6l6 6-6 6"/><path d="M18 6l2 6-2 6"/></svg>',
       attack: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
+      build: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16"/><path d="M6 20V10l6-4 6 4v10"/><path d="M9 20v-6h6v6"/><path d="M12 3v5"/><path d="M9.5 5.5h5"/></svg>',
       chase: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M17 7l3-3"/><path d="M17.5 3.5H20V6"/></svg>',
       shield: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 5-3 8-7 10-4-2-7-5-7-10V6l7-3z"/><path d="M9 12l2 2 4-5"/></svg>',
       behavior: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7.5l3 7M16 7.5l-3 7M8 6h8"/></svg>',

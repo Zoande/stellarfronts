@@ -3,6 +3,7 @@ import type {
   AuthMeResponse,
   AuthSessionResponse,
   Credentials,
+  LoginCredentials,
   DevStatsResponse,
   GamesResponse,
   GameSummary,
@@ -28,7 +29,7 @@ async function requestJson<T>(path: string, body?: unknown, method = 'POST'): Pr
   return payload as T;
 }
 
-export async function login(credentials: Credentials): Promise<AuthAccount> {
+export async function login(credentials: LoginCredentials): Promise<AuthAccount> {
   const result = await requestJson<AuthSessionResponse>('/api/login', credentials);
   return result.account;
 }

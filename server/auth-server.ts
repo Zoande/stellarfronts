@@ -11,7 +11,7 @@ import {
   serializeSessionCookie,
 } from './auth-store';
 import { getGameStateDirectory } from './game-state-path';
-import type { AuthAccount, Credentials } from '../src/auth/types';
+import type { AuthAccount, Credentials, LoginCredentials } from '../src/auth/types';
 
 const PORT = Number(process.env.AUTH_SERVER_PORT ?? 8788);
 
@@ -142,9 +142,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (request.method === 'POST' && url.pathname === '/api/login') {
-    const credentials = await readJsonBody<Credentials>(request);
+    const credentials = await readJsonBody<LoginCredentials>(request);
+    const rememberMe = credentials.rememberMe !== false;
     const result = authStore.login(credentials);
-    response.setHeader('Set-Cookie', serializeSessionCookie(result.token));
+    response.setHeader('Set-Cookie', serializeSessionCookie(result.token, { rememberMe }));
     writeJson(response, 200, { account: result.account });
     return;
   }

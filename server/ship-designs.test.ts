@@ -24,6 +24,20 @@ test("default corvette design uses section modules and five utility slots", () =
   assert.ok(stats.combat.maxShield > 0);
 });
 
+test("default construction ship design has utility systems and no weapons", () => {
+  const design = createDefaultShipDesign(1, "constructionShip", 2100);
+  const layout = getShipDesignLayout(design);
+  const stats = calculateShipDesignStats(design);
+
+  assert.deepEqual(design.weaponSectionModuleIds, []);
+  assert.deepEqual(design.defenseSectionModuleIds, []);
+  assert.equal(layout.weaponSlots.length, 0);
+  assert.equal(layout.defenseSlots.length, 0);
+  assert.equal(layout.utilitySlots.length, 3);
+  assert.equal(stats.combat.weaponMounts.length, 0);
+  assert.ok(stats.combat.maxHull > 0);
+});
+
 test("tanker corvette sections define large and medium weapon slots plus four defenses", () => {
   const normalized = normalizeShipDesign({
     id: "tanker",

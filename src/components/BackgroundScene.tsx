@@ -408,6 +408,15 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
     };
 
     const shipRoots: TransformNode[] = [];
+    const shipAnimationState: {
+      root: TransformNode;
+      basePosition: Vector3;
+      phase: number;
+      thrusterMaterial: StandardMaterial;
+      trailMaterial: StandardMaterial;
+      glowMeshes: Mesh[];
+      trailMeshes: Mesh[];
+    }[] = [];
     const shipMaterials: StandardMaterial[] = [];
     const faceShipAtStarbase = (ship: TransformNode) => {
       const dir = starbaseRoot.position.subtract(ship.position);
@@ -518,6 +527,8 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
         const meshes = result.meshes.filter((mesh): mesh is Mesh => typeof mesh.getTotalVertices === 'function' && mesh.getTotalVertices() > 0);
         if (meshes.length === 0) throw new Error('No fighter meshes loaded');
 
+        const shipBounds = computeMeshBounds(meshes);
+        const shipSize = shipBounds.max.subtract(shipBounds.min);
         const meshBounds = meshes[0].getBoundingInfo().boundingBox.extendSize.clone();
         const shipSizeScale = 0.55;
         const baseScale = (0.004 / Math.max(meshBounds.x, meshBounds.y, meshBounds.z, 1)) * clusterScaleInv * shipSizeScale;
@@ -538,6 +549,72 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
               clone.isPickable = false;
             }
           }
+
+          const engineX = shipBounds.min.x - shipSize.x * 0.035;
+          const zOffset = Math.max(0.45, shipSize.z * 0.22);
+          const glowDiameter = Math.max(0.18, Math.max(shipSize.x, shipSize.z) * 0.05);
+          const trailLength = Math.max(0.8, shipSize.x * 0.34);
+          const trailDiameter = Math.max(0.12, glowDiameter * 1.25);
+
+          const thrusterMat = new StandardMaterial(`authShipThrusterMat_${i}`, scene);
+          thrusterMat.diffuseColor = Color3.Black();
+          thrusterMat.specularColor = Color3.Black();
+          thrusterMat.emissiveColor = new Color3(0.32, 0.72, 1.0).scale(2.2);
+          thrusterMat.disableLighting = true;
+          thrusterMat.alpha = 0.82;
+
+          const trailMat = new StandardMaterial(`authShipTrailMat_${i}`, scene);
+          trailMat.diffuseColor = Color3.Black();
+          trailMat.specularColor = Color3.Black();
+          trailMat.emissiveColor = new Color3(0.24, 0.62, 1.0).scale(1.8);
+          trailMat.disableLighting = true;
+          trailMat.alpha = 0.34;
+          trailMat.backFaceCulling = false;
+
+          const glowMeshes: Mesh[] = [];
+          const trailMeshes: Mesh[] = [];
+
+          for (const z of [-zOffset, zOffset]) {
+            const glowMesh = MeshBuilder.CreateSphere(
+              `authShipThrusterGlow_${i}_${z}`,
+              { diameter: glowDiameter, segments: 16 },
+              scene,
+            );
+            glowMesh.parent = shipRoot;
+            glowMesh.position.set(engineX, shipBounds.center.y, shipBounds.center.z + z);
+            glowMesh.material = thrusterMat;
+            glowMesh.isPickable = false;
+            glow.addIncludedOnlyMesh(glowMesh);
+            glowMeshes.push(glowMesh);
+
+            const trailMesh = MeshBuilder.CreateCylinder(
+              `authShipThrusterTrail_${i}_${z}`,
+              {
+                height: trailLength,
+                diameterTop: trailDiameter * 0.15,
+                diameterBottom: trailDiameter,
+                tessellation: 18,
+              },
+              scene,
+            );
+            trailMesh.parent = shipRoot;
+            trailMesh.position.set(engineX - trailLength * 0.56, shipBounds.center.y, shipBounds.center.z + z);
+            trailMesh.rotation.z = Math.PI / 2;
+            trailMesh.material = trailMat;
+            trailMesh.isPickable = false;
+            glow.addIncludedOnlyMesh(trailMesh);
+            trailMeshes.push(trailMesh);
+          }
+
+          shipAnimationState.push({
+            root: shipRoot,
+            basePosition: shipPositions[i].clone(),
+            phase: i * 1.7,
+            thrusterMaterial: thrusterMat,
+            trailMaterial: trailMat,
+            glowMeshes,
+            trailMeshes,
+          });
         }
 
         const shipMat = new StandardMaterial('authShipMat', scene);
@@ -573,6 +650,50 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
           mat.emissiveColor = new Color3(0.1, 0.14, 0.18);
           body.material = mat;
           wing.material = mat;
+
+          const thrusterMat = new StandardMaterial(`authShipFallbackThrusterMat_${i}`, scene);
+          thrusterMat.diffuseColor = Color3.Black();
+          thrusterMat.specularColor = Color3.Black();
+          thrusterMat.emissiveColor = new Color3(0.32, 0.72, 1.0).scale(2.2);
+          thrusterMat.disableLighting = true;
+          thrusterMat.alpha = 0.82;
+
+          const trailMat = new StandardMaterial(`authShipFallbackTrailMat_${i}`, scene);
+          trailMat.diffuseColor = Color3.Black();
+          trailMat.specularColor = Color3.Black();
+          trailMat.emissiveColor = new Color3(0.24, 0.62, 1.0).scale(1.8);
+          trailMat.disableLighting = true;
+          trailMat.alpha = 0.34;
+          trailMat.backFaceCulling = false;
+
+          const glowMesh = MeshBuilder.CreateSphere(`authShipFallbackThrusterGlow_${i}`, { diameter: 0.24, segments: 16 }, scene);
+          glowMesh.parent = shipRoot;
+          glowMesh.position.set(-1.35, 0, 0);
+          glowMesh.material = thrusterMat;
+          glowMesh.isPickable = false;
+          glow.addIncludedOnlyMesh(glowMesh);
+
+          const trailMesh = MeshBuilder.CreateCylinder(
+            `authShipFallbackThrusterTrail_${i}`,
+            { height: 1.1, diameterTop: 0.03, diameterBottom: 0.26, tessellation: 18 },
+            scene,
+          );
+          trailMesh.parent = shipRoot;
+          trailMesh.position.set(-1.92, 0, 0);
+          trailMesh.rotation.z = Math.PI / 2;
+          trailMesh.material = trailMat;
+          trailMesh.isPickable = false;
+          glow.addIncludedOnlyMesh(trailMesh);
+
+          shipAnimationState.push({
+            root: shipRoot,
+            basePosition: shipPositions[i].clone(),
+            phase: i * 1.7,
+            thrusterMaterial: thrusterMat,
+            trailMaterial: trailMat,
+            glowMeshes: [glowMesh],
+            trailMeshes: [trailMesh],
+          });
         }
       });
 
@@ -581,13 +702,32 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
       const dt = engine.getDeltaTime() / 1000;
       const rotAmount = dt * 0.035;
       const shipTurnAmount = dt * 0.09;
+      const elapsed = performance.now() * 0.001;
       
       starbaseRoot.rotate(Axis.Y, rotAmount, Space.LOCAL);
       starbaseRoot.position.y = starbaseBaseY;
 
-      // Rotate each ship in place
-      for (const shipRoot of shipRoots) {
-        shipRoot.rotate(Axis.Y, shipTurnAmount, Space.LOCAL);
+      for (const ship of shipAnimationState) {
+        const motion = elapsed + ship.phase;
+        ship.root.position.x = ship.basePosition.x + Math.sin(motion * 0.46) * 0.28;
+        ship.root.position.y = ship.basePosition.y + Math.sin(motion * 0.82) * 0.09;
+        ship.root.position.z = ship.basePosition.z + Math.cos(motion * 0.52) * 0.18;
+        ship.root.rotate(Axis.Y, shipTurnAmount, Space.LOCAL);
+        ship.root.rotate(Axis.Z, Math.sin(motion * 0.7) * dt * 0.06, Space.LOCAL);
+
+        const thrusterPulse = 0.65 + 0.35 * Math.sin(motion * 5.8);
+        ship.thrusterMaterial.alpha = 0.45 + thrusterPulse * 0.45;
+        ship.trailMaterial.alpha = 0.18 + thrusterPulse * 0.28;
+
+        for (const glowMesh of ship.glowMeshes) {
+          glowMesh.scaling.setAll(1.55 + thrusterPulse * 0.95);
+        }
+
+        for (const trailMesh of ship.trailMeshes) {
+          trailMesh.scaling.x = 1;
+          trailMesh.scaling.y = 1 + thrusterPulse * 0.34;
+          trailMesh.scaling.z = 1;
+        }
       }
 
       scene.render();

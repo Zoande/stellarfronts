@@ -23,12 +23,13 @@ import type {
   TechId,
 } from "../data/Technology";
 import type { ClientCommand } from "../game/GameProtocol";
-import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 
 export interface TechnologyPanelData {
   technology: FactionTechnologyView | null;
   factionName?: string;
   onTechnologyCommand?: (command: ClientCommand) => void;
+  onClose?: () => void;
 }
 
 const STYLE_ID = "technology-panel-style";
@@ -64,6 +65,9 @@ export class TechnologyPanel {
   private position = { x: 62, y: 74 };
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
+  private pendingRefreshData: TechnologyPanelData | null = null;
+  private pendingRefreshTimer: number | null = null;
+  private readonly interactionGate = new PanelInteractionGate();
 
   private readonly onPointerMove = (ev: PointerEvent): void => {
     if (!this.isDragging || !this.panelElement) return;
@@ -100,6 +104,7 @@ export class TechnologyPanel {
       this.panelElement.className = "technologyPanel";
       this.root.appendChild(this.panelElement);
     }
+    this.interactionGate.bind(this.panelElement);
     this.panelElement.innerHTML = this.render(data);
     this.applyPosition();
     this.bindEvents(data);
@@ -108,6 +113,12 @@ export class TechnologyPanel {
 
   public refresh(data: TechnologyPanelData): void {
     if (!this.panelElement) return;
+    this.currentData = data;
+    if (this.shouldDeferRefresh()) {
+      this.pendingRefreshData = data;
+      this.schedulePendingRefresh();
+      return;
+    }
     this.show(data);
   }
 
@@ -120,10 +131,14 @@ export class TechnologyPanel {
   }
 
   public close(): void {
+    const onClose = this.currentData?.onClose;
     this.onPointerUp();
+    this.clearPendingRefresh();
+    this.interactionGate.clear();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
+    onClose?.();
   }
 
   public dispose(): void {
@@ -139,6 +154,33 @@ export class TechnologyPanel {
     if (!this.selectedTechId) return;
     const ids = new Set(view.technologies.map((status) => status.id));
     if (!ids.has(this.selectedTechId)) this.selectedTechId = null;
+  }
+
+  private shouldDeferRefresh(): boolean {
+    return this.isDragging || this.interactionGate.isBusy(this.panelElement);
+  }
+
+  private schedulePendingRefresh(delayMs = 120): void {
+    if (this.pendingRefreshTimer !== null) return;
+    this.pendingRefreshTimer = window.setTimeout(() => {
+      this.pendingRefreshTimer = null;
+      if (!this.pendingRefreshData || !this.panelElement) return;
+      if (this.shouldDeferRefresh()) {
+        this.schedulePendingRefresh();
+        return;
+      }
+      const data = this.pendingRefreshData;
+      this.pendingRefreshData = null;
+      this.show(data);
+    }, delayMs);
+  }
+
+  private clearPendingRefresh(): void {
+    if (this.pendingRefreshTimer !== null) {
+      window.clearTimeout(this.pendingRefreshTimer);
+      this.pendingRefreshTimer = null;
+    }
+    this.pendingRefreshData = null;
   }
 
   private bindEvents(data: TechnologyPanelData): void {

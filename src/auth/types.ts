@@ -17,6 +17,10 @@ export interface Credentials {
   password: string;
 }
 
+export interface LoginCredentials extends Credentials {
+  rememberMe?: boolean;
+}
+
 export interface AuthSessionResponse {
   account: AuthAccount;
 }

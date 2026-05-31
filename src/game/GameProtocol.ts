@@ -5,8 +5,15 @@ import type {
   DistrictKind,
   FactionEconomyState,
   PlanetState,
+  ResourceKind,
   UrbanSubDistrictKind,
 } from "../data/Economy";
+import type {
+  MarketPlayerStats,
+  MarketAutoTradeOrder,
+  MarketPriceSnapshot,
+  MarketTransactionRecord,
+} from "../data/Market";
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
@@ -18,6 +25,7 @@ import type {
 import type { ShipDesign } from "../data/ShipDesigns";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import type { LeaderAssignment, LeaderState } from "../data/Leaders";
+import type { FactionGovernmentState, GovernmentLawId, GovernmentLawOptionId } from "../data/Government";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type {
@@ -30,7 +38,7 @@ import type {
 } from "./CombatTypes";
 import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 
-export type ShipAction = "move" | "build" | "attack" | "merge" | "retreat" | "retreatTo" | "emergencyRetreatTo";
+export type ShipAction = "move" | "build" | "attack" | "merge" | "stop" | "retreat" | "retreatTo" | "emergencyRetreatTo";
 
 export type FleetFormation = "line" | "vanguard" | "echelon" | "defensive";
 
@@ -67,6 +75,8 @@ export type ServerUpdateField =
   | "starbases"
   | "technologies"
   | "leaders"
+  | "governments"
+  | "market"
   | "combatContacts";
 
 export interface ServerStar extends StarData {}
@@ -97,6 +107,150 @@ export interface ServerStarbase {
   shipQueue: StarbaseShipQueueItem[];
 }
 
+export type ServerStarbaseSummary = Omit<
+  ServerStarbase,
+  "economy" | "buildingSlots" | "constructionQueue" | "shipQueue"
+>;
+
+export type GameDetailScope =
+  | "system"
+  | "planet"
+  | "starbase"
+  | "fleet"
+  | "fleetManager"
+  | "planetManager"
+  | "market"
+  | "technology"
+  | "leaders"
+  | "government"
+  | "selection"
+  | "hud";
+
+export interface SystemDetailPayload {
+  star: ServerStar;
+  planetStates: PlanetState[];
+}
+
+export interface PlanetDetailPayload {
+  starId: number;
+  planet: PlanetConfig;
+  planetState: PlanetState;
+}
+
+export interface StarbaseDetailPayload {
+  starbase: ServerStarbase;
+}
+
+export interface FleetDetailPayload {
+  fleet: ServerFleet;
+  ships: ServerShip[];
+}
+
+export interface FleetManagerDetailPayload {
+  fleets: ServerFleet[];
+  ships: ServerShip[];
+  shipDesigns: ShipDesign[];
+  starbases: ServerStarbase[];
+  technologies: FactionTechnologyView[];
+  leaders: LeaderState[];
+  factionEconomies: FactionEconomyState[];
+}
+
+export interface PlanetManagerPlanetEntry {
+  starId: number;
+  starName: string;
+  ownerId: number;
+  planet: PlanetConfig;
+  planetState: PlanetState;
+}
+
+export interface PlanetManagerDetailPayload {
+  planets: PlanetManagerPlanetEntry[];
+  leaders: LeaderState[];
+  factionEconomies: FactionEconomyState[];
+}
+
+export type MarketTrend = "up" | "down" | "flat";
+
+export interface MarketResourceQuote {
+  resourceId: ResourceKind;
+  basePrice: number;
+  currentPrice: number;
+  liquidity: number;
+  temporaryPressure: number;
+  persistentPressure: number;
+  marketEnabled: boolean;
+  lastUpdatedAt: number;
+  finalQuotePrice: number;
+  buyPrice: number;
+  sellPrice: number;
+  marketFee: number;
+  ownedAmount: number;
+  productionPerHour: number;
+  consumptionPerHour: number;
+  internalSupply: number;
+  internalDemand: number;
+  playerInternalModifier: number;
+  totalExportsEnergy: number;
+  totalImportsEnergy: number;
+  priceHistory: MarketPriceSnapshot[];
+  trend: MarketTrend;
+}
+
+export interface MarketDetailPayload {
+  resources: MarketResourceQuote[];
+  playerStats: MarketPlayerStats | null;
+  autoTrades: MarketAutoTradeOrder[];
+  transactions: MarketTransactionRecord[];
+  marketFee: number;
+}
+
+export interface TechnologyDetailPayload {
+  technologies: FactionTechnologyView[];
+  factionEconomies: FactionEconomyState[];
+}
+
+export interface LeadersDetailPayload {
+  leaders: LeaderState[];
+  fleets: ServerFleet[];
+  planetStates: PlanetState[];
+}
+
+export interface GovernmentDetailPayload {
+  government: FactionGovernmentState | null;
+  leaders: LeaderState[];
+  technologies: FactionTechnologyView[];
+  factionEconomies: FactionEconomyState[];
+}
+
+export interface SelectionDetailPayload {
+  fleets: ServerFleet[];
+  ships: ServerShip[];
+  starbases: ServerStarbase[];
+  leaders: LeaderState[];
+}
+
+export interface HudDetailPayload {
+  clock: GameClock;
+  factionEconomies: FactionEconomyState[];
+  habitedPlanetSystemIds: number[];
+  starOwnership: Array<[number, number]>;
+}
+
+export type GameDetailPayload =
+  | SystemDetailPayload
+  | PlanetDetailPayload
+  | StarbaseDetailPayload
+  | FleetDetailPayload
+  | FleetManagerDetailPayload
+  | PlanetManagerDetailPayload
+  | MarketDetailPayload
+  | TechnologyDetailPayload
+  | LeadersDetailPayload
+  | GovernmentDetailPayload
+  | SelectionDetailPayload
+  | HudDetailPayload;
+
 export type ShipSystemPosition = SystemPosition;
 
 export interface ShipHyperlanePosition {
@@ -105,7 +259,7 @@ export interface ShipHyperlanePosition {
   progress: number;
 }
 
-export type FleetOrderType = "move" | "build" | "orbit" | "merge" | "retreat" | null;
+export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "merge" | "retreat" | null;
 
 export type FleetOrbitTargetKind = "star" | "planet" | "starbase" | "hyperlane" | "fleet";
 
@@ -284,6 +438,11 @@ export interface MergeFleetsCommand {
   sourceFleetIds: string[];
 }
 
+export interface StopFleetCommand {
+  type: "stopFleet";
+  fleetId: string;
+}
+
 export interface SetSpeedCommand {
   type: "setSpeedMultiplier";
   multiplier: number;
@@ -382,6 +541,12 @@ export interface DismissLeaderCommand {
   leaderId: string;
 }
 
+export interface SetGovernmentLawCommand {
+  type: "setGovernmentLaw";
+  lawId: GovernmentLawId;
+  optionId: GovernmentLawOptionId;
+}
+
 export interface RetreatFleetCommand {
   type: "retreatFleet";
   fleetId: string;
@@ -407,6 +572,12 @@ export interface AttackTargetCommand {
   targetKind: "fleet" | "starbase";
 }
 
+export interface AttackSystemCommand {
+  type: "attackSystem";
+  fleetId: string;
+  targetStarId: number;
+}
+
 export interface SetFleetCombatSettingsCommand {
   type: "setFleetCombatSettings";
   fleetId: string;
@@ -420,6 +591,25 @@ export interface IssueFleetTacticalOrderCommand {
   order: FleetTacticalOrder;
 }
 
+export interface MarketTradeCommand {
+  type: "marketTrade";
+  resourceId: ResourceKind;
+  tradeType: "buy" | "sell";
+  amount: number;
+}
+
+export interface AddMarketAutoTradeCommand {
+  type: "addMarketAutoTrade";
+  resourceId: ResourceKind;
+  tradeType: "auto_buy" | "auto_sell";
+  amountPerHour: number;
+}
+
+export interface RemoveMarketAutoTradeCommand {
+  type: "removeMarketAutoTrade";
+  orderId: string;
+}
+
 export interface RequestSystemDetailsCommand {
   type: "requestSystemDetails";
   starId: number;
@@ -428,6 +618,26 @@ export interface RequestSystemDetailsCommand {
 export interface RequestPlanetDetailsCommand {
   type: "requestPlanetDetails";
   planetId: string;
+}
+
+export interface RequestDetailsCommand {
+  type: "requestDetails";
+  scope: GameDetailScope;
+  id?: string | number | null;
+  knownRevision?: string | null;
+}
+
+export interface SubscribeDetailsCommand {
+  type: "subscribeDetails";
+  scope: GameDetailScope;
+  id?: string | number | null;
+  knownRevision?: string | null;
+}
+
+export interface UnsubscribeDetailsCommand {
+  type: "unsubscribeDetails";
+  scope: GameDetailScope;
+  id?: string | number | null;
 }
 
 export interface JoinCommand {
@@ -448,6 +658,7 @@ export type ClientCommand =
   | BuildCommand
   | OrbitPlanetCommand
   | MergeFleetsCommand
+  | StopFleetCommand
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
@@ -462,18 +673,27 @@ export type ClientCommand =
   | RecruitLeaderCommand
   | AssignLeaderCommand
   | DismissLeaderCommand
+  | SetGovernmentLawCommand
   | SetUrbanSubDistrictCommand
+  | MarketTradeCommand
+  | AddMarketAutoTradeCommand
+  | RemoveMarketAutoTradeCommand
   | RequestSystemDetailsCommand
   | RequestPlanetDetailsCommand
+  | RequestDetailsCommand
+  | SubscribeDetailsCommand
+  | UnsubscribeDetailsCommand
   | RetreatFleetCommand
   | RetreatFleetToCommand
   | EmergencyRetreatFleetToCommand
   | AttackTargetCommand
+  | AttackSystemCommand
   | SetFleetCombatSettingsCommand
   | IssueFleetTacticalOrderCommand;
 
 export interface GameSnapshot {
   type: "snapshot";
+  protocolVersion?: 2;
   perspective: GalaxyPerspective;
   clock: GameClock;
   stars: ServerStar[];
@@ -488,14 +708,16 @@ export interface GameSnapshot {
   ships: ServerShip[];
   shipDesigns: ShipDesign[];
   fleets: ServerFleet[];
-  starbases: ServerStarbase[];
+  starbases: ServerStarbaseSummary[];
   technologies: FactionTechnologyView[];
   leaders: LeaderState[];
+  governments: FactionGovernmentState[];
   recentCombatContacts: ServerCombatContact[];
 }
 
 export interface GameUpdate {
   type: "update";
+  protocolVersion?: 2;
   perspective: GalaxyPerspective;
   changed: ServerUpdateField[];
   clock?: GameClock;
@@ -511,9 +733,10 @@ export interface GameUpdate {
   ships?: ServerShip[];
   shipDesigns?: ShipDesign[];
   fleets?: ServerFleet[];
-  starbases?: ServerStarbase[];
+  starbases?: ServerStarbaseSummary[];
   technologies?: FactionTechnologyView[];
   leaders?: LeaderState[];
+  governments?: FactionGovernmentState[];
   recentCombatContacts?: ServerCombatContact[];
 }
 
@@ -541,6 +764,15 @@ export interface PlanetDetailsEvent {
   planetState: PlanetState;
 }
 
+export interface GameDetailEvent {
+  type: "detail";
+  scope: GameDetailScope;
+  id?: string | number | null;
+  revision: string;
+  status: "full" | "notModified";
+  payload?: GameDetailPayload;
+}
+
 export type ServerEvent =
   | GameSnapshot
   | GameUpdate
@@ -548,4 +780,5 @@ export type ServerEvent =
   | AdminCommandResult
   | ServerInfoEvent
   | SystemDetailsEvent
-  | PlanetDetailsEvent;
+  | PlanetDetailsEvent
+  | GameDetailEvent;

@@ -1,8 +1,9 @@
 import type { PlanetModifierOperation, PlanetModifierTarget } from "./Economy";
+import type { GovernmentLeaderTraitEffect } from "./Government";
 
 export type LeaderClass = "civilian" | "military";
 export type LeaderStatus = "pool" | "recruited" | "dead";
-export type LeaderAssignmentKind = "planet" | "fleet";
+export type LeaderAssignmentKind = "planet" | "fleet" | "government";
 
 export interface LeaderAssignment {
   kind: LeaderAssignmentKind;
@@ -15,11 +16,16 @@ export type LeaderTraitId =
   | "urbanPlanner"
   | "industrialOrganizer"
   | "strictAdministrator"
+  | "brilliantTheorist"
+  | "systemsArchitect"
+  | "coalitionBuilder"
   | "aggressive"
   | "cautious"
   | "logistician"
   | "reckless"
-  | "inspiring";
+  | "inspiring"
+  | "defenseCoordinator"
+  | "logisticsCommander";
 
 export interface LeaderPlanetEffect {
   target: PlanetModifierTarget;
@@ -42,6 +48,7 @@ export interface LeaderTraitDefinition {
   description: string;
   planetEffects?: LeaderPlanetEffect[];
   fleetEffects?: LeaderFleetEffects;
+  governmentEffects?: GovernmentLeaderTraitEffect[];
 }
 
 export interface LeaderState {
@@ -108,6 +115,43 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
       { target: "happiness", operation: "add", value: -3 },
     ],
   },
+  brilliantTheorist: {
+    id: "brilliantTheorist",
+    name: "Brilliant Theorist",
+    classes: ["civilian"],
+    description: "Council: as Head of Research, adds +8% research speed.",
+    governmentEffects: [{
+      positionId: "headOfResearch",
+      description: "Head of Research: +8% research speed.",
+      effects: [{ type: "researchSpeed", value: 0.08 }],
+    }],
+  },
+  systemsArchitect: {
+    id: "systemsArchitect",
+    name: "Systems Architect",
+    classes: ["civilian"],
+    description: "Council: as Head of Development, adds +10% construction speed.",
+    governmentEffects: [{
+      positionId: "headOfDevelopment",
+      description: "Head of Development: +10% planetary construction speed.",
+      effects: [{ type: "planetModifier", target: "constructionSpeed", operation: "multiply", value: 0.1 }],
+    }],
+  },
+  coalitionBuilder: {
+    id: "coalitionBuilder",
+    name: "Coalition Builder",
+    classes: ["civilian"],
+    description: "Council: as President, adds stability, unity, and diplomatic standing.",
+    governmentEffects: [{
+      positionId: "president",
+      description: "President: +3 stability, +8% unity, and +6 diplomatic relations.",
+      effects: [
+        { type: "planetModifier", target: "stability", operation: "add", value: 3 },
+        { type: "empireStat", stat: "unity", value: 0.08 },
+        { type: "empireStat", stat: "diplomaticRelations", value: 6 },
+      ],
+    }],
+  },
   aggressive: {
     id: "aggressive",
     name: "Aggressive",
@@ -143,6 +187,34 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
     description: "Commanded fleets gain +5% attack, +5% speed, and +2% evasion.",
     fleetEffects: { attackMultiplier: 0.05, speedMultiplier: 0.05, evasionBonus: 0.02 },
   },
+  defenseCoordinator: {
+    id: "defenseCoordinator",
+    name: "Defense Coordinator",
+    classes: ["military"],
+    description: "Council: as Minister of Defense, adds +8% fleet attack and shields.",
+    governmentEffects: [{
+      positionId: "ministerOfDefense",
+      description: "Minister of Defense: +8% fleet attack and shield endurance.",
+      effects: [
+        { type: "fleetModifier", target: "attack", value: 0.08 },
+        { type: "fleetModifier", target: "shield", value: 0.08 },
+      ],
+    }],
+  },
+  logisticsCommander: {
+    id: "logisticsCommander",
+    name: "Logistics Commander",
+    classes: ["military"],
+    description: "Council: as Minister of Defense, reduces fleet upkeep and improves speed.",
+    governmentEffects: [{
+      positionId: "ministerOfDefense",
+      description: "Minister of Defense: -8% fleet upkeep and +4% fleet speed.",
+      effects: [
+        { type: "fleetModifier", target: "upkeep", value: -0.08 },
+        { type: "fleetModifier", target: "speed", value: 0.04 },
+      ],
+    }],
+  },
 };
 
 const CIVILIAN_TRAITS: LeaderTraitId[] = [
@@ -151,6 +223,9 @@ const CIVILIAN_TRAITS: LeaderTraitId[] = [
   "urbanPlanner",
   "industrialOrganizer",
   "strictAdministrator",
+  "brilliantTheorist",
+  "systemsArchitect",
+  "coalitionBuilder",
 ];
 
 const MILITARY_TRAITS: LeaderTraitId[] = [
@@ -159,6 +234,8 @@ const MILITARY_TRAITS: LeaderTraitId[] = [
   "logistician",
   "reckless",
   "inspiring",
+  "defenseCoordinator",
+  "logisticsCommander",
 ];
 
 const FIRST_NAMES = [
@@ -321,7 +398,7 @@ export function normalizeLeaderState(raw: Partial<LeaderState> | undefined, fall
     .filter((trait) => LEADER_TRAIT_DEFINITIONS[trait].classes.includes(leaderClass));
   const xp = Math.max(0, Number(raw?.xp ?? fallback.xp) || 0);
   const assignment = raw?.assignment
-    && (raw.assignment.kind === "planet" || raw.assignment.kind === "fleet")
+    && (raw.assignment.kind === "planet" || raw.assignment.kind === "fleet" || raw.assignment.kind === "government")
     && typeof raw.assignment.targetId === "string"
       ? { kind: raw.assignment.kind, targetId: raw.assignment.targetId }
       : null;

@@ -18,7 +18,7 @@ import {
   getRequiredTechIdsForStarbaseBuilding,
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
-import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 
 export interface StarbasePanelData {
   id: string;
@@ -31,6 +31,7 @@ export interface StarbasePanelData {
   starbase?: ServerStarbase;
   technology?: FactionTechnologyView | null;
   onStarbaseCommand?: (command: ClientCommand) => void;
+  onClose?: (starbaseId: string) => void;
 }
 
 const STYLE_ID = "starbase-panel-style";
@@ -53,6 +54,9 @@ export class StarbasePanel {
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
   private buildingPickerSlotIndex: number | null = null;
+  private pendingRefreshData: StarbasePanelData | null = null;
+  private pendingRefreshTimer: number | null = null;
+  private readonly interactionGate = new PanelInteractionGate();
 
   private readonly onPointerMove = (ev: PointerEvent): void => {
     if (!this.isDragging || !this.panelElement) return;
@@ -81,6 +85,7 @@ export class StarbasePanel {
 
   public show(data: StarbasePanelData): void {
     if (this.currentData?.id !== data.id) {
+      if (this.currentData) this.currentData.onClose?.(this.currentData.id);
       this.activeTab = "starbase";
       this.buildingPickerSlotIndex = null;
     }
@@ -91,6 +96,7 @@ export class StarbasePanel {
       this.panelElement.className = "starbasePanel";
       this.root.appendChild(this.panelElement);
     }
+    this.interactionGate.bind(this.panelElement);
 
     const accent = data.ownerColor
       ? `rgba(${Math.round(data.ownerColor[0] * 255)}, ${Math.round(data.ownerColor[1] * 255)}, ${Math.round(data.ownerColor[2] * 255)}, 0.95)`
@@ -103,16 +109,28 @@ export class StarbasePanel {
   }
 
   public close(): void {
+    const closingId = this.currentData?.id ?? null;
+    const onClose = this.currentData?.onClose;
     this.onPointerUp();
+    this.clearPendingRefresh();
+    this.interactionGate.clear();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
     this.activeTab = "starbase";
+    if (closingId) onClose?.(closingId);
   }
 
   public refreshStarbase(starbase: ServerStarbase): void {
     if (!this.currentData || this.currentData.id !== starbase.id) return;
-    this.show({ ...this.currentData, starbase });
+    const nextData = { ...this.currentData, starbase };
+    this.currentData = nextData;
+    if (this.shouldDeferRefresh()) {
+      this.pendingRefreshData = nextData;
+      this.schedulePendingRefresh();
+      return;
+    }
+    this.show(nextData);
   }
 
   public dispose(): void {
@@ -139,8 +157,7 @@ export class StarbasePanel {
       });
     });
     this.panelElement.querySelector<HTMLButtonElement>("[data-sb-upgrade]")?.addEventListener("click", () => {
-      if (!data.starbase) return;
-      data.onStarbaseCommand?.({ type: "upgradeStarbase", starbaseId: data.starbase.id });
+      data.onStarbaseCommand?.({ type: "upgradeStarbase", starbaseId: data.id });
     });
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-building-slot]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -156,12 +173,12 @@ export class StarbasePanel {
     });
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-pick-building]").forEach((button) => {
       button.addEventListener("click", () => {
-        if (!data.starbase || this.buildingPickerSlotIndex === null) return;
+        if (this.buildingPickerSlotIndex === null) return;
         const buildingKind = button.dataset.sbPickBuilding as StarbaseBuildingKind | undefined;
         if (!buildingKind) return;
         data.onStarbaseCommand?.({
           type: "buildStarbaseBuilding",
-          starbaseId: data.starbase.id,
+          starbaseId: data.id,
           slotIndex: this.buildingPickerSlotIndex,
           buildingKind,
         });
@@ -169,12 +186,11 @@ export class StarbasePanel {
     });
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-build-ship]").forEach((button) => {
       button.addEventListener("click", () => {
-        if (!data.starbase) return;
         const shipKind = button.dataset.sbBuildShip as keyof typeof STARBASE_SHIP_DEFINITIONS | undefined;
         if (!shipKind) return;
         data.onStarbaseCommand?.({
           type: "buildStarbaseShip",
-          starbaseId: data.starbase.id,
+          starbaseId: data.id,
           shipKind,
         });
       });
@@ -185,6 +201,33 @@ export class StarbasePanel {
     if (!this.panelElement) return;
     this.panelElement.style.left = `${this.position.x}px`;
     this.panelElement.style.top = `${this.position.y}px`;
+  }
+
+  private shouldDeferRefresh(): boolean {
+    return this.isDragging || this.interactionGate.isBusy(this.panelElement);
+  }
+
+  private schedulePendingRefresh(delayMs = 120): void {
+    if (this.pendingRefreshTimer !== null) return;
+    this.pendingRefreshTimer = window.setTimeout(() => {
+      this.pendingRefreshTimer = null;
+      if (!this.pendingRefreshData || !this.panelElement) return;
+      if (this.shouldDeferRefresh()) {
+        this.schedulePendingRefresh();
+        return;
+      }
+      const data = this.pendingRefreshData;
+      this.pendingRefreshData = null;
+      this.show(data);
+    }, delayMs);
+  }
+
+  private clearPendingRefresh(): void {
+    if (this.pendingRefreshTimer !== null) {
+      window.clearTimeout(this.pendingRefreshTimer);
+      this.pendingRefreshTimer = null;
+    }
+    this.pendingRefreshData = null;
   }
 
   private render(data: StarbasePanelData): string {
@@ -283,8 +326,10 @@ export class StarbasePanel {
                   const progress = Math.max(0, Math.min(100, ((totalDays - remainingDays) / totalDays) * 100));
                   return `
                     <div class="sbQueueItem">
-                      <strong>${this.escapeHtml(item.label ?? "Starbase Order")}</strong>
-                      <span>${Math.ceil(remainingDays)} days remaining</span>
+                      <div class="sbQueueItemMain">
+                        <strong title="${this.escapeHtml(item.label ?? "Starbase Order")}">${this.escapeHtml(item.label ?? "Starbase Order")}</strong>
+                        <span>${Math.ceil(remainingDays)} days remaining</span>
+                      </div>
                       <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
                     </div>
                   `;
@@ -359,11 +404,14 @@ export class StarbasePanel {
                 const waitingVerb = item.kind === "upgrade" ? "Upgrade queued" : "Waiting";
                 return `
                   <div class="sbShipQueueItem ${isActive ? "active" : ""}">
-                    <div>
-                      <strong>${this.escapeHtml(item.label)}</strong>
+                    <div class="sbShipQueueMain">
+                      <strong title="${this.escapeHtml(item.label)}">${this.escapeHtml(item.label)}</strong>
                       <span>${isActive ? verb : waitingVerb} | ${Math.ceil(item.remainingDays)}d</span>
                     </div>
-                    <small>${this.renderDailyDemand(item.resourceUpkeepPerDay)} / day | ${this.renderInlineCost(item.cost)}</small>
+                    <div class="sbShipQueueCosts">
+                      <small><span>Demand</span><strong>${this.renderDailyDemand(item.resourceUpkeepPerDay)} / day</strong></small>
+                      <small><span>Cost</span><strong>${this.renderInlineCost(item.cost)}</strong></small>
+                    </div>
                     <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
                   </div>
                 `;
@@ -1007,14 +1055,29 @@ export class StarbasePanel {
 }
 
 .sbQueueItem {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
   padding: 8px;
   border: 1px solid rgba(255, 224, 123, 0.34);
   background: rgba(42, 31, 11, 0.58);
 }
 
+.sbQueueItemMain {
+  min-width: 0;
+}
+
 .sbQueueItem strong,
 .sbQueueItem span {
   display: block;
+  min-width: 0;
+}
+
+.sbQueueItem strong {
+  color: #ffe989;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sbQueueBar {
@@ -1160,9 +1223,10 @@ export class StarbasePanel {
 
 .sbShipQueueItem {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
-  padding: 7px;
+  min-width: 0;
+  padding: 8px;
   border: 1px solid rgba(103, 255, 221, 0.2);
   background: rgba(1, 8, 10, 0.46);
 }
@@ -1176,10 +1240,22 @@ export class StarbasePanel {
 .sbShipQueueItem span,
 .sbShipQueueItem small {
   display: block;
+  min-width: 0;
+}
+
+.sbShipQueueMain {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
 }
 
 .sbShipQueueItem strong {
+  min-width: 0;
   font-size: 12px;
+  color: #eafff8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sbShipQueueItem span,
@@ -1188,8 +1264,37 @@ export class StarbasePanel {
   font-size: 10px;
 }
 
+.sbShipQueueCosts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.sbShipQueueCosts small {
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid rgba(103, 255, 221, 0.16);
+  background: rgba(0, 0, 0, 0.2);
+  line-height: 1.25;
+}
+
+.sbShipQueueCosts small > span {
+  margin-bottom: 2px;
+  color: rgba(206, 232, 226, 0.44);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sbShipQueueCosts small > strong {
+  color: rgba(232, 255, 247, 0.84);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .sbShipQueueItem .sbQueueBar {
-  grid-column: 1 / span 2;
   margin-top: 0;
 }
 

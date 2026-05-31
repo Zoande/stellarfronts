@@ -240,6 +240,7 @@ export interface FactionEconomyState {
   factionId: number;
   stockpiles: ResourceCounts;
   monthlyDelta: ResourceCounts;
+  marketMonthlyDelta?: ResourceCounts;
   lastProcessedMonth: number;
   lastProcessedHour: number;
 }

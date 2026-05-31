@@ -6,9 +6,11 @@ import {
   getLeaderTraitDefinition,
   leaderXpForLevel,
 } from "../data/Leaders";
+import { getGovernmentPositionDefinition } from "../data/Government";
+import type { GovernmentPositionId } from "../data/Government";
 import type { LeaderClass, LeaderState } from "../data/Leaders";
 import type { ClientCommand, ServerFleet } from "../game/GameProtocol";
-import { captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 import type { LeaderAssignmentTarget } from "./leaderEvents";
 
 export interface LeadersPanelData {
@@ -22,6 +24,7 @@ export interface LeadersPanelData {
   clockYear: number;
   assignmentTarget?: LeaderAssignmentTarget | null;
   onLeaderCommand?: (command: ClientCommand) => void;
+  onClose?: () => void;
 }
 
 type LeaderTab = "all" | "civilian" | "military";
@@ -38,6 +41,9 @@ export class LeadersPanel {
   private position = { x: 38, y: 52 };
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
+  private pendingRefreshData: LeadersPanelData | null = null;
+  private pendingRefreshTimer: number | null = null;
+  private readonly interactionGate = new PanelInteractionGate();
 
   private readonly onPointerMove = (ev: PointerEvent): void => {
     if (!this.isDragging || !this.panelElement) return;
@@ -73,6 +79,7 @@ export class LeadersPanel {
       this.panelElement.className = "leadersPanel";
       this.root.appendChild(this.panelElement);
     }
+    this.interactionGate.bind(this.panelElement);
     this.panelElement.innerHTML = this.render(data);
     this.applyPosition();
     this.bindEvents(data);
@@ -81,14 +88,24 @@ export class LeadersPanel {
 
   public refresh(data: LeadersPanelData): void {
     if (!this.panelElement) return;
+    this.currentData = data;
+    if (this.shouldDeferRefresh()) {
+      this.pendingRefreshData = data;
+      this.schedulePendingRefresh();
+      return;
+    }
     this.show(data);
   }
 
   public close(): void {
+    const onClose = this.currentData?.onClose;
     this.onPointerUp();
+    this.clearPendingRefresh();
+    this.interactionGate.clear();
     this.panelElement?.remove();
     this.panelElement = null;
     this.currentData = null;
+    onClose?.();
   }
 
   public dispose(): void {
@@ -103,6 +120,33 @@ export class LeadersPanel {
     this.selectedLeaderId = visible.find((leader) => (
       target && leader.class === target.requiredClass && leader.status !== "dead"
     ))?.id ?? visible[0]?.id ?? null;
+  }
+
+  private shouldDeferRefresh(): boolean {
+    return this.isDragging || this.interactionGate.isBusy(this.panelElement);
+  }
+
+  private schedulePendingRefresh(delayMs = 120): void {
+    if (this.pendingRefreshTimer !== null) return;
+    this.pendingRefreshTimer = window.setTimeout(() => {
+      this.pendingRefreshTimer = null;
+      if (!this.pendingRefreshData || !this.panelElement) return;
+      if (this.shouldDeferRefresh()) {
+        this.schedulePendingRefresh();
+        return;
+      }
+      const data = this.pendingRefreshData;
+      this.pendingRefreshData = null;
+      this.show(data);
+    }, delayMs);
+  }
+
+  private clearPendingRefresh(): void {
+    if (this.pendingRefreshTimer !== null) {
+      window.clearTimeout(this.pendingRefreshTimer);
+      this.pendingRefreshTimer = null;
+    }
+    this.pendingRefreshData = null;
   }
 
   private bindEvents(data: LeadersPanelData): void {
@@ -345,6 +389,10 @@ export class LeadersPanel {
 
   private getAssignmentLabel(leader: LeaderState, data: LeadersPanelData): string {
     if (!leader.assignment) return leader.status === "pool" ? "Candidate" : "No assignment";
+    if (leader.assignment.kind === "government") {
+      const position = getGovernmentPositionDefinition(leader.assignment.targetId as GovernmentPositionId);
+      return position ? `${position.title} cabinet` : "Government position missing";
+    }
     if (leader.assignment.kind === "fleet") {
       const fleet = data.fleets.find((candidate) => candidate.id === leader.assignment?.targetId);
       if (!fleet) return "Assigned fleet missing";
