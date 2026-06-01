@@ -118,6 +118,12 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     stars: true,
     ownership: true,
   };
+  const systemViewToggles = {
+    labels: true,
+    ranges: true,
+    footprints: false,
+    renderDebug: false,
+  };
 
   const resolveRoutingStars = (): StarData[] => cachedGalaxyStars ?? snapshot.stars;
 
@@ -262,12 +268,26 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         || parsed.canonicalName === "show_ranges"
         || parsed.canonicalName === "show_footprints"
         || parsed.canonicalName === "show_labels") {
+        const enabled = (args[0] ?? "on") !== "off";
         if (parsed.canonicalName === "show_labels") {
-          const enabled = (args[0] ?? "on") !== "off";
+          systemViewToggles.labels = enabled;
           document.body.classList.toggle("admin-hide-system-labels", !enabled);
+          activeSystemScene?.setLabelsVisible(enabled);
           return adminResult(input, true, `System labels ${enabled ? "shown" : "hidden"}.`);
         }
-        return adminResult(input, true, `${parsed.canonicalName} ${args[0] ?? "toggled"} recorded for this client session.`);
+        if (parsed.canonicalName === "show_ranges") {
+          systemViewToggles.ranges = enabled;
+          activeSystemScene?.setRangeRingsVisible(enabled);
+          return adminResult(input, true, `System range rings ${enabled ? "shown" : "hidden"}.`);
+        }
+        if (parsed.canonicalName === "show_footprints") {
+          systemViewToggles.footprints = enabled;
+          activeSystemScene?.setFootprintsVisible(enabled);
+          return adminResult(input, true, `System fleet footprints ${enabled ? "shown" : "hidden"}.`);
+        }
+        systemViewToggles.renderDebug = enabled;
+        activeSystemScene?.setRenderDebugEnabled(enabled);
+        return adminResult(input, true, `System render debug ${enabled ? "enabled" : "disabled"}.`);
       }
       return adminResult(input, false, `"${parsed.canonicalName}" is not implemented as a local command.`);
     } catch (error) {
@@ -835,6 +855,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     if (activeSystemScene) {
       activeSystemScene.setBloomEnabled(visualToggles.bloom);
       activeSystemScene.setStarsVisible(visualToggles.stars);
+      activeSystemScene.setLabelsVisible(systemViewToggles.labels);
+      activeSystemScene.setRangeRingsVisible(systemViewToggles.ranges);
+      activeSystemScene.setFootprintsVisible(systemViewToggles.footprints);
+      activeSystemScene.setRenderDebugEnabled(systemViewToggles.renderDebug);
     }
   };
 

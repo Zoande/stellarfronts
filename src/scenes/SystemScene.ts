@@ -263,8 +263,10 @@ export class SystemScene implements IGameScene {
   private shipVisualTrailTimers = new Map<string, number>();
   private shipVisualLastTrailPositions = new Map<string, Vector3>();
   private shipVisualTrailSegments = new Map<string, Array<{ mesh: Mesh; material: StandardMaterial; age: number; ttl: number }>>();
+  private shipVisualRefreshVersion = 0;
   private fleetRoots = new Map<string, TransformNode>();
   private fleetTargets = new Map<string, Vector3>();
+  private fleetPickMaterial: StandardMaterial | null = null;
   private weaponBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
   private weaponProjectiles: Array<{ mesh: Mesh; material: StandardMaterial; velocity: Vector3; ttl: number; maxTtl: number }> = [];
   private combatContactSeen = new Set<string>();
@@ -302,6 +304,9 @@ export class SystemScene implements IGameScene {
   private elapsed = 0;
   private starsVisible = true;
   private bloomEnabled = true;
+  private labelsVisible = true;
+  private rangesVisible = true;
+  private footprintsVisible = false;
 
   private starKind: StarVisualKind = "main-sequence";
 
@@ -777,6 +782,11 @@ export class SystemScene implements IGameScene {
   }
 
   private updatePlanetLabels(): void {
+    if (!this.labelsVisible) {
+      for (const labelMesh of this.planetLabelMeshes) labelMesh?.setEnabled(false);
+      this.starLabelMesh?.setEnabled(false);
+      return;
+    }
     // Update planet labels
     for (let i = 0; i < this.planetMeshes.length; i++) {
       const planetMesh = this.planetMeshes[i];
@@ -1797,6 +1807,7 @@ export class SystemScene implements IGameScene {
     const root = document.getElementById("spaceHudRoot") ?? document.body;
     const layer = this.entityCardLayer ?? document.createElement("div");
     layer.className = "systemEntityCardLayer";
+    layer.style.display = this.labelsVisible ? "" : "none";
     if (!this.entityCardLayer || layer.parentElement !== root) {
       root.appendChild(layer);
     }
@@ -1887,6 +1898,11 @@ export class SystemScene implements IGameScene {
 
   private updateSystemEntityCards(): void {
     if (!this.entityCardLayer) return;
+    if (!this.labelsVisible) {
+      this.entityCardLayer.style.display = "none";
+      return;
+    }
+    this.entityCardLayer.style.display = "";
     const visibleCards: Array<{ card: HTMLElement; x: number; y: number }> = [];
     for (const card of Array.from(this.entityCardLayer.querySelectorAll<HTMLElement>(".systemEntityCard"))) {
       const kind = card.dataset.entityKind;
@@ -2048,6 +2064,7 @@ export class SystemScene implements IGameScene {
     if (!shiftKey) this.selectedFleetIds.clear();
     this.selectedFleetIds.add(fleet.id);
     this.selectedFleetId = fleet.id;
+    this.systemStore?.setSelectedFleetIds(this.selectedFleetIds);
     this.notifyFleetSelectionChanged();
     this.selectionPanel.select(this.createFleetSelectionData(fleet), shiftKey);
     this.refreshFleetMarkers();
@@ -2199,6 +2216,7 @@ export class SystemScene implements IGameScene {
     if (!append) {
       this.selectedFleetIds.clear();
       this.selectedFleetId = null;
+      this.systemStore?.setSelectedFleetIds([]);
       this.clearFleetAction();
       this.notifyFleetSelectionChanged();
     }
@@ -2208,6 +2226,7 @@ export class SystemScene implements IGameScene {
     if (this.selectedFleetIds.size === 0 && !this.selectedFleetId) return;
     this.selectedFleetIds.clear();
     this.selectedFleetId = null;
+    this.systemStore?.setSelectedFleetIds([]);
     this.selectionPanel?.clear();
     this.disposeSelectedFleetRouteLine();
     this.clearFleetAction();
@@ -3035,6 +3054,7 @@ export class SystemScene implements IGameScene {
 
     // Create star label
     this.starLabelMesh = this.createStarLabel();
+    this.starLabelMesh.setEnabled(this.labelsVisible);
   }
 
   private formatFleetNavigationDetail(fleet: ServerFleet): string {
@@ -3379,6 +3399,10 @@ export class SystemScene implements IGameScene {
           modelDef.modelFile,
           this.scene,
         );
+        for (const mesh of result.meshes) {
+          mesh.setEnabled(false);
+          mesh.isPickable = false;
+        }
         const meshes = result.meshes.filter((mesh) => (
           typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
         ));
@@ -3405,6 +3429,7 @@ export class SystemScene implements IGameScene {
           mesh.parent = assetRoot;
           mesh.isPickable = false;
           mesh.alwaysSelectAsActiveMesh = true;
+          mesh.setEnabled(true);
           if (shipKind === "corvette") {
             this.applyPlayerShipMaterialStyle(mesh.material);
           } else {
@@ -3504,14 +3529,41 @@ export class SystemScene implements IGameScene {
       this.fleetTargets.set(view.id, target);
       root.setEnabled(this.starsVisible);
       root.metadata = { fleetId: view.id, view };
+      for (const mesh of root.getChildMeshes()) {
+        mesh.metadata = { fleetId: view.id, view };
+      }
     }
   }
 
   private createFleetMarker(view: TacticalFleetView): TransformNode {
     const root = new TransformNode(`fleetMarker-${view.id}`, this.scene);
     root.metadata = { fleetId: view.id, view };
+    const pickMesh = MeshBuilder.CreateSphere(
+      `fleetPickVolume-${view.id}`,
+      { diameter: Math.max(3.2, view.tacticalRadius * 2), segments: 12 },
+      this.scene,
+    );
+    pickMesh.parent = root;
+    pickMesh.position.set(0, 0, 0);
+    pickMesh.material = this.getFleetPickMaterial();
+    pickMesh.isPickable = true;
+    pickMesh.alwaysSelectAsActiveMesh = true;
+    pickMesh.metadata = { fleetId: view.id, view };
     this.fleetRoots.set(view.id, root);
     return root;
+  }
+
+  private getFleetPickMaterial(): StandardMaterial {
+    if (!this.fleetPickMaterial) {
+      const material = new StandardMaterial("fleetPickVolumeMat", this.scene);
+      material.diffuseColor = Color3.Black();
+      material.specularColor = Color3.Black();
+      material.emissiveColor = Color3.Black();
+      material.alpha = this.footprintsVisible ? 0.1 : 0.001;
+      material.disableLighting = true;
+      this.fleetPickMaterial = material;
+    }
+    return this.fleetPickMaterial;
   }
 
   private updateFleetVisualTargetsOnly(): void {
@@ -3593,7 +3645,7 @@ export class SystemScene implements IGameScene {
       );
       this.starbaseRangeSignature = signature;
     }
-    this.starbaseRangeRing?.setEnabled(this.starsVisible && range > 0);
+    this.starbaseRangeRing?.setEnabled(this.starsVisible && this.rangesVisible && range > 0);
   }
 
   private getStarbaseMaxWeaponRange(starbase: ServerStarbaseSummary): number {
@@ -3622,6 +3674,7 @@ export class SystemScene implements IGameScene {
   }
 
   private refreshShipVisuals(): void {
+    const refreshVersion = ++this.shipVisualRefreshVersion;
     const visibleFleetViews = this.getVisibleFleetViews();
     const liveServerShipIds = new Set(this.serverShips.map((ship) => ship.id));
     const serverShipById = new Map(this.serverShips.map((ship) => [ship.id, ship]));
@@ -3659,6 +3712,7 @@ export class SystemScene implements IGameScene {
     void Promise.all(
       Array.from(shipKinds, (shipKind) => this.ensureTacticalShipTemplate(shipKind)),
     ).then(() => {
+      if (refreshVersion !== this.shipVisualRefreshVersion) return;
       for (const [shipId, root] of Array.from(this.shipVisualRoots.entries())) {
         if (!shipIds.has(shipId)) {
           root.dispose();
@@ -4025,6 +4079,7 @@ export class SystemScene implements IGameScene {
     
     // Create planet label
     const labelMesh = this.createPlanetLabel(index, planet, orbitRadius);
+    labelMesh.setEnabled(this.labelsVisible);
     this.planetLabelMeshes.push(labelMesh);
 
     const axialPhase = Number.isFinite(planet.orbitPhaseAtEpoch)
@@ -4079,6 +4134,20 @@ export class SystemScene implements IGameScene {
     for (const marker of this.hyperlaneExitMeshes) {
       marker.setEnabled(this.starsVisible);
     }
+  }
+
+  private getHyperlaneExitSignature(exits: HyperlaneExitPoint[]): string {
+    return exits
+      .map((exit) => [
+        exit.starId,
+        exit.name,
+        exit.dx.toFixed(4),
+        exit.dz.toFixed(4),
+        exit.systemPosition?.x.toFixed(2) ?? "",
+        exit.systemPosition?.z.toFixed(2) ?? "",
+      ].join(":"))
+      .sort()
+      .join("|");
   }
 
   private createOrbitRing(index: number, radius: number): void {
@@ -4688,6 +4757,38 @@ export class SystemScene implements IGameScene {
     }
   }
 
+  setLabelsVisible(visible: boolean): void {
+    this.labelsVisible = visible;
+    for (const labelMesh of this.planetLabelMeshes) {
+      labelMesh?.setEnabled(visible);
+    }
+    this.starLabelMesh?.setEnabled(visible);
+    if (this.entityCardLayer) {
+      this.entityCardLayer.style.display = visible ? "" : "none";
+    }
+    if (visible) {
+      this.updatePlanetLabels();
+      this.updateSystemEntityCards();
+    }
+  }
+
+  setRangeRingsVisible(visible: boolean): void {
+    this.rangesVisible = visible;
+    this.refreshStarbaseCombatRangeRing();
+  }
+
+  setFootprintsVisible(visible: boolean): void {
+    this.footprintsVisible = visible;
+    if (this.fleetPickMaterial) {
+      this.fleetPickMaterial.alpha = visible ? 0.1 : 0.001;
+    }
+  }
+
+  setRenderDebugEnabled(enabled: boolean): void {
+    this.debugLogOccluder = enabled;
+    this.deepDebug = enabled;
+  }
+
   setFleetSystemPositions(
     positions: Record<string, { x: number; y: number; z: number }>,
     options: { refreshCards?: boolean } = {},
@@ -4800,7 +4901,9 @@ export class SystemScene implements IGameScene {
     this.factions = this.systemStore.getFactions();
     this.factionFlagSvgCache.clear();
     this.planetStates = this.systemStore.getPlanetStates();
+    const previousHyperlaneExitSignature = this.getHyperlaneExitSignature(this.hyperlaneExits);
     this.hyperlaneExits = this.systemStore.getHyperlaneExits();
+    const nextHyperlaneExitSignature = this.getHyperlaneExitSignature(this.hyperlaneExits);
     this.leaders = this.systemStore.getLeaders();
     this.options.technology = this.systemStore.getTechnology();
 
@@ -4828,11 +4931,16 @@ export class SystemScene implements IGameScene {
     }
 
     this.syncStarbasePresence();
-    this.refreshHyperlaneExits();
+    if (previousHyperlaneExitSignature !== nextHyperlaneExitSignature) {
+      this.refreshHyperlaneExits();
+    }
     this.refreshShipVisuals();
     this.refreshSystemEntityCards();
     this.refreshStarbaseCombatRangeRing();
     this.queueRecentCombatContactEffects();
+    if (this.activeFleetAction) {
+      this.rebuildSystemActionTargetMarkers();
+    }
   }
 
   setLeaders(leaders: LeaderState[]): void {
@@ -4941,6 +5049,7 @@ export class SystemScene implements IGameScene {
         this.planetConfigs[i],
         this.planetConfigs[i].orbitRadius,
       );
+      this.planetLabelMeshes[i]?.setEnabled(this.labelsVisible);
     }
     for (const planetState of planetStates) {
       if (planetState.starId !== this.star.id) continue;
@@ -4985,6 +5094,8 @@ export class SystemScene implements IGameScene {
     }
     this.fleetRoots.clear();
     this.fleetTargets.clear();
+    this.fleetPickMaterial?.dispose();
+    this.fleetPickMaterial = null;
     this.disposeStarbaseCombatRangeRing();
     for (const beam of this.weaponBeams) {
       beam.mesh.dispose();
