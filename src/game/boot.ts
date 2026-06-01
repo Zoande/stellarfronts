@@ -45,6 +45,7 @@ import type {
   ServerStarbase,
   ServerUpdateField,
   StarbaseDetailPayload,
+  SystemDetailPayload,
   TechnologyDetailPayload,
 } from "./GameProtocol";
 import { isLocalAdminCommand, parseAdminCommand } from "./AdminCommands";
@@ -105,6 +106,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let releaseTechnologyDetail: (() => void) | null = null;
   let releaseLeadersDetail: (() => void) | null = null;
   let releaseGovernmentDetail: (() => void) | null = null;
+  let releaseActiveSystemDetail: (() => void) | null = null;
   const releaseStarbaseDetails = new Map<string, () => void>();
   const releasePlanetDetails = new Map<string, () => void>();
   let selectedFleetIds = new Set<string>();
@@ -126,7 +128,6 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     snapshot.knownStarIds ? new Set(snapshot.knownStarIds) : null
   );
 
-  const getFactionHomeStarIds = (): number[] => snapshot.factions.map((faction) => faction.homeStarId);
   const getStarbaseSystemIds = (): number[] => snapshot.starbases.map((starbase) => starbase.starId);
   const getPromotedStarbaseSystemIds = (): number[] => (
     snapshot.starbases
@@ -764,7 +765,6 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
     if (activeSystemScene) {
       activeSystemScene.setClockYear(year);
-      activeSystemScene.setFleetSystemPositions(getFleetSystemPositions(year), { refreshCards: false });
     }
   };
 
@@ -830,10 +830,6 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       activeGalaxyScene.setCenterCloudVisible(visualToggles.centerCloud);
       activeGalaxyScene.setStarsVisible(visualToggles.stars);
       activeGalaxyScene.setOwnershipVisible(visualToggles.ownership);
-    }
-
-    if (activeSystemScene) {
-      activeSystemScene.setFleetSystemPositions(getFleetSystemPositions());
     }
 
     if (activeSystemScene) {
@@ -905,6 +901,31 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       .then((event) => (event.payload && "starbase" in event.payload ? event.payload.starbase : null));
   }
 
+  function releaseSystemDetail(): void {
+    releaseActiveSystemDetail?.();
+    releaseActiveSystemDetail = null;
+  }
+
+  function applySystemDetailPayload(payload: SystemDetailPayload): void {
+    cacheSystemDetails(payload.star, payload.planetStates);
+    if (!activeSystemScene || currentSystemStar?.id !== payload.star.id) return;
+    currentSystemStar = payload.star;
+    activeSystemScene.applySystemPayload(payload, {
+      leaders: snapshot.leaders,
+      selectedFleetIds,
+      clockYear: getRenderClockYear(),
+    });
+    updateHud();
+  }
+
+  function subscribeSystemDetail(starId: number): void {
+    releaseSystemDetail();
+    releaseActiveSystemDetail = server.subscribeDetail<SystemDetailPayload>("system", starId, (event) => {
+      if (!event.payload || !("star" in event.payload)) return;
+      applySystemDetailPayload(event.payload);
+    });
+  }
+
   function applySnapshotToActiveScene(changed?: ServerUpdateField[]): void {
     const isFull = !changed;
     const has = (field: ServerUpdateField): boolean => isFull || changed.includes(field);
@@ -965,37 +986,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
     if (activeSystemScene) {
       activeSystemScene.setClockYear(getRenderClockYear());
-      if (isFull || has("combatContacts") || has("visibility")) {
-        activeSystemScene.setRecentCombatContacts(snapshot.recentCombatContacts);
-      }
-      if (isFull || has("clock") || has("fleets")) {
-        activeSystemScene.setFleetSystemPositions(getFleetSystemPositions(), { refreshCards: false });
-      }
-      if (isFull || has("fleets")) {
-        activeSystemScene.setServerFleets(snapshot.fleets);
-      }
       if (isFull || has("leaders")) {
         activeSystemScene.setLeaders(snapshot.leaders);
-      }
-      if (isFull || has("ships")) {
-        activeSystemScene.setServerShips(snapshot.ships);
-      }
-      if (isFull || has("shipDesigns")) {
-        activeSystemScene.setShipDesigns(snapshot.shipDesigns);
-      }
-      if (isFull || has("starbases")) {
-        activeSystemScene.setStarbaseSystemIds(getStarbaseSystemIds());
-        activeSystemScene.setServerStarbases(snapshot.starbases);
-      }
-      if (isFull || has("planetStates")) {
-        activeSystemScene.setPlanetStates(snapshot.planetStates);
-      }
-      if (isFull || has("technologies")) {
-        activeSystemScene.setTechnology(getCurrentFactionTechnology());
-      }
-      if (isFull || has("visibility")) {
-        activeSystemScene.setFactions(snapshot.factions);
-        activeSystemScene.setStarOwnerships(expandStarOwnership());
       }
     }
 
@@ -1057,6 +1049,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   async function openGalaxyView(): Promise<void> {
     reportProgress(0.58, "Loading galaxy scene");
+    releaseSystemDetail();
     applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
 
     const optionsForGalaxy: GalaxySceneOptions = {
@@ -1124,9 +1117,11 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   }
 
   async function openSystemView(star: StarData): Promise<void> {
-    const details = await server.requestSystemDetails(star.id);
-    cacheSystemDetails(details.star, details.planetStates);
-    const systemStar = details.star;
+    const detailEvent = await server.requestDetail<SystemDetailPayload>("system", star.id);
+    const systemPayload = detailEvent.payload ?? server.getCachedDetail<SystemDetailPayload>("system", star.id);
+    if (!systemPayload || !("star" in systemPayload)) throw new Error("System details are unavailable.");
+    cacheSystemDetails(systemPayload.star, systemPayload.planetStates);
+    const systemStar = systemPayload.star;
 
     if (activeGalaxyScene) {
       activeGalaxyScene.setClockYear(getRenderClockYear());
@@ -1139,28 +1134,27 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         engine,
         systemStar,
         () => openGalaxyView(),
-        snapshot.stars.length,
         {
-          homeSystemStarIds: getFactionHomeStarIds(),
           playerShipSystemIds: getFleetSystemIds(),
-          serverFleets: snapshot.fleets,
-          serverShips: snapshot.ships,
-          shipDesigns: snapshot.shipDesigns,
-          recentCombatContacts: snapshot.recentCombatContacts,
-          starbaseSystemIds: getStarbaseSystemIds(),
-          starbases: snapshot.starbases,
-          factions: snapshot.factions,
+          systemPayload,
+          serverFleets: systemPayload.fleets,
+          serverShips: systemPayload.ships,
+          shipDesigns: systemPayload.shipDesigns,
+          recentCombatContacts: systemPayload.recentCombatContacts,
+          starbaseSystemIds: systemPayload.starbases.map((starbase) => starbase.starId),
+          starbases: systemPayload.starbases,
+          factions: systemPayload.factions,
           starOwnership: expandStarOwnership(),
           playerFactionId: snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : 0,
           playerShipStarId: getPrimaryFleetStarId(),
           shipTransit: getPrimaryTransit(),
-          fleetSystemPositions: getFleetSystemPositions(),
-          hyperlaneExits: getHyperlaneExitsForSystem(systemStar),
+          fleetSystemPositions: {},
+          hyperlaneExits: systemPayload.hyperlaneExits,
           clockYear: getRenderClockYear(),
           selectedFleetIds,
-          planetStates: details.planetStates,
+          planetStates: systemPayload.planetStates,
           leaders: snapshot.leaders,
-          technology: getCurrentFactionTechnology(),
+          technology: systemPayload.technology,
           onPlanetCommand: sendPlanetCommand,
           onFleetCommand: (command) => server.send(command),
           onReleasePlanetDetails: releasePlanetDetail,
@@ -1185,6 +1179,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       return system;
     });
 
+    subscribeSystemDetail(systemStar.id);
     applyVisualToggles();
     updateHud();
   }
@@ -1297,6 +1292,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     releaseStarbaseDetails.clear();
     for (const release of releasePlanetDetails.values()) release();
     releasePlanetDetails.clear();
+    releaseSystemDetail();
     adminCommandPanel?.dispose();
     server.dispose();
     mgr.dispose();

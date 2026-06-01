@@ -73,6 +73,7 @@ import type {
   ServerShip,
   ServerStarbase,
   ServerStarbaseSummary,
+  SystemDetailPayload,
 } from "../game/GameProtocol";
 import type { FactionTechnologyView } from "../data/Technology";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
@@ -85,6 +86,7 @@ import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
+import { SystemViewStore } from "./system/SystemViewStore";
 // OBJ and glTF loading are handled by @babylonjs/loaders modules
 
 type ExitSystemHandler = () => void | Promise<void>;
@@ -115,7 +117,7 @@ interface TacticalFleetView {
 }
 
 export interface SystemSceneOptions {
-  homeSystemStarIds?: number[];
+  systemPayload?: SystemDetailPayload;
   playerShipStarId?: number;
   playerShipSystemIds?: number[];
   fleetSystemPositions?: Record<string, { x: number; y: number; z: number }>;
@@ -148,7 +150,6 @@ export interface SystemSceneOptions {
 }
 
 const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
-const PLAYER_SHIP_MODEL_FILE = "Fighter_01.obj";
 const PLAYER_SHIP_TARGET_SIZE = 0.8;
 const PLAYER_SHIP_BASE_POSITION = new Vector3(23, 4.8, -19);
 const PLAYER_SHIP_MODEL_PITCH = 0.18;
@@ -207,8 +208,6 @@ export class SystemScene implements IGameScene {
   public scene: Scene;
   private engine: AbstractEngine;
   private star: StarData;
-  private starCount: number;  // Track actual star count for player ship detection
-  private homeSystemStarIds: Set<number>;
   private playerShipStarId: number;
   private playerShipSystemIds: Set<number>;
   private fleetSystemPositions: Record<string, { x: number; y: number; z: number }>;
@@ -226,6 +225,7 @@ export class SystemScene implements IGameScene {
   private shipTransit: GalaxyShipTransit | null;
   private clockYear: number;
   private hyperlaneExits: HyperlaneExitPoint[];
+  private systemStore: SystemViewStore | null = null;
   private readonly onExitSystem: ExitSystemHandler;
   private readonly options: SystemSceneOptions;
 
@@ -245,7 +245,6 @@ export class SystemScene implements IGameScene {
   private blackHoleDiskInner: Mesh | null = null;
   private playerShipRoot: TransformNode | null = null;
   private playerShipLight: PointLight | null = null;
-  private playerShipThrusterMaterial: StandardMaterial | null = null;
   private playerShipTrailAttachmentPoint: TransformNode | null = null;
   private playerShipKind: StarbaseShipKind = "corvette";
   private playerShipFleetId: string | null = null;
@@ -259,7 +258,6 @@ export class SystemScene implements IGameScene {
 
   private tacticalShipTemplates = new Map<StarbaseShipKind, TransformNode>();
   private tacticalShipTemplatePromises = new Map<StarbaseShipKind, Promise<void>>();
-  private tacticalShipTemplateTrailAttachments = new Map<StarbaseShipKind, TransformNode | null>();
   private shipVisualRoots = new Map<string, TransformNode>();
   private shipVisualTargets = new Map<string, Vector3>();
   private shipVisualTrailTimers = new Map<string, number>();
@@ -267,7 +265,6 @@ export class SystemScene implements IGameScene {
   private shipVisualTrailSegments = new Map<string, Array<{ mesh: Mesh; material: StandardMaterial; age: number; ttl: number }>>();
   private fleetRoots = new Map<string, TransformNode>();
   private fleetTargets = new Map<string, Vector3>();
-  private fleetMaterials = new Map<string, StandardMaterial>();
   private weaponBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
   private weaponProjectiles: Array<{ mesh: Mesh; material: StandardMaterial; velocity: Vector3; ttl: number; maxTtl: number }> = [];
   private combatContactSeen = new Set<string>();
@@ -350,42 +347,52 @@ export class SystemScene implements IGameScene {
     engine: AbstractEngine,
     star: StarData,
     onExitSystem: ExitSystemHandler,
-    starCount: number = 500,
     options: SystemSceneOptions = {},
   ) {
     this.engine = engine;
-    this.star = star;
-    this.starCount = starCount;
-    this.homeSystemStarIds = new Set(options.homeSystemStarIds ?? []);
-    this.playerShipStarId = options.playerShipStarId ?? (options.homeSystemStarIds?.[0] ?? -1);
+    const initialClockYear = options.clockYear ?? 2100;
+    if (options.systemPayload) {
+      this.systemStore = new SystemViewStore(
+        { ...options.systemPayload, leaders: options.leaders ?? [] },
+        initialClockYear,
+      );
+    }
+    this.star = this.systemStore?.getStar() ?? star;
+    this.playerShipStarId = options.playerShipStarId ?? -1;
     this.playerShipSystemIds = new Set(
       options.playerShipSystemIds
-        ?? options.homeSystemStarIds
         ?? (this.playerShipStarId >= 0 ? [this.playerShipStarId] : []),
     );
-    this.fleetSystemPositions = options.fleetSystemPositions ?? {};
-    this.serverFleets = options.serverFleets ?? [];
-    this.serverShips = options.serverShips ?? [];
-    this.shipDesigns = options.shipDesigns ?? [];
-    this.recentCombatContacts = options.recentCombatContacts ?? [];
-    this.starbaseSystemIds = new Set(options.starbaseSystemIds ?? options.homeSystemStarIds ?? []);
-    this.starbases = options.starbases ?? [];
-    this.factions = options.factions ?? [];
-    this.starOwnership = options.starOwnership ?? [];
+    this.fleetSystemPositions = this.systemStore?.getFleetSystemPositions(initialClockYear) ?? options.fleetSystemPositions ?? {};
+    this.serverFleets = this.systemStore?.getFleets() ?? options.serverFleets ?? [];
+    this.serverShips = this.systemStore?.getShips() ?? options.serverShips ?? [];
+    this.shipDesigns = this.systemStore?.getShipDesigns() ?? options.shipDesigns ?? [];
+    this.recentCombatContacts = this.systemStore?.getRecentCombatContacts() ?? options.recentCombatContacts ?? [];
+    this.starbases = this.systemStore?.getStarbases() ?? options.starbases ?? [];
+    this.starbaseSystemIds = new Set(
+      this.systemStore
+        ? this.starbases.map((starbase) => starbase.starId)
+        : (options.starbaseSystemIds ?? []),
+    );
+    this.factions = this.systemStore?.getFactions() ?? options.factions ?? [];
+    this.starOwnership = options.starOwnership ? [...options.starOwnership] : [];
+    const initialStarOwnerId = this.systemStore?.getStarOwnerId();
+    if (initialStarOwnerId !== undefined) {
+      this.starOwnership[this.star.id] = initialStarOwnerId ?? -1;
+    }
     this.playerFactionId = options.playerFactionId ?? 0;
-    this.planetStates = options.planetStates ?? [];
-    this.leaders = options.leaders ?? [];
+    this.planetStates = this.systemStore?.getPlanetStates() ?? options.planetStates ?? [];
+    this.leaders = this.systemStore?.getLeaders() ?? options.leaders ?? [];
     applyPlanetStatesToStars([this.star], this.planetStates);
     this.shipTransit = options.shipTransit ?? null;
-    this.clockYear = options.clockYear ?? 2100;
-    this.hyperlaneExits = options.hyperlaneExits ?? [];
+    this.clockYear = initialClockYear;
+    this.hyperlaneExits = this.systemStore?.getHyperlaneExits() ?? options.hyperlaneExits ?? [];
     this.selectedFleetId = options.selectedFleetId ?? null;
     this.selectedFleetIds = new Set(options.selectedFleetIds ?? (this.selectedFleetId ? [this.selectedFleetId] : []));
     this.onExitSystem = onExitSystem;
     this.options = options;
     this.scene = new Scene(engine);
     this.scene.clearColor = new Color4(0.01, 0.015, 0.03, 1);
-    console.log(`📍 SystemScene init: star.id=${star.id}, totalStarCount=${starCount}`);
   }
 
   private hasPlayerShipPresence(): boolean {
@@ -426,8 +433,6 @@ export class SystemScene implements IGameScene {
     this.playerShipFleetId = null;
     this.playerShipLight?.dispose();
     this.playerShipLight = null;
-    this.playerShipThrusterMaterial?.dispose();
-    this.playerShipThrusterMaterial = null;
     this.playerShipTrailAttachmentPoint = null;
   }
 
@@ -461,9 +466,7 @@ export class SystemScene implements IGameScene {
   }
 
   private async createStarbaseIfPresent(): Promise<void> {
-    console.log(`🔍 Checking starbase: star.id=${this.star.id}, using starCount=${this.starCount}`);
     if (!this.hasStarbasePresence() || this.starbaseRoot) return;
-    console.log(`✅ This is the starbase system!`);
 
     const starbaseSystemPosition = this.getStarbasesInCurrentSystem()[0]?.systemPosition ?? getSystemStarbasePosition();
     const starbaseBasePosition = new Vector3(
@@ -474,17 +477,13 @@ export class SystemScene implements IGameScene {
     this.starbaseRoot = new TransformNode("starbaseRoot", this.scene);
     this.starbaseRoot.position = starbaseBasePosition.clone();
     this.starbaseRoot.rotation.set(0.18, 0.2, 0.05);
-    console.log(`📍 Starbase root position: ${JSON.stringify(starbaseBasePosition)}`);
 
     try {
-      console.log(`📦 Importing starbase GLB from ${STARBASE_MODEL_URL}`);
       const result = await SceneLoader.ImportMeshAsync("", "", STARBASE_MODEL_URL, this.scene);
 
-      console.log(`✓ Loaded ${result.meshes.length} total meshes from GLB`);
       const meshes = result.meshes.filter((mesh) => (
         typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
       ));
-      console.log(`✓ Filtered to ${meshes.length} renderable meshes`);
       if (meshes.length === 0) {
         throw new Error("star_trek_-_starbase_375.glb did not produce renderable meshes.");
       }
@@ -496,11 +495,9 @@ export class SystemScene implements IGameScene {
         bounds.max.y - bounds.min.y,
         bounds.max.z - bounds.min.z,
       );
-      console.log(`📐 Bounds: min=${JSON.stringify(bounds.min)}, max=${JSON.stringify(bounds.max)}, maxDim=${maxDimension}`);
 
       const starbaseTargetSize = 15.0;
       const starbaseScale = starbaseTargetSize / maxDimension;
-      console.log(`📏 Scaling to ${starbaseTargetSize} world units: scale=${starbaseScale}`);
 
       const assetRoot = new TransformNode("starbaseAssetRoot", this.scene);
       assetRoot.parent = this.starbaseRoot;
@@ -526,10 +523,8 @@ export class SystemScene implements IGameScene {
       this.starbaseLight.range = 42;
       this.starbaseLight.diffuse = new Color3(0.58, 0.86, 1.0);
       this.starbaseLight.specular = new Color3(0.85, 0.92, 1.0);
-
-      console.log(`✅ Starbase GLB loaded successfully! Root position: ${JSON.stringify(this.starbaseRoot.position)}`);
     } catch (err) {
-      console.warn("❌ Failed to load starbase GLB, falling back to procedural starbase", err);
+      console.warn("Failed to load starbase GLB, using procedural fallback.", err);
       this.createProceduralStarbaseFallback();
     }
   }
@@ -544,8 +539,6 @@ export class SystemScene implements IGameScene {
         concreteMesh.removeVerticesData(kind);
       }
     }
-
-    console.log(`🧹 Trimmed ${mesh.name}: ${kinds.join(", ")}`);
   }
 
   private createProceduralStarbaseFallback(): void {
@@ -741,14 +734,6 @@ export class SystemScene implements IGameScene {
       }
       this.weaponProjectiles = nextProjectiles;
     }
-    if (this.playerShipThrusterMaterial) {
-      const thrusterPulse = 0.65 + 0.35 * Math.sin(this.elapsed * 5.8);
-      this.playerShipThrusterMaterial.alpha = 0.45 + thrusterPulse * 0.45;
-      this.playerShipThrusterMaterial.emissiveColor = new Color3(0.32, 0.72, 1.0).scale(
-        1.8 + thrusterPulse * 1.2,
-      );
-    }
-
     if (this.starKind === "pulsar") {
       const beamPulse = 0.5 + 0.5 * Math.abs(Math.sin(this.elapsed * this.glowPulseSpeed));
 
@@ -2926,11 +2911,9 @@ export class SystemScene implements IGameScene {
       window.addEventListener("keydown", (ev: KeyboardEvent) => {
         if (ev.key.toLowerCase() === "g") {
           this.glowLayer!.isEnabled = !this.glowLayer!.isEnabled;
-          console.log(`🔆 Glow layer toggled: ${this.glowLayer!.isEnabled}`);
         }
         if (ev.key.toLowerCase() === "d") {
           this.deepDebug = !this.deepDebug;
-          console.log(`🐞 Deep debug toggled: ${this.deepDebug}`);
         }
       });
     }
@@ -3088,11 +3071,7 @@ export class SystemScene implements IGameScene {
   }
 
   private async createPlayerShipIfPresent(): Promise<void> {
-    console.log(`🔍 Checking player ship: star.id=${this.star.id}, using starCount=${this.starCount}`);
     if (!this.hasPlayerShipPresence() || this.playerShipRoot) return;
-    console.log(`✅ This is the player ship system!`);
-
-    console.log(`🚀 Loading player ship for star ID ${this.star.id}`);
 
     this.playerShipBasePosition = PLAYER_SHIP_BASE_POSITION.clone();
     this.playerShipTargetPosition = PLAYER_SHIP_BASE_POSITION.clone();
@@ -3108,7 +3087,6 @@ export class SystemScene implements IGameScene {
       if (primaryShip) {
         this.playerShipKind = primaryShip.shipKind;
         this.playerShipFleetId = primaryFleet.id;
-        console.log(`🎨 Player ship kind: ${this.playerShipKind}`);
       }
     }
     
@@ -3120,11 +3098,9 @@ export class SystemScene implements IGameScene {
     const initRoll = typeof initialModelDef.modelRoll === "number" ? initialModelDef.modelRoll : PLAYER_SHIP_MODEL_ROLL;
     const initYaw = -0.7 + (typeof initialModelDef.modelYawOffset === "number" ? initialModelDef.modelYawOffset : 0);
     this.playerShipRoot.rotation.set(initPitch, initYaw, initRoll);
-    console.log(`📍 Player ship root position: ${JSON.stringify(this.playerShipBasePosition)}`);
 
     try {
       const modelDef = SHIP_MODEL_DEFINITIONS[this.playerShipKind];
-      console.log(`📦 Importing ${modelDef.modelFile} from ${modelDef.modelPath}`);
       const result = await SceneLoader.ImportMeshAsync(
         "",
         modelDef.modelPath,
@@ -3132,12 +3108,9 @@ export class SystemScene implements IGameScene {
         this.scene,
       );
 
-      console.log(`✓ Loaded ${result.meshes.length} total meshes from ${modelDef.modelFormat.toUpperCase()}`);
-      
       const meshes = result.meshes.filter((mesh) => (
         typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
       ));
-      console.log(`✓ Filtered to ${meshes.length} renderable meshes`);
       if (meshes.length === 0) {
         throw new Error(`${modelDef.modelFile} did not produce renderable meshes.`);
       }
@@ -3149,11 +3122,9 @@ export class SystemScene implements IGameScene {
         bounds.max.y - bounds.min.y,
         bounds.max.z - bounds.min.z,
       );
-      console.log(`📐 Bounds: min=${JSON.stringify(bounds.min)}, max=${JSON.stringify(bounds.max)}, maxDim=${maxDimension}`);
       const shipScale = PLAYER_SHIP_TARGET_SIZE / maxDimension;
       // Apply a small model-specific scale multiplier for construction ship to correct size
       const effectiveShipScale = this.playerShipKind === "constructionShip" ? shipScale * 1.3 : shipScale;
-      console.log(`📏 Scaling to ${PLAYER_SHIP_TARGET_SIZE} world units: baseScale=${shipScale}, effectiveScale=${effectiveShipScale}`);
 
       const assetRoot = new TransformNode("playerShipAssetRoot", this.scene);
       assetRoot.parent = this.playerShipRoot;
@@ -3163,7 +3134,6 @@ export class SystemScene implements IGameScene {
         mesh.parent = assetRoot;
         mesh.isPickable = false;
         mesh.alwaysSelectAsActiveMesh = true;
-        console.log(`  - Mesh "${mesh.name}": vertices=${mesh.getTotalVertices()}`);
         if (this.playerShipKind === "corvette") {
           this.applyPlayerShipMaterialStyle(mesh.material);
         } else {
@@ -3182,17 +3152,15 @@ export class SystemScene implements IGameScene {
             // ignore
           }
           this.playerShipTrailAttachmentPoint = this.createTrailSocketAnchorNode(socket as TransformNode, modelDef, "playerShipTrailAnchor");
-          console.log(`✅ Found trail socket: ${modelDef.trailSocketName}`);
         } else {
-          console.warn(`⚠️ Trail socket "${modelDef.trailSocketName}" not found, will use offset`);
+          console.warn(`Trail socket "${modelDef.trailSocketName}" not found; using configured offset.`);
         }
       }
 
       this.playerShipRoot.scaling.setAll(effectiveShipScale);
       this.createPlayerShipReadabilityLight();
-      console.log(`✅ Player ship loaded successfully! Root position: ${JSON.stringify(this.playerShipRoot.position)}, rotation: ${JSON.stringify(this.playerShipRoot.rotation)}`);
     } catch (err) {
-      console.warn("❌ Failed to load player ship model", err);
+      console.warn("Failed to load player ship model; using procedural fallback.", err);
       this.createFallbackPlayerShip();
     }
   }
@@ -3362,50 +3330,6 @@ export class SystemScene implements IGameScene {
     this.playerShipLight.specular = new Color3(0.72, 0.78, 0.86);
   }
 
-  private createPlayerShipAccents(
-    parent: TransformNode,
-    bounds: { min: Vector3; max: Vector3; center: Vector3 },
-  ): void {
-    if (!this.playerShipRoot) return;
-
-    const size = bounds.max.subtract(bounds.min);
-    const glowDiameter = Math.max(0.18, Math.max(size.x, size.z) * 0.045);
-    const zOffset = Math.max(0.45, size.z * 0.22);
-    const engineX = bounds.min.x - size.x * 0.035;
-
-    const thrusterMat = new StandardMaterial("playerShipThrusterMat", this.scene);
-    thrusterMat.diffuseColor = Color3.Black();
-    thrusterMat.specularColor = Color3.Black();
-    thrusterMat.emissiveColor = new Color3(0.32, 0.72, 1.0).scale(2.2);
-    thrusterMat.disableLighting = true;
-    thrusterMat.alpha = 0.78;
-    this.playerShipThrusterMaterial = thrusterMat;
-
-    for (const z of [-zOffset, zOffset]) {
-      const glow = MeshBuilder.CreateSphere(
-        "playerShipThrusterGlow",
-        { diameter: glowDiameter, segments: 16 },
-        this.scene,
-      );
-      glow.parent = parent;
-      glow.position.set(engineX, bounds.center.y, bounds.center.z + z);
-      glow.material = thrusterMat;
-      glow.isPickable = false;
-      this.glowLayer.addIncludedOnlyMesh(glow);
-    }
-
-    this.playerShipLight = new PointLight(
-      "playerShipInspectionLight",
-      new Vector3(0, 6, -8),
-      this.scene,
-    );
-    this.playerShipLight.parent = this.playerShipRoot;
-    this.playerShipLight.intensity = 1.45;
-    this.playerShipLight.range = 46;
-    this.playerShipLight.diffuse = new Color3(0.54, 0.7, 1.0);
-    this.playerShipLight.specular = new Color3(0.85, 0.9, 1.0);
-  }
-
   private createFallbackPlayerShip(): void {
     if (!this.playerShipRoot) return;
 
@@ -3502,8 +3426,6 @@ export class SystemScene implements IGameScene {
             }
           }
         }
-        this.tacticalShipTemplateTrailAttachments.set(shipKind, trailAttachment);
-
         templateRoot.scaling.setAll(effectiveShipScale);
         templateRoot.setEnabled(false);
         this.tacticalShipTemplates.set(shipKind, templateRoot);
@@ -3541,14 +3463,6 @@ export class SystemScene implements IGameScene {
         }
       }
     }
-    if (instanceTrailAttachment) {
-      console.log(`🔗 Ship visual ${shipId} (${shipKind}) has trail attachment: ${instanceTrailAttachment.name}, parent=${instanceTrailAttachment.parent?.name ?? 'null'}`);
-      try {
-        console.log(`   attachment ABS pos=${JSON.stringify(instanceTrailAttachment.getAbsolutePosition())}`);
-      } catch (e) {
-        // ignore
-      }
-    }
     for (const mesh of clone.getChildMeshes()) {
       mesh.isPickable = true;
     }
@@ -3580,9 +3494,6 @@ export class SystemScene implements IGameScene {
         root.dispose();
         this.fleetRoots.delete(fleetId);
         this.fleetTargets.delete(fleetId);
-        const material = this.fleetMaterials.get(fleetId);
-        material?.dispose();
-        this.fleetMaterials.delete(fleetId);
       }
     }
     for (const view of views) {
@@ -3601,6 +3512,29 @@ export class SystemScene implements IGameScene {
     root.metadata = { fleetId: view.id, view };
     this.fleetRoots.set(view.id, root);
     return root;
+  }
+
+  private updateFleetVisualTargetsOnly(): void {
+    const views = this.getVisibleFleetViews();
+    this.refreshFleetMarkers(views);
+
+    const viewById = new Map(views.map((view) => [view.id, view]));
+    for (const [shipId, root] of this.shipVisualRoots) {
+      const metadata = root.metadata as { fleetId?: string | null } | null;
+      const fleetId = metadata?.fleetId ?? null;
+      const view = fleetId ? viewById.get(fleetId) : undefined;
+      if (!view) continue;
+      this.shipVisualTargets.set(
+        shipId,
+        this.getGroupShipFormationPosition(`fleet:${view.id}`, view.position, view.shipIds, shipId),
+      );
+    }
+
+    const playerFleet = this.getPlayerShipFleetCandidate();
+    if (this.playerShipRoot && playerFleet) {
+      const position = this.getFleetRenderPosition(playerFleet);
+      this.playerShipTargetPosition.set(position.x, position.y, position.z);
+    }
   }
 
   private createSystemPlaneCircleLine(
@@ -4131,6 +4065,22 @@ export class SystemScene implements IGameScene {
     }
   }
 
+  private disposeHyperlaneExits(): void {
+    for (const marker of this.hyperlaneExitMeshes) {
+      this.glowLayer?.removeIncludedOnlyMesh(marker);
+      marker.dispose();
+    }
+    this.hyperlaneExitMeshes = [];
+  }
+
+  private refreshHyperlaneExits(): void {
+    this.disposeHyperlaneExits();
+    this.createHyperlaneExits();
+    for (const marker of this.hyperlaneExitMeshes) {
+      marker.setEnabled(this.starsVisible);
+    }
+  }
+
   private createOrbitRing(index: number, radius: number): void {
     const points: Vector3[] = [];
     const segments = 144;
@@ -4379,61 +4329,6 @@ export class SystemScene implements IGameScene {
     ctx.lineTo(x, y + radius);
     ctx.quadraticCurveTo(x, y, x + radius, y);
     ctx.closePath();
-  }
-
-  private drawSystemHexBadge(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
-    const drawHex = (r: number): void => {
-      ctx.beginPath();
-      for (let i = 0; i < 6; i++) {
-        const angle = -Math.PI / 6 + (i * Math.PI * 2) / 6;
-        const px = x + Math.cos(angle) * r;
-        const py = y + Math.sin(angle) * r;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-    };
-
-    ctx.save();
-    ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
-    ctx.shadowBlur = 28;
-    ctx.shadowOffsetY = 12;
-    drawHex(radius);
-    ctx.fillStyle = "rgba(224, 239, 235, 0.98)";
-    ctx.fill();
-    ctx.lineWidth = 20;
-    ctx.strokeStyle = "rgba(66, 86, 82, 0.96)";
-    ctx.stroke();
-
-    drawHex(radius * 0.64);
-    ctx.fillStyle = "rgba(245, 252, 250, 1)";
-    ctx.fill();
-    ctx.lineWidth = 10;
-    ctx.strokeStyle = "rgba(92, 112, 108, 0.86)";
-    ctx.stroke();
-
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "rgba(78, 93, 90, 0.98)";
-    const nodeR = radius * 0.12;
-    const nodes = [
-      [x, y - radius * 0.22],
-      [x - radius * 0.22, y + radius * 0.12],
-      [x + radius * 0.22, y + radius * 0.12],
-    ];
-    ctx.lineWidth = 14;
-    ctx.strokeStyle = "rgba(78, 93, 90, 0.95)";
-    ctx.beginPath();
-    ctx.moveTo(nodes[0][0], nodes[0][1]);
-    ctx.lineTo(nodes[1][0], nodes[1][1]);
-    ctx.lineTo(nodes[2][0], nodes[2][1]);
-    ctx.lineTo(nodes[0][0], nodes[0][1]);
-    ctx.stroke();
-    for (const [nx, ny] of nodes) {
-      ctx.beginPath();
-      ctx.arc(nx, ny, nodeR, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
   }
 
   private drawSystemHabitedPlanetBadge(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
@@ -4829,6 +4724,11 @@ export class SystemScene implements IGameScene {
 
   setClockYear(year: number): void {
     this.clockYear = year;
+    if (this.systemStore) {
+      this.systemStore.setClockYear(year);
+      this.fleetSystemPositions = this.systemStore.getFleetSystemPositions(year);
+      this.updateFleetVisualTargetsOnly();
+    }
     this.selectionPanel?.setClockYear(year);
     this.objectPanel?.setClockYear(year);
   }
@@ -4875,6 +4775,66 @@ export class SystemScene implements IGameScene {
     this.options.technology = technology;
   }
 
+  applySystemPayload(
+    payload: SystemDetailPayload,
+    context: { leaders?: LeaderState[]; selectedFleetIds?: Iterable<string>; clockYear?: number } = {},
+  ): void {
+    const clockYear = context.clockYear ?? this.clockYear;
+    const previousSelection = Array.from(this.selectedFleetIds).join("\0");
+    const storePayload = { ...payload, leaders: context.leaders ?? this.leaders };
+    if (this.systemStore) {
+      this.systemStore.applyPayload(storePayload);
+    } else {
+      this.systemStore = new SystemViewStore(storePayload, clockYear);
+    }
+    this.systemStore.setClockYear(clockYear);
+    this.systemStore.setSelectedFleetIds(context.selectedFleetIds ?? this.selectedFleetIds);
+
+    this.star = this.systemStore.getStar();
+    this.serverFleets = this.systemStore.getFleets();
+    this.serverShips = this.systemStore.getShips();
+    this.shipDesigns = this.systemStore.getShipDesigns();
+    this.recentCombatContacts = this.systemStore.getRecentCombatContacts();
+    this.starbases = this.systemStore.getStarbases();
+    this.starbaseSystemIds = new Set(this.starbases.map((starbase) => starbase.starId));
+    this.factions = this.systemStore.getFactions();
+    this.factionFlagSvgCache.clear();
+    this.planetStates = this.systemStore.getPlanetStates();
+    this.hyperlaneExits = this.systemStore.getHyperlaneExits();
+    this.leaders = this.systemStore.getLeaders();
+    this.options.technology = this.systemStore.getTechnology();
+
+    const ownerId = this.systemStore.getStarOwnerId();
+    this.starOwnership = [...this.starOwnership];
+    this.starOwnership[this.star.id] = ownerId ?? -1;
+    this.fleetSystemPositions = this.systemStore.getFleetSystemPositions(clockYear);
+    this.selectedFleetIds = new Set(this.systemStore.getSelectedFleetIds());
+    this.selectedFleetId = this.systemStore.getPrimarySelectedFleetId();
+
+    applyPlanetStatesToStars([this.star], this.planetStates);
+    this.planetConfigs = this.star.system.planets.length > 0
+      ? this.star.system.planets
+      : this.planetConfigs;
+    this.clockYear = clockYear;
+    this.selectionPanel?.setClockYear(clockYear);
+    this.objectPanel?.setClockYear(clockYear);
+
+    const nextSelection = Array.from(this.selectedFleetIds).join("\0");
+    if (previousSelection !== nextSelection) {
+      this.notifyFleetSelectionChanged();
+      this.renderSelectedFleetPanels();
+    } else if (this.selectedFleetIds.size > 0) {
+      this.renderSelectedFleetPanels();
+    }
+
+    this.syncStarbasePresence();
+    this.refreshHyperlaneExits();
+    this.refreshShipVisuals();
+    this.refreshSystemEntityCards();
+    this.refreshStarbaseCombatRangeRing();
+    this.queueRecentCombatContactEffects();
+  }
+
   setLeaders(leaders: LeaderState[]): void {
     this.leaders = leaders;
     if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
@@ -4901,6 +4861,23 @@ export class SystemScene implements IGameScene {
 
   setStarOwnerships(ownerByStar: number[]): void {
     this.starOwnership = ownerByStar;
+  }
+
+  private syncStarbasePresence(): void {
+    if (this.starbaseSystemIds.has(this.star.id)) {
+      if (this.starbaseRoot) {
+        this.starbaseRoot.setEnabled(true);
+        return;
+      }
+      void this.createStarbaseIfPresent().then(() => {
+        this.refreshStarbaseCombatRangeRing();
+        this.refreshSystemEntityCards();
+      });
+      return;
+    }
+
+    this.starbaseRoot?.setEnabled(false);
+    this.disposeStarbaseCombatRangeRing();
   }
 
   private getAssignedLeader(kind: "planet" | "fleet", targetId: string): LeaderState | null {
@@ -5008,10 +4985,6 @@ export class SystemScene implements IGameScene {
     }
     this.fleetRoots.clear();
     this.fleetTargets.clear();
-    for (const [, material] of this.fleetMaterials) {
-      material.dispose();
-    }
-    this.fleetMaterials.clear();
     this.disposeStarbaseCombatRangeRing();
     for (const beam of this.weaponBeams) {
       beam.mesh.dispose();
@@ -5022,6 +4995,9 @@ export class SystemScene implements IGameScene {
       projectile.material.dispose();
     }
     this.weaponProjectiles = [];
+    this.disposeHyperlaneExits();
+    this.hyperlaneExitMaterial?.dispose();
+    this.hyperlaneExitMaterial = null;
     this.disposePlayerShipTrail();
     this.disposeSelectedFleetRouteLine();
     this.disposeSystemActionTargetMarkers();
