@@ -16,7 +16,6 @@ import {
   StandardMaterial,
   PBRMaterial,
   MultiMaterial,
-  CubeTexture,
   Texture,
   GlowLayer,
   TransformNode,
@@ -93,6 +92,7 @@ import { SystemInputController } from "./system/SystemInputController";
 import { SystemActionTargetRenderer } from "./system/SystemActionTargetRenderer";
 import type { SystemActionTarget } from "./system/SystemActionTargetRenderer";
 import { SystemViewStore } from "./system/SystemViewStore";
+import { createProceduralSpaceSkybox, getSystemSkyboxSettings } from "../utils/proceduralSpaceSkybox";
 
 type ExitSystemHandler = () => void | Promise<void>;
 
@@ -171,15 +171,6 @@ const SYSTEM_ACTION_MARKER_MAX_EMPTY_MOVE_RADIUS = 72;
 const SHIP_EXIT_END_PROGRESS = 0.28;
 const SHIP_ENTRY_START_PROGRESS = 0.72;
 const STAR_BANNER_DIR = "/textures/planet-banners";
-const SYSTEM_SKYBOX_DIR = "/textures/system-skybox";
-const SYSTEM_SKYBOX_FACE_URLS = [
-  `${SYSTEM_SKYBOX_DIR}/right.png`,
-  `${SYSTEM_SKYBOX_DIR}/top.png`,
-  `${SYSTEM_SKYBOX_DIR}/front.png`,
-  `${SYSTEM_SKYBOX_DIR}/left.png`,
-  `${SYSTEM_SKYBOX_DIR}/bottom.png`,
-  `${SYSTEM_SKYBOX_DIR}/back.png`,
-];
 
 const TACTICAL_SHIP_TARGET_SIZE = 0.65;
 const TACTICAL_BEAM_TTL = 0.45;
@@ -2445,24 +2436,28 @@ export class SystemScene implements IGameScene {
   }
 
   private setupBackground(): void {
-    const skyboxTexture = new CubeTexture("", this.scene, undefined, false, SYSTEM_SKYBOX_FACE_URLS);
-    skyboxTexture.coordinatesMode = Texture.SKYBOX_MODE;
-    skyboxTexture.gammaSpace = true;
-    skyboxTexture.level = 0.9;
-    this.scene.environmentTexture = skyboxTexture;
-    this.scene.environmentIntensity = 0.38;
+    const generated = createProceduralSpaceSkybox(this.scene, {
+      name: "systemSkybox",
+      materialName: "systemSkyboxMat",
+      size: 4000,
+      render: getSystemSkyboxSettings(this.star),
+      textureLevel: 0.9,
+      environmentIntensity: 0.38,
+    });
+    if (generated) return;
 
-    const skybox = MeshBuilder.CreateBox("systemSkybox", { size: 4000 }, this.scene);
-    const skyboxMat = new StandardMaterial("systemSkyboxMat", this.scene);
-    skyboxMat.reflectionTexture = skyboxTexture;
-    skyboxMat.reflectionTexture.coordinatesMode = Texture.SKYBOX_MODE;
-    skyboxMat.disableLighting = true;
-    skyboxMat.backFaceCulling = false;
-    skyboxMat.diffuseColor = Color3.Black();
-    skyboxMat.specularColor = Color3.Black();
-    skybox.material = skyboxMat;
-    skybox.isPickable = false;
-    skybox.infiniteDistance = true;
+    const bgSphere = MeshBuilder.CreateSphere(
+      "systemBackground",
+      { diameter: 4000, segments: 20 },
+      this.scene,
+    );
+    const bgMat = new StandardMaterial("systemBackgroundMat", this.scene);
+    bgMat.emissiveTexture = new Texture("/textures/galaxy_bg.webp", this.scene);
+    bgMat.disableLighting = true;
+    bgMat.backFaceCulling = false;
+    bgSphere.material = bgMat;
+    bgSphere.isPickable = false;
+    bgSphere.infiniteDistance = true;
   }
 
   private setupCamera(canvas: HTMLCanvasElement): void {

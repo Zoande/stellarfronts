@@ -44,6 +44,7 @@ import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase, ServerStarbaseSummary } from "../game/GameProtocol";
 import type { FactionTechnologyView } from "../data/Technology";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
+import { createProceduralSpaceSkybox, getGalaxySkyboxSettings } from "../utils/proceduralSpaceSkybox";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
 
@@ -1094,18 +1095,28 @@ export class GalaxyScene implements IGameScene {
     this.clickPlane.isVisible = false;
     this.clickPlane.isPickable = true;
 
-    const bgSphere = MeshBuilder.CreateSphere(
-      "galaxyBackground",
-      { diameter: 5000, segments: 24 },
-      this.scene,
-    );
-    const bgMat = new StandardMaterial("galaxyBackgroundMat", this.scene);
-    bgMat.emissiveTexture = new Texture("/textures/galaxy_bg.webp", this.scene);
-    bgMat.disableLighting = true;
-    bgMat.backFaceCulling = false;
-    bgSphere.material = bgMat;
-    bgSphere.isPickable = false;
-    bgSphere.infiniteDistance = true;
+    const generatedSkybox = createProceduralSpaceSkybox(this.scene, {
+      name: "galaxySkybox",
+      materialName: "galaxySkyboxMat",
+      size: 5000,
+      render: getGalaxySkyboxSettings(),
+      textureLevel: 0.78,
+      environmentIntensity: 0.2,
+    });
+    if (!generatedSkybox) {
+      const bgSphere = MeshBuilder.CreateSphere(
+        "galaxyBackground",
+        { diameter: 5000, segments: 24 },
+        this.scene,
+      );
+      const bgMat = new StandardMaterial("galaxyBackgroundMat", this.scene);
+      bgMat.emissiveTexture = new Texture("/textures/galaxy_bg.webp", this.scene);
+      bgMat.disableLighting = true;
+      bgMat.backFaceCulling = false;
+      bgSphere.material = bgMat;
+      bgSphere.isPickable = false;
+      bgSphere.infiniteDistance = true;
+    }
 
     this.setupGalacticCore(cfg.width, cfg.height);
     this.setupHyperlanes(cfg.width, cfg.height, cfg.shape, cfg.seed);
