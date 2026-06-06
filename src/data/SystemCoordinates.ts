@@ -25,8 +25,9 @@ export const SYSTEM_HYPERLANE_EXIT_MARKER_Y = 2.8;
 
 const SYSTEM_FLEET_STAGING_POSITION: SystemPosition = { x: 23, y: SYSTEM_FLEET_Y, z: -19 };
 const SYSTEM_STAR_ORBIT_POSITION: SystemPosition = { x: 0, y: SYSTEM_FLEET_Y, z: -8 };
-const SYSTEM_STARBASE_POSITION: SystemPosition = { x: 3.2, y: SYSTEM_FLEET_Y, z: -18 };
-const SYSTEM_STARBASE_ORBIT_OFFSET: SystemPosition = { x: 10, y: 0, z: 0 };
+const LEGACY_SYSTEM_STARBASE_POSITION: SystemPosition = { x: 3.2, y: SYSTEM_FLEET_Y, z: -18 };
+const SYSTEM_STARBASE_POSITION: SystemPosition = { x: 4.2, y: SYSTEM_FLEET_Y, z: -10.5 };
+const SYSTEM_STARBASE_ORBIT_OFFSET: SystemPosition = { x: 6.5, y: 0, z: 0 };
 
 export interface SystemOrbitLayout {
   orbitBaseOffset: number;
@@ -212,13 +213,24 @@ export function getSystemStarbasePosition(): SystemPosition {
   return { ...SYSTEM_STARBASE_POSITION };
 }
 
+export function normalizeSystemStarbasePosition(position: SystemPosition | undefined | null): SystemPosition {
+  if (!position) return getSystemStarbasePosition();
+  const matchesLegacyDefault =
+    Math.abs(position.x - LEGACY_SYSTEM_STARBASE_POSITION.x) < 0.001
+    && Math.abs(position.y - LEGACY_SYSTEM_STARBASE_POSITION.y) < 0.001
+    && Math.abs(position.z - LEGACY_SYSTEM_STARBASE_POSITION.z) < 0.001;
+  if (matchesLegacyDefault) return getSystemStarbasePosition();
+  return { ...position };
+}
+
 export function getSystemStarbaseOrbitPosition(
   starbasePosition: SystemPosition = SYSTEM_STARBASE_POSITION,
 ): SystemPosition {
+  const normalizedPosition = normalizeSystemStarbasePosition(starbasePosition);
   return {
-    x: starbasePosition.x + SYSTEM_STARBASE_ORBIT_OFFSET.x,
+    x: normalizedPosition.x + SYSTEM_STARBASE_ORBIT_OFFSET.x,
     y: SYSTEM_FLEET_Y,
-    z: starbasePosition.z + SYSTEM_STARBASE_ORBIT_OFFSET.z,
+    z: normalizedPosition.z + SYSTEM_STARBASE_ORBIT_OFFSET.z,
   };
 }
 

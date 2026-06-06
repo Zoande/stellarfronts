@@ -14,6 +14,7 @@ import {
   PointLight,
   MeshBuilder,
   StandardMaterial,
+  PBRMaterial,
   MultiMaterial,
   Texture,
   GlowLayer,
@@ -26,8 +27,8 @@ import {
 } from "@babylonjs/core";
 import type { AbstractEngine, AbstractMesh, LinesMesh, Observer, PointerInfo } from "@babylonjs/core";
 import type { IGameScene } from "../SceneManager";
-import { SHIP_MODEL_DEFINITIONS } from "../data/Starbase";
-import type { StarbaseShipKind } from "../data/Starbase";
+import { SHIP_MODEL_DEFINITIONS, STARBASE_MODEL_DEFINITIONS } from "../data/Starbase";
+import type { StarbaseLevel, StarbaseShipKind } from "../data/Starbase";
 import {
   STAR_TYPES,
   StarType,
@@ -47,6 +48,7 @@ import {
   getSystemStarOrbitPosition,
   getSystemStarbasePosition,
   getSystemStarbaseOrbitPosition,
+  normalizeSystemStarbasePosition,
   SYSTEM_FLEET_Y,
   SYSTEM_HYPERLANE_EXIT_MARKER_Y,
   withPlanetOrbitFields,
@@ -138,7 +140,6 @@ export interface SystemSceneOptions {
   onReleaseStarbaseDetails?: (starbaseId: string) => void;
 }
 
-const PLAYER_SHIP_MODEL_ROOT = "/ships/fighter_01/";
 const PLAYER_SHIP_TARGET_SIZE = 0.8;
 const PLAYER_SHIP_BASE_POSITION = new Vector3(23, 4.8, -19);
 const PLAYER_SHIP_MODEL_PITCH = 0.18;
@@ -166,7 +167,6 @@ const SYSTEM_ACTION_MARKER_PULSE_SPEED = 4.2;
 const SYSTEM_ACTION_MARKER_ROTATION_SPEED = 0.42;
 const SYSTEM_ACTION_MARKER_MAX_EMPTY_MOVE_RADIUS = 72;
 
-const STARBASE_MODEL_URL = "/starbase/star_trek_-_starbase_375.glb";
 const SHIP_EXIT_END_PROGRESS = 0.28;
 const SHIP_ENTRY_START_PROGRESS = 0.72;
 const STAR_BANNER_DIR = "/textures/planet-banners";
@@ -252,6 +252,7 @@ export class SystemScene implements IGameScene {
   private combatContactSeen = new Set<string>();
 
   private starbaseRoot: TransformNode | null = null;
+  private starbaseVisualLevel: StarbaseLevel | null = null;
   private starbaseLight: PointLight | null = null;
   private starbaseRangeRing: LinesMesh | null = null;
   private starbaseRangeSignature: string | null = null;
@@ -490,6 +491,10 @@ export class SystemScene implements IGameScene {
     return this.starbaseSystemIds.has(this.star.id);
   }
 
+  private getCurrentStarbaseVisualLevel(): StarbaseLevel {
+    return this.getStarbasesInCurrentSystem()[0]?.level ?? "outpost";
+  }
+
   private getShipAssetDefinition(
     shipKind: StarbaseShipKind,
     keyPrefix: string,
@@ -501,25 +506,25 @@ export class SystemScene implements IGameScene {
       rootUrl: modelDef.modelPath,
       fileName: modelDef.modelFile,
       targetSize,
-      scaleMultiplier: shipKind === "constructionShip" ? 1.3 : 1,
+      scaleMultiplier: modelDef.scaleMultiplier ?? 1,
       trailSocketName: modelDef.trailSocketName,
       configureMesh: (mesh) => {
-        if (shipKind === "corvette") {
-          this.applyPlayerShipMaterialStyle(mesh.material);
-        } else {
-          this.applyBasicShipMaterialStyle(mesh.material);
-        }
+        this.applyBasicShipMaterialStyle(mesh.material);
       },
     };
   }
 
-  private getStarbaseAssetDefinition(): SystemAssetDefinition {
+  private getStarbaseAssetDefinition(level = this.getCurrentStarbaseVisualLevel()): SystemAssetDefinition {
+    const modelDef = STARBASE_MODEL_DEFINITIONS[level] ?? STARBASE_MODEL_DEFINITIONS.outpost;
     return {
-      key: "starbase:375",
-      rootUrl: "",
-      fileName: STARBASE_MODEL_URL,
-      targetSize: 15.0,
-      configureMesh: (mesh) => this.trimStarbaseVertexData(mesh),
+      key: `starbase:${modelDef.level}`,
+      rootUrl: modelDef.modelPath,
+      fileName: modelDef.modelFile,
+      targetSize: modelDef.targetSize,
+      configureMesh: (mesh) => {
+        this.trimStarbaseVertexData(mesh);
+        this.applyStarbaseMaterialStyle(mesh.material);
+      },
     };
   }
 
@@ -530,26 +535,48 @@ export class SystemScene implements IGameScene {
     return null;
   }
 
-  private async createStarbaseIfPresent(): Promise<void> {
-    if (!this.hasStarbasePresence() || this.starbaseRoot) return;
+  private disposeStarbaseVisuals(): void {
+    this.starbaseLight?.dispose();
+    this.starbaseLight = null;
+    this.starbaseRoot?.dispose(false, true);
+    this.starbaseRoot = null;
+    this.starbaseVisualLevel = null;
+  }
 
-    const starbaseSystemPosition = this.getStarbasesInCurrentSystem()[0]?.systemPosition ?? getSystemStarbasePosition();
+  private async createStarbaseIfPresent(): Promise<void> {
+    if (!this.hasStarbasePresence()) return;
+
+    const starbaseLevel = this.getCurrentStarbaseVisualLevel();
+    if (this.starbaseRoot) {
+      if (this.starbaseVisualLevel === starbaseLevel) return;
+      this.disposeStarbaseVisuals();
+    }
+
+    const starbaseSystemPosition = normalizeSystemStarbasePosition(
+      this.getStarbasesInCurrentSystem()[0]?.systemPosition ?? getSystemStarbasePosition(),
+    );
     const starbaseBasePosition = new Vector3(
       starbaseSystemPosition.x,
       8.5,
       starbaseSystemPosition.z,
     );
+    const modelDef = STARBASE_MODEL_DEFINITIONS[starbaseLevel] ?? STARBASE_MODEL_DEFINITIONS.outpost;
     this.starbaseRoot = new TransformNode("starbaseRoot", this.scene);
+    this.starbaseVisualLevel = starbaseLevel;
     this.starbaseRoot.position = starbaseBasePosition.clone();
-    this.starbaseRoot.rotation.set(0.18, 0.2, 0.05);
+    this.starbaseRoot.rotation.set(
+      modelDef.modelPitch ?? 0.18,
+      modelDef.modelYawOffset ?? 0.2,
+      modelDef.modelRoll ?? 0.05,
+    );
 
     try {
       const assetRoot = await this.assetRegistry.instantiate(
-        this.getStarbaseAssetDefinition(),
+        this.getStarbaseAssetDefinition(starbaseLevel),
         "starbaseAssetRoot",
       );
       if (!assetRoot) {
-        throw new Error("star_trek_-_starbase_375.glb did not produce renderable meshes.");
+        throw new Error(`${modelDef.modelFile} did not produce renderable meshes.`);
       }
       assetRoot.parent = this.starbaseRoot;
       for (const mesh of assetRoot.getChildMeshes()) {
@@ -564,12 +591,12 @@ export class SystemScene implements IGameScene {
         this.scene,
       );
       this.starbaseLight.parent = this.starbaseRoot;
-      this.starbaseLight.intensity = 1.0;
-      this.starbaseLight.range = 42;
-      this.starbaseLight.diffuse = new Color3(0.58, 0.86, 1.0);
-      this.starbaseLight.specular = new Color3(0.85, 0.92, 1.0);
+      this.starbaseLight.intensity = 1.45;
+      this.starbaseLight.range = 36;
+      this.starbaseLight.diffuse = new Color3(0.72, 0.92, 1.0);
+      this.starbaseLight.specular = new Color3(0.95, 0.98, 1.0);
     } catch (err) {
-      console.warn("Failed to load starbase GLB, using procedural fallback.", err);
+      console.warn("Failed to load starbase model, using procedural fallback.", err);
       this.createProceduralStarbaseFallback();
     }
   }
@@ -590,9 +617,9 @@ export class SystemScene implements IGameScene {
     if (!this.starbaseRoot) return;
 
     const hullMat = new StandardMaterial("starbaseHullMat", this.scene);
-    hullMat.diffuseColor = new Color3(0.2, 0.24, 0.3);
-    hullMat.specularColor = new Color3(0.45, 0.5, 0.58);
-    hullMat.emissiveColor = new Color3(0.03, 0.05, 0.08);
+    hullMat.diffuseColor = new Color3(0.38, 0.43, 0.5);
+    hullMat.specularColor = new Color3(0.65, 0.7, 0.78);
+    hullMat.emissiveColor = new Color3(0.08, 0.1, 0.13);
 
     const accentMat = new StandardMaterial("starbaseAccentMat", this.scene);
     accentMat.diffuseColor = Color3.Black();
@@ -602,9 +629,9 @@ export class SystemScene implements IGameScene {
     accentMat.alpha = 0.95;
 
     const hubMat = new StandardMaterial("starbaseHubMat", this.scene);
-    hubMat.diffuseColor = new Color3(0.34, 0.38, 0.46);
-    hubMat.specularColor = new Color3(0.62, 0.68, 0.75);
-    hubMat.emissiveColor = new Color3(0.04, 0.06, 0.1);
+    hubMat.diffuseColor = new Color3(0.48, 0.52, 0.6);
+    hubMat.specularColor = new Color3(0.76, 0.82, 0.9);
+    hubMat.emissiveColor = new Color3(0.09, 0.11, 0.15);
 
     const core = MeshBuilder.CreateCylinder(
       "starbaseCore",
@@ -653,10 +680,10 @@ export class SystemScene implements IGameScene {
       this.scene,
     );
     this.starbaseLight.parent = this.starbaseRoot;
-    this.starbaseLight.intensity = 1.0;
-    this.starbaseLight.range = 42;
-    this.starbaseLight.diffuse = new Color3(0.58, 0.86, 1.0);
-    this.starbaseLight.specular = new Color3(0.85, 0.92, 1.0);
+    this.starbaseLight.intensity = 1.45;
+    this.starbaseLight.range = 36;
+    this.starbaseLight.diffuse = new Color3(0.72, 0.92, 1.0);
+    this.starbaseLight.specular = new Color3(0.95, 0.98, 1.0);
   }
 
   async setup(): Promise<void> {
@@ -1398,7 +1425,7 @@ export class SystemScene implements IGameScene {
 
     const starbase = this.getStarbasesInCurrentSystem()[0];
     if (starbase) {
-      const starbasePosition = starbase.systemPosition ?? getSystemStarbasePosition();
+      const starbasePosition = normalizeSystemStarbasePosition(starbase.systemPosition ?? getSystemStarbasePosition());
       const starbaseOrbitPosition = getSystemStarbaseOrbitPosition(starbasePosition);
       targets.push({
         kind: "starbase",
@@ -1784,8 +1811,8 @@ export class SystemScene implements IGameScene {
     if (this.starbaseRoot?.isEnabled()) {
       return this.starbaseRoot.position.add(new Vector3(0, 2.8, 0));
     }
-    const starRadius = Math.max(0.6, this.starDiameter * 0.5);
-    return new Vector3(3.2, 8.5 + 2.8, -(starRadius + 4.5 + 10));
+    const position = normalizeSystemStarbasePosition(starbase.systemPosition ?? getSystemStarbasePosition());
+    return new Vector3(position.x, 8.5 + 2.8, position.z);
   }
 
   private projectToScreen(world: Vector3): { x: number; y: number } | null {
@@ -2671,7 +2698,11 @@ export class SystemScene implements IGameScene {
     try {
       const modelDef = SHIP_MODEL_DEFINITIONS[this.playerShipKind];
       const assetRoot = await this.assetRegistry.instantiate(
-        this.getShipAssetDefinition(this.playerShipKind, "playerShip", PLAYER_SHIP_TARGET_SIZE),
+        this.getShipAssetDefinition(
+          this.playerShipKind,
+          "playerShip",
+          modelDef.systemTargetSize ?? PLAYER_SHIP_TARGET_SIZE,
+        ),
         "playerShipAssetRoot",
       );
       if (!assetRoot) {
@@ -2699,96 +2730,52 @@ export class SystemScene implements IGameScene {
     }
   }
 
-  private applyPlayerShipMaterialStyle(material: Material | null): void {
-    if (!material) return;
-
-    if (material instanceof MultiMaterial) {
-      for (const subMaterial of material.subMaterials) {
-        this.applyPlayerShipMaterialStyle(subMaterial);
-      }
-      return;
-    }
-
-    if (!(material instanceof StandardMaterial)) return;
-
-    const name = material.name.toLowerCase();
-    material.disableLighting = false;
-    material.diffuseColor = new Color3(0.92, 0.96, 1.0);
-    material.ambientColor = new Color3(0.34, 0.38, 0.44);
-    material.specularColor = new Color3(0.82, 0.86, 0.9);
-    material.emissiveColor = new Color3(0.014, 0.016, 0.019);
-
-    if (name.includes("body")) {
-      material.diffuseTexture = this.createPlayerShipTexture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Body_BaseColor.png`,
-      );
-      material.bumpTexture = new Texture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Body_Normal.png`,
-        this.scene,
-      );
-      material.diffuseColor = new Color3(1.02, 1.04, 1.06);
-      material.emissiveColor = new Color3(0.026, 0.028, 0.033);
-      material.specularPower = 110;
-      return;
-    }
-
-    if (name.includes("front")) {
-      material.diffuseTexture = this.createPlayerShipTexture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Front_BaseColor.png`,
-      );
-      material.bumpTexture = new Texture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Front_Normal.png`,
-        this.scene,
-      );
-      material.emissiveTexture = new Texture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Front_Emissive.png`,
-        this.scene,
-      );
-      material.diffuseColor = new Color3(0.96, 1.0, 1.04);
-      material.emissiveColor = new Color3(0.018, 0.032, 0.052);
-      material.specularPower = 160;
-      return;
-    }
-
-    if (name.includes("rear")) {
-      material.diffuseTexture = this.createPlayerShipTexture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Rear_BaseColor.png`,
-      );
-      material.bumpTexture = new Texture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Rear_Normal.png`,
-        this.scene,
-      );
-      material.emissiveTexture = new Texture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Rear_Emissive.png`,
-        this.scene,
-      );
-      material.diffuseColor = new Color3(0.96, 0.98, 1.0);
-      material.emissiveColor = new Color3(0.055, 0.02, 0.012);
-      material.specularPower = 150;
-      return;
-    }
-
-    if (name.includes("windows")) {
-      material.diffuseTexture = this.createPlayerShipTexture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Windows_BaseColor.png`,
-      );
-      material.bumpTexture = new Texture(
-        `${PLAYER_SHIP_MODEL_ROOT}textures/Fighter_01_Windows_Normal.png`,
-        this.scene,
-      );
-      material.diffuseColor = new Color3(0.95, 1.0, 1.05);
-      material.emissiveColor = new Color3(0.035, 0.08, 0.095);
-      material.specularPower = 180;
-    }
+  private applyBasicShipMaterialStyle(material: Material | null): void {
+    this.applyReadableModelMaterialStyle(material, {
+      diffuse: new Color3(1.08, 1.12, 1.16),
+      ambient: new Color3(0.48, 0.54, 0.62),
+      specular: new Color3(0.92, 0.96, 1.0),
+      emissive: new Color3(0.055, 0.075, 0.095),
+      pbrEmissive: new Color3(0.075, 0.095, 0.115),
+    });
   }
 
-  private applyBasicShipMaterialStyle(material: Material | null): void {
+  private applyStarbaseMaterialStyle(material: Material | null): void {
+    this.applyReadableModelMaterialStyle(material, {
+      diffuse: new Color3(1.12, 1.13, 1.12),
+      ambient: new Color3(0.55, 0.58, 0.62),
+      specular: new Color3(0.95, 0.94, 0.9),
+      emissive: new Color3(0.08, 0.095, 0.11),
+      pbrEmissive: new Color3(0.1, 0.115, 0.13),
+    });
+  }
+
+  private applyReadableModelMaterialStyle(
+    material: Material | null,
+    colors: {
+      diffuse: Color3;
+      ambient: Color3;
+      specular: Color3;
+      emissive: Color3;
+      pbrEmissive: Color3;
+    },
+  ): void {
     if (!material) return;
 
     if (material instanceof MultiMaterial) {
       for (const subMaterial of material.subMaterials) {
-        this.applyBasicShipMaterialStyle(subMaterial);
+        this.applyReadableModelMaterialStyle(subMaterial, colors);
       }
+      return;
+    }
+
+    if (material instanceof PBRMaterial) {
+      material.albedoColor = colors.diffuse;
+      material.emissiveColor = colors.pbrEmissive;
+      material.emissiveIntensity = Math.max(material.emissiveIntensity ?? 0, 0.75);
+      material.environmentIntensity = Math.max(material.environmentIntensity ?? 0, 0.9);
+      material.metallic = Math.min(material.metallic ?? 0.45, 0.65);
+      material.roughness = Math.min(material.roughness ?? 0.7, 0.62);
       return;
     }
 
@@ -2797,16 +2784,11 @@ export class SystemScene implements IGameScene {
     }
 
     material.disableLighting = false;
-    material.diffuseColor = new Color3(0.92, 0.96, 1.0);
-    material.ambientColor = new Color3(0.34, 0.38, 0.44);
-    material.specularColor = new Color3(0.82, 0.86, 0.9);
-    material.specularPower = 120;
-  }
-
-  private createPlayerShipTexture(url: string, level = 1.35): Texture {
-    const texture = new Texture(url, this.scene);
-    texture.level = level;
-    return texture;
+    material.diffuseColor = colors.diffuse;
+    material.ambientColor = colors.ambient;
+    material.specularColor = colors.specular;
+    material.emissiveColor = colors.emissive;
+    material.specularPower = 135;
   }
 
   private createPlayerShipReadabilityLight(): void {
@@ -2818,10 +2800,10 @@ export class SystemScene implements IGameScene {
       this.scene,
     );
     this.playerShipLight.parent = this.playerShipRoot;
-    this.playerShipLight.intensity = 0.9;
-    this.playerShipLight.range = 34;
-    this.playerShipLight.diffuse = new Color3(0.64, 0.7, 0.78);
-    this.playerShipLight.specular = new Color3(0.72, 0.78, 0.86);
+    this.playerShipLight.intensity = 1.15;
+    this.playerShipLight.range = 38;
+    this.playerShipLight.diffuse = new Color3(0.74, 0.82, 0.92);
+    this.playerShipLight.specular = new Color3(0.9, 0.94, 1.0);
   }
 
   private createFallbackPlayerShip(): void {
@@ -2861,8 +2843,13 @@ export class SystemScene implements IGameScene {
   }
 
   private async ensureTacticalShipTemplate(shipKind: StarbaseShipKind): Promise<void> {
+    const modelDef = SHIP_MODEL_DEFINITIONS[shipKind];
     const template = await this.assetRegistry.loadTemplate(
-      this.getShipAssetDefinition(shipKind, "tacticalShip", TACTICAL_SHIP_TARGET_SIZE),
+      this.getShipAssetDefinition(
+        shipKind,
+        "tacticalShip",
+        modelDef.tacticalTargetSize ?? TACTICAL_SHIP_TARGET_SIZE,
+      ),
     );
     if (!template) {
       console.warn(`Failed to load tactical ship model for ${shipKind}.`);
@@ -4044,10 +4031,12 @@ export class SystemScene implements IGameScene {
 
   private syncStarbasePresence(): void {
     if (this.starbaseSystemIds.has(this.star.id)) {
-      if (this.starbaseRoot) {
+      const level = this.getCurrentStarbaseVisualLevel();
+      if (this.starbaseRoot && this.starbaseVisualLevel === level) {
         this.starbaseRoot.setEnabled(true);
         return;
       }
+      if (this.starbaseRoot) this.disposeStarbaseVisuals();
       void this.createStarbaseIfPresent().then(() => {
         this.refreshStarbaseCombatRangeRing();
         this.refreshSystemEntityCards();
@@ -4055,7 +4044,7 @@ export class SystemScene implements IGameScene {
       return;
     }
 
-    this.starbaseRoot?.setEnabled(false);
+    this.disposeStarbaseVisuals();
     this.disposeStarbaseCombatRangeRing();
   }
 
@@ -4070,12 +4059,14 @@ export class SystemScene implements IGameScene {
   setStarbaseSystemIds(starIds: Iterable<number>): void {
     this.starbaseSystemIds = new Set(starIds);
     if (this.starbaseSystemIds.has(this.star.id)) {
-      if (this.starbaseRoot) {
+      const level = this.getCurrentStarbaseVisualLevel();
+      if (this.starbaseRoot && this.starbaseVisualLevel === level) {
         this.starbaseRoot.setEnabled(true);
         this.refreshStarbaseCombatRangeRing();
         this.refreshSystemEntityCards();
         return;
       }
+      if (this.starbaseRoot) this.disposeStarbaseVisuals();
       void this.createStarbaseIfPresent().then(() => {
         this.refreshStarbaseCombatRangeRing();
         this.refreshSystemEntityCards();
@@ -4083,13 +4074,15 @@ export class SystemScene implements IGameScene {
       return;
     }
 
-    this.starbaseRoot?.setEnabled(false);
+    this.disposeStarbaseVisuals();
     this.disposeStarbaseCombatRangeRing();
     this.refreshSystemEntityCards();
   }
 
   setServerStarbases(starbases: ServerStarbaseSummary[]): void {
     this.starbases = starbases;
+    this.starbaseSystemIds = new Set(this.starbases.map((starbase) => starbase.starId));
+    this.syncStarbasePresence();
     this.refreshStarbaseCombatRangeRing();
     this.refreshSystemEntityCards();
   }
@@ -4149,6 +4142,7 @@ export class SystemScene implements IGameScene {
     this.fleetPickMaterial?.dispose();
     this.fleetPickMaterial = null;
     this.disposeStarbaseCombatRangeRing();
+    this.disposeStarbaseVisuals();
     this.effectsRenderer?.dispose();
     this.effectsRenderer = null;
     this.hyperlaneExitMaterial?.dispose();

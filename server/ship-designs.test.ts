@@ -38,6 +38,32 @@ test("default construction ship design has utility systems and no weapons", () =
   assert.ok(stats.combat.maxHull > 0);
 });
 
+test("default larger combat hulls produce valid scaled layouts", () => {
+  const cases = [
+    { kind: "destroyer" as const, weaponSections: 1, defenseSections: 1, utilities: 6, weapons: 3, defenses: 4 },
+    { kind: "cruiser" as const, weaponSections: 2, defenseSections: 2, utilities: 7, weapons: 8, defenses: 6 },
+    { kind: "battleship" as const, weaponSections: 3, defenseSections: 3, utilities: 8, weapons: 12, defenses: 9 },
+  ];
+
+  for (const expected of cases) {
+    const design = createDefaultShipDesign(1, expected.kind, 2100);
+    const layout = getShipDesignLayout(design);
+    const stats = calculateShipDesignStats(design);
+
+    assert.equal(design.weaponSectionModuleIds.length, expected.weaponSections);
+    assert.equal(design.defenseSectionModuleIds.length, expected.defenseSections);
+    assert.equal(layout.weaponSlots.length, expected.weapons);
+    assert.equal(layout.defenseSlots.length, expected.defenses);
+    assert.equal(layout.utilitySlots.length, expected.utilities);
+    assert.equal(design.weaponModuleIds.length, expected.weapons);
+    assert.equal(design.defenseModuleIds.length, expected.defenses);
+    assert.equal(design.utilityModuleIds.length, expected.utilities);
+    assert.equal(stats.combat.weaponMounts.length, expected.weapons);
+    assert.ok(stats.combat.maxHull > 0);
+    assert.ok(stats.cost.alloys > 0);
+  }
+});
+
 test("tanker corvette sections define large and medium weapon slots plus four defenses", () => {
   const normalized = normalizeShipDesign({
     id: "tanker",

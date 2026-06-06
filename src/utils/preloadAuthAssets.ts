@@ -1,3 +1,5 @@
+import { SHIP_MODEL_DEFINITIONS, STARBASE_MODEL_DEFINITIONS } from "../data/Starbase";
+
 type AuthPreloadProgress = {
   progress: number;
   detail: string;
@@ -69,34 +71,20 @@ const preloadSteps: PreloadStep[] = [
     ]).then(() => undefined),
   },
   {
-    detail: 'Fetching the starbase GLB',
-    load: () => fetchAsset('/starbase/star_trek_-_starbase_375.glb'),
+    detail: 'Fetching starbase GLB models',
+    load: () => Promise.all(
+      Object.values(STARBASE_MODEL_DEFINITIONS).map((definition) => (
+        fetchAsset(`${definition.modelPath}${definition.modelFile}`)
+      )),
+    ).then(() => undefined),
   },
   {
-    detail: 'Fetching the fighter OBJ and material file',
-    load: () => Promise.all([
-      fetchAsset('/ships/fighter_01/Fighter_01.obj'),
-      fetchAsset('/ships/fighter_01/Fighter_01.mtl'),
-    ]).then(() => undefined),
-  },
-  {
-    detail: 'Warming fighter textures',
-    load: () => Promise.all([
-      loadImage('/ships/fighter_01/textures/Fighter_01_Body_BaseColor.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Body_Normal.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Front_BaseColor.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Front_Emissive.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Front_Normal.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Rear_BaseColor.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Rear_Emissive.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Rear_Normal.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Windows_BaseColor.png'),
-      loadImage('/ships/fighter_01/textures/Fighter_01_Windows_Normal.png'),
-    ]).then(() => undefined),
-  },
-  {
-    detail: 'Fetching the construction ship GLB model',
-    load: () => fetchAsset('/ships/construction_ship/model.glb').then(() => undefined),
+    detail: 'Fetching ship GLB models',
+    load: () => Promise.all(
+      Object.values(SHIP_MODEL_DEFINITIONS).map((definition) => (
+        fetchAsset(`${definition.modelPath}${definition.modelFile}`)
+      )),
+    ).then(() => undefined),
   },
 ];
 

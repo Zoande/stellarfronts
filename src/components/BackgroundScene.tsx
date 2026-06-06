@@ -24,6 +24,10 @@ import {
   Vector3,
 } from '@babylonjs/core';
 import '@babylonjs/loaders';
+import { SHIP_MODEL_DEFINITIONS, STARBASE_MODEL_DEFINITIONS } from '../data/Starbase';
+
+const AUTH_STARBASE_MODEL = STARBASE_MODEL_DEFINITIONS.starbase;
+const AUTH_SHIP_MODEL = SHIP_MODEL_DEFINITIONS.corvette;
 
 function rnd(seedRef: { v: number }) {
   seedRef.v = (seedRef.v * 1664525 + 1013904223) >>> 0;
@@ -423,10 +427,11 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
       dir.y = 0;
       dir.normalize();
       const yaw = Math.atan2(dir.x, dir.z);
-      ship.rotation = new Vector3(0, yaw, 0);
-      ship.addRotation(0, Math.PI, 0);
-      ship.addRotation(0, Math.PI / 2, 0);
-      ship.addRotation(Math.PI / 2, 0, 0);
+      ship.rotation = new Vector3(
+        AUTH_SHIP_MODEL.modelPitch ?? 0,
+        yaw + (AUTH_SHIP_MODEL.modelYawOffset ?? 0),
+        AUTH_SHIP_MODEL.modelRoll ?? 0,
+      );
     };
 
     const starbaseRoot = new TransformNode('authStarbaseRoot', scene);
@@ -435,12 +440,9 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
     starbaseRoot.position = new Vector3(51.4, 60.2, 0.1);
     const starbaseBaseY = starbaseRoot.position.y;
 
-    console.info('[AuthStarbase] Loading /starbase/star_trek_-_starbase_375.glb');
-    const starbasePromise = SceneLoader.ImportMeshAsync('', '', '/starbase/star_trek_-_starbase_375.glb', scene)
+    const starbasePromise = SceneLoader.ImportMeshAsync('', AUTH_STARBASE_MODEL.modelPath, AUTH_STARBASE_MODEL.modelFile, scene)
       .then((result) => {
-        console.info('[AuthStarbase] Raw meshes:', result.meshes.length);
         const meshes = result.meshes.filter((mesh): mesh is Mesh => typeof mesh.getTotalVertices === 'function' && mesh.getTotalVertices() > 0);
-        console.info('[AuthStarbase] Renderable meshes:', meshes.length);
         if (meshes.length === 0) {
           console.warn('[AuthStarbase] No renderable meshes found in GLB');
           return;
@@ -455,8 +457,6 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
         const starbaseTargetSize = 15;
         const starbaseSizeScale = 3.45;
         const starbaseScale = (starbaseTargetSize / maxDimension) * clusterScaleInv * starbaseSizeScale;
-        console.info('[AuthStarbase] Bounds:', bounds);
-        console.info('[AuthStarbase] Scale:', starbaseScale, 'Target size:', starbaseTargetSize, 'Cluster scale:', clusterScale);
 
         const assetRoot = new TransformNode('authStarbaseAssetRoot', scene);
         assetRoot.parent = starbaseRoot;
@@ -468,11 +468,6 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
         fallbackMat.diffuseColor = new Color3(0.18, 0.22, 0.28);
         fallbackMat.specularColor = new Color3(0.18, 0.2, 0.24);
 
-        let missingMaterialCount = 0;
-        let fallbackAssignedCount = 0;
-        let texturedCount = 0;
-        const materialClasses: Record<string, number> = {};
-
         for (const mesh of meshes) {
           trimStarbaseVertexData(mesh);
           mesh.parent = assetRoot;
@@ -481,27 +476,12 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
           const mat = mesh.material as StandardMaterial | null;
           if (!mat) {
             mesh.material = fallbackMat;
-            fallbackAssignedCount += 1;
-            missingMaterialCount += 1;
-          } else {
-            const className = typeof (mat as any).getClassName === 'function'
-              ? (mat as any).getClassName()
-              : (mat as any).constructor?.name || 'Unknown';
-            materialClasses[className] = (materialClasses[className] || 0) + 1;
-            const hasTexture = !!((mat as any).diffuseTexture || (mat as any).albedoTexture || (mat as any).emissiveTexture);
-            if (hasTexture) texturedCount += 1;
           }
           mesh.isVisible = true;
           glow.addIncludedOnlyMesh(mesh);
         }
 
-        console.info('[AuthStarbase] Missing materials:', missingMaterialCount);
-        console.info('[AuthStarbase] Fallback materials assigned:', fallbackAssignedCount);
-        console.info('[AuthStarbase] Textured materials:', texturedCount);
-        console.info('[AuthStarbase] Material classes:', materialClasses);
-
         starbaseRoot.scaling.setAll(starbaseScale);
-        console.info('[AuthStarbase] Final root scale:', starbaseScale);
 
         const starbaseLight = new PointLight('authStarbaseLight', new Vector3(0, 6, -10), scene);
         starbaseLight.parent = starbaseRoot;
@@ -520,9 +500,9 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
         fallback.material = mat;
       });
 
-    onLoadProgress?.(0.65, 'Importing fighter model');
+    onLoadProgress?.(0.65, 'Importing ship model');
 
-    const shipPromise = SceneLoader.ImportMeshAsync('', '', '/ships/fighter_01/Fighter_01.obj', scene)
+    const shipPromise = SceneLoader.ImportMeshAsync('', AUTH_SHIP_MODEL.modelPath, AUTH_SHIP_MODEL.modelFile, scene)
       .then((result) => {
         const meshes = result.meshes.filter((mesh): mesh is Mesh => typeof mesh.getTotalVertices === 'function' && mesh.getTotalVertices() > 0);
         if (meshes.length === 0) throw new Error('No fighter meshes loaded');

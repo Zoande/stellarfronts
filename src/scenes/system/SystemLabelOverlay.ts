@@ -15,6 +15,8 @@ export interface SystemLabelOverlayItem {
 
 export type SystemLabelProjector = (anchor: Vector3) => { x: number; y: number } | null;
 
+type LabelRect = { left: number; top: number; right: number; bottom: number };
+
 export class SystemLabelOverlay {
   private static styleInstalled = false;
   private readonly root: HTMLDivElement;
@@ -53,43 +55,55 @@ export class SystemLabelOverlay {
 
   update(project: SystemLabelProjector): void {
     if (!this.visible) return;
+    const viewport = {
+      width: Math.max(1, window.innerWidth),
+      height: Math.max(1, window.innerHeight),
+      margin: 8,
+    };
+    const anchorMargin = 140;
     const candidates = this.items
       .map((item) => ({ item, projected: project(item.anchor) }))
       .filter((entry): entry is { item: SystemLabelOverlayItem; projected: { x: number; y: number } } => entry.projected !== null)
+      .filter((entry) => (
+        entry.projected.x >= -anchorMargin
+        && entry.projected.x <= viewport.width + anchorMargin
+        && entry.projected.y >= -anchorMargin
+        && entry.projected.y <= viewport.height + anchorMargin
+      ))
       .sort((a, b) => (b.item.priority ?? 0) - (a.item.priority ?? 0));
 
-    const placed: Array<{ left: number; top: number; right: number; bottom: number }> = [];
+    const placed: LabelRect[] = [];
     for (const { item, projected } of candidates) {
       const node = this.nodes.get(item.key);
       if (!node) continue;
       node.style.display = "grid";
       const width = Math.max(1, node.offsetWidth || 132);
       const height = Math.max(1, node.offsetHeight || 34);
-      const baseX = projected.x - width / 2;
-      const baseY = projected.y + (item.offsetY ?? 0) - height / 2;
-      let left = baseX;
-      let top = baseY;
-      let rect = { left, top, right: left + width, bottom: top + height };
-      let placedWithoutCollision = false;
+      const anchor = {
+        x: this.clamp(projected.x, viewport.margin, viewport.width - viewport.margin),
+        y: this.clamp(projected.y + (item.offsetY ?? 0), viewport.margin, viewport.height - viewport.margin),
+      };
+      const priority = item.priority ?? 0;
+      const maxDisplacement = priority >= 90 ? 132 : priority >= 70 ? 112 : 88;
+      const placement = this.findPlacement(anchor, width, height, placed, viewport, maxDisplacement);
 
-      for (let attempt = 0; attempt < 10; attempt += 1) {
-        const collision = placed.find((other) => this.rectsOverlap(rect, other));
-        if (!collision) {
-          placedWithoutCollision = true;
-          break;
-        }
-        top = collision.bottom + 4;
-        rect = { left, top, right: left + width, bottom: top + height };
-      }
-
-      if (!placedWithoutCollision && (item.priority ?? 0) < 50) {
+      if (!placement && priority < 90) {
         node.style.display = "none";
         continue;
       }
 
+      const rect = placement ?? this.clampRect(
+        {
+          left: anchor.x - width / 2,
+          top: anchor.y - height / 2,
+          right: anchor.x + width / 2,
+          bottom: anchor.y + height / 2,
+        },
+        viewport,
+      );
       placed.push(rect);
-      node.style.left = `${left}px`;
-      node.style.top = `${top}px`;
+      node.style.left = `${rect.left}px`;
+      node.style.top = `${rect.top}px`;
     }
 
     for (const [key, node] of this.nodes) {
@@ -140,11 +154,70 @@ export class SystemLabelOverlay {
     node.onclick = item.onClick ?? null;
   }
 
-  private rectsOverlap(
-    a: { left: number; top: number; right: number; bottom: number },
-    b: { left: number; top: number; right: number; bottom: number },
-  ): boolean {
-    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  private findPlacement(
+    anchor: { x: number; y: number },
+    width: number,
+    height: number,
+    placed: LabelRect[],
+    viewport: { width: number; height: number; margin: number },
+    maxDisplacement: number,
+  ): LabelRect | null {
+    const gap = 8;
+    const candidates = [
+      { dx: -width / 2, dy: -height / 2 },
+      { dx: -width / 2, dy: -height - gap },
+      { dx: -width / 2, dy: gap },
+      { dx: gap, dy: -height / 2 },
+      { dx: -width - gap, dy: -height / 2 },
+      { dx: gap, dy: -height - gap },
+      { dx: -width - gap, dy: -height - gap },
+      { dx: gap, dy: gap },
+      { dx: -width - gap, dy: gap },
+    ];
+
+    let best: { rect: LabelRect; score: number } | null = null;
+    for (const candidate of candidates) {
+      const rect = this.clampRect(
+        {
+          left: anchor.x + candidate.dx,
+          top: anchor.y + candidate.dy,
+          right: anchor.x + candidate.dx + width,
+          bottom: anchor.y + candidate.dy + height,
+        },
+        viewport,
+      );
+      const centerX = (rect.left + rect.right) / 2;
+      const centerY = (rect.top + rect.bottom) / 2;
+      const displacement = Math.hypot(centerX - anchor.x, centerY - anchor.y);
+      if (displacement > maxDisplacement) continue;
+      const overlapScore = placed.reduce((total, other) => total + this.overlapArea(rect, other), 0);
+      if (overlapScore <= 0) return rect;
+      const score = overlapScore * 8 + displacement;
+      if (!best || score < best.score) best = { rect, score };
+    }
+
+    return best?.rect ?? null;
+  }
+
+  private clampRect(
+    rect: LabelRect,
+    viewport: { width: number; height: number; margin: number },
+  ): LabelRect {
+    const width = rect.right - rect.left;
+    const height = rect.bottom - rect.top;
+    const left = this.clamp(rect.left, viewport.margin, Math.max(viewport.margin, viewport.width - width - viewport.margin));
+    const top = this.clamp(rect.top, viewport.margin, Math.max(viewport.margin, viewport.height - height - viewport.margin));
+    return { left, top, right: left + width, bottom: top + height };
+  }
+
+  private overlapArea(a: LabelRect, b: LabelRect): number {
+    const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+    const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    return width * height;
+  }
+
+  private clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
   }
 
   private escapeHtml(value: string): string {

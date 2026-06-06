@@ -27,6 +27,7 @@ import {
   DEFAULT_ORBIT_EPOCH_MS,
   SYSTEM_FLEET_Y,
   interpolateSystemPosition,
+  normalizeSystemStarbasePosition,
 } from "../src/data/SystemCoordinates";
 import {
   addResourceCounts,
@@ -1306,7 +1307,7 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
     id: starbase.id,
     ownerId: starbase.ownerId,
     starId: starbase.starId,
-    systemPosition: starbase.systemPosition ?? getSystemStarbasePosition(),
+    systemPosition: normalizeSystemStarbasePosition(starbase.systemPosition ?? getSystemStarbasePosition()),
     status: starbase.status ?? "online",
     buildProgress: starbase.buildProgress ?? 1,
     shield: Math.max(0, Math.min(maxShield, Number.isFinite(shieldValue) ? shieldValue : maxShield)),
