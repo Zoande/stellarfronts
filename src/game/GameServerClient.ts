@@ -69,8 +69,6 @@ export class GameServerClient {
   private planetDetailsHandlers = new Set<PlanetDetailsHandler>();
   private detailHandlers = new Map<string, Set<DetailHandler>>();
   private adminCommandHandlers = new Set<AdminCommandHandler>();
-  private systemDetailsRequests = new Map<number, PendingRequest<SystemDetailsEvent>>();
-  private planetDetailsRequests = new Map<string, PendingRequest<PlanetDetailsEvent>>();
   private detailRequests = new Map<string, PendingRequest<GameDetailEvent>>();
   private detailCache = new Map<string, CachedDetail>();
   private adminCommandRequests = new Map<string, PendingRequest<AdminCommandResult>>();
@@ -137,21 +135,7 @@ export class GameServerClient {
           return;
         }
 
-        if (parsed.type === "systemDetails") {
-          const pending = this.systemDetailsRequests.get(parsed.star.id);
-          if (pending) {
-            this.systemDetailsRequests.delete(parsed.star.id);
-            pending.resolve(parsed);
-          }
-          return;
-        }
-
         if (parsed.type === "planetDetails") {
-          const pending = this.planetDetailsRequests.get(parsed.planet.id);
-          if (pending) {
-            this.planetDetailsRequests.delete(parsed.planet.id);
-            pending.resolve(parsed);
-          }
           for (const handler of this.planetDetailsHandlers) handler(parsed);
           return;
         }
@@ -372,18 +356,6 @@ export class GameServerClient {
   }
 
   private rejectOldestPendingRequest(error: Error): void {
-    const systemEntry = this.systemDetailsRequests.entries().next();
-    if (!systemEntry.done) {
-      this.systemDetailsRequests.delete(systemEntry.value[0]);
-      systemEntry.value[1].reject(error);
-      return;
-    }
-    const planetEntry = this.planetDetailsRequests.entries().next();
-    if (!planetEntry.done) {
-      this.planetDetailsRequests.delete(planetEntry.value[0]);
-      planetEntry.value[1].reject(error);
-      return;
-    }
     const adminEntry = this.adminCommandRequests.entries().next();
     if (!adminEntry.done) {
       this.adminCommandRequests.delete(adminEntry.value[0]);
@@ -398,12 +370,8 @@ export class GameServerClient {
   }
 
   private rejectAllPendingRequests(error: Error): void {
-    for (const [, pending] of this.systemDetailsRequests) pending.reject(error);
-    for (const [, pending] of this.planetDetailsRequests) pending.reject(error);
     for (const [, pending] of this.detailRequests) pending.reject(error);
     for (const [, pending] of this.adminCommandRequests) pending.reject(error);
-    this.systemDetailsRequests.clear();
-    this.planetDetailsRequests.clear();
     this.detailRequests.clear();
     this.adminCommandRequests.clear();
   }

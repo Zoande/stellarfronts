@@ -27,6 +27,7 @@ import {
   DEFAULT_ORBIT_EPOCH_MS,
   SYSTEM_FLEET_Y,
   interpolateSystemPosition,
+  normalizeSystemStarbasePosition,
 } from "../src/data/SystemCoordinates";
 import {
   addResourceCounts,
@@ -150,6 +151,7 @@ import type {
   ServerShip,
   ServerStarbase,
   ServerStarbaseSummary,
+  SystemDetailPayload,
   ServerCombatContact,
   ServerUpdateField,
   ShipTransitPhase,
@@ -218,6 +220,10 @@ import {
   refreshLeaderPool,
 } from "../src/data/Leaders";
 import type { LeaderAssignment, LeaderClass, LeaderFleetEffects, LeaderState } from "../src/data/Leaders";
+import {
+  buildSystemDetailPayload,
+  createSystemDetailRevision,
+} from "./system-view";
 import {
   createInitialGovernmentState,
   createInitialGovernmentStates,
@@ -1301,7 +1307,7 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
     id: starbase.id,
     ownerId: starbase.ownerId,
     starId: starbase.starId,
-    systemPosition: starbase.systemPosition ?? getSystemStarbasePosition(),
+    systemPosition: normalizeSystemStarbasePosition(starbase.systemPosition ?? getSystemStarbasePosition()),
     status: starbase.status ?? "online",
     buildProgress: starbase.buildProgress ?? 1,
     shield: Math.max(0, Math.min(maxShield, Number.isFinite(shieldValue) ? shieldValue : maxShield)),
@@ -3548,19 +3554,6 @@ function canAccessPlanet(perspective: GalaxyPerspective, planetState: PlanetStat
   return canAccessStar(perspective, planetState.starId);
 }
 
-function sendSystemDetails(socket: WebSocket, perspective: GalaxyPerspective, starId: number): void {
-  if (!Number.isInteger(starId) || !canAccessStar(perspective, starId)) {
-    reject(socket, "System is not available.");
-    return;
-  }
-
-  sendEvent(socket, {
-    type: "systemDetails",
-    star: state.stars[starId],
-    planetStates: state.planetStates.filter((planetState) => planetState.starId === starId),
-  });
-}
-
 function sendPlanetDetails(socket: WebSocket, perspective: GalaxyPerspective, planetId: string): void {
   const planetState = getPlanetState(planetId);
   if (!planetState || !canAccessPlanet(perspective, planetState)) {
@@ -3610,6 +3603,42 @@ function createVisibleDetailState(perspective: GalaxyPerspective) {
     fleets,
     ships: getVisibleFullShips(perspective, fleets),
     starbases: getVisibleFullStarbases(perspective),
+  };
+}
+
+function createSystemDetailPayload(
+  perspective: GalaxyPerspective,
+  starId: number,
+): { payload: SystemDetailPayload; revision: string; normalizedId: number } | { error: string } {
+  const knownSet = getKnownSet(perspective);
+  const visibleState = createVisibleState(perspective);
+  const ownerByStar = new Array<number>(state.stars.length).fill(-1);
+  for (const [ownedStarId, ownerId] of visibleState.starOwnership) {
+    if (ownedStarId >= 0 && ownedStarId < ownerByStar.length) ownerByStar[ownedStarId] = ownerId;
+  }
+  const visibleFleets = getVisibleFullFleets(perspective);
+  const result = buildSystemDetailPayload({
+    perspective,
+    starId,
+    stars: state.stars,
+    visibleStars: createVisibleStars(perspective, knownSet),
+    knownStarIds: knownSet,
+    hyperlanes: visibleState.hyperlanes,
+    planetStates: state.planetStates,
+    fleets: visibleFleets,
+    ships: getVisibleFullShips(perspective, visibleFleets),
+    starbases: getVisibleFullStarbases(perspective),
+    recentCombatContacts: visibleState.recentCombatContacts,
+    factions: visibleState.factions,
+    shipDesigns: visibleState.shipDesigns,
+    technologies: visibleState.technologies,
+    starOwnership: ownerByStar,
+  });
+  if (!result.ok) return { error: result.error };
+  return {
+    payload: result.payload,
+    revision: createSystemDetailRevision(result.payload),
+    normalizedId: starId,
   };
 }
 
@@ -3824,12 +3853,8 @@ function createDetailPayload(
 ): { payload: GameDetailPayload; revision: string; normalizedId: string | number | null } | { error: string } {
   if (scope === "system") {
     const starId = Number(id);
-    if (!Number.isInteger(starId) || !canAccessStar(perspective, starId)) return { error: "System is not available." };
-    const payload = {
-      star: state.stars[starId],
-      planetStates: state.planetStates.filter((planetState) => planetState.starId === starId),
-    };
-    return { payload, revision: createRevision(payload), normalizedId: starId };
+    if (!Number.isInteger(starId)) return { error: "System is not available." };
+    return createSystemDetailPayload(perspective, starId);
   }
 
   if (scope === "planet") {
@@ -8101,14 +8126,6 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
       command.subDistrictIndex,
       command.subDistrictKind,
     );
-    return;
-  }
-  if (command.type === "requestSystemDetails") {
-    sendSystemDetails(session.socket, session.perspective, command.starId);
-    return;
-  }
-  if (command.type === "requestPlanetDetails") {
-    sendPlanetDetails(session.socket, session.perspective, command.planetId);
     return;
   }
   if (command.type === "requestDetails") {

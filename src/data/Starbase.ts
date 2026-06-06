@@ -11,7 +11,12 @@ export type StarbaseBuildingKind =
   | "alloyAssemblyDock"
   | "researchAnnex"
   | "logisticsDepot";
-export type StarbaseShipKind = "corvette" | "constructionShip";
+export type StarbaseShipKind =
+  | "corvette"
+  | "destroyer"
+  | "cruiser"
+  | "battleship"
+  | "constructionShip";
 
 export type WeaponKind = "laser" | "missile" | "pointDefense";
 
@@ -367,6 +372,10 @@ export interface ShipModelDefinition {
   modelPath: string;
   modelFile: string;
   modelFormat: "obj" | "glb";
+  systemTargetSize: number;
+  tacticalTargetSize: number;
+  previewTargetSize: number;
+  scaleMultiplier?: number;
   modelPitch?: number;
   modelRoll?: number;
   modelYawOffset?: number;
@@ -377,29 +386,103 @@ export interface ShipModelDefinition {
   trailOffsetY?: number;
 }
 
+export interface StarbaseModelDefinition {
+  level: StarbaseLevel;
+  modelPath: string;
+  modelFile: string;
+  modelFormat: "glb";
+  targetSize: number;
+  modelPitch?: number;
+  modelRoll?: number;
+  modelYawOffset?: number;
+}
+
 export const SHIP_MODEL_DEFINITIONS: Record<StarbaseShipKind, ShipModelDefinition> = {
   corvette: {
-    modelPath: "/ships/fighter_01/",
-    modelFile: "Fighter_01.obj",
-    modelFormat: "obj",
-    trailOffsetY: -0.22,
+    modelPath: "/ships/corvette/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    systemTargetSize: 0.82,
+    tacticalTargetSize: 0.64,
+    previewTargetSize: 3.6,
+    trailOffsetY: -0.18,
   },
   constructionShip: {
     modelPath: "/ships/construction_ship/",
     modelFile: "model.glb",
     modelFormat: "glb",
-    modelPitch: 0,
-    modelRoll: 0,
-    modelYawOffset: 1.5707963267948966,
-    trailSocketName: "FX_EngineTrail_Main",
-    trailAxis: "+X",
-    trailSocketOffset: 4.0,
-    trailSocketLift: 0.35,
-    trailOffsetY: 0,
+    systemTargetSize: 1.02,
+    tacticalTargetSize: 0.82,
+    previewTargetSize: 3.7,
+    trailOffsetY: -0.12,
+  },
+  destroyer: {
+    modelPath: "/ships/destroyer/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    systemTargetSize: 1.08,
+    tacticalTargetSize: 0.86,
+    previewTargetSize: 3.85,
+    trailOffsetY: -0.14,
+  },
+  cruiser: {
+    modelPath: "/ships/cruiser/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    systemTargetSize: 1.32,
+    tacticalTargetSize: 1.08,
+    previewTargetSize: 4.05,
+    trailOffsetY: -0.16,
+  },
+  battleship: {
+    modelPath: "/ships/battleship/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    systemTargetSize: 1.68,
+    tacticalTargetSize: 1.36,
+    previewTargetSize: 4.35,
+    trailOffsetY: -0.2,
   },
 };
 
-export const STARBASE_SHIP_KINDS: StarbaseShipKind[] = ["corvette", "constructionShip"];
+export const STARBASE_MODEL_DEFINITIONS: Record<StarbaseLevel, StarbaseModelDefinition> = {
+  outpost: {
+    level: "outpost",
+    modelPath: "/starbases/outpost/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    targetSize: 7,
+  },
+  starbase: {
+    level: "starbase",
+    modelPath: "/starbases/starbase/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    targetSize: 9.7,
+  },
+  starhold: {
+    level: "starhold",
+    modelPath: "/starbases/starhold/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    targetSize: 11.7,
+  },
+  starFortress: {
+    level: "starFortress",
+    modelPath: "/starbases/star_fortress/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    targetSize: 14,
+  },
+};
+
+export const STARBASE_SHIP_KINDS: StarbaseShipKind[] = [
+  "corvette",
+  "destroyer",
+  "cruiser",
+  "battleship",
+  "constructionShip",
+];
 
 export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDefinition> = {
   corvette: {
@@ -438,6 +521,63 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
       evasion: 0.08,
       sensorRange: 3,
       weaponMounts: [],
+    },
+  },
+  destroyer: {
+    kind: "destroyer",
+    label: "Destroyer",
+    className: "Vanguard-class",
+    description: "Medium escort hull with heavier weapons and defenses for fleet-line combat.",
+    speed: 0.82,
+    buildDays: 18,
+    alloyUpkeepPerDay: 32,
+    crewDemand: 2_800,
+    upkeep: resources({ energy: 2.4, alloys: 0.34 }),
+    combat: {
+      maxShield: 260,
+      maxArmor: 220,
+      maxHull: 380,
+      evasion: 0.14,
+      sensorRange: 3,
+      weaponMounts: repeatMount(createLaserMount({ damage: 18, barrels: 3, accuracy: 0.8 }), 2),
+    },
+  },
+  cruiser: {
+    kind: "cruiser",
+    label: "Cruiser",
+    className: "Resolute-class",
+    description: "Heavy fleet hull with broadside hardpoints, strong defenses, and command endurance.",
+    speed: 0.68,
+    buildDays: 38,
+    alloyUpkeepPerDay: 58,
+    crewDemand: 6_400,
+    upkeep: resources({ energy: 4.2, alloys: 0.62, goods: 0.2 }),
+    combat: {
+      maxShield: 620,
+      maxArmor: 540,
+      maxHull: 900,
+      evasion: 0.09,
+      sensorRange: 4,
+      weaponMounts: repeatMount(createLaserMount({ damage: 24, barrels: 4, accuracy: 0.78 }), 4),
+    },
+  },
+  battleship: {
+    kind: "battleship",
+    label: "Battleship",
+    className: "Bulwark-class",
+    description: "Capital hull for decisive engagements with the highest firepower and durability.",
+    speed: 0.52,
+    buildDays: 80,
+    alloyUpkeepPerDay: 110,
+    crewDemand: 14_000,
+    upkeep: resources({ energy: 8, alloys: 1.2, goods: 0.4 }),
+    combat: {
+      maxShield: 1250,
+      maxArmor: 1120,
+      maxHull: 1900,
+      evasion: 0.04,
+      sensorRange: 4,
+      weaponMounts: repeatMount(createLaserMount({ damage: 32, barrels: 4, accuracy: 0.76 }), 6),
     },
   },
 };

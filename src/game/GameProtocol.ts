@@ -38,7 +38,19 @@ import type {
 } from "./CombatTypes";
 import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 
-export type ShipAction = "move" | "build" | "attack" | "merge" | "stop" | "retreat" | "retreatTo" | "emergencyRetreatTo";
+export type ShipAction =
+  | "move"
+  | "build"
+  | "attack"
+  | "merge"
+  | "stop"
+  | "retreat"
+  | "retreatTo"
+  | "emergencyRetreatTo"
+  | "orbit"
+  | "hold"
+  | "guard"
+  | "protect";
 
 export type FleetFormation = "line" | "vanguard" | "echelon" | "defensive";
 
@@ -129,6 +141,23 @@ export type GameDetailScope =
 export interface SystemDetailPayload {
   star: ServerStar;
   planetStates: PlanetState[];
+  fleets: ServerFleet[];
+  ships: ServerShip[];
+  starbases: ServerStarbaseSummary[];
+  recentCombatContacts: ServerCombatContact[];
+  hyperlaneExits: SystemHyperlaneExitPoint[];
+  factions: FactionState[];
+  shipDesigns: ShipDesign[];
+  technology: FactionTechnologyView | null;
+  starOwnerId: number | null;
+}
+
+export interface SystemHyperlaneExitPoint {
+  starId: number;
+  name: string;
+  dx: number;
+  dz: number;
+  systemPosition: ShipSystemPosition;
 }
 
 export interface PlanetDetailPayload {
@@ -610,16 +639,6 @@ export interface RemoveMarketAutoTradeCommand {
   orderId: string;
 }
 
-export interface RequestSystemDetailsCommand {
-  type: "requestSystemDetails";
-  starId: number;
-}
-
-export interface RequestPlanetDetailsCommand {
-  type: "requestPlanetDetails";
-  planetId: string;
-}
-
 export interface RequestDetailsCommand {
   type: "requestDetails";
   scope: GameDetailScope;
@@ -678,8 +697,6 @@ export type ClientCommand =
   | MarketTradeCommand
   | AddMarketAutoTradeCommand
   | RemoveMarketAutoTradeCommand
-  | RequestSystemDetailsCommand
-  | RequestPlanetDetailsCommand
   | RequestDetailsCommand
   | SubscribeDetailsCommand
   | UnsubscribeDetailsCommand
@@ -779,6 +796,5 @@ export type ServerEvent =
   | CommandResultEvent
   | AdminCommandResult
   | ServerInfoEvent
-  | SystemDetailsEvent
   | PlanetDetailsEvent
   | GameDetailEvent;

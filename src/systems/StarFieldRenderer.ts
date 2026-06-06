@@ -18,6 +18,7 @@ import {
   Vector3,
   Color3,
   Color4,
+  AbstractMesh,
   Material,
   MeshBuilder,
   StandardMaterial,
@@ -600,12 +601,6 @@ export class StarFieldRenderer {
         labelMaterial.emissiveColor = labelColor;
       }
       
-      // Keep plane facing camera
-      if (labelVisible && this.scene.activeCamera) {
-        const cameraPosition = this.scene.activeCamera.position;
-        labelMesh.lookAt(cameraPosition);
-        labelMesh.rotation.y += Math.PI;
-      }
     }
   }
 
@@ -688,6 +683,8 @@ export class StarFieldRenderer {
     labelMesh.material = material;
     labelMesh.isPickable = false;
     labelMesh.isVisible = false;
+    labelMesh.billboardMode = AbstractMesh.BILLBOARDMODE_ALL;
+    labelMesh.alwaysSelectAsActiveMesh = true;
     labelMesh.renderingGroupId = 1;
 
     return labelMesh;
@@ -1476,6 +1473,7 @@ export class StarFieldRenderer {
   }
 
   private hitLabelBadge(ray: any, labelMesh: Mesh, badgeU: number): boolean {
+    labelMesh.computeWorldMatrix(true);
     const normal = labelMesh.getDirection(Vector3.Forward());
     const denominator = Vector3.Dot(ray.direction, normal);
     if (Math.abs(denominator) < 0.0001) return false;

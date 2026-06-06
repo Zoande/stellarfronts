@@ -1,18 +1,5 @@
 import type { SystemPosition } from "../data/SystemCoordinates";
-
-export type ShipAction =
-  | "move"
-  | "build"
-  | "attack"
-  | "merge"
-  | "stop"
-  | "retreat"
-  | "retreatTo"
-  | "emergencyRetreatTo"
-  | "orbit"
-  | "hold"
-  | "guard"
-  | "protect";
+export type { ShipAction } from "./GameProtocol";
 
 export interface GalaxyShipTransit {
   fromStarId: number;

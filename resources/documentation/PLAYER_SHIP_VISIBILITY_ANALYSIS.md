@@ -1,7 +1,7 @@
 # Player Ship Model Visibility Issue - Investigation Report
 
 ## Executive Summary
-The 3D fighter ship model (`Fighter_01.obj`) is supposed to render in the system view when the player visits their home star system, but **it's not visible**. The investigation identified **multiple interconnected issues** preventing visibility.
+The player ship GLB model is supposed to render in the system view when the player visits their home star system, but **it's not visible**. The investigation identified **multiple interconnected issues** preventing visibility.
 
 ---
 
@@ -16,9 +16,9 @@ Game Root
 ```
 
 ### Game Flow
-1. **Start** → Load GalaxyScene (500 procedurally-generated stars)
-2. **Click Star** → Switch to SystemScene for that star
-3. **If Player's Home Star** → Load Fighter_01.obj 3D model
+1. **Start** -> Load GalaxyScene (500 procedurally-generated stars)
+2. **Click Star** -> Switch to SystemScene for that star
+3. **If Player's Home Star** -> Load the active hull's GLB model
 4. **Player can return** to GalaxyScene via Escape key
 
 ---
@@ -81,8 +81,8 @@ material.emissiveColor = /* varying */      // ← ONLY source of light
 **Why This Matters**:
 - The ship **only shows emissive colors** (blue cockpit, red thrusters)
 - The main body (grey hull) has:
-  - Diffuse texture: `Fighter_01_Body_BaseColor.png`
-  - Normal map: `Fighter_01_Body_Normal.png`
+  - GLB material data from the active hull model
+  - Normal/texture data embedded or referenced by the GLB
   - **But**: `diffuseColor = Black()` means textures receive NO light
 - Ships needs the star light to render the body properly
 
@@ -150,26 +150,17 @@ material.emissiveColor = /* varying */      // ← ONLY source of light
 
 **Asset Structure**:
 ```
-/public/ships/fighter_01/
-├── Fighter_01.obj
-├── Fighter_01.mtl
-└── textures/
-    ├── Fighter_01_Body_BaseColor.png
-    ├── Fighter_01_Body_Normal.png
-    ├── Fighter_01_Front_BaseColor.png
-    ├── Fighter_01_Front_Normal.png
-    ├── Fighter_01_Front_Emissive.png
-    ├── Fighter_01_Rear_BaseColor.png
-    ├── Fighter_01_Rear_Normal.png
-    ├── Fighter_01_Rear_Emissive.png
-    ├── Fighter_01_Windows_BaseColor.png
-    └── Fighter_01_Windows_Normal.png
+/public/ships/corvette/model.glb
+/public/ships/construction_ship/model.glb
+/public/ships/destroyer/model.glb
+/public/ships/cruiser/model.glb
+/public/ships/battleship/model.glb
 ```
 
-**OBJ Loader**: Uses Babylon's `SceneLoader.ImportMeshAsync()`
-- Automatically loads .mtl and textures referenced in OBJ
-- Paths are relative to model root: `/ships/fighter_01/`
-- **Risk**: If textures don't exist, model still loads but appears untextured
+**GLB Loader**: Uses Babylon's `SceneLoader.ImportMeshAsync()`
+- Ship model paths come from `SHIP_MODEL_DEFINITIONS`
+- Each hull defines system, tactical, and preview target sizes
+- **Risk**: If a GLB has no renderable position primitive, the procedural fallback is used
 
 ---
 
@@ -194,9 +185,9 @@ Sample console output now shows:
 ```
 🚀 Loading player ship for star ID 42
 📍 Player ship root position: {"x":23,"y":4.8,"z":-19}
-📦 Importing Fighter_01.obj from /ships/fighter_01/
-✓ Loaded 5 total meshes from OBJ
-✓ Filtered to 5 renderable meshes
+📦 Importing model.glb from the hull's shared model definition
+✓ Loaded GLB meshes
+✓ Filtered to renderable meshes
 📐 Bounds: min={"x":-1,"y":0,"z":-1}, max={"x":1,"y":1,"z":1}, maxDim=2
 📏 Scaling to 11 world units: scale=5.5
   - Mesh "Body": vertices=1200
@@ -224,7 +215,7 @@ Sample console output now shows:
    - **Quick Test**: Change rotation to `(0, 0, 0)`
 
 3. **Asset Path Issues**
-   - Verify `/ships/fighter_01/Fighter_01.obj` path is correct
+   - Verify the relevant `SHIP_MODEL_DEFINITIONS[shipKind]` path is correct
    - Check browser Network tab for 404 errors
    - Ensure textures load with correct paths
 
