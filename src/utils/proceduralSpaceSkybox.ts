@@ -7,11 +7,11 @@ import {
   Texture,
 } from "@babylonjs/core";
 
-import nebulaShaderSource from "../../space-3d/src/glsl/nebula.glsl?raw";
-import pointStarsShaderSource from "../../space-3d/src/glsl/point-stars.glsl?raw";
-import starShaderSource from "../../space-3d/src/glsl/star.glsl?raw";
-import sunShaderSource from "../../space-3d/src/glsl/sun.glsl?raw";
-import classicNoiseSource from "../../space-3d/src/glsl/classic-noise-4d.snip?raw";
+import nebulaShaderSource from "../assets/space-3d/glsl/nebula.glsl?raw";
+import pointStarsShaderSource from "../assets/space-3d/glsl/point-stars.glsl?raw";
+import starShaderSource from "../assets/space-3d/glsl/star.glsl?raw";
+import sunShaderSource from "../assets/space-3d/glsl/sun.glsl?raw";
+import classicNoiseSource from "../assets/space-3d/glsl/classic-noise-4d.snip?raw";
 
 type Vec3 = [number, number, number];
 type Mat4 = Float32Array;
