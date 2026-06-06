@@ -639,16 +639,6 @@ export interface RemoveMarketAutoTradeCommand {
   orderId: string;
 }
 
-export interface RequestSystemDetailsCommand {
-  type: "requestSystemDetails";
-  starId: number;
-}
-
-export interface RequestPlanetDetailsCommand {
-  type: "requestPlanetDetails";
-  planetId: string;
-}
-
 export interface RequestDetailsCommand {
   type: "requestDetails";
   scope: GameDetailScope;
@@ -707,8 +697,6 @@ export type ClientCommand =
   | MarketTradeCommand
   | AddMarketAutoTradeCommand
   | RemoveMarketAutoTradeCommand
-  | RequestSystemDetailsCommand
-  | RequestPlanetDetailsCommand
   | RequestDetailsCommand
   | SubscribeDetailsCommand
   | UnsubscribeDetailsCommand
@@ -808,6 +796,5 @@ export type ServerEvent =
   | CommandResultEvent
   | AdminCommandResult
   | ServerInfoEvent
-  | SystemDetailsEvent
   | PlanetDetailsEvent
   | GameDetailEvent;

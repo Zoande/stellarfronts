@@ -18,18 +18,13 @@ import {
   Texture,
   GlowLayer,
   TransformNode,
-  SceneLoader,
-  DynamicTexture,
   Material,
   Mesh,
   Ray,
-  Quaternion,
   Matrix,
   PointerEventTypes,
 } from "@babylonjs/core";
 import type { AbstractEngine, AbstractMesh, LinesMesh, Observer, PointerInfo } from "@babylonjs/core";
-import "@babylonjs/loaders/OBJ/objFileLoader";
-import "@babylonjs/loaders/glTF";
 import type { IGameScene } from "../SceneManager";
 import { SHIP_MODEL_DEFINITIONS } from "../data/Starbase";
 import type { StarbaseShipKind } from "../data/Starbase";
@@ -84,25 +79,19 @@ import type { FleetPolicyControl, FleetPolicyValue, SelectionData, SelectionShip
 import { StarbasePanel } from "../ui/StarbasePanel";
 import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
-import { createFlagDesign } from "../flags/flagGenerator";
-import { renderFlagSvg } from "../flags/renderFlagSvg";
+import { SystemAssetRegistry } from "./system/SystemAssetRegistry";
+import type { SystemAssetDefinition } from "./system/SystemAssetRegistry";
+import { SystemLabelOverlay } from "./system/SystemLabelOverlay";
+import type { SystemLabelOverlayItem } from "./system/SystemLabelOverlay";
+import { SystemObjectRenderer } from "./system/SystemObjectRenderer";
+import type { SystemRenderableDefinition } from "./system/SystemObjectRenderer";
+import { SystemEffectsRenderer } from "./system/SystemEffectsRenderer";
+import { SystemInputController } from "./system/SystemInputController";
+import { SystemActionTargetRenderer } from "./system/SystemActionTargetRenderer";
+import type { SystemActionTarget } from "./system/SystemActionTargetRenderer";
 import { SystemViewStore } from "./system/SystemViewStore";
-// OBJ and glTF loading are handled by @babylonjs/loaders modules
 
 type ExitSystemHandler = () => void | Promise<void>;
-
-type SystemActionTargetKind = "star" | "planet" | "starbase" | "hyperlane";
-
-interface SystemActionTarget {
-  kind: SystemActionTargetKind;
-  label: string;
-  starId: number;
-  position: SystemPosition;
-  markerPosition: SystemPosition;
-  planetId?: string;
-  starbaseId?: string;
-  connectedStarId?: number;
-}
 
 interface TacticalFleetView {
   id: string;
@@ -180,10 +169,6 @@ const SYSTEM_ACTION_MARKER_MAX_EMPTY_MOVE_RADIUS = 72;
 const STARBASE_MODEL_URL = "/starbase/star_trek_-_starbase_375.glb";
 const SHIP_EXIT_END_PROGRESS = 0.28;
 const SHIP_ENTRY_START_PROGRESS = 0.72;
-const SYSTEM_LABEL_TEXTURE_WIDTH = 2048;
-const SYSTEM_LABEL_TEXTURE_HEIGHT = 512;
-const SYSTEM_LABEL_U_SCALE = -1;
-const SYSTEM_LABEL_U_OFFSET = 1;
 const STAR_BANNER_DIR = "/textures/planet-banners";
 
 const TACTICAL_SHIP_TARGET_SIZE = 0.65;
@@ -253,53 +238,47 @@ export class SystemScene implements IGameScene {
   private playerShipTrailTimer = 0;
   private playerShipLastTrailPosition: Vector3 | null = null;
   private playerShipLastTrailAttachmentPosition: Vector3 | null = null;
-  private playerShipTrailSegments: Array<{ mesh: Mesh; material: StandardMaterial; age: number; ttl: number }> = [];
   private selectedFleetRouteLine: LinesMesh | null = null;
 
-  private tacticalShipTemplates = new Map<StarbaseShipKind, TransformNode>();
-  private tacticalShipTemplatePromises = new Map<StarbaseShipKind, Promise<void>>();
+  private assetRegistry!: SystemAssetRegistry;
+  private objectRenderer!: SystemObjectRenderer;
   private shipVisualRoots = new Map<string, TransformNode>();
   private shipVisualTargets = new Map<string, Vector3>();
   private shipVisualTrailTimers = new Map<string, number>();
   private shipVisualLastTrailPositions = new Map<string, Vector3>();
-  private shipVisualTrailSegments = new Map<string, Array<{ mesh: Mesh; material: StandardMaterial; age: number; ttl: number }>>();
   private shipVisualRefreshVersion = 0;
-  private fleetRoots = new Map<string, TransformNode>();
-  private fleetTargets = new Map<string, Vector3>();
   private fleetPickMaterial: StandardMaterial | null = null;
-  private weaponBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
-  private weaponProjectiles: Array<{ mesh: Mesh; material: StandardMaterial; velocity: Vector3; ttl: number; maxTtl: number }> = [];
+  private effectsRenderer: SystemEffectsRenderer | null = null;
   private combatContactSeen = new Set<string>();
 
   private starbaseRoot: TransformNode | null = null;
   private starbaseLight: PointLight | null = null;
   private starbaseRangeRing: LinesMesh | null = null;
   private starbaseRangeSignature: string | null = null;
-  private hyperlaneExitMeshes: Mesh[] = [];
   private hyperlaneExitMaterial: StandardMaterial | null = null;
 
   private orbitSystem = new OrbitSystem();
   private orbitRings: LinesMesh[] = [];
   private planetMeshes: Mesh[] = [];
-  private planetLabelMeshes: Mesh[] = [];
   private planetConfigs: PlanetConfig[] = [];
   private planetDiameters: number[] = [];
-  private starLabelMesh: Mesh | null = null;
+  private labelOverlay: SystemLabelOverlay | null = null;
   private objectPanel!: CelestialObjectPanel;
   private selectionPanel!: SelectionPanel;
   private starbasePanel!: StarbasePanel;
-  private entityCardLayer: HTMLDivElement | null = null;
-  private entityCardNodes = new Map<string, HTMLButtonElement>();
+  private inputController: SystemInputController | null = null;
   private selectedFleetId: string | null = null;
   private selectedFleetIds = new Set<string>();
   private activeFleetAction: ShipAction | null = null;
-  private systemActionTargetRoots: Array<{ root: TransformNode; target: SystemActionTarget; meshes: Mesh[] }> = [];
-  private systemActionMarkerMaterial: StandardMaterial | null = null;
-  private readonly factionFlagSvgCache = new Map<string, string>();
+  private actionTargetRenderer: SystemActionTargetRenderer | null = null;
   private pointerObserver: Observer<PointerInfo> | null = null;
   private starOccluded = false;
-  private debugLogOccluder = false;
-  private deepDebug = false;
+  private renderDebugEnabled = false;
+  private renderDebugOverlay: HTMLDivElement | null = null;
+  private renderDebugState: { starOccluded: boolean; starOccluderName: string | null } = {
+    starOccluded: false,
+    starOccluderName: null,
+  };
   private isExiting = false;
   private elapsed = 0;
   private starsVisible = true;
@@ -398,6 +377,47 @@ export class SystemScene implements IGameScene {
     this.options = options;
     this.scene = new Scene(engine);
     this.scene.clearColor = new Color4(0.01, 0.015, 0.03, 1);
+    this.assetRegistry = new SystemAssetRegistry(this.scene);
+    this.objectRenderer = new SystemObjectRenderer(this.scene);
+    this.configureSystemObjectRenderer();
+  }
+
+  private configureSystemObjectRenderer(): void {
+    this.objectRenderer.registerFactory("fleet-pick-volume", ({ definition, root }) => {
+      const diameter = Math.max(3.2, (definition.pickRadius ?? 1.6) * 2);
+      const pickMesh = MeshBuilder.CreateSphere(
+        `fleetPickVolume-${definition.id}`,
+        { diameter, segments: 12 },
+        this.scene,
+      );
+      pickMesh.parent = root;
+      pickMesh.position.set(0, 0, 0);
+      pickMesh.material = this.getFleetPickMaterial();
+      pickMesh.isPickable = true;
+      pickMesh.alwaysSelectAsActiveMesh = true;
+      return [pickMesh];
+    });
+    this.objectRenderer.registerFactory("hyperlane-exit", ({ definition, root }) => {
+      const marker = MeshBuilder.CreateTorus(
+        `hyperlaneExit_${definition.id}`,
+        { diameter: 2.4, thickness: 0.08, tessellation: 36 },
+        this.scene,
+      );
+      marker.parent = root;
+      marker.rotation.x = Math.PI / 2;
+      marker.material = this.getHyperlaneExitMaterial();
+      marker.isPickable = false;
+      marker.alwaysSelectAsActiveMesh = true;
+      return [marker];
+    });
+  }
+
+  private getFleetRenderableId(fleetId: string): string {
+    return `fleet:${fleetId}`;
+  }
+
+  private getHyperlaneRenderableId(connectedStarId: number): string {
+    return `hyperlane:${this.star.id}:${connectedStarId}`;
   }
 
   private hasPlayerShipPresence(): boolean {
@@ -470,6 +490,46 @@ export class SystemScene implements IGameScene {
     return this.starbaseSystemIds.has(this.star.id);
   }
 
+  private getShipAssetDefinition(
+    shipKind: StarbaseShipKind,
+    keyPrefix: string,
+    targetSize: number,
+  ): SystemAssetDefinition {
+    const modelDef = SHIP_MODEL_DEFINITIONS[shipKind];
+    return {
+      key: `${keyPrefix}:${shipKind}`,
+      rootUrl: modelDef.modelPath,
+      fileName: modelDef.modelFile,
+      targetSize,
+      scaleMultiplier: shipKind === "constructionShip" ? 1.3 : 1,
+      trailSocketName: modelDef.trailSocketName,
+      configureMesh: (mesh) => {
+        if (shipKind === "corvette") {
+          this.applyPlayerShipMaterialStyle(mesh.material);
+        } else {
+          this.applyBasicShipMaterialStyle(mesh.material);
+        }
+      },
+    };
+  }
+
+  private getStarbaseAssetDefinition(): SystemAssetDefinition {
+    return {
+      key: "starbase:375",
+      rootUrl: "",
+      fileName: STARBASE_MODEL_URL,
+      targetSize: 15.0,
+      configureMesh: (mesh) => this.trimStarbaseVertexData(mesh),
+    };
+  }
+
+  private findDescendantByName(root: TransformNode, name: string): TransformNode | null {
+    for (const node of root.getDescendants()) {
+      if (node.name === name) return node as TransformNode;
+    }
+    return null;
+  }
+
   private async createStarbaseIfPresent(): Promise<void> {
     if (!this.hasStarbasePresence() || this.starbaseRoot) return;
 
@@ -484,39 +544,19 @@ export class SystemScene implements IGameScene {
     this.starbaseRoot.rotation.set(0.18, 0.2, 0.05);
 
     try {
-      const result = await SceneLoader.ImportMeshAsync("", "", STARBASE_MODEL_URL, this.scene);
-
-      const meshes = result.meshes.filter((mesh) => (
-        typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
-      ));
-      if (meshes.length === 0) {
+      const assetRoot = await this.assetRegistry.instantiate(
+        this.getStarbaseAssetDefinition(),
+        "starbaseAssetRoot",
+      );
+      if (!assetRoot) {
         throw new Error("star_trek_-_starbase_375.glb did not produce renderable meshes.");
       }
-
-      const bounds = this.computeMeshBounds(meshes);
-      const maxDimension = Math.max(
-        0.001,
-        bounds.max.x - bounds.min.x,
-        bounds.max.y - bounds.min.y,
-        bounds.max.z - bounds.min.z,
-      );
-
-      const starbaseTargetSize = 15.0;
-      const starbaseScale = starbaseTargetSize / maxDimension;
-
-      const assetRoot = new TransformNode("starbaseAssetRoot", this.scene);
       assetRoot.parent = this.starbaseRoot;
-      assetRoot.position = bounds.center.scale(-1);
-
-      for (const mesh of meshes) {
-        this.trimStarbaseVertexData(mesh);
-        mesh.parent = assetRoot;
+      for (const mesh of assetRoot.getChildMeshes()) {
         mesh.isPickable = false;
         mesh.alwaysSelectAsActiveMesh = true;
         this.glowLayer.addIncludedOnlyMesh(mesh as Mesh);
       }
-
-      this.starbaseRoot.scaling.setAll(starbaseScale);
 
       this.starbaseLight = new PointLight(
         "starbaseInspectionLight",
@@ -625,6 +665,7 @@ export class SystemScene implements IGameScene {
     this.configureVisualPreset();
     this.setupBackground();
     this.setupCamera(canvas);
+    this.inputController = new SystemInputController(this.scene, this.camera, () => this.engine.getRenderingCanvas());
     this.setupLighting();
     this.buildSystemObjects();
     this.objectPanel = new CelestialObjectPanel();
@@ -632,6 +673,7 @@ export class SystemScene implements IGameScene {
       onShipAction: (action, selection) => this.handleSelectedFleetAction(action, selection),
       onFleetPolicyChange: (control, value, selection) => this.setFleetPolicy(control, value, selection),
     });
+    this.labelOverlay = new SystemLabelOverlay();
     this.renderSelectedFleetPanels();
     this.starbasePanel = new StarbasePanel();
     this.installObjectLabelClicks();
@@ -679,7 +721,6 @@ export class SystemScene implements IGameScene {
       this.updatePlayerShipHeading(dt);
       this.updatePlayerShipTrail(dt, previousShipPosition, this.playerShipRoot.position);
     }
-    this.updatePlayerShipTrailFades(dt);
     this.updateSelectedFleetRouteLine();
     this.updateSystemActionTargetMarkers();
 
@@ -696,49 +737,10 @@ export class SystemScene implements IGameScene {
         this.updateShipVisualTrail(shipId, dt, previousPosition, root.position);
       }
     }
-    this.updateShipVisualTrailFades(dt);
 
-    if (this.fleetRoots.size > 0) {
-      const moveT = Math.min(1, dt * 3.8);
-      for (const [fleetId, root] of this.fleetRoots) {
-        const target = this.fleetTargets.get(fleetId);
-        if (!target) continue;
-        root.position.x = root.position.x + (target.x - root.position.x) * moveT;
-        root.position.y = root.position.y + (target.y - root.position.y) * moveT;
-        root.position.z = root.position.z + (target.z - root.position.z) * moveT;
-      }
-    }
+    this.objectRenderer.update(dt, 3.8);
+    this.effectsRenderer?.update(dt);
 
-    if (this.weaponBeams.length > 0) {
-      const nextBeams: Array<{ mesh: LinesMesh; ttl: number; maxTtl: number }> = [];
-      for (const beam of this.weaponBeams) {
-        beam.ttl -= dt;
-        if (beam.ttl <= 0) {
-          beam.mesh.dispose();
-          continue;
-        }
-        const alpha = Math.max(0, beam.ttl / beam.maxTtl);
-        beam.mesh.alpha = alpha;
-        nextBeams.push(beam);
-      }
-      this.weaponBeams = nextBeams;
-    }
-    if (this.weaponProjectiles.length > 0) {
-      const nextProjectiles: Array<{ mesh: Mesh; material: StandardMaterial; velocity: Vector3; ttl: number; maxTtl: number }> = [];
-      for (const projectile of this.weaponProjectiles) {
-        projectile.ttl -= dt;
-        if (projectile.ttl <= 0) {
-          projectile.mesh.dispose();
-          projectile.material.dispose();
-          continue;
-        }
-        projectile.mesh.position.addInPlace(projectile.velocity.scale(dt));
-        const alpha = Math.max(0, projectile.ttl / projectile.maxTtl);
-        projectile.material.alpha = alpha;
-        nextProjectiles.push(projectile);
-      }
-      this.weaponProjectiles = nextProjectiles;
-    }
     if (this.starKind === "pulsar") {
       const beamPulse = 0.5 + 0.5 * Math.abs(Math.sin(this.elapsed * this.glowPulseSpeed));
 
@@ -776,44 +778,9 @@ export class SystemScene implements IGameScene {
       this.glowLayer.intensity = 0;
     }
 
-    this.updatePlanetLabels();
-    this.updateSystemEntityCards();
+    this.updateSystemLabelOverlay();
     this.updateStarOcclusionAndGlow();
-  }
-
-  private updatePlanetLabels(): void {
-    if (!this.labelsVisible) {
-      for (const labelMesh of this.planetLabelMeshes) labelMesh?.setEnabled(false);
-      this.starLabelMesh?.setEnabled(false);
-      return;
-    }
-    // Update planet labels
-    for (let i = 0; i < this.planetMeshes.length; i++) {
-      const planetMesh = this.planetMeshes[i];
-      const labelMesh = this.planetLabelMeshes[i];
-      const diameter = this.planetDiameters[i];
-      if (labelMesh && planetMesh && diameter) {
-        // Position label above planet based on its actual diameter
-        const offsetDistance = diameter * 0.6 + 1.2;
-        labelMesh.position = new Vector3(
-          planetMesh.position.x,
-          planetMesh.position.y + offsetDistance,
-          planetMesh.position.z,
-        );
-        this.faceSystemLabelToCamera(labelMesh);
-      }
-    }
-
-    // Update star label
-    if (this.starLabelMesh && this.starMesh) {
-      const offsetDistance = this.starDiameter * 0.6 + 1.2;
-      this.starLabelMesh.position = new Vector3(
-        this.starMesh.position.x,
-        this.starMesh.position.y + offsetDistance,
-        this.starMesh.position.z,
-      );
-      this.faceSystemLabelToCamera(this.starLabelMesh);
-    }
+    this.updateRenderDebugOverlay();
   }
 
   private updatePlayerShipHeading(deltaTime: number): void {
@@ -897,52 +864,21 @@ export class SystemScene implements IGameScene {
     this.playerShipLastTrailPosition = currentPosition.clone();
   }
 
-  private updatePlayerShipTrailFades(deltaTime: number): void {
-    if (this.playerShipTrailSegments.length === 0) return;
-    const nextSegments: typeof this.playerShipTrailSegments = [];
-    for (const segment of this.playerShipTrailSegments) {
-      segment.age += deltaTime;
-      const life = Math.max(0, 1 - segment.age / segment.ttl);
-      segment.material.alpha = PLAYER_SHIP_TRAIL_START_ALPHA * Math.pow(life, 1.35);
-      if (segment.age < segment.ttl) {
-        nextSegments.push(segment);
-      } else {
-        this.glowLayer.removeIncludedOnlyMesh(segment.mesh);
-        segment.mesh.dispose();
-        segment.material.dispose();
-      }
-    }
-    this.playerShipTrailSegments = nextSegments;
-  }
-
   private createPlayerShipTrailSegment(from: Vector3, to: Vector3): void {
-    const path = [
-      new Vector3(from.x, from.y - 0.22, from.z),
-      new Vector3(to.x, to.y - 0.22, to.z),
-    ];
-    const material = new StandardMaterial("playerShipTrailSegmentMat", this.scene);
-    material.diffuseColor = new Color3(0.02, 0.16, 0.48);
-    material.emissiveColor = new Color3(0.08, 0.75, 1.0);
-    material.specularColor = Color3.Black();
-    material.disableLighting = true;
-    material.alpha = PLAYER_SHIP_TRAIL_START_ALPHA;
-    material.transparencyMode = Material.MATERIAL_ALPHABLEND;
-
-    const mesh = MeshBuilder.CreateTube(
-      "playerShipTrailSegment",
-      {
-        path,
-        radius: PLAYER_SHIP_TRAIL_RADIUS,
-        tessellation: 8,
-        cap: Mesh.NO_CAP,
-      },
-      this.scene,
-    );
-    mesh.material = material;
-    mesh.isPickable = false;
-    mesh.alwaysSelectAsActiveMesh = true;
-    this.glowLayer.addIncludedOnlyMesh(mesh);
-    this.playerShipTrailSegments.push({ mesh, material, age: 0, ttl: PLAYER_SHIP_TRAIL_TTL });
+    this.effectsRenderer?.queueTrail({
+      name: "playerShipTrailSegment",
+      ownerId: "playerShip",
+      from: new Vector3(from.x, from.y - 0.22, from.z),
+      to: new Vector3(to.x, to.y - 0.22, to.z),
+      radius: PLAYER_SHIP_TRAIL_RADIUS,
+      tessellation: 8,
+      diffuse: new Color3(0.02, 0.16, 0.48),
+      emissive: new Color3(0.08, 0.75, 1.0),
+      ttl: PLAYER_SHIP_TRAIL_TTL,
+      startAlpha: PLAYER_SHIP_TRAIL_START_ALPHA,
+      fadePower: 1.35,
+      maxPerOwner: 72,
+    });
   }
 
   private getTrailSocketAnchorPosition(
@@ -973,13 +909,9 @@ export class SystemScene implements IGameScene {
   }
 
   private disposePlayerShipTrail(): void {
-    for (const segment of this.playerShipTrailSegments) {
-      this.glowLayer.removeIncludedOnlyMesh(segment.mesh);
-      segment.mesh.dispose();
-      segment.material.dispose();
-    }
-    this.playerShipTrailSegments = [];
+    this.effectsRenderer?.removeTrails("playerShip");
     this.playerShipLastTrailPosition = null;
+    this.playerShipLastTrailAttachmentPosition = null;
     this.playerShipTrailTimer = 0;
   }
 
@@ -1074,30 +1006,6 @@ export class SystemScene implements IGameScene {
     this.shipVisualTrailTimers.set(shipId, 0);
   }
 
-  private updateShipVisualTrailFades(deltaTime: number): void {
-    if (this.shipVisualTrailSegments.size === 0) return;
-    for (const [shipId, segments] of Array.from(this.shipVisualTrailSegments.entries())) {
-      const nextSegments: typeof segments = [];
-      for (const segment of segments) {
-        segment.age += deltaTime;
-        const life = Math.max(0, 1 - segment.age / segment.ttl);
-        segment.material.alpha = TACTICAL_SHIP_TRAIL_START_ALPHA * Math.pow(life, 1.4);
-        if (segment.age < segment.ttl) {
-          nextSegments.push(segment);
-        } else {
-          this.glowLayer.removeIncludedOnlyMesh(segment.mesh);
-          segment.mesh.dispose();
-          segment.material.dispose();
-        }
-      }
-      if (nextSegments.length > 0) {
-        this.shipVisualTrailSegments.set(shipId, nextSegments);
-      } else {
-        this.shipVisualTrailSegments.delete(shipId);
-      }
-    }
-  }
-
   private createShipVisualTrailSegment(shipId: string, from: Vector3, to: Vector3): void {
     const palette = this.getShipTrailPalette(shipId);
     // Allow model-provided trail axis to nudge the trail slightly along the socket's world direction
@@ -1132,40 +1040,20 @@ export class SystemScene implements IGameScene {
         }
       }
     }
-    const path = [start, end];
-    const material = new StandardMaterial(`shipTrailSegmentMat-${shipId}`, this.scene);
-    material.diffuseColor = palette.diffuse;
-    material.emissiveColor = palette.emissive;
-    material.specularColor = Color3.Black();
-    material.disableLighting = true;
-    material.alpha = TACTICAL_SHIP_TRAIL_START_ALPHA;
-    material.transparencyMode = Material.MATERIAL_ALPHABLEND;
-
-    const mesh = MeshBuilder.CreateTube(
-      `shipTrailSegment-${shipId}`,
-      {
-        path,
-        radius: TACTICAL_SHIP_TRAIL_RADIUS,
-        tessellation: 6,
-        cap: Mesh.NO_CAP,
-      },
-      this.scene,
-    );
-    mesh.material = material;
-    mesh.isPickable = false;
-    mesh.alwaysSelectAsActiveMesh = true;
-    this.glowLayer.addIncludedOnlyMesh(mesh);
-
-    const segments = this.shipVisualTrailSegments.get(shipId) ?? [];
-    segments.push({ mesh, material, age: 0, ttl: TACTICAL_SHIP_TRAIL_TTL });
-    while (segments.length > TACTICAL_SHIP_TRAIL_MAX_SEGMENTS_PER_SHIP) {
-      const oldest = segments.shift();
-      if (!oldest) break;
-      this.glowLayer.removeIncludedOnlyMesh(oldest.mesh);
-      oldest.mesh.dispose();
-      oldest.material.dispose();
-    }
-    this.shipVisualTrailSegments.set(shipId, segments);
+    this.effectsRenderer?.queueTrail({
+      name: `shipTrailSegment-${shipId}`,
+      ownerId: `ship:${shipId}`,
+      from: start,
+      to: end,
+      radius: TACTICAL_SHIP_TRAIL_RADIUS,
+      tessellation: 6,
+      diffuse: palette.diffuse,
+      emissive: palette.emissive,
+      ttl: TACTICAL_SHIP_TRAIL_TTL,
+      startAlpha: TACTICAL_SHIP_TRAIL_START_ALPHA,
+      fadePower: 1.4,
+      maxPerOwner: TACTICAL_SHIP_TRAIL_MAX_SEGMENTS_PER_SHIP,
+    });
   }
 
   private getShipTrailPalette(shipId: string): { diffuse: Color3; emissive: Color3 } {
@@ -1183,19 +1071,17 @@ export class SystemScene implements IGameScene {
   }
 
   private disposeShipVisualTrail(shipId: string): void {
-    const segments = this.shipVisualTrailSegments.get(shipId) ?? [];
-    for (const segment of segments) {
-      this.glowLayer.removeIncludedOnlyMesh(segment.mesh);
-      segment.mesh.dispose();
-      segment.material.dispose();
-    }
-    this.shipVisualTrailSegments.delete(shipId);
+    this.effectsRenderer?.removeTrails(`ship:${shipId}`);
     this.shipVisualLastTrailPositions.delete(shipId);
     this.shipVisualTrailTimers.delete(shipId);
   }
 
   private disposeAllShipVisualTrails(): void {
-    for (const shipId of Array.from(this.shipVisualTrailSegments.keys())) {
+    const shipIds = new Set([
+      ...this.shipVisualLastTrailPositions.keys(),
+      ...this.shipVisualTrailTimers.keys(),
+    ]);
+    for (const shipId of shipIds) {
       this.disposeShipVisualTrail(shipId);
     }
     this.shipVisualLastTrailPositions.clear();
@@ -1469,91 +1355,21 @@ export class SystemScene implements IGameScene {
   }
 
   private rebuildSystemActionTargetMarkers(): void {
-    this.disposeSystemActionTargetMarkers();
-    const targets = this.getSystemActionTargets();
-    if (targets.length === 0) return;
-    const material = this.getSystemActionMarkerMaterial();
-    for (const target of targets) {
-      const root = new TransformNode(`systemActionTarget_${target.kind}_${target.starId}`, this.scene);
-      root.position.set(target.markerPosition.x, target.markerPosition.y, target.markerPosition.z);
-      const radius = this.getSystemActionMarkerRadius(target);
-      const meshes = this.createSystemActionMarkerBoxes(root, material, radius);
-      this.systemActionTargetRoots.push({ root, target, meshes });
-    }
-  }
-
-  private getSystemActionMarkerMaterial(): StandardMaterial {
-    if (!this.systemActionMarkerMaterial) {
-      const material = new StandardMaterial("systemActionTargetMarkerMat", this.scene);
-      material.diffuseColor = SYSTEM_ACTION_MARKER_COLOR.scale(0.14);
-      material.emissiveColor = SYSTEM_ACTION_MARKER_COLOR.scale(2.2);
-      material.specularColor = Color3.Black();
-      material.disableLighting = true;
-      material.backFaceCulling = false;
-      material.alpha = 0.58;
-      material.alphaMode = 2;
-      this.systemActionMarkerMaterial = material;
-    }
-    return this.systemActionMarkerMaterial;
-  }
-
-  private createSystemActionMarkerBoxes(
-    parent: TransformNode,
-    material: StandardMaterial,
-    radius: number,
-  ): Mesh[] {
-    const meshes: Mesh[] = [];
-    const angles = [-Math.PI / 2, Math.PI / 6, (Math.PI * 5) / 6];
-    const width = Math.max(1.8, radius * 0.42);
-    const depth = Math.max(1.0, radius * 0.22);
-    const thickness = Math.max(0.16, radius * 0.045);
-    for (let i = 0; i < angles.length; i++) {
-      const angle = angles[i];
-      const radialX = Math.cos(angle);
-      const radialZ = Math.sin(angle);
-      const box = MeshBuilder.CreateBox(
-        `systemActionTargetRect_${i}`,
-        { width, height: thickness, depth },
-        this.scene,
-      );
-      box.parent = parent;
-      box.position.set(radialX * radius, 0, radialZ * radius);
-      box.rotation.y = -angle - Math.PI / 2;
-      box.material = material;
-      box.isPickable = true;
-      box.alwaysSelectAsActiveMesh = true;
-      this.glowLayer.addIncludedOnlyMesh(box);
-      meshes.push(box);
-    }
-    return meshes;
+    this.actionTargetRenderer?.setTargets(
+      this.getSystemActionTargets(),
+      (target) => this.getSystemActionMarkerRadius(target),
+    );
   }
 
   private updateSystemActionTargetMarkers(): void {
-    if (this.systemActionTargetRoots.length === 0) return;
-    const pulse = 0.5 + 0.5 * Math.sin(this.elapsed * SYSTEM_ACTION_MARKER_PULSE_SPEED);
-    const scale = 0.94 + pulse * 0.12;
-    if (this.systemActionMarkerMaterial) {
-      this.systemActionMarkerMaterial.alpha = 0.42 + pulse * 0.22;
-      this.systemActionMarkerMaterial.emissiveColor = SYSTEM_ACTION_MARKER_COLOR.scale(1.6 + pulse * 1.0);
-    }
-    for (const item of this.systemActionTargetRoots) {
-      const target = this.resolveSystemActionTargetMarkerPosition(item.target);
-      item.target = target;
-      item.root.position.set(target.markerPosition.x, target.markerPosition.y, target.markerPosition.z);
-      item.root.rotation.y = -this.elapsed * SYSTEM_ACTION_MARKER_ROTATION_SPEED;
-      item.root.scaling.set(scale, scale, scale);
-    }
+    this.actionTargetRenderer?.update(
+      this.elapsed,
+      (target) => this.resolveSystemActionTargetMarkerPosition(target),
+    );
   }
 
   private disposeSystemActionTargetMarkers(): void {
-    for (const item of this.systemActionTargetRoots) {
-      for (const mesh of item.meshes) {
-        this.glowLayer.removeIncludedOnlyMesh(mesh);
-        mesh.dispose();
-      }
-      item.root.dispose();
-    }
-    this.systemActionTargetRoots = [];
+    this.actionTargetRenderer?.clear();
   }
 
   private getSystemActionTargets(): SystemActionTarget[] {
@@ -1666,33 +1482,15 @@ export class SystemScene implements IGameScene {
   }
 
   private pickSystemActionTarget(ev: PointerEvent): SystemActionTarget | null {
-    const canvas = this.engine.getRenderingCanvas();
-    if (!canvas || this.systemActionTargetRoots.length === 0) return null;
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
-    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
-    const targetMeshes = new Set(this.systemActionTargetRoots.flatMap((item) => item.meshes));
-    const pick = this.scene.pick(
-      canvasX,
-      canvasY,
-      (mesh) => targetMeshes.has(mesh as Mesh),
-    );
+    if (!this.actionTargetRenderer?.hasTargets) return null;
+    const pick = this.inputController?.pick(ev, (mesh) => this.actionTargetRenderer?.hasMesh(mesh) === true);
     if (!pick?.hit || !pick.pickedMesh) return null;
-    const item = this.systemActionTargetRoots.find((candidate) => candidate.meshes.includes(pick.pickedMesh as Mesh));
-    return item?.target ?? null;
+    return this.actionTargetRenderer.getTargetForMesh(pick.pickedMesh as Mesh);
   }
 
   private getPointerSystemPlanePosition(ev: PointerEvent): SystemPosition | null {
-    const canvas = this.engine.getRenderingCanvas();
-    if (!canvas) return null;
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
-    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
-    const ray = this.scene.createPickingRay(canvasX, canvasY, Matrix.Identity(), this.camera);
-    if (Math.abs(ray.direction.y) < 0.0001) return null;
-    const t = (0 - ray.origin.y) / ray.direction.y;
-    if (t < 0) return null;
-    const hit = ray.origin.add(ray.direction.scale(t));
+    const hit = this.inputController?.getSystemPlanePosition(ev, 0);
+    if (!hit) return null;
     const distance = Math.hypot(hit.x, hit.z);
     const scale = distance > SYSTEM_ACTION_MARKER_MAX_EMPTY_MOVE_RADIUS
       ? SYSTEM_ACTION_MARKER_MAX_EMPTY_MOVE_RADIUS / distance
@@ -1758,180 +1556,126 @@ export class SystemScene implements IGameScene {
     };
   }
 
-  private faceSystemLabelToCamera(labelMesh: Mesh): void {
-    const camera = this.scene.activeCamera ?? this.camera;
-    if (!camera) return;
-
-    const toCamera = camera.position.subtract(labelMesh.position);
-    if (toCamera.lengthSquared() < 0.0001) return;
-
-    const normal = toCamera.normalize();
-    const cameraRight = camera.getDirection(Vector3.Right()).normalize();
-    const cameraUp = camera.getDirection(Vector3.Up()).normalize();
-
-    let right = cameraRight.subtract(normal.scale(Vector3.Dot(cameraRight, normal)));
-    if (right.lengthSquared() < 0.0001) {
-      right = Vector3.Cross(Vector3.Up(), normal);
-    }
-    if (right.lengthSquared() < 0.0001) {
-      right = Vector3.Right();
-    }
-    right.normalize();
-    if (Vector3.Dot(right, cameraRight) < 0) {
-      right.scaleInPlace(-1);
-    }
-
-    let up = Vector3.Cross(normal, right);
-    if (Vector3.Dot(up, cameraUp) < 0) {
-      right.scaleInPlace(-1);
-      up = Vector3.Cross(normal, right);
-    }
-    up.normalize();
-
-    const rotationMatrix = Matrix.Identity();
-    Matrix.FromXYZAxesToRef(right, up, normal, rotationMatrix);
-    labelMesh.rotationQuaternion = Quaternion.FromRotationMatrix(rotationMatrix);
-  }
-
   private refreshSystemEntityCards(): void {
-    const fleets = this.getFleetsInCurrentSystem();
-    const starbases = this.getStarbasesInCurrentSystem();
-    if (fleets.length === 0 && starbases.length === 0) {
-      this.entityCardLayer?.remove();
-      this.entityCardLayer = null;
-      this.entityCardNodes.clear();
-      return;
-    }
-
-    this.injectSystemEntityCardStyles();
-    const root = document.getElementById("spaceHudRoot") ?? document.body;
-    const layer = this.entityCardLayer ?? document.createElement("div");
-    layer.className = "systemEntityCardLayer";
-    layer.style.display = this.labelsVisible ? "" : "none";
-    if (!this.entityCardLayer || layer.parentElement !== root) {
-      root.appendChild(layer);
-    }
-    this.entityCardLayer = layer;
-    const liveKeys = new Set<string>();
-
-    fleets.forEach((fleet, index) => {
-      const owner = this.getFaction(fleet.ownerId);
-      const key = `fleet:${fleet.id}`;
-      liveKeys.add(key);
-      let card = this.entityCardNodes.get(key);
-      if (!card) {
-        card = document.createElement("button");
-        this.entityCardNodes.set(key, card);
-        layer.appendChild(card);
-      }
-      card.type = "button";
-      card.className = "systemEntityCard fleet";
-      card.dataset.entityKey = key;
-      card.dataset.entityKind = "fleet";
-      card.dataset.entityId = fleet.id;
-      card.dataset.offsetY = String(-28 - index * 36);
-      card.style.setProperty("--entity-accent", this.factionColorCss(owner, "rgba(88, 211, 255, 0.95)"));
-      const renderSignature = `${fleet.ownerId}|${this.formatFleetPower(fleet, index)}|${this.formatFleetStatus(fleet)}`;
-      const html = `
-        <span class="systemEntityFlag">${this.getFactionFlagSvg(fleet.ownerId)}</span>
-        <span class="systemEntityCopy">
-          <strong>${this.escapeHtml(this.formatFleetPower(fleet, index))}</strong>
-          <small>${this.escapeHtml(this.formatFleetStatus(fleet))}</small>
-        </span>
-        <span class="systemEntityIcon">F</span>
-      `;
-      if (card.dataset.renderSignature !== renderSignature) {
-        card.innerHTML = html;
-        card.dataset.renderSignature = renderSignature;
-      }
-      card.onclick = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this.selectFleetFromCard(fleet, ev.shiftKey);
-      };
-    });
-
-    starbases.forEach((starbase, index) => {
-      const owner = this.getFaction(starbase.ownerId);
-      const key = `starbase:${starbase.id}`;
-      liveKeys.add(key);
-      let card = this.entityCardNodes.get(key);
-      if (!card) {
-        card = document.createElement("button");
-        this.entityCardNodes.set(key, card);
-        layer.appendChild(card);
-      }
-      card.type = "button";
-      card.className = "systemEntityCard starbase";
-      card.dataset.entityKey = key;
-      card.dataset.entityKind = "starbase";
-      card.dataset.entityId = starbase.id;
-      card.dataset.offsetY = String(-16 - index * 34);
-      card.style.setProperty("--entity-accent", this.factionColorCss(owner, "rgba(255, 207, 115, 0.95)"));
-      const renderSignature = `${starbase.ownerId}|${this.formatStarbasePower(starbase)}|${starbase.status}`;
-      const html = `
-        <span class="systemEntityFlag">${this.getFactionFlagSvg(starbase.ownerId)}</span>
-        <span class="systemEntityCopy">
-          <strong>${this.escapeHtml(this.formatStarbasePower(starbase))}</strong>
-          <small>${this.escapeHtml(starbase.status === "building" ? "Building" : "Starbase")}</small>
-        </span>
-        <span class="systemEntityIcon">SB</span>
-      `;
-      if (card.dataset.renderSignature !== renderSignature) {
-        card.innerHTML = html;
-        card.dataset.renderSignature = renderSignature;
-      }
-      card.onclick = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        this.openStarbasePanel(starbase);
-      };
-    });
-
-    for (const [key, card] of Array.from(this.entityCardNodes.entries())) {
-      if (liveKeys.has(key)) continue;
-      card.remove();
-      this.entityCardNodes.delete(key);
-    }
-    this.updateSystemEntityCards();
+    this.updateSystemLabelOverlay();
   }
 
   private updateSystemEntityCards(): void {
-    if (!this.entityCardLayer) return;
-    if (!this.labelsVisible) {
-      this.entityCardLayer.style.display = "none";
-      return;
+    this.updateSystemLabelOverlay();
+  }
+
+  private updateSystemLabelOverlay(): void {
+    if (!this.labelOverlay) return;
+    this.labelOverlay.setVisible(this.labelsVisible);
+    if (!this.labelsVisible) return;
+    const items = this.createSystemLabelOverlayItems();
+    this.labelOverlay.setItems(items);
+    this.labelOverlay.update((anchor) => this.projectToScreen(anchor));
+  }
+
+  private createSystemLabelOverlayItems(): SystemLabelOverlayItem[] {
+    const items: SystemLabelOverlayItem[] = [];
+    if (this.starMesh) {
+      const [r, g, b] = this.star.color.map((channel) => Math.round(channel * 255));
+      items.push({
+        key: `star:${this.star.id}`,
+        kind: "star",
+        anchor: this.starMesh.position.add(new Vector3(0, this.starDiameter * 0.72 + 1.8, 0)),
+        text: this.star.name,
+        detail: "Star",
+        icon: "S",
+        accent: `rgba(${r}, ${g}, ${b}, 0.95)`,
+        priority: 90,
+        onClick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.clearFleetSelection();
+          this.showStarObjectPanel();
+        },
+      });
     }
-    this.entityCardLayer.style.display = "";
-    const visibleCards: Array<{ card: HTMLElement; x: number; y: number }> = [];
-    for (const card of Array.from(this.entityCardLayer.querySelectorAll<HTMLElement>(".systemEntityCard"))) {
-      const kind = card.dataset.entityKind;
-      const id = card.dataset.entityId;
-      const offsetY = Number(card.dataset.offsetY ?? "0");
-      const anchor = kind === "fleet"
-        ? this.getFleetCardAnchor(id)
-        : this.getStarbaseCardAnchor(id);
-      const projected = anchor ? this.projectToScreen(anchor) : null;
-      if (!projected) {
-        card.style.display = "none";
-        continue;
-      }
-      card.style.display = "grid";
-      visibleCards.push({ card, x: projected.x, y: projected.y + offsetY });
+
+    for (let i = 0; i < this.planetMeshes.length; i += 1) {
+      const mesh = this.planetMeshes[i];
+      const planet = this.planetConfigs[i];
+      const diameter = this.planetDiameters[i] ?? 2;
+      if (!mesh || !planet) continue;
+      items.push({
+        key: `planet:${planet.id}`,
+        kind: "planet",
+        anchor: mesh.position.add(new Vector3(0, diameter * 0.6 + 1.2, 0)),
+        text: planet.name,
+        detail: planet.isHabited ? "Habited planet" : "Planet",
+        icon: planet.isHabited ? "H" : "P",
+        accent: planet.isHabited ? "rgba(92, 221, 184, 0.92)" : "rgba(166, 210, 255, 0.82)",
+        priority: planet.isHabited ? 82 : 55,
+        onClick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.clearFleetSelection();
+          void this.showPlanetObjectPanel(planet);
+        },
+      });
     }
-    visibleCards.sort((a, b) => a.y - b.y || a.x - b.x);
-    const placed: Array<{ x: number; y: number }> = [];
-    for (const item of visibleCards) {
-      let y = item.y;
-      for (let guard = 0; guard < 12; guard += 1) {
-        const collision = placed.find((other) => Math.abs(other.x - item.x) < 150 && Math.abs(other.y - y) < 34);
-        if (!collision) break;
-        y = collision.y + 34;
-      }
-      placed.push({ x: item.x, y });
-      item.card.style.left = `${item.x}px`;
-      item.card.style.top = `${y}px`;
+
+    this.getFleetsInCurrentSystem().forEach((fleet, index) => {
+      const anchor = this.getFleetCardAnchor(fleet.id);
+      if (!anchor) return;
+      const owner = this.getFaction(fleet.ownerId);
+      items.push({
+        key: `fleet:${fleet.id}`,
+        kind: "fleet",
+        anchor,
+        text: this.formatFleetPower(fleet, index),
+        detail: this.formatFleetStatus(fleet),
+        icon: "F",
+        accent: this.factionColorCss(owner, "rgba(88, 211, 255, 0.95)"),
+        priority: fleet.ownerId === this.playerFactionId ? 100 : 88,
+        offsetY: -28 - index * 14,
+        onClick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.selectFleetFromCard(fleet, event.shiftKey);
+        },
+      });
+    });
+
+    this.getStarbasesInCurrentSystem().forEach((starbase, index) => {
+      const anchor = this.getStarbaseCardAnchor(starbase.id);
+      if (!anchor) return;
+      const owner = this.getFaction(starbase.ownerId);
+      items.push({
+        key: `starbase:${starbase.id}`,
+        kind: "starbase",
+        anchor,
+        text: this.formatStarbasePower(starbase),
+        detail: starbase.status === "building" ? "Building" : "Starbase",
+        icon: "SB",
+        accent: this.factionColorCss(owner, "rgba(255, 207, 115, 0.95)"),
+        priority: 96,
+        offsetY: -16 - index * 12,
+        onClick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.openStarbasePanel(starbase);
+        },
+      });
+    });
+
+    for (const exit of this.hyperlaneExits) {
+      const position = exit.systemPosition ?? getHyperlaneExitSystemPosition(exit);
+      items.push({
+        key: `hyperlane:${this.star.id}:${exit.starId}`,
+        kind: "hyperlane",
+        anchor: new Vector3(position.x, SYSTEM_HYPERLANE_EXIT_MARKER_Y + 1.2, position.z),
+        text: exit.name,
+        detail: "Hyperlane",
+        icon: "HL",
+        accent: "rgba(92, 196, 255, 0.75)",
+        priority: 32,
+      });
     }
+    return items;
   }
 
   private getFleetsInCurrentSystem(): ServerFleet[] {
@@ -2022,7 +1766,7 @@ export class SystemScene implements IGameScene {
     if (!fleetId) return null;
     const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
     if (!fleet || fleet.currentStarId !== this.star.id || fleet.phase === "jumpingHyperlane") return null;
-    const fleetRoot = this.fleetRoots.get(fleet.id);
+    const fleetRoot = this.objectRenderer.getRoot(this.getFleetRenderableId(fleet.id));
     if (fleetRoot?.isEnabled()) {
       return fleetRoot.position.add(new Vector3(0, 2.6, 0));
     }
@@ -2269,21 +2013,6 @@ export class SystemScene implements IGameScene {
     return this.factions.find((faction) => faction.id === ownerId) ?? null;
   }
 
-  private getFactionFlagSvg(ownerId: number): string {
-    const faction = this.getFaction(ownerId);
-    const design = faction?.flagDesign ?? createFlagDesign({ seed: `system-entity-${ownerId}` });
-    const cacheKey = `${ownerId}:${JSON.stringify(design)}`;
-    const cached = this.factionFlagSvgCache.get(cacheKey);
-    if (cached) return cached;
-    const svg = renderFlagSvg(design, {
-      size: 26,
-      className: "systemEntityFlagSvg",
-      idPrefix: `system-entity-flag-${ownerId}`,
-    });
-    this.factionFlagSvgCache.set(cacheKey, svg);
-    return svg;
-  }
-
   private factionColorCss(faction: FactionInfo | null, fallback: string): string {
     if (!faction) return fallback;
     const [r, g, b] = faction.color.map((channel) => Math.round(Math.max(0, Math.min(1, channel)) * 255));
@@ -2354,111 +2083,6 @@ export class SystemScene implements IGameScene {
     }
   }
 
-  private injectSystemEntityCardStyles(): void {
-    const styleId = "system-entity-card-style";
-    if (document.getElementById(styleId)) return;
-    const style = document.createElement("style");
-    style.id = styleId;
-    style.textContent = `
-.systemEntityCardLayer {
-  position: fixed;
-  inset: 0;
-  z-index: 54;
-  pointer-events: none;
-  font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
-}
-
-.systemEntityCard {
-  --entity-accent: rgba(88, 211, 255, 0.95);
-  position: absolute;
-  min-width: 124px;
-  height: 34px;
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) 24px;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 5px 3px 4px;
-  pointer-events: auto;
-  border: 1px solid color-mix(in srgb, var(--entity-accent) 72%, transparent);
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--entity-accent) 38%, rgba(5, 21, 28, 0.94)), rgba(4, 15, 20, 0.94)),
-    radial-gradient(circle at 18% 50%, color-mix(in srgb, var(--entity-accent) 28%, transparent), transparent 3rem);
-  color: #eaffff;
-  cursor: pointer;
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.42), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
-  transform: translate(-50%, -50%);
-  transition: border-color 0.12s ease, box-shadow 0.12s ease, filter 0.12s ease;
-}
-
-.systemEntityCard:hover {
-  filter: brightness(1.16);
-  border-color: color-mix(in srgb, var(--entity-accent) 88%, white);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.46), 0 0 18px color-mix(in srgb, var(--entity-accent) 28%, transparent), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
-}
-
-.systemEntityCard.starbase {
-  border-color: rgba(255, 212, 116, 0.74);
-}
-
-.systemEntityFlag {
-  width: 26px;
-  height: 26px;
-  display: grid;
-  place-items: center;
-  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.6));
-}
-
-.systemEntityFlag svg {
-  width: 26px;
-  height: 26px;
-  display: block;
-  overflow: visible;
-}
-
-.systemEntityCopy {
-  min-width: 0;
-  display: grid;
-  line-height: 1;
-}
-
-.systemEntityCopy strong {
-  font-size: 12px;
-  font-weight: 900;
-  color: #ecfffb;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-}
-
-.systemEntityCopy small {
-  margin-top: 3px;
-  color: rgba(193, 230, 224, 0.72);
-  font-size: 7px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.systemEntityIcon {
-  width: 22px;
-  height: 22px;
-  display: grid;
-  place-items: center;
-  clip-path: polygon(50% 0, 93% 25%, 93% 75%, 50% 100%, 7% 75%, 7% 25%);
-  background: color-mix(in srgb, var(--entity-accent) 34%, rgba(0, 0, 0, 0.4));
-  border: 1px solid color-mix(in srgb, var(--entity-accent) 82%, transparent);
-  color: #ffffff;
-  font-size: 10px;
-}
-    `;
-    document.head.appendChild(style);
-  }
-
-  private escapeHtml(value: string): string {
-    return value
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
   private updateStarOcclusionAndGlow(): void {
     if (!this.starMesh || !this.camera || !this.glowLayer) return;
 
@@ -2481,82 +2105,14 @@ export class SystemScene implements IGameScene {
     const occluded = !!(pick && pick.hit && pick.pickedPoint);
     this.starOccluded = occluded;
 
-    if (this.debugLogOccluder && occluded && pick && pick.pickedMesh) {
-      console.log(`🌑 Star occluded by mesh: ${pick.pickedMesh.name}`);
-      if (this.deepDebug) {
-        // Dump material info for the occluding mesh
-        this.dumpMeshMaterialInfo(pick.pickedMesh);
-
-        // Find a starbase mesh (if present) to compare materials
-        const sb = this.scene.meshes.find((m) => m.name.toLowerCase().includes("starbase") && m.material);
-        if (sb) {
-          console.log("🔎 Example starbase mesh for comparison:", sb.name);
-          this.dumpMeshMaterialInfo(sb);
-        }
-
-        // If the occluder is not a planet, also dump the nearest planet material
-        if (!pick.pickedMesh.name.startsWith("systemPlanet")) {
-          const planet = this.planetMeshes.length > 0 ? this.planetMeshes[0] : null;
-          if (planet) {
-            console.log(`🔎 Example planet mesh for comparison: ${planet.name}`);
-            this.dumpMeshMaterialInfo(planet);
-          }
-        }
-      }
-    }
+    this.renderDebugState = {
+      starOccluded: occluded,
+      starOccluderName: pick?.pickedMesh?.name ?? null,
+    };
 
     const target = occluded ? this.glowBaseIntensity * 0.12 : this.glowBaseIntensity;
     const current = this.glowLayer.intensity;
     this.glowLayer.intensity = current + (target - current) * 0.18;
-  }
-
-  private dumpMeshMaterialInfo(mesh: AbstractMesh | null): void {
-    if (!mesh) return;
-    try {
-      mesh.computeWorldMatrix(true);
-      console.log(`  • Mesh: ${mesh.name}, renderingGroupId=${(mesh as Mesh).renderingGroupId}, isPickable=${mesh.isPickable}, alwaysSelectAsActiveMesh=${mesh.alwaysSelectAsActiveMesh}`);
-      const material = (mesh as Mesh).material as any;
-      if (!material) {
-        console.log("    - No material attached");
-        return;
-      }
-
-      // Handle MultiMaterial
-      if (material.subMaterials) {
-        console.log(`    - MultiMaterial with ${material.subMaterials.length} subMaterials`);
-        material.subMaterials.forEach((m: any, idx: number) => {
-          console.log(`    - subMaterial[${idx}]: ${m.name || "<anon>"}`);
-          this.logMaterialFields(m);
-        });
-        return;
-      }
-
-      console.log(`    - Material: ${material.name || "<anon>"}, type=${material.getClassName ? material.getClassName() : typeof material}`);
-      this.logMaterialFields(material);
-    } catch (err) {
-      console.warn("Failed to dump material info", err);
-    }
-  }
-
-  private logMaterialFields(mat: any): void {
-    if (!mat) return;
-    const entries: string[] = [];
-    try {
-      entries.push(`alpha=${mat.alpha}`);
-      if (typeof mat.transparencyMode !== "undefined") entries.push(`transparencyMode=${mat.transparencyMode}`);
-      if (typeof mat.useAlphaFromDiffuseTexture !== "undefined") entries.push(`useAlphaFromDiffuseTexture=${mat.useAlphaFromDiffuseTexture}`);
-      if (typeof mat.needDepthPrePass !== "undefined") entries.push(`needDepthPrePass=${mat.needDepthPrePass}`);
-      if (typeof mat.backFaceCulling !== "undefined") entries.push(`backFaceCulling=${mat.backFaceCulling}`);
-      if (typeof (mat as any).forceDepthWrite !== "undefined") entries.push(`forceDepthWrite=${(mat as any).forceDepthWrite}`);
-      if (typeof mat.disableLighting !== "undefined") entries.push(`disableLighting=${mat.disableLighting}`);
-      if (mat.emissiveColor) entries.push(`emissiveColor=${mat.emissiveColor.r?.toFixed(2)},${mat.emissiveColor.g?.toFixed(2)},${mat.emissiveColor.b?.toFixed(2)}`);
-      if (mat.diffuseTexture) entries.push(`diffuseTexture=${mat.diffuseTexture.name || mat.diffuseTexture.url || '<texture>'}`);
-      if (mat.opacityTexture) entries.push(`opacityTexture=${mat.opacityTexture?.name || mat.opacityTexture?.url || '<texture>'}`);
-      if (mat.emissiveTexture) entries.push(`emissiveTexture=${mat.emissiveTexture?.name || mat.emissiveTexture?.url || '<texture>'}`);
-    } catch (err) {
-      entries.push(`(failed reading fields: ${err})`);
-    }
-    for (const e of entries) console.log(`      - ${e}`);
   }
 
   private configureVisualPreset(): void {
@@ -2923,19 +2479,16 @@ export class SystemScene implements IGameScene {
       blurKernelSize: 48,
     });
     this.glowLayer.intensity = this.glowBaseIntensity;
+    this.effectsRenderer = new SystemEffectsRenderer(this.scene, this.glowLayer, {
+      maxBeams: 96,
+      maxProjectiles: 180,
+    });
+    this.actionTargetRenderer = new SystemActionTargetRenderer(this.scene, this.glowLayer, {
+      color: SYSTEM_ACTION_MARKER_COLOR,
+      pulseSpeed: SYSTEM_ACTION_MARKER_PULSE_SPEED,
+      rotationSpeed: SYSTEM_ACTION_MARKER_ROTATION_SPEED,
+    });
     this.scene.ambientColor = new Color3(0.18, 0.2, 0.24);
-
-    // Debug: allow toggling glow with 'g' key to quickly test occlusion behavior
-    if (typeof window !== "undefined") {
-      window.addEventListener("keydown", (ev: KeyboardEvent) => {
-        if (ev.key.toLowerCase() === "g") {
-          this.glowLayer!.isEnabled = !this.glowLayer!.isEnabled;
-        }
-        if (ev.key.toLowerCase() === "d") {
-          this.deepDebug = !this.deepDebug;
-        }
-      });
-    }
   }
 
   private buildSystemObjects(): void {
@@ -2959,7 +2512,7 @@ export class SystemScene implements IGameScene {
     starBaseMat.specularColor = Color3.Black();
     starBaseMat.disableLighting = true;
     this.starMesh.material = starBaseMat;
-    this.starMesh.isPickable = false;
+    this.starMesh.isPickable = true;
 
     this.starDetailMesh = MeshBuilder.CreateSphere(
       "systemStarDetail",
@@ -3050,11 +2603,7 @@ export class SystemScene implements IGameScene {
     for (let i = 0; i < planets.length; i++) {
       this.createPlanet(i, planets[i]);
     }
-    this.createHyperlaneExits();
-
-    // Create star label
-    this.starLabelMesh = this.createStarLabel();
-    this.starLabelMesh.setEnabled(this.labelsVisible);
+    this.refreshHyperlaneExits();
   }
 
   private formatFleetNavigationDetail(fleet: ServerFleet): string {
@@ -3121,108 +2670,33 @@ export class SystemScene implements IGameScene {
 
     try {
       const modelDef = SHIP_MODEL_DEFINITIONS[this.playerShipKind];
-      const result = await SceneLoader.ImportMeshAsync(
-        "",
-        modelDef.modelPath,
-        modelDef.modelFile,
-        this.scene,
+      const assetRoot = await this.assetRegistry.instantiate(
+        this.getShipAssetDefinition(this.playerShipKind, "playerShip", PLAYER_SHIP_TARGET_SIZE),
+        "playerShipAssetRoot",
       );
-
-      const meshes = result.meshes.filter((mesh) => (
-        typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
-      ));
-      if (meshes.length === 0) {
+      if (!assetRoot) {
         throw new Error(`${modelDef.modelFile} did not produce renderable meshes.`);
       }
-      
-      const bounds = this.computeMeshBounds(meshes);
-      const maxDimension = Math.max(
-        0.001,
-        bounds.max.x - bounds.min.x,
-        bounds.max.y - bounds.min.y,
-        bounds.max.z - bounds.min.z,
-      );
-      const shipScale = PLAYER_SHIP_TARGET_SIZE / maxDimension;
-      // Apply a small model-specific scale multiplier for construction ship to correct size
-      const effectiveShipScale = this.playerShipKind === "constructionShip" ? shipScale * 1.3 : shipScale;
-
-      const assetRoot = new TransformNode("playerShipAssetRoot", this.scene);
       assetRoot.parent = this.playerShipRoot;
-      assetRoot.position = bounds.center.scale(-1);
-
-      for (const mesh of meshes) {
-        mesh.parent = assetRoot;
+      for (const mesh of assetRoot.getChildMeshes()) {
         mesh.isPickable = false;
         mesh.alwaysSelectAsActiveMesh = true;
-        if (this.playerShipKind === "corvette") {
-          this.applyPlayerShipMaterialStyle(mesh.material);
-        } else {
-          this.applyBasicShipMaterialStyle(mesh.material);
-        }
       }
 
-      // If model supplies a named trail/socket, locate it globally and reparent under our assetRoot so
-      // it will be included with the playerShipRoot and can be sampled for trail VFX.
       if (modelDef.trailSocketName) {
-        const socket = this.scene.getNodeByName(modelDef.trailSocketName) as TransformNode | null;
+        const socket = this.findDescendantByName(assetRoot, modelDef.trailSocketName);
         if (socket) {
-          try {
-            socket.parent = assetRoot;
-          } catch (e) {
-            // ignore
-          }
-          this.playerShipTrailAttachmentPoint = this.createTrailSocketAnchorNode(socket as TransformNode, modelDef, "playerShipTrailAnchor");
+          this.playerShipTrailAttachmentPoint = this.createTrailSocketAnchorNode(socket, modelDef, "playerShipTrailAnchor");
         } else {
           console.warn(`Trail socket "${modelDef.trailSocketName}" not found; using configured offset.`);
         }
       }
 
-      this.playerShipRoot.scaling.setAll(effectiveShipScale);
       this.createPlayerShipReadabilityLight();
     } catch (err) {
       console.warn("Failed to load player ship model; using procedural fallback.", err);
       this.createFallbackPlayerShip();
     }
-  }
-
-  private computeMeshBounds(meshes: AbstractMesh[]): {
-    min: Vector3;
-    max: Vector3;
-    center: Vector3;
-  } {
-    const min = new Vector3(
-      Number.POSITIVE_INFINITY,
-      Number.POSITIVE_INFINITY,
-      Number.POSITIVE_INFINITY,
-    );
-    const max = new Vector3(
-      Number.NEGATIVE_INFINITY,
-      Number.NEGATIVE_INFINITY,
-      Number.NEGATIVE_INFINITY,
-    );
-
-    for (const mesh of meshes) {
-      mesh.computeWorldMatrix(true);
-      const corners = mesh.getBoundingInfo().boundingBox.vectorsWorld;
-      for (const corner of corners) {
-        min.minimizeInPlace(corner);
-        max.maximizeInPlace(corner);
-      }
-    }
-
-    if (!Number.isFinite(min.x) || !Number.isFinite(max.x)) {
-      return {
-        min: new Vector3(-1, -1, -1),
-        max: new Vector3(1, 1, 1),
-        center: Vector3.Zero(),
-      };
-    }
-
-    return {
-      min,
-      max,
-      center: min.add(max).scale(0.5),
-    };
   }
 
   private applyPlayerShipMaterialStyle(material: Material | null): void {
@@ -3387,87 +2861,16 @@ export class SystemScene implements IGameScene {
   }
 
   private async ensureTacticalShipTemplate(shipKind: StarbaseShipKind): Promise<void> {
-    if (this.tacticalShipTemplates.has(shipKind)) return;
-    const pending = this.tacticalShipTemplatePromises.get(shipKind);
-    if (pending) return pending;
-    const promise = (async () => {
-      try {
-        const modelDef = SHIP_MODEL_DEFINITIONS[shipKind];
-        const result = await SceneLoader.ImportMeshAsync(
-          "",
-          modelDef.modelPath,
-          modelDef.modelFile,
-          this.scene,
-        );
-        for (const mesh of result.meshes) {
-          mesh.setEnabled(false);
-          mesh.isPickable = false;
-        }
-        const meshes = result.meshes.filter((mesh) => (
-          typeof mesh.getTotalVertices === "function" && mesh.getTotalVertices() > 0
-        ));
-        if (meshes.length === 0) {
-          throw new Error(`${modelDef.modelFile} did not produce renderable meshes.`);
-        }
-
-        const bounds = this.computeMeshBounds(meshes);
-        const maxDimension = Math.max(
-          0.001,
-          bounds.max.x - bounds.min.x,
-          bounds.max.y - bounds.min.y,
-          bounds.max.z - bounds.min.z,
-        );
-        const shipScale = TACTICAL_SHIP_TARGET_SIZE / maxDimension;
-        // Allow per-model size tweaks; construction ship should be slightly larger
-        const effectiveShipScale = shipKind === "constructionShip" ? shipScale * 1.3 : shipScale;
-
-        const templateRoot = new TransformNode(`tacticalShipTemplateRoot-${shipKind}`, this.scene);
-        const assetRoot = new TransformNode(`tacticalShipTemplateAsset-${shipKind}`, this.scene);
-        assetRoot.parent = templateRoot;
-        assetRoot.position = bounds.center.scale(-1);
-        for (const mesh of meshes) {
-          mesh.parent = assetRoot;
-          mesh.isPickable = false;
-          mesh.alwaysSelectAsActiveMesh = true;
-          mesh.setEnabled(true);
-          if (shipKind === "corvette") {
-            this.applyPlayerShipMaterialStyle(mesh.material);
-          } else {
-            this.applyBasicShipMaterialStyle(mesh.material);
-          }
-        }
-
-        // If the model contained a named transform (an empty) for VFX attachment, find it in the scene
-        // and reparent it under our asset root so clones include the socket.
-        let trailAttachment: TransformNode | null = null;
-        if (modelDef.trailSocketName) {
-          const globalNode = this.scene.getNodeByName(modelDef.trailSocketName) as TransformNode | null;
-          if (globalNode) {
-            try {
-              globalNode.parent = assetRoot;
-              trailAttachment = this.createTrailSocketAnchorNode(globalNode, modelDef, `shipVisualTrailAnchor-${shipKind}`);
-            } catch (e) {
-              // ignore reparent errors
-            }
-          }
-        }
-        templateRoot.scaling.setAll(effectiveShipScale);
-        templateRoot.setEnabled(false);
-        this.tacticalShipTemplates.set(shipKind, templateRoot);
-      } catch (err) {
-        console.warn("Failed to load tactical ship model", err);
-      }
-    })().finally(() => {
-      this.tacticalShipTemplatePromises.delete(shipKind);
-    });
-    this.tacticalShipTemplatePromises.set(shipKind, promise);
-    return promise;
+    const template = await this.assetRegistry.loadTemplate(
+      this.getShipAssetDefinition(shipKind, "tacticalShip", TACTICAL_SHIP_TARGET_SIZE),
+    );
+    if (!template) {
+      console.warn(`Failed to load tactical ship model for ${shipKind}.`);
+    }
   }
 
   private createShipVisualInstance(shipId: string, shipKind: StarbaseShipKind): TransformNode | null {
-    const template = this.tacticalShipTemplates.get(shipKind);
-    if (!template) return null;
-    const clone = template.clone(`shipVisual-${shipId}`, null);
+    const clone = this.assetRegistry.cloneTemplate(`tacticalShip:${shipKind}`, `shipVisual-${shipId}`);
     if (!clone) return null;
     clone.setEnabled(this.starsVisible);
     // Apply per-model orientation overrides if specified
@@ -3513,44 +2916,18 @@ export class SystemScene implements IGameScene {
   }
 
   private refreshFleetMarkers(views = this.getVisibleFleetViews()): void {
-    const viewById = new Map(views.map((view) => [view.id, view]));
-    for (const [fleetId, root] of Array.from(this.fleetRoots.entries())) {
-      if (!viewById.has(fleetId)) {
-        root.dispose();
-        this.fleetRoots.delete(fleetId);
-        this.fleetTargets.delete(fleetId);
-      }
-    }
-    for (const view of views) {
-      const existingRoot = this.fleetRoots.get(view.id);
-      const root = existingRoot ?? this.createFleetMarker(view);
-      const target = new Vector3(view.position.x, SYSTEM_FLEET_Y + 0.25, view.position.z);
-      if (!existingRoot) root.position.copyFrom(target);
-      this.fleetTargets.set(view.id, target);
-      root.setEnabled(this.starsVisible);
-      root.metadata = { fleetId: view.id, view };
-      for (const mesh of root.getChildMeshes()) {
-        mesh.metadata = { fleetId: view.id, view };
-      }
-    }
-  }
-
-  private createFleetMarker(view: TacticalFleetView): TransformNode {
-    const root = new TransformNode(`fleetMarker-${view.id}`, this.scene);
-    root.metadata = { fleetId: view.id, view };
-    const pickMesh = MeshBuilder.CreateSphere(
-      `fleetPickVolume-${view.id}`,
-      { diameter: Math.max(3.2, view.tacticalRadius * 2), segments: 12 },
-      this.scene,
-    );
-    pickMesh.parent = root;
-    pickMesh.position.set(0, 0, 0);
-    pickMesh.material = this.getFleetPickMaterial();
-    pickMesh.isPickable = true;
-    pickMesh.alwaysSelectAsActiveMesh = true;
-    pickMesh.metadata = { fleetId: view.id, view };
-    this.fleetRoots.set(view.id, root);
-    return root;
+    const definitions: SystemRenderableDefinition[] = views.map((view) => ({
+      id: this.getFleetRenderableId(view.id),
+      kind: "fleet",
+      assetKey: "fleet-pick-volume",
+      position: new Vector3(view.position.x, SYSTEM_FLEET_Y + 0.25, view.position.z),
+      pickRadius: view.tacticalRadius,
+      label: view.name,
+      ownerId: view.ownerId,
+      visible: this.starsVisible,
+      metadata: { fleetId: view.id, view },
+    }));
+    this.objectRenderer.reconcile(definitions, { scopeKinds: ["fleet"] });
   }
 
   private getFleetPickMaterial(): StandardMaterial {
@@ -3725,13 +3102,14 @@ export class SystemScene implements IGameScene {
       for (const [shipId, fleet] of fleetViewByShipId) {
         const ship = serverShipById.get(shipId);
         const shipKind = ship?.shipKind ?? "corvette";
-        const existingRoot = this.shipVisualRoots.get(shipId);
+        let existingRoot = this.shipVisualRoots.get(shipId);
         const existingKind = (existingRoot?.metadata as { shipKind?: StarbaseShipKind } | null)?.shipKind;
         if (existingRoot && existingKind && existingKind !== shipKind) {
           existingRoot.dispose();
           this.shipVisualRoots.delete(shipId);
           this.shipVisualTargets.delete(shipId);
           this.disposeShipVisualTrail(shipId);
+          existingRoot = undefined;
         }
         const root = this.shipVisualRoots.get(shipId) ?? this.createShipVisualInstance(shipId, shipKind);
         if (!root) continue;
@@ -3758,7 +3136,7 @@ export class SystemScene implements IGameScene {
   private getCombatEntityPosition(entityId: string): Vector3 | null {
     const shipRoot = this.shipVisualRoots.get(entityId);
     if (shipRoot) return shipRoot.position.clone();
-    const fleetRoot = this.fleetRoots.get(entityId);
+    const fleetRoot = this.objectRenderer.getRoot(this.getFleetRenderableId(entityId));
     if (fleetRoot) return fleetRoot.position.clone();
     for (const root of this.shipVisualRoots.values()) {
       const metadata = root.metadata as { fleetId?: string | null } | null;
@@ -3783,48 +3161,27 @@ export class SystemScene implements IGameScene {
         ?? new Vector3(contact.targetPosition.x, SYSTEM_FLEET_Y + 0.4, contact.targetPosition.z);
       const weaponId = contact.weaponId?.toLowerCase() ?? "";
       if (weaponId.includes("missile") || weaponId.includes("torpedo")) {
-        this.queueWeaponProjectile(`fleetMissile-${contact.id}`, from, to, new Color3(1, 0.52, 0.12), 0.8, 0.24);
+        this.effectsRenderer?.queueProjectile(`fleetMissile-${contact.id}`, from, to, new Color3(1, 0.52, 0.12), 0.8, 0.24);
       } else if (weaponId.includes("point") || weaponId.includes("pd") || weaponId.includes("flak")) {
         for (let i = 0; i < 3; i += 1) {
           const offset = new Vector3((i - 1) * 0.12, i * 0.04, 0);
-          this.queueWeaponProjectile(`fleetPd-${contact.id}-${i}`, from.add(offset), to, new Color3(0.5, 0.9, 1), 0.32, 0.1);
+          this.effectsRenderer?.queueProjectile(`fleetPd-${contact.id}-${i}`, from.add(offset), to, new Color3(0.5, 0.9, 1), 0.32, 0.1);
         }
       } else {
-        const beam = MeshBuilder.CreateLines(`fleetBeam-${contact.id}`, { points: [from, to] }, this.scene);
-        beam.color = contact.hit ? new Color3(0.3, 0.84, 1) : new Color3(0.7, 0.72, 0.78);
-        beam.alpha = contact.hit ? 0.85 : 0.38;
-        beam.isPickable = false;
-        this.glowLayer.addIncludedOnlyMesh(beam);
-        this.weaponBeams.push({ mesh: beam, ttl: TACTICAL_BEAM_TTL, maxTtl: TACTICAL_BEAM_TTL });
+        this.effectsRenderer?.queueBeam(
+          `fleetBeam-${contact.id}`,
+          from,
+          to,
+          contact.hit ? new Color3(0.3, 0.84, 1) : new Color3(0.7, 0.72, 0.78),
+          TACTICAL_BEAM_TTL,
+          contact.hit ? 0.85 : 0.38,
+        );
       }
       effectsQueued += 1;
     }
     if (this.combatContactSeen.size > 320) {
       this.combatContactSeen = new Set(Array.from(this.combatContactSeen).slice(-160));
     }
-  }
-
-  private queueWeaponProjectile(
-    name: string,
-    from: Vector3,
-    to: Vector3,
-    color: Color3,
-    ttl: number,
-    diameter: number,
-  ): void {
-    const projectile = MeshBuilder.CreateSphere(name, { diameter, segments: 10 }, this.scene);
-    projectile.position.copyFrom(from);
-    projectile.isPickable = false;
-    const material = new StandardMaterial(`${name}Mat`, this.scene);
-    material.diffuseColor = Color3.Black();
-    material.specularColor = Color3.Black();
-    material.emissiveColor = color.scale(1.8);
-    material.disableLighting = true;
-    material.alpha = 1;
-    projectile.material = material;
-    this.glowLayer.addIncludedOnlyMesh(projectile);
-    const velocity = to.subtract(from).scale(1 / Math.max(0.01, ttl));
-    this.weaponProjectiles.push({ mesh: projectile, material, velocity, ttl, maxTtl: ttl });
   }
 
   private createRedGiantAtmosphere(starDiameter: number, starTint: Color3): void {
@@ -4062,7 +3419,7 @@ export class SystemScene implements IGameScene {
     mat.transparencyMode = Material.MATERIAL_OPAQUE;
     mat.forceDepthWrite = true;
     mesh.material = mat;
-    mesh.isPickable = false;
+    mesh.isPickable = true;
     const getSystemPosition = (nowMs: number) => getPlanetSystemPosition(planet, index, nowMs, orbitLayout);
     const initialPosition = getSystemPosition(Date.now());
     mesh.position.set(initialPosition.x, initialPosition.y, initialPosition.z);
@@ -4076,12 +3433,6 @@ export class SystemScene implements IGameScene {
     this.createOrbitRing(index, orbitRadius);
     this.planetMeshes.push(mesh);
     this.planetDiameters.push(diameter);
-    
-    // Create planet label
-    const labelMesh = this.createPlanetLabel(index, planet, orbitRadius);
-    labelMesh.setEnabled(this.labelsVisible);
-    this.planetLabelMeshes.push(labelMesh);
-
     const axialPhase = Number.isFinite(planet.orbitPhaseAtEpoch)
       ? (planet.orbitPhaseAtEpoch / (Math.PI * 2)) % 1
       : 0;
@@ -4092,8 +3443,7 @@ export class SystemScene implements IGameScene {
     });
   }
 
-  private createHyperlaneExits(): void {
-    if (this.hyperlaneExits.length === 0) return;
+  private getHyperlaneExitMaterial(): StandardMaterial {
     if (!this.hyperlaneExitMaterial) {
       const material = new StandardMaterial("systemHyperlaneExitMat", this.scene);
       material.emissiveColor = new Color3(0.32, 0.75, 1.0);
@@ -4102,38 +3452,23 @@ export class SystemScene implements IGameScene {
       material.alpha = 0.78;
       this.hyperlaneExitMaterial = material;
     }
-
-    for (const exit of this.hyperlaneExits) {
-      const position = exit.systemPosition ?? getHyperlaneExitSystemPosition(exit);
-      const marker = MeshBuilder.CreateTorus(
-        `hyperlaneExit_${this.star.id}_${exit.starId}`,
-        { diameter: 2.4, thickness: 0.08, tessellation: 36 },
-        this.scene,
-      );
-      marker.position.set(position.x, SYSTEM_HYPERLANE_EXIT_MARKER_Y, position.z);
-      marker.rotation.x = Math.PI / 2;
-      marker.material = this.hyperlaneExitMaterial;
-      marker.isPickable = false;
-      marker.alwaysSelectAsActiveMesh = true;
-      this.hyperlaneExitMeshes.push(marker);
-      this.glowLayer.addIncludedOnlyMesh(marker);
-    }
-  }
-
-  private disposeHyperlaneExits(): void {
-    for (const marker of this.hyperlaneExitMeshes) {
-      this.glowLayer?.removeIncludedOnlyMesh(marker);
-      marker.dispose();
-    }
-    this.hyperlaneExitMeshes = [];
+    return this.hyperlaneExitMaterial;
   }
 
   private refreshHyperlaneExits(): void {
-    this.disposeHyperlaneExits();
-    this.createHyperlaneExits();
-    for (const marker of this.hyperlaneExitMeshes) {
-      marker.setEnabled(this.starsVisible);
-    }
+    const definitions: SystemRenderableDefinition[] = this.hyperlaneExits.map((exit) => {
+      const position = exit.systemPosition ?? getHyperlaneExitSystemPosition(exit);
+      return {
+        id: this.getHyperlaneRenderableId(exit.starId),
+        kind: "hyperlane",
+        assetKey: "hyperlane-exit",
+        position: new Vector3(position.x, SYSTEM_HYPERLANE_EXIT_MARKER_Y, position.z),
+        label: exit.name,
+        visible: this.starsVisible,
+        metadata: { connectedStarId: exit.starId, exit },
+      };
+    });
+    this.objectRenderer.reconcile(definitions, { scopeKinds: ["hyperlane"] });
   }
 
   private getHyperlaneExitSignature(exits: HyperlaneExitPoint[]): string {
@@ -4179,298 +3514,6 @@ export class SystemScene implements IGameScene {
     this.orbitRings.push(ring);
   }
 
-  private createPlanetLabel(index: number, planet: PlanetConfig, orbitRadius: number): Mesh {
-    const labelTexture = new DynamicTexture(
-      `planetLabel_${index}`,
-      { width: SYSTEM_LABEL_TEXTURE_WIDTH, height: SYSTEM_LABEL_TEXTURE_HEIGHT },
-      this.scene,
-      false,
-    );
-    labelTexture.hasAlpha = true;
-    labelTexture.uScale = SYSTEM_LABEL_U_SCALE;
-    labelTexture.uOffset = SYSTEM_LABEL_U_OFFSET;
-    const ctx = labelTexture.getContext() as unknown as CanvasRenderingContext2D;
-
-    const isHabited = planet.isHabited ?? false;
-    ctx.clearRect(0, 0, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT);
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.lineJoin = "round";
-
-    if (isHabited) {
-      this.drawSystemNameplate(ctx, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT, planet.name, "HABITED", true);
-    } else {
-      this.drawSimpleSystemLabel(ctx, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT, planet.name, 150);
-    }
-
-    labelTexture.update(true);
-
-    // Create material
-    const material = new StandardMaterial(`planetLabelMat_${index}`, this.scene);
-    material.diffuseTexture = labelTexture;
-    material.emissiveTexture = labelTexture;
-    material.opacityTexture = labelTexture;
-    material.diffuseColor = Color3.White();
-    material.emissiveColor = Color3.White();
-    material.specularColor = Color3.Black();
-    material.disableLighting = true;
-    material.backFaceCulling = false;
-    material.useAlphaFromDiffuseTexture = true;
-    material.transparencyMode = Material.MATERIAL_ALPHABLEND;
-    material.alpha = 1.0;
-    material.disableDepthWrite = true;
-    
-
-    // Create plane mesh - texture and plane share the same aspect ratio to avoid stretching.
-    const labelMesh = MeshBuilder.CreatePlane(
-      `planetLabel_mesh_${index}`,
-      { width: isHabited ? 8.2 : 5.8, height: isHabited ? 2.05 : 1.45 },
-      this.scene,
-    );
-    
-    // Position label (will be updated each frame)
-    labelMesh.position = new Vector3(0, 0, 0);
-    labelMesh.material = material;
-    labelMesh.isPickable = false;
-    labelMesh.renderingGroupId = 2;
-    labelMesh.alwaysSelectAsActiveMesh = true;
-    labelMesh.billboardMode = Mesh.BILLBOARDMODE_NONE;
-    
-    return labelMesh;
-  }
-
-  private createStarLabel(): Mesh {
-    const labelTexture = new DynamicTexture(
-      "starLabel",
-      { width: SYSTEM_LABEL_TEXTURE_WIDTH, height: SYSTEM_LABEL_TEXTURE_HEIGHT },
-      this.scene,
-      false,
-    );
-    labelTexture.hasAlpha = true;
-    labelTexture.uScale = SYSTEM_LABEL_U_SCALE;
-    labelTexture.uOffset = SYSTEM_LABEL_U_OFFSET;
-    const ctx = labelTexture.getContext() as unknown as CanvasRenderingContext2D;
-
-    ctx.clearRect(0, 0, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT);
-    this.drawSimpleSystemLabel(ctx, SYSTEM_LABEL_TEXTURE_WIDTH, SYSTEM_LABEL_TEXTURE_HEIGHT, this.star.name, 150);
-
-    labelTexture.update(true);
-
-    // Create material
-    const material = new StandardMaterial("starLabelMat", this.scene);
-    material.diffuseTexture = labelTexture;
-    material.emissiveTexture = labelTexture;
-    material.opacityTexture = labelTexture;
-    material.diffuseColor = Color3.White();
-    material.emissiveColor = Color3.White();
-    material.specularColor = Color3.Black();
-    material.disableLighting = true;
-    material.backFaceCulling = false;
-    material.useAlphaFromDiffuseTexture = true;
-    material.transparencyMode = Material.MATERIAL_ALPHABLEND;
-    material.alpha = 1.0;
-    material.disableDepthWrite = true;
-    
-
-    // Create plane mesh for star label
-    const labelMesh = MeshBuilder.CreatePlane(
-      "starLabel_mesh",
-      { width: 6.2, height: 1.55 },
-      this.scene,
-    );
-    
-    labelMesh.position = new Vector3(0, this.starDiameter + 3, 0);
-    labelMesh.material = material;
-    labelMesh.isPickable = false;
-    labelMesh.renderingGroupId = 2;
-    labelMesh.alwaysSelectAsActiveMesh = true;
-    labelMesh.billboardMode = Mesh.BILLBOARDMODE_NONE;
-    
-    return labelMesh;
-  }
-
-  private drawSimpleSystemLabel(
-    ctx: CanvasRenderingContext2D,
-    textureWidth: number,
-    textureHeight: number,
-    text: string,
-    fontSize: number,
-  ): void {
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    const maxTextWidth = textureWidth - 180;
-    let fittedFontSize = fontSize;
-    do {
-      ctx.font = `800 ${fittedFontSize}px "Segoe UI", Arial, sans-serif`;
-      if (ctx.measureText(text).width <= maxTextWidth) break;
-      fittedFontSize -= 6;
-    } while (fittedFontSize > 72);
-
-    ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
-    ctx.shadowBlur = 20;
-    ctx.shadowOffsetY = 5;
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.96)";
-    ctx.lineWidth = Math.max(10, fittedFontSize * 0.11);
-    ctx.strokeText(text, textureWidth / 2, textureHeight / 2);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.98)";
-    ctx.fillText(text, textureWidth / 2, textureHeight / 2);
-    ctx.restore();
-  }
-
-  private drawSystemNameplate(
-    ctx: CanvasRenderingContext2D,
-    textureWidth: number,
-    textureHeight: number,
-    name: string,
-    status: string,
-    drawBadge: boolean,
-  ): void {
-    const plateW = 1120;
-    const plateH = 210;
-    const plateX = (textureWidth - plateW) / 2 - (drawBadge ? 115 : 0);
-    const plateY = (textureHeight - plateH) / 2;
-    const badgeX = plateX + plateW + 125;
-    const badgeY = textureHeight / 2;
-    const badgeR = 110;
-
-    ctx.save();
-    ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
-    ctx.shadowBlur = 24;
-    ctx.shadowOffsetY = 10;
-    ctx.fillStyle = "rgba(5, 45, 39, 0.94)";
-    ctx.strokeStyle = "rgba(152, 240, 219, 0.86)";
-    ctx.lineWidth = 12;
-    this.drawSystemRoundedRect(ctx, plateX, plateY, plateW, plateH, 12);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.shadowBlur = 0;
-    ctx.fillStyle = "rgba(35, 137, 116, 0.34)";
-    ctx.fillRect(plateX + 24, plateY + 24, plateW - 48, 24);
-    ctx.restore();
-
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    const maxTextWidth = plateW - 90;
-    let nameFontSize = 112;
-    do {
-      ctx.font = `900 ${nameFontSize}px "Segoe UI", Arial, sans-serif`;
-      if (ctx.measureText(name).width <= maxTextWidth) break;
-      nameFontSize -= 5;
-    } while (nameFontSize > 58);
-
-    ctx.shadowColor = "rgba(0, 0, 0, 0.9)";
-    ctx.shadowBlur = 14;
-    ctx.strokeStyle = "rgba(0, 0, 0, 0.95)";
-    ctx.lineWidth = Math.max(7, nameFontSize * 0.07);
-    ctx.strokeText(name, plateX + plateW / 2, plateY + 92, maxTextWidth);
-    ctx.fillStyle = "rgba(230, 255, 250, 0.98)";
-    ctx.fillText(name, plateX + plateW / 2, plateY + 92, maxTextWidth);
-
-    ctx.font = `800 42px "Segoe UI", Arial, sans-serif`;
-    ctx.fillStyle = "rgba(114, 230, 139, 0.9)";
-    ctx.fillText(status, plateX + plateW / 2, plateY + 158);
-    ctx.restore();
-
-    if (drawBadge) {
-      this.drawSystemHabitedPlanetBadge(ctx, badgeX, badgeY, badgeR);
-    }
-  }
-
-  private drawSystemRoundedRect(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    radius: number,
-  ): void {
-    ctx.beginPath();
-    ctx.moveTo(x + radius, y);
-    ctx.lineTo(x + width - radius, y);
-    ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
-    ctx.lineTo(x + width, y + height - radius);
-    ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
-    ctx.lineTo(x + radius, y + height);
-    ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
-    ctx.lineTo(x, y + radius);
-    ctx.quadraticCurveTo(x, y, x + radius, y);
-    ctx.closePath();
-  }
-
-  private drawSystemHabitedPlanetBadge(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number): void {
-    const drawHex = (r: number): void => {
-      ctx.beginPath();
-      for (let i = 0; i < 6; i++) {
-        const angle = -Math.PI / 6 + (i * Math.PI * 2) / 6;
-        const px = x + Math.cos(angle) * r;
-        const py = y + Math.sin(angle) * r;
-        if (i === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-    };
-
-    ctx.save();
-    ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
-    ctx.shadowBlur = 28;
-    ctx.shadowOffsetY = 12;
-
-    drawHex(radius);
-    const bg = ctx.createLinearGradient(x - radius, y - radius, x + radius, y + radius);
-    bg.addColorStop(0, "rgba(24, 171, 126, 0.98)");
-    bg.addColorStop(0.58, "rgba(21, 100, 137, 0.98)");
-    bg.addColorStop(1, "rgba(226, 166, 61, 0.98)");
-    ctx.fillStyle = bg;
-    ctx.fill();
-    ctx.lineWidth = 20;
-    ctx.strokeStyle = "rgba(194, 255, 231, 0.96)";
-    ctx.stroke();
-
-    drawHex(radius * 0.76);
-    ctx.lineWidth = 10;
-    ctx.strokeStyle = "rgba(7, 35, 40, 0.72)";
-    ctx.stroke();
-
-    ctx.shadowBlur = 0;
-    ctx.beginPath();
-    ctx.ellipse(x, y, radius * 0.45, radius * 0.32, -0.18, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(210, 252, 230, 0.98)";
-    ctx.fill();
-    ctx.lineWidth = 10;
-    ctx.strokeStyle = "rgba(9, 50, 51, 0.88)";
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.ellipse(x - radius * 0.1, y - radius * 0.02, radius * 0.5, radius * 0.16, -0.34, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(255, 232, 134, 0.95)";
-    ctx.lineWidth = 9;
-    ctx.stroke();
-
-    ctx.fillStyle = "rgba(34, 124, 92, 0.9)";
-    ctx.beginPath();
-    ctx.moveTo(x - radius * 0.27, y - radius * 0.06);
-    ctx.bezierCurveTo(x - radius * 0.1, y - radius * 0.2, x + radius * 0.08, y - radius * 0.14, x + radius * 0.17, y);
-    ctx.bezierCurveTo(x + radius * 0.02, y + radius * 0.05, x - radius * 0.12, y + radius * 0.08, x - radius * 0.27, y - radius * 0.06);
-    ctx.fill();
-
-    ctx.fillStyle = "rgba(255, 226, 105, 0.96)";
-    const lightR = Math.max(4, radius * 0.045);
-    const lights = [
-      [x - radius * 0.11, y + radius * 0.1],
-      [x + radius * 0.03, y + radius * 0.07],
-      [x + radius * 0.18, y + radius * 0.02],
-    ];
-    for (const [lx, ly] of lights) {
-      ctx.beginPath();
-      ctx.arc(lx, ly, lightR, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
   private installObjectLabelClicks(): void {
     this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
       if (pointerInfo.type !== PointerEventTypes.POINTERDOWN) return;
@@ -4480,7 +3523,7 @@ export class SystemScene implements IGameScene {
         ev.preventDefault();
         return;
       }
-      if (this.trySelectFleetMarkerAtPointer(ev) || this.trySelectShipVisualAtPointer(ev)) {
+      if (this.trySelectShipVisualAtPointer(ev) || this.trySelectFleetMarkerAtPointer(ev)) {
         ev.preventDefault();
         return;
       }
@@ -4493,18 +3536,14 @@ export class SystemScene implements IGameScene {
   }
 
   private trySelectFleetMarkerAtPointer(ev: PointerEvent): boolean {
-    const canvas = this.engine.getRenderingCanvas();
-    if (!canvas || this.fleetRoots.size === 0) return false;
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
-    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
-    const fleetMeshes = new Set<Mesh>();
-    for (const root of this.fleetRoots.values()) {
-      for (const mesh of root.getChildMeshes()) fleetMeshes.add(mesh as Mesh);
-    }
-    const pick = this.scene.pick(canvasX, canvasY, (mesh) => fleetMeshes.has(mesh as Mesh));
-    if (!pick?.hit || !pick.pickedMesh) return false;
-    const fleetId = (pick.pickedMesh.metadata as { fleetId?: string } | null)?.fleetId;
+    const point = this.inputController?.getCanvasPoint(ev);
+    if (!point) return false;
+    const pick = this.objectRenderer.pick(
+      point.canvasX,
+      point.canvasY,
+      (definition) => definition.kind === "fleet",
+    );
+    const fleetId = pick?.entry.definition.metadata?.fleetId as string | undefined;
     if (!fleetId) return false;
     const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
     if (!fleet) return false;
@@ -4514,16 +3553,12 @@ export class SystemScene implements IGameScene {
   }
 
   private trySelectShipVisualAtPointer(ev: PointerEvent): boolean {
-    const canvas = this.engine.getRenderingCanvas();
-    if (!canvas || this.shipVisualRoots.size === 0) return false;
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
-    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
+    if (this.shipVisualRoots.size === 0) return false;
     const shipMeshes = new Set<Mesh>();
     for (const root of this.shipVisualRoots.values()) {
       for (const mesh of root.getChildMeshes()) shipMeshes.add(mesh as Mesh);
     }
-    const pick = this.scene.pick(canvasX, canvasY, (mesh) => shipMeshes.has(mesh as Mesh));
+    const pick = this.inputController?.pick(ev, (mesh) => shipMeshes.has(mesh));
     if (!pick?.hit || !pick.pickedMesh) return false;
     const metadata = pick.pickedMesh.metadata as { fleetId?: string | null } | null;
     if (metadata?.fleetId) {
@@ -4538,45 +3573,29 @@ export class SystemScene implements IGameScene {
   }
 
   private tryOpenObjectPanelAtPointer(ev: PointerEvent): boolean {
-    const canvas = this.engine.getRenderingCanvas();
-    if (!canvas) return false;
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = (ev.clientX - rect.left) * (canvas.width / rect.width);
-    const canvasY = (ev.clientY - rect.top) * (canvas.height / rect.height);
-    const ray = this.scene.createPickingRay(canvasX, canvasY, Matrix.Identity(), this.camera);
-
-    for (let i = 0; i < this.planetLabelMeshes.length; i++) {
-      const labelMesh = this.planetLabelMeshes[i];
-      const planet = this.planetConfigs[i];
-      if (!labelMesh || !planet || !labelMesh.isEnabled() || !this.hitLabelPlane(ray, labelMesh)) continue;
-      this.clearFleetSelection();
-      void this.showPlanetObjectPanel(planet);
-      return true;
-    }
-
-    if (this.starLabelMesh && this.starLabelMesh.isEnabled() && this.hitLabelPlane(ray, this.starLabelMesh)) {
-      this.clearFleetSelection();
-      this.showStarObjectPanel();
-      return true;
+    const objectMeshes = new Set<Mesh>([
+      ...this.planetMeshes,
+      ...(this.starMesh ? [this.starMesh] : []),
+    ]);
+    const objectPick = this.inputController?.pick(ev, (mesh) => objectMeshes.has(mesh));
+    if (objectPick?.hit && objectPick.pickedMesh) {
+      const planetIndex = this.planetMeshes.findIndex((mesh) => mesh === objectPick.pickedMesh);
+      if (planetIndex >= 0) {
+        const planet = this.planetConfigs[planetIndex];
+        if (planet) {
+          this.clearFleetSelection();
+          void this.showPlanetObjectPanel(planet);
+          return true;
+        }
+      }
+      if (objectPick.pickedMesh === this.starMesh) {
+        this.clearFleetSelection();
+        this.showStarObjectPanel();
+        return true;
+      }
     }
 
     return false;
-  }
-
-  private hitLabelPlane(ray: Ray, labelMesh: Mesh): boolean {
-    const normal = labelMesh.getDirection(Vector3.Forward());
-    const denominator = Vector3.Dot(ray.direction, normal);
-    if (Math.abs(denominator) < 0.0001) return false;
-
-    const t = Vector3.Dot(labelMesh.position.subtract(ray.origin), normal) / denominator;
-    if (t < 0) return false;
-
-    const hitPoint = ray.origin.add(ray.direction.scale(t));
-    const inverseWorld = labelMesh.getWorldMatrix().clone().invert();
-    const local = Vector3.TransformCoordinates(hitPoint, inverseWorld);
-    const width = labelMesh.getBoundingInfo().boundingBox.extendSize.x * 2;
-    const height = labelMesh.getBoundingInfo().boundingBox.extendSize.y * 2;
-    return Math.abs(local.x) <= width / 2 && Math.abs(local.y) <= height / 2;
   }
 
   private async showPlanetObjectPanel(planet: PlanetConfig): Promise<void> {
@@ -4735,18 +3754,14 @@ export class SystemScene implements IGameScene {
       this.starMesh.setEnabled(visible);
     }
     if (this.playerShipRoot) {
-      const hasTacticalFleetVisuals = this.shipVisualRoots.size > 0 || this.fleetRoots.size > 0;
+      const hasTacticalFleetVisuals = this.shipVisualRoots.size > 0 || this.getVisibleFleetViews().length > 0;
       this.playerShipRoot.setEnabled(visible && !hasTacticalFleetVisuals);
-    }
-    for (const marker of this.hyperlaneExitMeshes) {
-      marker.setEnabled(visible);
     }
     for (const [, root] of this.shipVisualRoots) {
       root.setEnabled(visible);
     }
-    for (const [, root] of this.fleetRoots) {
-      root.setEnabled(visible);
-    }
+    this.objectRenderer.setVisibleForKind("fleet", visible);
+    this.objectRenderer.setVisibleForKind("hyperlane", visible);
     this.refreshStarbaseCombatRangeRing();
   }
 
@@ -4759,16 +3774,9 @@ export class SystemScene implements IGameScene {
 
   setLabelsVisible(visible: boolean): void {
     this.labelsVisible = visible;
-    for (const labelMesh of this.planetLabelMeshes) {
-      labelMesh?.setEnabled(visible);
-    }
-    this.starLabelMesh?.setEnabled(visible);
-    if (this.entityCardLayer) {
-      this.entityCardLayer.style.display = visible ? "" : "none";
-    }
+    this.labelOverlay?.setVisible(visible);
     if (visible) {
-      this.updatePlanetLabels();
-      this.updateSystemEntityCards();
+      this.updateSystemLabelOverlay();
     }
   }
 
@@ -4785,8 +3793,73 @@ export class SystemScene implements IGameScene {
   }
 
   setRenderDebugEnabled(enabled: boolean): void {
-    this.debugLogOccluder = enabled;
-    this.deepDebug = enabled;
+    this.renderDebugEnabled = enabled;
+    if (!enabled) {
+      this.renderDebugOverlay?.remove();
+      this.renderDebugOverlay = null;
+      return;
+    }
+    this.updateRenderDebugOverlay();
+  }
+
+  private updateRenderDebugOverlay(): void {
+    if (!this.renderDebugEnabled) return;
+    const overlay = this.ensureRenderDebugOverlay();
+    overlay.innerHTML = `
+      <strong>System Render</strong>
+      <span>meshes ${this.scene.meshes.length}</span>
+      <span>ships ${this.shipVisualRoots.size}</span>
+      <span>fleets ${this.getVisibleFleetViews().length}</span>
+      <span>labels ${this.labelsVisible ? "on" : "off"}</span>
+      <span>ranges ${this.rangesVisible ? "on" : "off"}</span>
+      <span>footprints ${this.footprintsVisible ? "on" : "off"}</span>
+      <span>star ${this.renderDebugState.starOccluded ? `occluded by ${this.escapeHtml(this.renderDebugState.starOccluderName ?? "unknown")}` : "clear"}</span>
+    `;
+  }
+
+  private ensureRenderDebugOverlay(): HTMLDivElement {
+    if (this.renderDebugOverlay) return this.renderDebugOverlay;
+    if (!document.getElementById("system-render-debug-style")) {
+      const style = document.createElement("style");
+      style.id = "system-render-debug-style";
+      style.textContent = `
+.systemRenderDebugOverlay {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 58;
+  display: grid;
+  gap: 3px;
+  min-width: 178px;
+  padding: 8px 10px;
+  border: 1px solid rgba(126, 218, 255, 0.5);
+  border-radius: 4px;
+  background: rgba(3, 9, 15, 0.82);
+  color: rgba(226, 245, 255, 0.94);
+  font: 10px "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
+  pointer-events: none;
+}
+
+.systemRenderDebugOverlay strong {
+  font-size: 11px;
+  color: #ffffff;
+}
+`;
+      document.head.appendChild(style);
+    }
+    const overlay = document.createElement("div");
+    overlay.className = "systemRenderDebugOverlay";
+    document.body.appendChild(overlay);
+    this.renderDebugOverlay = overlay;
+    return overlay;
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
   }
 
   setFleetSystemPositions(
@@ -4856,7 +3929,6 @@ export class SystemScene implements IGameScene {
 
   setFactions(factions: FactionInfo[]): void {
     this.factions = factions;
-    this.factionFlagSvgCache.clear();
     this.refreshSystemEntityCards();
     if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
@@ -4899,7 +3971,6 @@ export class SystemScene implements IGameScene {
     this.starbases = this.systemStore.getStarbases();
     this.starbaseSystemIds = new Set(this.starbases.map((starbase) => starbase.starId));
     this.factions = this.systemStore.getFactions();
-    this.factionFlagSvgCache.clear();
     this.planetStates = this.systemStore.getPlanetStates();
     const previousHyperlaneExitSignature = this.getHyperlaneExitSignature(this.hyperlaneExits);
     this.hyperlaneExits = this.systemStore.getHyperlaneExits();
@@ -5029,28 +4100,11 @@ export class SystemScene implements IGameScene {
 
   setPlanetStates(planetStates: PlanetState[]): void {
     this.planetStates = planetStates;
-    const previousHabited = this.planetConfigs.map((planet) => planet.isHabited === true);
     applyPlanetStatesToStars([this.star], planetStates);
     this.planetConfigs = this.star.system.planets.length > 0
       ? this.star.system.planets
       : this.planetConfigs;
 
-    for (let i = 0; i < this.planetConfigs.length; i++) {
-      if (previousHabited[i] === (this.planetConfigs[i].isHabited === true)) continue;
-      const oldLabel = this.planetLabelMeshes[i];
-      if (oldLabel) {
-        const material = oldLabel.material as StandardMaterial | null;
-        material?.diffuseTexture?.dispose();
-        material?.dispose();
-        oldLabel.dispose();
-      }
-      this.planetLabelMeshes[i] = this.createPlanetLabel(
-        i,
-        this.planetConfigs[i],
-        this.planetConfigs[i].orbitRadius,
-      );
-      this.planetLabelMeshes[i]?.setEnabled(this.labelsVisible);
-    }
     for (const planetState of planetStates) {
       if (planetState.starId !== this.star.id) continue;
       const planet = this.star.system.planets[planetState.planetIndex];
@@ -5058,6 +4112,7 @@ export class SystemScene implements IGameScene {
         this.objectPanel?.refreshPlanetState(planet.id, planetState, planet.objectDetails, planet.isHabited === true);
       }
     }
+    this.refreshSystemEntityCards();
   }
 
   refreshPlanetDetails(planet: PlanetConfig, planetState: PlanetState): void {
@@ -5072,6 +4127,7 @@ export class SystemScene implements IGameScene {
       planet.objectDetails,
       planet.isHabited === true,
     );
+    this.refreshSystemEntityCards();
   }
 
   dispose(): void {
@@ -5089,39 +4145,23 @@ export class SystemScene implements IGameScene {
     this.shipVisualRoots.clear();
     this.shipVisualTargets.clear();
     this.disposeAllShipVisualTrails();
-    for (const [, root] of this.fleetRoots) {
-      root.dispose();
-    }
-    this.fleetRoots.clear();
-    this.fleetTargets.clear();
+    this.objectRenderer.dispose();
     this.fleetPickMaterial?.dispose();
     this.fleetPickMaterial = null;
     this.disposeStarbaseCombatRangeRing();
-    for (const beam of this.weaponBeams) {
-      beam.mesh.dispose();
-    }
-    this.weaponBeams = [];
-    for (const projectile of this.weaponProjectiles) {
-      projectile.mesh.dispose();
-      projectile.material.dispose();
-    }
-    this.weaponProjectiles = [];
-    this.disposeHyperlaneExits();
+    this.effectsRenderer?.dispose();
+    this.effectsRenderer = null;
     this.hyperlaneExitMaterial?.dispose();
     this.hyperlaneExitMaterial = null;
     this.disposePlayerShipTrail();
     this.disposeSelectedFleetRouteLine();
-    this.disposeSystemActionTargetMarkers();
-    this.systemActionMarkerMaterial?.dispose();
-    this.systemActionMarkerMaterial = null;
-    for (const template of this.tacticalShipTemplates.values()) {
-      template.dispose();
-    }
-    this.tacticalShipTemplates.clear();
-    this.tacticalShipTemplatePromises.clear();
-    this.entityCardLayer?.remove();
-    this.entityCardLayer = null;
-    this.entityCardNodes.clear();
+    this.actionTargetRenderer?.dispose();
+    this.actionTargetRenderer = null;
+    this.assetRegistry.dispose();
+    this.labelOverlay?.dispose();
+    this.labelOverlay = null;
+    this.renderDebugOverlay?.remove();
+    this.renderDebugOverlay = null;
     this.orbitSystem.dispose();
     this.camera?.detachControl();
     this.scene.dispose();

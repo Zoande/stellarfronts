@@ -3553,19 +3553,6 @@ function canAccessPlanet(perspective: GalaxyPerspective, planetState: PlanetStat
   return canAccessStar(perspective, planetState.starId);
 }
 
-function sendSystemDetails(socket: WebSocket, perspective: GalaxyPerspective, starId: number): void {
-  if (!Number.isInteger(starId) || !canAccessStar(perspective, starId)) {
-    reject(socket, "System is not available.");
-    return;
-  }
-
-  sendEvent(socket, {
-    type: "systemDetails",
-    star: state.stars[starId],
-    planetStates: state.planetStates.filter((planetState) => planetState.starId === starId),
-  });
-}
-
 function sendPlanetDetails(socket: WebSocket, perspective: GalaxyPerspective, planetId: string): void {
   const planetState = getPlanetState(planetId);
   if (!planetState || !canAccessPlanet(perspective, planetState)) {
@@ -8138,14 +8125,6 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
       command.subDistrictIndex,
       command.subDistrictKind,
     );
-    return;
-  }
-  if (command.type === "requestSystemDetails") {
-    sendSystemDetails(session.socket, session.perspective, command.starId);
-    return;
-  }
-  if (command.type === "requestPlanetDetails") {
-    sendPlanetDetails(session.socket, session.perspective, command.planetId);
     return;
   }
   if (command.type === "requestDetails") {
