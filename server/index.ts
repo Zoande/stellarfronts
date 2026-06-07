@@ -129,6 +129,9 @@ import {
 } from "../src/game/CombatTypes";
 import type {
   ClientCommand,
+  DiplomacyDetailPayload,
+  DiplomacyEligiblePeaceTransferSystem,
+  DiplomacyMovementPayload,
   FactionState,
   FleetFormation,
   GameClock,
@@ -242,6 +245,32 @@ import type {
   GovernmentPositionId,
 } from "../src/data/Government";
 import {
+  TREATY_ARTICLE_DEFINITIONS,
+  TRADE_PRIVILEGE_ARTICLE_ID,
+  areFactionsAtWar,
+  clampTreatyDurationYears,
+  createInitialDiplomacyState,
+  getActiveTreatiesBetween,
+  getActiveTreatyPartnersForArticle,
+  getActiveWar,
+  getBorderPolicy,
+  isTreatyArticleSuspended,
+  normalizeDiplomacyState,
+  normalizePeaceTerms,
+  normalizeTreatyArticleIds,
+  setBorderPolicy,
+} from "../src/data/Diplomacy";
+import type {
+  BorderPolicy,
+  DiplomacyPeaceTerms,
+  DiplomacyProposal,
+  DiplomacyState,
+  DiplomacySystemTransferTerm,
+  DiplomacyTreaty,
+  DiplomacyWar,
+  TreatyArticleId,
+} from "../src/data/Diplomacy";
+import {
   ADMIN_COMMAND_DEFINITIONS,
   formatAdminCommandHelp,
   getAdminCommandDefinition,
@@ -300,12 +329,13 @@ interface GameFleet extends ServerFleet {
 interface GameShip extends ServerShip {}
 
 interface GameState {
-  schemaVersion: 18;
+  schemaVersion: 19;
   stars: StarData[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
   factionTechnologies: FactionTechState[];
   governments: FactionGovernmentState[];
+  diplomacy: DiplomacyState;
   market: MarketState;
   leaders: LeaderState[];
   hyperlanes: Array<[number, number]>;
@@ -2018,12 +2048,13 @@ function createInitialState(): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 18,
+    schemaVersion: 19,
     stars,
     planetStates,
     factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
     factionTechnologies: factions.map((faction) => normalizeFactionTechState(faction.id, undefined)),
     governments: createInitialGovernmentStates(factions.map((faction) => faction.id)),
+    diplomacy: createInitialDiplomacyState(factions.map((faction) => faction.id)),
     market: createInitialMarketState(factions.map((faction) => faction.id), startHour, GAME_START_YEAR),
     leaders: createInitialLeaders(factions.map((faction) => faction.id), startLeaderDay, GAME_START_YEAR),
     hyperlanes,
@@ -2060,7 +2091,7 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(statePath, "utf8");
     const parsed = JSON.parse(raw) as GameState;
-    parsed.schemaVersion = 18;
+    parsed.schemaVersion = 19;
     delete (parsed as GameState & { battles?: unknown }).battles;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
@@ -2132,6 +2163,11 @@ async function loadState(): Promise<GameState> {
     );
     const governmentsChanged = JSON.stringify(parsed.governments ?? []) !== JSON.stringify(normalizedGovernments);
     parsed.governments = normalizedGovernments;
+    const normalizedDiplomacy = normalizeDiplomacyState(
+      parsed.diplomacy,
+      parsed.factions.map((faction) => faction.id),
+    );
+    parsed.diplomacy = normalizedDiplomacy.state;
     const normalizedLeaders = normalizeLeadersForFactions(
       parsed.factions.map((faction) => faction.id),
       parsed.leaders,
@@ -2143,7 +2179,7 @@ async function loadState(): Promise<GameState> {
     recalculatePlanetEconomies(parsed);
     refreshFactionEconomyDeltas(parsed);
     const planetStateApplied = applyPlanetStatesToStars(parsed.stars, parsed.planetStates);
-    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || governmentsChanged || leadersChanged || homeStarbaseChanged || ownershipChanged) {
+    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || governmentsChanged || normalizedDiplomacy.changed || leadersChanged || homeStarbaseChanged || ownershipChanged) {
       hasDirtyState = true;
     }
     refreshDiscovery(parsed);
@@ -2421,6 +2457,9 @@ function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField
   if (changed.includes("governments")) {
     update.governments = visibleState.governments;
   }
+  if (changed.includes("diplomacy")) {
+    update.diplomacy = visibleState.diplomacy;
+  }
   if (changed.includes("combatContacts") || changed.includes("visibility")) {
     update.recentCombatContacts = visibleState.recentCombatContacts;
   }
@@ -2502,6 +2541,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     leaders,
     governments,
     recentCombatContacts,
+    diplomacy: createDiplomacyMovementPayload(perspective),
     planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
     factionEconomies,
     habitedPlanetSystemIds: createHabitedPlanetSystemIds(knownSet),
@@ -2537,7 +2577,19 @@ function accept(socket: WebSocket, message: string): void {
 }
 
 function routeIsAllowed(route: number[], ownerId: number): boolean {
-  return true;
+  if (!Number.isInteger(ownerId)) return false;
+  return route.slice(1).every((starId) => canEnterSystem(ownerId, starId));
+}
+
+function getStarOwnerId(starId: number): number {
+  return state.starOwnership[starId] ?? -1;
+}
+
+function canEnterSystem(fleetOwnerId: number, starId: number): boolean {
+  const ownerId = getStarOwnerId(starId);
+  if (ownerId < 0 || ownerId === fleetOwnerId) return true;
+  if (areFactionsAtWar(state.diplomacy, fleetOwnerId, ownerId)) return true;
+  return getBorderPolicy(state.diplomacy, ownerId, fleetOwnerId) === "open";
 }
 
 function gameDaysToYears(days: number): number {
@@ -2849,6 +2901,7 @@ function findRoute(fleet: GameFleet, targetStarId: number): number[] | null {
 
     for (const neighbor of state.adjacency[current] ?? []) {
       if (!discovered.has(neighbor)) continue;
+      if (neighbor !== startStarId && !canEnterSystem(fleet.ownerId, neighbor)) continue;
       const nextDistance = currentDistance + hyperlaneTravelDays(current, neighbor, fleet);
       if (nextDistance >= (distances.get(neighbor) ?? Number.POSITIVE_INFINITY)) continue;
       distances.set(neighbor, nextDistance);
@@ -2877,7 +2930,7 @@ function startPositionOrder(
   routeOverride: number[] | null = null,
 ): void {
   const route = routeOverride ?? (targetStarId === fleet.currentStarId ? [fleet.currentStarId] : findRoute(fleet, targetStarId));
-  if (!route) throw new Error("No discovered safe route to target.");
+  if (!route || !routeIsAllowed(route, fleet.ownerId)) throw new Error("No discovered safe route to target.");
   fleet.targetStarId = targetStarId;
   fleet.orderType = orderType;
   fleet.route = route;
@@ -3606,6 +3659,33 @@ function createVisibleDetailState(perspective: GalaxyPerspective) {
   };
 }
 
+function createDiplomacyMovementPayload(perspective: GalaxyPerspective): DiplomacyMovementPayload {
+  if (perspective.mode !== "faction") {
+    return {
+      playerFactionId: null,
+      openBorderFactionIds: [],
+      warFactionIds: [],
+    };
+  }
+  const playerFactionId = perspective.factionId;
+  const openBorderFactionIds: number[] = [];
+  const warFactionIds: number[] = [];
+  for (const faction of state.factions) {
+    if (faction.id === playerFactionId) continue;
+    if (getBorderPolicy(state.diplomacy, faction.id, playerFactionId) === "open") {
+      openBorderFactionIds.push(faction.id);
+    }
+    if (areFactionsAtWar(state.diplomacy, playerFactionId, faction.id)) {
+      warFactionIds.push(faction.id);
+    }
+  }
+  return {
+    playerFactionId,
+    openBorderFactionIds: openBorderFactionIds.sort((a, b) => a - b),
+    warFactionIds: warFactionIds.sort((a, b) => a - b),
+  };
+}
+
 function createSystemDetailPayload(
   perspective: GalaxyPerspective,
   starId: number,
@@ -3766,12 +3846,27 @@ function calculatePlayerMarketQuote(
   const consumptionPerHour = factionId === null || !flows
     ? 0
     : Math.max(0, flows.consumption[resource.resourceId]) / GAME_HOURS_PER_MONTH;
-  const internalSupply = productionPerHour;
-  let internalDemand = consumptionPerHour * 0.85;
+  let effectiveProductionPerHour = productionPerHour;
+  let effectiveConsumptionPerHour = consumptionPerHour;
 
-  if (consumptionPerHour > productionPerHour) {
+  if (factionId !== null) {
+    const tradePrivilege = TREATY_ARTICLE_DEFINITIONS.find((article) => article.id === TRADE_PRIVILEGE_ARTICLE_ID);
+    const shareFraction = tradePrivilege?.effects.find((effect) => effect.type === "marketSharedSupply")?.shareFraction ?? 0;
+    if (shareFraction > 0) {
+      for (const partnerId of getActiveTreatyPartnersForArticle(nextState.diplomacy, factionId, TRADE_PRIVILEGE_ARTICLE_ID)) {
+        const partnerFlows = calculateFactionResourceFlow(nextState, partnerId);
+        effectiveProductionPerHour += (Math.max(0, partnerFlows.production[resource.resourceId]) / GAME_HOURS_PER_MONTH) * shareFraction;
+        effectiveConsumptionPerHour += (Math.max(0, partnerFlows.consumption[resource.resourceId]) / GAME_HOURS_PER_MONTH) * shareFraction;
+      }
+    }
+  }
+
+  const internalSupply = effectiveProductionPerHour;
+  let internalDemand = effectiveConsumptionPerHour * 0.85;
+
+  if (effectiveConsumptionPerHour > effectiveProductionPerHour) {
     const deficitRatio = clamp(
-      (consumptionPerHour - productionPerHour) / Math.max(consumptionPerHour, 1),
+      (effectiveConsumptionPerHour - effectiveProductionPerHour) / Math.max(effectiveConsumptionPerHour, 1),
       0,
       1,
     );
@@ -3844,6 +3939,103 @@ function createMarketDetailPayload(perspective: GalaxyPerspective): MarketDetail
       : state.market.transactions.filter((transaction) => transaction.playerId === factionId).slice(-24),
     marketFee: MARKET_FEE_RATE,
   };
+}
+
+function createDiplomacyDetailPayload(perspective: GalaxyPerspective): DiplomacyDetailPayload {
+  const playerFactionId = perspective.mode === "faction" ? perspective.factionId : null;
+  const factions: FactionState[] = state.factions.map((faction) => ({
+    ...faction,
+    discoveredStarIds: state.discoveredByFaction[String(faction.id)] ?? [],
+  }));
+  const activeWars = state.diplomacy.wars.filter((war) => !Number.isFinite(war.endedAtYear ?? Number.NaN));
+  const activeTreaties = state.diplomacy.treaties.filter((treaty) => !Number.isFinite(treaty.cancelledAtYear ?? Number.NaN));
+  const pendingProposals = state.diplomacy.proposals.filter((proposal) => proposal.status === "pending");
+  const pairRelevant = (factionA: number, factionB: number): boolean => (
+    playerFactionId === null || factionA === playerFactionId || factionB === playerFactionId
+  );
+  const countries = factions.map((faction) => {
+    const activeBetween = playerFactionId === null
+      ? []
+      : getActiveTreatiesBetween(state.diplomacy, playerFactionId, faction.id);
+    const tradePrivilegeTreaty = activeBetween.some((treaty) => treaty.articleIds.includes(TRADE_PRIVILEGE_ARTICLE_ID));
+    return {
+      faction,
+      isSelf: playerFactionId === faction.id,
+      atWar: playerFactionId !== null && areFactionsAtWar(state.diplomacy, playerFactionId, faction.id),
+      ourBorderPolicy: playerFactionId === null ? "closed" as BorderPolicy : getBorderPolicy(state.diplomacy, playerFactionId, faction.id),
+      theirBorderPolicy: playerFactionId === null ? "closed" as BorderPolicy : getBorderPolicy(state.diplomacy, faction.id, playerFactionId),
+      activeTreatyCount: activeBetween.length,
+      pendingProposalCount: playerFactionId === null
+        ? 0
+        : pendingProposals.filter((proposal) => (
+          (proposal.fromFactionId === playerFactionId && proposal.toFactionId === faction.id)
+          || (proposal.fromFactionId === faction.id && proposal.toFactionId === playerFactionId)
+        )).length,
+      tradePrivilegeActive: playerFactionId !== null
+        && tradePrivilegeTreaty
+        && !isTreatyArticleSuspended(state.diplomacy, TRADE_PRIVILEGE_ARTICLE_ID, playerFactionId, faction.id),
+      tradePrivilegeSuspended: playerFactionId !== null
+        && tradePrivilegeTreaty
+        && isTreatyArticleSuspended(state.diplomacy, TRADE_PRIVILEGE_ARTICLE_ID, playerFactionId, faction.id),
+    };
+  });
+  const wars = playerFactionId === null
+    ? activeWars
+    : activeWars.filter((war) => pairRelevant(war.attackerFactionId, war.defenderFactionId));
+  const treaties = playerFactionId === null
+    ? activeTreaties
+    : activeTreaties.filter((treaty) => pairRelevant(treaty.factionIds[0], treaty.factionIds[1]));
+  const proposals = playerFactionId === null
+    ? pendingProposals
+    : pendingProposals.filter((proposal) => pairRelevant(proposal.fromFactionId, proposal.toFactionId));
+  const chatMessages = playerFactionId === null
+    ? state.diplomacy.chatMessages
+    : state.diplomacy.chatMessages.filter((message) => (
+      message.fromFactionId === playerFactionId || message.toFactionId === playerFactionId
+    ));
+  const eligiblePeaceTransferSystems = createEligiblePeaceTransferSystems(playerFactionId, wars);
+
+  return {
+    countries,
+    wars,
+    treaties,
+    proposals,
+    chatMessages,
+    eligiblePeaceTransferSystems,
+    treatyArticles: TREATY_ARTICLE_DEFINITIONS,
+    playerFactionId,
+  };
+}
+
+function createEligiblePeaceTransferSystems(
+  playerFactionId: number | null,
+  wars: DiplomacyWar[],
+): DiplomacyEligiblePeaceTransferSystem[] {
+  const rows: DiplomacyEligiblePeaceTransferSystem[] = [];
+  for (const war of wars) {
+    if (
+      playerFactionId !== null
+      && war.attackerFactionId !== playerFactionId
+      && war.defenderFactionId !== playerFactionId
+    ) {
+      continue;
+    }
+    for (const starbase of state.starbases) {
+      if (starbase.ownerId !== war.attackerFactionId && starbase.ownerId !== war.defenderFactionId) continue;
+      const toFactionId = starbase.ownerId === war.attackerFactionId ? war.defenderFactionId : war.attackerFactionId;
+      const star = state.stars[starbase.starId];
+      rows.push({
+        starbaseId: starbase.id,
+        starId: starbase.starId,
+        starName: star?.name ?? `System ${starbase.starId}`,
+        ownerId: starbase.ownerId,
+        ownerName: state.factions.find((faction) => faction.id === starbase.ownerId)?.name ?? `Faction ${starbase.ownerId}`,
+        fromFactionId: starbase.ownerId,
+        toFactionId,
+      });
+    }
+  }
+  return rows.sort((a, b) => a.starName.localeCompare(b.starName));
 }
 
 function createDetailPayload(
@@ -3964,6 +4156,11 @@ function createDetailPayload(
       technologies: detailState.technologies,
       factionEconomies: detailState.factionEconomies,
     };
+    return { payload, revision: createRevision(payload), normalizedId: null };
+  }
+
+  if (scope === "diplomacy") {
+    const payload = createDiplomacyDetailPayload(perspective);
     return { payload, revision: createRevision(payload), normalizedId: null };
   }
 
@@ -5118,7 +5315,7 @@ function getMaxWeaponSystemRange(mounts: WeaponMountDefinition[]): number {
 }
 
 function isHostileOwner(ownerA: number, ownerB: number): boolean {
-  return ownerA !== ownerB;
+  return ownerA !== ownerB && areFactionsAtWar(state.diplomacy, ownerA, ownerB);
 }
 
 function resetFleetTacticalMovement(fleet: GameFleet): void {
@@ -7996,6 +8193,393 @@ function handleDismissLeader(socket: WebSocket, perspective: GalaxyPerspective, 
   commitLeaderChange(changed);
 }
 
+function getFactionName(factionId: number): string {
+  return state.factions.find((faction) => faction.id === factionId)?.name ?? `Faction ${factionId}`;
+}
+
+function getDiplomacyCommandFaction(socket: WebSocket, perspective: GalaxyPerspective): number | null {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) {
+    reject(socket, "Observer mode is read-only.");
+    return null;
+  }
+  if (!state.factions.some((faction) => faction.id === factionId)) {
+    reject(socket, "Your country is not available.");
+    return null;
+  }
+  return factionId;
+}
+
+function getDiplomacyTarget(socket: WebSocket, actorFactionId: number, targetFactionId: number): FactionInfo | null {
+  if (!Number.isInteger(targetFactionId) || targetFactionId === actorFactionId) {
+    reject(socket, "Select another country.");
+    return null;
+  }
+  const target = state.factions.find((faction) => faction.id === targetFactionId);
+  if (!target) {
+    reject(socket, "Country not found.");
+    return null;
+  }
+  return target;
+}
+
+function normalizeDiplomacyAfterMutation(): void {
+  const normalized = normalizeDiplomacyState(
+    state.diplomacy,
+    state.factions.map((faction) => faction.id),
+  );
+  state.diplomacy = normalized.state;
+}
+
+function commitDiplomacyChange(socket: WebSocket, message: string, changed: ServerUpdateField[] = ["diplomacy"]): void {
+  normalizeDiplomacyAfterMutation();
+  hasDirtyState = true;
+  accept(socket, message);
+  broadcastUpdates(changed);
+}
+
+function handleSendDiplomacyMessage(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  targetFactionId: number,
+  body: string,
+): void {
+  const factionId = getDiplomacyCommandFaction(socket, perspective);
+  if (factionId === null) return;
+  const target = getDiplomacyTarget(socket, factionId, Number(targetFactionId));
+  if (!target) return;
+  const normalizedBody = String(body ?? "").trim().slice(0, 500);
+  if (!normalizedBody) return reject(socket, "Message is empty.");
+  state.diplomacy.chatMessages.push({
+    id: createRuntimeId("diplomacy-message", [factionId, target.id]),
+    fromFactionId: factionId,
+    toFactionId: target.id,
+    body: normalizedBody,
+    createdAtYear: state.clock.year,
+  });
+  commitDiplomacyChange(socket, "Message sent.");
+}
+
+function handleSetBorderPolicy(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  targetFactionId: number,
+  policy: BorderPolicy,
+): void {
+  const factionId = getDiplomacyCommandFaction(socket, perspective);
+  if (factionId === null) return;
+  const target = getDiplomacyTarget(socket, factionId, Number(targetFactionId));
+  if (!target) return;
+  const normalizedPolicy: BorderPolicy = policy === "open" ? "open" : "closed";
+  setBorderPolicy(state.diplomacy, factionId, target.id, normalizedPolicy);
+  commitDiplomacyChange(socket, `Borders ${normalizedPolicy === "open" ? "opened" : "closed"} to ${target.name}.`);
+}
+
+function handleDeclareWar(socket: WebSocket, perspective: GalaxyPerspective, targetFactionId: number): void {
+  const factionId = getDiplomacyCommandFaction(socket, perspective);
+  if (factionId === null) return;
+  const target = getDiplomacyTarget(socket, factionId, Number(targetFactionId));
+  if (!target) return;
+  if (areFactionsAtWar(state.diplomacy, factionId, target.id)) {
+    return reject(socket, `You are already at war with ${target.name}.`);
+  }
+  state.diplomacy.wars.push({
+    id: createRuntimeId("war", [factionId, target.id]),
+    attackerFactionId: factionId,
+    defenderFactionId: target.id,
+    startedAtYear: state.clock.year,
+    endedAtYear: null,
+    preWarOwnership: toOwnershipEntries(state.starOwnership),
+  });
+  commitDiplomacyChange(
+    socket,
+    `War declared on ${target.name}.`,
+    ["diplomacy", "market", "fleets", "starbases", "combatContacts"],
+  );
+}
+
+function getPendingDiplomacyProposal(proposalId: string): DiplomacyProposal | null {
+  return state.diplomacy.proposals.find((proposal) => (
+    proposal.id === proposalId && proposal.status === "pending"
+  )) ?? null;
+}
+
+function createDiplomacyTreaty(
+  factionA: number,
+  factionB: number,
+  articleIds: TreatyArticleId[],
+  proposedByFactionId: number,
+  acceptedByFactionId: number,
+  durationYears: number,
+  id = createRuntimeId("treaty", [factionA, factionB]),
+): DiplomacyTreaty {
+  const factionIds: [number, number] = factionA < factionB ? [factionA, factionB] : [factionB, factionA];
+  const startedAtYear = state.clock.year;
+  return {
+    id,
+    factionIds,
+    articleIds,
+    proposedByFactionId,
+    acceptedByFactionId,
+    startedAtYear,
+    minimumEndYear: startedAtYear + clampTreatyDurationYears(durationYears),
+    cancelledAtYear: null,
+    earlyCancelled: false,
+    cancellationReason: null,
+    replacedByTreatyId: null,
+  };
+}
+
+function replaceOverlappingTreaties(nextTreaty: DiplomacyTreaty, requestedReplacesTreatyId?: string | null): void {
+  const replacements = state.diplomacy.treaties.filter((treaty) => {
+    if (Number.isFinite(treaty.cancelledAtYear ?? Number.NaN)) return false;
+    if (!getActiveTreatiesBetween(state.diplomacy, nextTreaty.factionIds[0], nextTreaty.factionIds[1]).includes(treaty)) return false;
+    if (requestedReplacesTreatyId && treaty.id === requestedReplacesTreatyId) return true;
+    return treaty.articleIds.some((articleId) => nextTreaty.articleIds.includes(articleId));
+  });
+  for (const treaty of replacements) {
+    treaty.cancelledAtYear = state.clock.year;
+    treaty.earlyCancelled = state.clock.year < treaty.minimumEndYear;
+    treaty.cancellationReason = "renegotiated";
+    treaty.replacedByTreatyId = nextTreaty.id;
+  }
+}
+
+function handleProposeTreaty(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  targetFactionId: number,
+  articleIds: TreatyArticleId[],
+  durationYears?: number,
+  replacesTreatyId?: string | null,
+): void {
+  const factionId = getDiplomacyCommandFaction(socket, perspective);
+  if (factionId === null) return;
+  const target = getDiplomacyTarget(socket, factionId, Number(targetFactionId));
+  if (!target) return;
+  const normalizedArticleIds = normalizeTreatyArticleIds(articleIds);
+  if (normalizedArticleIds.length === 0) return reject(socket, "Select at least one treaty article.");
+  const normalizedDuration = clampTreatyDurationYears(durationYears);
+  if (replacesTreatyId) {
+    const treaty = state.diplomacy.treaties.find((candidate) => candidate.id === replacesTreatyId);
+    if (
+      !treaty
+      || Number.isFinite(treaty.cancelledAtYear ?? Number.NaN)
+      || !getActiveTreatiesBetween(state.diplomacy, factionId, target.id).includes(treaty)
+    ) {
+      return reject(socket, "Treaty to renegotiate is not active.");
+    }
+  }
+  state.diplomacy.proposals.push({
+    id: createRuntimeId("treaty-proposal", [factionId, target.id]),
+    kind: "treaty",
+    fromFactionId: factionId,
+    toFactionId: target.id,
+    articleIds: normalizedArticleIds,
+    durationYears: normalizedDuration,
+    peaceTerms: null,
+    status: "pending",
+    createdAtYear: state.clock.year,
+    resolvedAtYear: null,
+    responseByFactionId: null,
+    replacesTreatyId: replacesTreatyId ?? null,
+  });
+  commitDiplomacyChange(socket, `Treaty proposed to ${target.name}.`);
+}
+
+function cancelOtherPendingPeaceProposals(war: DiplomacyWar, acceptedProposalId: string): void {
+  for (const proposal of state.diplomacy.proposals) {
+    if (
+      proposal.id !== acceptedProposalId
+      && proposal.kind === "peace"
+      && proposal.status === "pending"
+      && (
+        (proposal.fromFactionId === war.attackerFactionId && proposal.toFactionId === war.defenderFactionId)
+        || (proposal.fromFactionId === war.defenderFactionId && proposal.toFactionId === war.attackerFactionId)
+      )
+    ) {
+      proposal.status = "cancelled";
+      proposal.resolvedAtYear = state.clock.year;
+    }
+  }
+}
+
+function applyPeaceTerms(war: DiplomacyWar, proposal: DiplomacyProposal, responseFactionId: number): ServerUpdateField[] {
+  const terms = normalizePeaceTerms(proposal.peaceTerms);
+  const participants = new Set([war.attackerFactionId, war.defenderFactionId]);
+  if (terms.mode === "whitePeace") {
+    for (const [starId, ownerId] of war.preWarOwnership) {
+      if (!participants.has(ownerId)) continue;
+      const starbase = getStarbaseInSystem(starId);
+      if (!starbase || !participants.has(starbase.ownerId)) continue;
+      starbase.ownerId = ownerId;
+    }
+  }
+
+  for (const transfer of terms.transfers) {
+    if (!isValidPeaceTransferTerm(transfer, war)) continue;
+    const starbase = state.starbases.find((candidate) => candidate.id === transfer.starbaseId);
+    if (!starbase || starbase.ownerId !== transfer.fromFactionId) continue;
+    starbase.ownerId = transfer.toFactionId;
+  }
+
+  war.endedAtYear = state.clock.year;
+  cancelOtherPendingPeaceProposals(war, proposal.id);
+
+  if (terms.enforcedArticleIds.length > 0) {
+    const treaty = createDiplomacyTreaty(
+      war.attackerFactionId,
+      war.defenderFactionId,
+      terms.enforcedArticleIds,
+      proposal.fromFactionId,
+      responseFactionId,
+      terms.enforcedDurationYears,
+    );
+    replaceOverlappingTreaties(treaty, null);
+    state.diplomacy.treaties.push(treaty);
+  }
+
+  syncSystemOwnershipFromStarbases();
+  recalculatePlanetEconomies();
+  refreshFactionEconomyDeltas();
+  refreshDiscovery();
+  return ["diplomacy", "starbases", "visibility", "planetStates", "factionEconomies", "market", "fleets", "combatContacts"];
+}
+
+function handleRespondDiplomacyProposal(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  proposalId: string,
+  response: "accept" | "decline",
+): void {
+  const factionId = getDiplomacyCommandFaction(socket, perspective);
+  if (factionId === null) return;
+  const proposal = getPendingDiplomacyProposal(String(proposalId ?? ""));
+  if (!proposal) return reject(socket, "Proposal is not pending.");
+  if (proposal.toFactionId !== factionId) return reject(socket, "Only the recipient can respond to this proposal.");
+  if (response !== "accept") {
+    proposal.status = "declined";
+    proposal.resolvedAtYear = state.clock.year;
+    proposal.responseByFactionId = factionId;
+    return commitDiplomacyChange(socket, "Proposal declined.");
+  }
+
+  let changed: ServerUpdateField[] = ["diplomacy", "market"];
+  if (proposal.kind === "treaty") {
+    const treaty = createDiplomacyTreaty(
+      proposal.fromFactionId,
+      proposal.toFactionId,
+      proposal.articleIds,
+      proposal.fromFactionId,
+      factionId,
+      proposal.durationYears,
+    );
+    replaceOverlappingTreaties(treaty, proposal.replacesTreatyId);
+    state.diplomacy.treaties.push(treaty);
+  } else {
+    const war = getActiveWar(state.diplomacy, proposal.fromFactionId, proposal.toFactionId);
+    if (!war) return reject(socket, "There is no active war to end.");
+    changed = applyPeaceTerms(war, proposal, factionId);
+  }
+
+  proposal.status = "accepted";
+  proposal.resolvedAtYear = state.clock.year;
+  proposal.responseByFactionId = factionId;
+  commitDiplomacyChange(socket, proposal.kind === "peace" ? "Peace accepted." : "Treaty accepted.", changed);
+}
+
+function handleCancelDiplomacyProposal(socket: WebSocket, perspective: GalaxyPerspective, proposalId: string): void {
+  const factionId = getDiplomacyCommandFaction(socket, perspective);
+  if (factionId === null) return;
+  const proposal = getPendingDiplomacyProposal(String(proposalId ?? ""));
+  if (!proposal) return reject(socket, "Proposal is not pending.");
+  if (proposal.fromFactionId !== factionId) return reject(socket, "Only the proposer can cancel this proposal.");
+  proposal.status = "cancelled";
+  proposal.resolvedAtYear = state.clock.year;
+  proposal.responseByFactionId = factionId;
+  commitDiplomacyChange(socket, "Proposal cancelled.");
+}
+
+function handleCancelTreaty(socket: WebSocket, perspective: GalaxyPerspective, treatyId: string): void {
+  const factionId = getDiplomacyCommandFaction(socket, perspective);
+  if (factionId === null) return;
+  const treaty = state.diplomacy.treaties.find((candidate) => candidate.id === String(treatyId ?? ""));
+  if (!treaty || Number.isFinite(treaty.cancelledAtYear ?? Number.NaN)) return reject(socket, "Active treaty not found.");
+  if (treaty.factionIds[0] !== factionId && treaty.factionIds[1] !== factionId) {
+    return reject(socket, "You are not part of this treaty.");
+  }
+  const partnerId = treaty.factionIds[0] === factionId ? treaty.factionIds[1] : treaty.factionIds[0];
+  const war = getActiveWar(state.diplomacy, factionId, partnerId);
+  treaty.cancelledAtYear = state.clock.year;
+  treaty.earlyCancelled = state.clock.year < treaty.minimumEndYear;
+  treaty.cancellationReason = war?.defenderFactionId === factionId ? "defenderWarCancel" : treaty.earlyCancelled ? "earlyCancellation" : "cancelled";
+  commitDiplomacyChange(socket, "Treaty cancelled.", ["diplomacy", "market"]);
+}
+
+function isValidPeaceTransferTerm(transfer: DiplomacySystemTransferTerm, war: DiplomacyWar): boolean {
+  const participants = new Set([war.attackerFactionId, war.defenderFactionId]);
+  if (!participants.has(transfer.fromFactionId) || !participants.has(transfer.toFactionId)) return false;
+  if (transfer.fromFactionId === transfer.toFactionId) return false;
+  const starbase = state.starbases.find((candidate) => candidate.id === transfer.starbaseId);
+  return !!starbase && starbase.ownerId === transfer.fromFactionId;
+}
+
+function validatePeaceTerms(socket: WebSocket, war: DiplomacyWar, terms: DiplomacyPeaceTerms): DiplomacyPeaceTerms | null {
+  const normalized = normalizePeaceTerms(terms);
+  const participants = new Set([war.attackerFactionId, war.defenderFactionId]);
+  for (const transfer of normalized.transfers) {
+    if (!participants.has(transfer.fromFactionId) || !participants.has(transfer.toFactionId)) {
+      reject(socket, "Peace transfer must stay between war participants.");
+      return null;
+    }
+    if (!state.starbases.some((starbase) => starbase.id === transfer.starbaseId)) {
+      reject(socket, "Peace transfer starbase not found.");
+      return null;
+    }
+  }
+  return normalized;
+}
+
+function handleProposePeace(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  targetFactionId: number,
+  terms: DiplomacyPeaceTerms,
+): void {
+  const factionId = getDiplomacyCommandFaction(socket, perspective);
+  if (factionId === null) return;
+  const target = getDiplomacyTarget(socket, factionId, Number(targetFactionId));
+  if (!target) return;
+  const war = getActiveWar(state.diplomacy, factionId, target.id);
+  if (!war) return reject(socket, `You are not at war with ${target.name}.`);
+  const normalizedTerms = validatePeaceTerms(socket, war, terms);
+  if (!normalizedTerms) return;
+  const existing = state.diplomacy.proposals.some((proposal) => (
+    proposal.kind === "peace"
+    && proposal.status === "pending"
+    && (
+      (proposal.fromFactionId === factionId && proposal.toFactionId === target.id)
+      || (proposal.fromFactionId === target.id && proposal.toFactionId === factionId)
+    )
+  ));
+  if (existing) return reject(socket, "A peace proposal is already pending.");
+  state.diplomacy.proposals.push({
+    id: createRuntimeId("peace-proposal", [factionId, target.id]),
+    kind: "peace",
+    fromFactionId: factionId,
+    toFactionId: target.id,
+    articleIds: normalizedTerms.enforcedArticleIds,
+    durationYears: normalizedTerms.enforcedDurationYears,
+    peaceTerms: normalizedTerms,
+    status: "pending",
+    createdAtYear: state.clock.year,
+    resolvedAtYear: null,
+    responseByFactionId: null,
+    replacesTreatyId: null,
+  });
+  commitDiplomacyChange(socket, `Peace proposed to ${target.name}.`);
+}
+
 function handleCommand(session: ClientSession, command: ClientCommand): void {
   if (command.type === "join") {
     if (!session.sentInitialSnapshot) {
@@ -8038,6 +8622,45 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "removeMarketAutoTrade") {
     handleRemoveMarketAutoTrade(session.socket, session.perspective, command.orderId);
+    return;
+  }
+  if (command.type === "sendDiplomacyMessage") {
+    handleSendDiplomacyMessage(session.socket, session.perspective, command.targetFactionId, command.body);
+    return;
+  }
+  if (command.type === "setBorderPolicy") {
+    handleSetBorderPolicy(session.socket, session.perspective, command.targetFactionId, command.policy);
+    return;
+  }
+  if (command.type === "declareWar") {
+    handleDeclareWar(session.socket, session.perspective, command.targetFactionId);
+    return;
+  }
+  if (command.type === "proposeTreaty") {
+    handleProposeTreaty(
+      session.socket,
+      session.perspective,
+      command.targetFactionId,
+      command.articleIds,
+      command.durationYears,
+      command.replacesTreatyId,
+    );
+    return;
+  }
+  if (command.type === "respondDiplomacyProposal") {
+    handleRespondDiplomacyProposal(session.socket, session.perspective, command.proposalId, command.response);
+    return;
+  }
+  if (command.type === "cancelTreaty") {
+    handleCancelTreaty(session.socket, session.perspective, command.treatyId);
+    return;
+  }
+  if (command.type === "cancelDiplomacyProposal") {
+    handleCancelDiplomacyProposal(session.socket, session.perspective, command.proposalId);
+    return;
+  }
+  if (command.type === "proposePeace") {
+    handleProposePeace(session.socket, session.perspective, command.targetFactionId, command.terms);
     return;
   }
   if (command.type === "moveShip" || command.type === "moveFleet") {

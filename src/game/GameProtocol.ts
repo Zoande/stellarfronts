@@ -26,6 +26,17 @@ import type { ShipDesign } from "../data/ShipDesigns";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import type { LeaderAssignment, LeaderState } from "../data/Leaders";
 import type { FactionGovernmentState, GovernmentLawId, GovernmentLawOptionId } from "../data/Government";
+import type {
+  BorderPolicy,
+  DiplomacyChatMessage,
+  DiplomacyPeaceTerms,
+  DiplomacyProposal,
+  DiplomacySystemTransferTerm,
+  DiplomacyTreaty,
+  DiplomacyWar,
+  TreatyArticleDefinition,
+  TreatyArticleId,
+} from "../data/Diplomacy";
 import type { PlanetConfig, StarData } from "../data/StarMap";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type {
@@ -88,6 +99,7 @@ export type ServerUpdateField =
   | "technologies"
   | "leaders"
   | "governments"
+  | "diplomacy"
   | "market"
   | "combatContacts";
 
@@ -135,6 +147,7 @@ export type GameDetailScope =
   | "technology"
   | "leaders"
   | "government"
+  | "diplomacy"
   | "selection"
   | "hud";
 
@@ -252,6 +265,42 @@ export interface GovernmentDetailPayload {
   factionEconomies: FactionEconomyState[];
 }
 
+export interface DiplomacyCountrySummary {
+  faction: FactionState;
+  isSelf: boolean;
+  atWar: boolean;
+  ourBorderPolicy: BorderPolicy;
+  theirBorderPolicy: BorderPolicy;
+  activeTreatyCount: number;
+  pendingProposalCount: number;
+  tradePrivilegeActive: boolean;
+  tradePrivilegeSuspended: boolean;
+}
+
+export interface DiplomacyEligiblePeaceTransferSystem extends DiplomacySystemTransferTerm {
+  starId: number;
+  starName: string;
+  ownerId: number;
+  ownerName: string;
+}
+
+export interface DiplomacyDetailPayload {
+  countries: DiplomacyCountrySummary[];
+  wars: DiplomacyWar[];
+  treaties: DiplomacyTreaty[];
+  proposals: DiplomacyProposal[];
+  chatMessages: DiplomacyChatMessage[];
+  eligiblePeaceTransferSystems: DiplomacyEligiblePeaceTransferSystem[];
+  treatyArticles: TreatyArticleDefinition[];
+  playerFactionId: number | null;
+}
+
+export interface DiplomacyMovementPayload {
+  playerFactionId: number | null;
+  openBorderFactionIds: number[];
+  warFactionIds: number[];
+}
+
 export interface SelectionDetailPayload {
   fleets: ServerFleet[];
   ships: ServerShip[];
@@ -277,6 +326,7 @@ export type GameDetailPayload =
   | TechnologyDetailPayload
   | LeadersDetailPayload
   | GovernmentDetailPayload
+  | DiplomacyDetailPayload
   | SelectionDetailPayload
   | HudDetailPayload;
 
@@ -639,6 +689,53 @@ export interface RemoveMarketAutoTradeCommand {
   orderId: string;
 }
 
+export interface SendDiplomacyMessageCommand {
+  type: "sendDiplomacyMessage";
+  targetFactionId: number;
+  body: string;
+}
+
+export interface SetBorderPolicyCommand {
+  type: "setBorderPolicy";
+  targetFactionId: number;
+  policy: BorderPolicy;
+}
+
+export interface DeclareWarCommand {
+  type: "declareWar";
+  targetFactionId: number;
+}
+
+export interface ProposeTreatyCommand {
+  type: "proposeTreaty";
+  targetFactionId: number;
+  articleIds: TreatyArticleId[];
+  durationYears?: number;
+  replacesTreatyId?: string | null;
+}
+
+export interface RespondDiplomacyProposalCommand {
+  type: "respondDiplomacyProposal";
+  proposalId: string;
+  response: "accept" | "decline";
+}
+
+export interface CancelTreatyCommand {
+  type: "cancelTreaty";
+  treatyId: string;
+}
+
+export interface CancelDiplomacyProposalCommand {
+  type: "cancelDiplomacyProposal";
+  proposalId: string;
+}
+
+export interface ProposePeaceCommand {
+  type: "proposePeace";
+  targetFactionId: number;
+  terms: DiplomacyPeaceTerms;
+}
+
 export interface RequestDetailsCommand {
   type: "requestDetails";
   scope: GameDetailScope;
@@ -697,6 +794,14 @@ export type ClientCommand =
   | MarketTradeCommand
   | AddMarketAutoTradeCommand
   | RemoveMarketAutoTradeCommand
+  | SendDiplomacyMessageCommand
+  | SetBorderPolicyCommand
+  | DeclareWarCommand
+  | ProposeTreatyCommand
+  | RespondDiplomacyProposalCommand
+  | CancelTreatyCommand
+  | CancelDiplomacyProposalCommand
+  | ProposePeaceCommand
   | RequestDetailsCommand
   | SubscribeDetailsCommand
   | UnsubscribeDetailsCommand
@@ -730,6 +835,7 @@ export interface GameSnapshot {
   leaders: LeaderState[];
   governments: FactionGovernmentState[];
   recentCombatContacts: ServerCombatContact[];
+  diplomacy: DiplomacyMovementPayload;
 }
 
 export interface GameUpdate {
@@ -755,6 +861,7 @@ export interface GameUpdate {
   leaders?: LeaderState[];
   governments?: FactionGovernmentState[];
   recentCombatContacts?: ServerCombatContact[];
+  diplomacy?: DiplomacyMovementPayload;
 }
 
 export interface CommandResultEvent {

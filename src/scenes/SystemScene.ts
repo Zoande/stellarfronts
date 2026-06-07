@@ -64,6 +64,7 @@ import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
 import type {
   ClientCommand,
+  DiplomacyMovementPayload,
   FleetMovementSegment,
   FleetOrbitTarget,
   ServerCombatContact,
@@ -122,6 +123,7 @@ export interface SystemSceneOptions {
   starbases?: ServerStarbaseSummary[];
   factions?: FactionInfo[];
   starOwnership?: number[];
+  diplomacy?: DiplomacyMovementPayload;
   playerFactionId?: number;
   planetStates?: PlanetState[];
   leaders?: LeaderState[];
@@ -207,6 +209,8 @@ export class SystemScene implements IGameScene {
   private starbases: ServerStarbaseSummary[];
   private factions: FactionInfo[];
   private starOwnership: number[];
+  private openBorderFactionIds = new Set<number>();
+  private warFactionIds = new Set<number>();
   private playerFactionId: number;
   private planetStates: PlanetState[];
   private leaders: LeaderState[];
@@ -369,6 +373,7 @@ export class SystemScene implements IGameScene {
       this.starOwnership[this.star.id] = initialStarOwnerId ?? -1;
     }
     this.playerFactionId = options.playerFactionId ?? 0;
+    this.applyDiplomacyMovement(options.diplomacy);
     this.planetStates = this.systemStore?.getPlanetStates() ?? options.planetStates ?? [];
     this.leaders = this.systemStore?.getLeaders() ?? options.leaders ?? [];
     applyPlanetStatesToStars([this.star], this.planetStates);
@@ -1385,6 +1390,7 @@ export class SystemScene implements IGameScene {
       candidate.id !== fleet.id
       && candidate.currentStarId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     ));
     if (hostileFleet) {
       this.options.onFleetCommand?.({
@@ -1398,6 +1404,7 @@ export class SystemScene implements IGameScene {
     const hostileStarbase = this.starbases.find((candidate) => (
       candidate.starId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     ));
     if (hostileStarbase) {
       this.options.onFleetCommand?.({
@@ -1416,10 +1423,19 @@ export class SystemScene implements IGameScene {
       candidate.id !== fleet.id
       && candidate.currentStarId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     )) || this.starbases.some((candidate) => (
       candidate.starId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     ));
+  }
+
+  private canPlayerEnterStar(starId: number): boolean {
+    const owner = this.starOwnership[starId] ?? -1;
+    if (owner < 0 || owner === this.playerFactionId) return true;
+    if (this.warFactionIds.has(owner)) return true;
+    return this.openBorderFactionIds.has(owner);
   }
 
   private rebuildSystemActionTargetMarkers(): void {
@@ -1493,6 +1509,7 @@ export class SystemScene implements IGameScene {
     }
 
     for (const exit of this.hyperlaneExits) {
+      if (!this.canPlayerEnterStar(exit.starId)) continue;
       const markerPosition = exit.systemPosition ?? getHyperlaneExitSystemPosition(exit);
       const destinationPosition = getHyperlaneExitSystemPosition({ dx: -exit.dx, dz: -exit.dz });
       targets.push({
@@ -4123,6 +4140,21 @@ export class SystemScene implements IGameScene {
 
   setStarOwnerships(ownerByStar: number[]): void {
     this.starOwnership = ownerByStar;
+    if (this.activeFleetAction) {
+      this.rebuildSystemActionTargetMarkers();
+    }
+  }
+
+  setDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
+    this.applyDiplomacyMovement(diplomacy);
+    if (this.activeFleetAction) {
+      this.rebuildSystemActionTargetMarkers();
+    }
+  }
+
+  private applyDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
+    this.openBorderFactionIds = new Set(diplomacy?.openBorderFactionIds ?? []);
+    this.warFactionIds = new Set(diplomacy?.warFactionIds ?? []);
   }
 
   private syncStarbasePresence(): void {

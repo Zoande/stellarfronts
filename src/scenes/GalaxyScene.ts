@@ -41,7 +41,7 @@ import type { ShipDesign } from "../data/ShipDesigns";
 import { computeStarbasePower } from "../game/combatPower";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
-import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase, ServerStarbaseSummary } from "../game/GameProtocol";
+import type { ClientCommand, DiplomacyMovementPayload, ServerFleet, ServerShip, ServerStarbase, ServerStarbaseSummary } from "../game/GameProtocol";
 import type { FactionTechnologyView } from "../data/Technology";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
 import { createProceduralSpaceSkybox, getGalaxySkyboxSettings } from "../utils/proceduralSpaceSkybox";
@@ -66,6 +66,7 @@ export interface GalaxySceneOptions {
   visibleStarIds?: Iterable<number> | null;
   knownStarIds?: Iterable<number> | null;
   starOwnership?: number[];
+  diplomacy?: DiplomacyMovementPayload;
   playerFactionId?: number;
   playerShipStarId?: number;
   playerShipSystemIds?: Iterable<number>;
@@ -925,6 +926,8 @@ export class GalaxyScene implements IGameScene {
   private hyperlanePairs: Array<[number, number]> = [];
   private hyperlaneAdjacency: number[][] = [];
   private starOwnership: number[] = [];
+  private openBorderFactionIds = new Set<number>();
+  private warFactionIds = new Set<number>();
   private factions: FactionInfo[] = [];
   private perspective: GalaxyPerspective = { mode: "observer" };
   private visibleStarIds: Set<number> | null = null;
@@ -1036,6 +1039,7 @@ export class GalaxyScene implements IGameScene {
     this.serverShips = this.options.serverShips ?? [];
     this.shipDesigns = this.options.shipDesigns ?? [];
     this.leaders = this.options.leaders ?? [];
+    this.applyDiplomacyMovement(this.options.diplomacy);
     this.selectedFleetIds = new Set(this.options.selectedFleetIds ?? []);
     this.starbases = this.options.starbases ?? [];
     this.starbaseSystemIds = new Set(
@@ -1621,9 +1625,23 @@ export class GalaxyScene implements IGameScene {
 
   private hasHostilePresenceAtStar(starId: number): boolean {
     const owner = this.starOwnership[starId] ?? -1;
-    if (owner >= 0 && owner !== this.playerFactionId) return true;
-    return this.starbases.some((starbase) => starbase.starId === starId && starbase.ownerId !== this.playerFactionId)
-      || this.serverFleets.some((fleet) => fleet.currentStarId === starId && fleet.ownerId !== this.playerFactionId);
+    if (owner >= 0 && owner !== this.playerFactionId && this.warFactionIds.has(owner)) return true;
+    return this.starbases.some((starbase) => (
+      starbase.starId === starId
+      && starbase.ownerId !== this.playerFactionId
+      && this.warFactionIds.has(starbase.ownerId)
+    )) || this.serverFleets.some((fleet) => (
+      fleet.currentStarId === starId
+      && fleet.ownerId !== this.playerFactionId
+      && this.warFactionIds.has(fleet.ownerId)
+    ));
+  }
+
+  private canEnterStar(starId: number): boolean {
+    const owner = this.starOwnership[starId] ?? -1;
+    if (owner < 0 || owner === this.playerFactionId) return true;
+    if (this.warFactionIds.has(owner)) return true;
+    return this.openBorderFactionIds.has(owner);
   }
 
   private getReachableStarIds(action: ShipAction): Set<number> {
@@ -1651,6 +1669,7 @@ export class GalaxyScene implements IGameScene {
         if (neighbor < 0 || neighbor >= this.hyperlaneAdjacency.length) continue;
         if (reachable.has(neighbor)) continue;
         if (!this.isStarKnownToPerspective(neighbor)) continue;
+        if (!this.canEnterStar(neighbor)) continue;
 
         reachable.add(neighbor);
         queue.push(neighbor);
@@ -1814,6 +1833,7 @@ export class GalaxyScene implements IGameScene {
       candidate.id !== fleet.id
       && candidate.currentStarId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     ));
     if (hostileFleet) {
       this.options.onFleetCommand?.({
@@ -1827,6 +1847,7 @@ export class GalaxyScene implements IGameScene {
     const hostileStarbase = this.starbases.find((candidate) => (
       candidate.starId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     ));
     if (hostileStarbase) {
       this.options.onFleetCommand?.({
@@ -2711,6 +2732,19 @@ export class GalaxyScene implements IGameScene {
       this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
     }
+  }
+
+  setDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
+    this.applyDiplomacyMovement(diplomacy);
+    if (this.activeShipAction) {
+      this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
+      this.starField?.setHighlightedStarIds(this.targetableStarIds);
+    }
+  }
+
+  private applyDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
+    this.openBorderFactionIds = new Set(diplomacy?.openBorderFactionIds ?? []);
+    this.warFactionIds = new Set(diplomacy?.warFactionIds ?? []);
   }
 
   captureViewState(): GalaxyViewState | null {
