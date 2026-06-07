@@ -6,7 +6,7 @@ import { preloadAuthAssets } from '@/utils/preloadAuthAssets';
 export interface AuthState {
   isLoggedIn: boolean;
   account: AuthAccount | null;
-  mode: 'login' | 'signup' | 'home';
+  mode: 'login' | 'home';
 }
 
 export interface HomeTransitionState {
@@ -30,8 +30,6 @@ export interface UseAppFlowResult {
   handleAuthBackgroundReady: () => void;
   handleAuthStartupLoadingHidden: () => void;
   handleLoginSubmit: (username: string, password: string, rememberMe: boolean) => Promise<void>;
-  handleSignupClick: () => void;
-  handleBackToLogin: () => void;
   handleSignupSubmit: (username: string, password: string) => Promise<void>;
   handleLogout: () => Promise<void>;
   handleStartGameFromHome: (gameId: string) => void;
@@ -219,20 +217,6 @@ export function useAppFlow(): UseAppFlowResult {
     });
   };
 
-  const handleSignupClick = () => {
-    setAuth((prev) => ({
-      ...prev,
-      mode: 'signup',
-    }));
-  };
-
-  const handleBackToLogin = () => {
-    setAuth((prev) => ({
-      ...prev,
-      mode: 'login',
-    }));
-  };
-
   const handleSignupSubmit = async (username: string, password: string) => {
     const account = await signupRequest({ username, password });
     startHomeTransition(account.username, 'signup', 'Account created');
@@ -328,8 +312,6 @@ export function useAppFlow(): UseAppFlowResult {
     handleAuthBackgroundReady,
     handleAuthStartupLoadingHidden,
     handleLoginSubmit,
-    handleSignupClick,
-    handleBackToLogin,
     handleSignupSubmit,
     handleLogout,
     handleStartGameFromHome,
