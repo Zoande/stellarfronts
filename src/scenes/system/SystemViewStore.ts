@@ -137,6 +137,21 @@ export class SystemViewStore {
   }
 
   getFleetSystemPosition(fleet: ServerFleet, year = this.clockYear): SystemPosition {
+    if (fleet.movementPlan) {
+      const segment = fleet.movementPlan.segments.find((candidate) => (
+        year >= candidate.startYear && year < candidate.endYear
+      ));
+      if (segment) {
+        const progress = Math.max(
+          0,
+          Math.min(1, (year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear)),
+        );
+        return interpolateSystemPosition(segment.from, segment.to, progress);
+      }
+      const finalSegment = fleet.movementPlan.segments[fleet.movementPlan.segments.length - 1];
+      if (finalSegment) return finalSegment.to;
+    }
+
     if (fleet.orbitTarget?.kind && fleet.orbitTarget.kind !== "planet") {
       return fleet.orbitTarget.position;
     }
@@ -159,21 +174,6 @@ export class SystemViewStore {
           z: planetPosition.z + offset.z,
         };
       }
-    }
-
-    if (fleet.movementPlan) {
-      const segment = fleet.movementPlan.segments.find((candidate) => (
-        year >= candidate.startYear && year < candidate.endYear
-      ));
-      if (segment) {
-        const progress = Math.max(
-          0,
-          Math.min(1, (year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear)),
-        );
-        return interpolateSystemPosition(segment.from, segment.to, progress);
-      }
-      const finalSegment = fleet.movementPlan.segments[fleet.movementPlan.segments.length - 1];
-      if (finalSegment) return finalSegment.to;
     }
 
     return fleet.systemPosition ?? { x: 23, y: SYSTEM_FLEET_Y, z: -19 };

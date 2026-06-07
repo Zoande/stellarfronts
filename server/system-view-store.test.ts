@@ -78,6 +78,41 @@ test("SystemViewStore interpolates fleet movement segments", () => {
   assert.deepEqual(store.getFleetSystemPosition(fleet), { x: 5, y: SYSTEM_FLEET_Y, z: 10 });
 });
 
+test("SystemViewStore lets active movement override destination orbit targets", () => {
+  const fleet = createFleet("fleet-a", {
+    orbitTarget: {
+      kind: "starbase",
+      starId: 0,
+      starbaseId: "starbase-a",
+      position: { x: 80, y: SYSTEM_FLEET_Y, z: 80 },
+    },
+    movementPlan: {
+      destinationStarId: 0,
+      destinationOrbitTarget: {
+        kind: "starbase",
+        starId: 0,
+        starbaseId: "starbase-a",
+        position: { x: 80, y: SYSTEM_FLEET_Y, z: 80 },
+      },
+      startedAtYear: 2100,
+      endsAtYear: 2101,
+      totalDays: GAME_DAYS_PER_YEAR,
+      segments: [{
+        kind: "system",
+        fromStarId: 0,
+        toStarId: 0,
+        startYear: 2100,
+        endYear: 2101,
+        from: { x: 0, y: SYSTEM_FLEET_Y, z: 0 },
+        to: { x: 10, y: SYSTEM_FLEET_Y, z: 20 },
+      }],
+    },
+  });
+  const store = new SystemViewStore(createPayload([fleet]), 2100.5);
+
+  assert.deepEqual(store.getFleetSystemPosition(fleet), { x: 5, y: SYSTEM_FLEET_Y, z: 10 });
+});
+
 test("SystemViewStore resolves planet orbit positions", () => {
   const payload = createPayload([]);
   const planet = payload.star.system.planets[0];

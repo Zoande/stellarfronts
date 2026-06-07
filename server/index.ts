@@ -2610,20 +2610,6 @@ function getPlanetSystemPositionAt(star: StarData, planet: PlanetConfig, planetI
 }
 
 function getFleetAuthoritativeSystemPosition(fleet: GameFleet, year = state.clock.year): ReturnType<typeof systemCenterPosition> {
-  if (fleet.orbitTargetPlanetId) {
-    const star = state.stars[fleet.currentStarId];
-    const planetIndex = star?.system.planets.findIndex((planet) => planet.id === fleet.orbitTargetPlanetId) ?? -1;
-    const planet = planetIndex >= 0 ? star.system.planets[planetIndex] : null;
-    if (star && planet) {
-      const planetPosition = getPlanetSystemPositionAt(star, planet, planetIndex, year);
-      const offset = fleet.orbitOffset ?? { x: SYSTEM_PLANET_ORBIT_DISTANCE, y: SYSTEM_FLEET_Y, z: 0 };
-      return {
-        x: planetPosition.x + offset.x,
-        y: offset.y,
-        z: planetPosition.z + offset.z,
-      };
-    }
-  }
   if (fleet.movementPlan) {
     const segment = fleet.movementPlan.segments.find((candidate) => (
       year >= candidate.startYear && year < candidate.endYear
@@ -2637,6 +2623,20 @@ function getFleetAuthoritativeSystemPosition(fleet: GameFleet, year = state.cloc
     }
     const finalSegment = fleet.movementPlan.segments[fleet.movementPlan.segments.length - 1];
     if (finalSegment) return cloneSystemPosition(finalSegment.to);
+  }
+  if (fleet.orbitTargetPlanetId) {
+    const star = state.stars[fleet.currentStarId];
+    const planetIndex = star?.system.planets.findIndex((planet) => planet.id === fleet.orbitTargetPlanetId) ?? -1;
+    const planet = planetIndex >= 0 ? star.system.planets[planetIndex] : null;
+    if (star && planet) {
+      const planetPosition = getPlanetSystemPositionAt(star, planet, planetIndex, year);
+      const offset = fleet.orbitOffset ?? { x: SYSTEM_PLANET_ORBIT_DISTANCE, y: SYSTEM_FLEET_Y, z: 0 };
+      return {
+        x: planetPosition.x + offset.x,
+        y: offset.y,
+        z: planetPosition.z + offset.z,
+      };
+    }
   }
   return cloneSystemPosition(fleet.systemPosition ?? systemCenterPosition());
 }

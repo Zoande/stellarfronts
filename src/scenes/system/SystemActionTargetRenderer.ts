@@ -92,6 +92,31 @@ export class SystemActionTargetRenderer {
     return this.targets.find((item) => item.meshes.includes(mesh))?.target ?? null;
   }
 
+  findTargetNearPosition(
+    position: { x: number; z: number },
+    getRadius: (target: SystemActionTarget) => number,
+    options: { radiusScale?: number; minimumRadius?: number } = {},
+  ): SystemActionTarget | null {
+    const radiusScale = options.radiusScale ?? 1.65;
+    const minimumRadius = options.minimumRadius ?? 3.2;
+    let nearest: { target: SystemActionTarget; distanceSq: number } | null = null;
+
+    for (const item of this.targets) {
+      const target = item.target;
+      const markerPosition = target.markerPosition;
+      const radius = Math.max(minimumRadius, getRadius(target) * radiusScale);
+      const dx = markerPosition.x - position.x;
+      const dz = markerPosition.z - position.z;
+      const distanceSq = dx * dx + dz * dz;
+      if (distanceSq > radius * radius) continue;
+      if (!nearest || distanceSq < nearest.distanceSq) {
+        nearest = { target, distanceSq };
+      }
+    }
+
+    return nearest?.target ?? null;
+  }
+
   clear(): void {
     for (const item of this.targets) {
       for (const mesh of item.meshes) {
