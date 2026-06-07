@@ -21,7 +21,8 @@ import {
   recalculatePlanetStateEconomy,
   STARTING_HABITED_POPULATION,
 } from "../src/data/Economy";
-import type { DistrictCounts } from "../src/data/Economy";
+import type { DistrictCounts, PlanetEconomySpeciesContext } from "../src/data/Economy";
+import type { SpeciesState } from "../src/data/Species";
 
 const DEFAULT_LIMITS: DistrictCounts = {
   city: 12,
@@ -376,4 +377,90 @@ test("construction queue completes districts and buildings over time", () => {
 test("building mineral costs are exposed for server validation and UI", () => {
   assert.equal(BUILDING_MINERAL_COSTS.housingComplex, BUILDING_DEFINITIONS.housingComplex.mineralCost);
   assert.ok(BUILDING_MINERAL_COSTS.alloyFoundries > BUILDING_MINERAL_COSTS.housingComplex);
+});
+
+test("species traits and living standards feed habitability, happiness, growth, and upkeep", () => {
+  const species: SpeciesState = {
+    id: "species-faction-0",
+    name: "Asteri",
+    archetypeId: "humanoid",
+    traitIds: ["adaptive", "conservationist", "rapidBreeders"],
+    originFactionId: 0,
+  };
+  const planet = {
+    ...createHabitedPlanet(),
+    speciesPopulations: [{ speciesId: species.id, population: STARTING_HABITED_POPULATION }],
+  };
+  planet.population = STARTING_HABITED_POPULATION;
+  const baseline = recalculatePlanetStateEconomy(createHabitedPlanet(), DEFAULT_LIMITS);
+  const context: PlanetEconomySpeciesContext = {
+    species: [species],
+    rightsBySpeciesId: {
+      [species.id]: {
+        livingStandard: "luxurious",
+        citizenship: "fullCitizenship",
+        migration: "free",
+        workEligibility: "allJobs",
+      },
+    },
+  };
+  const modified = recalculatePlanetStateEconomy(planet, DEFAULT_LIMITS, [], context);
+
+  assert.equal(getEffectiveSpeciesHabitability(modified, species.id, context), 90);
+  assert.ok(modified.economy.happiness > baseline.economy.happiness);
+  assert.ok(modified.economy.upkeep.goods > baseline.economy.upkeep.goods);
+  assert.ok(modified.economy.populationGrowth.netPerQuarter > baseline.economy.populationGrowth.netPerQuarter);
+});
+
+test("work eligibility filters job assignment by species rights", () => {
+  const species: SpeciesState = {
+    id: "restricted",
+    name: "Restricted",
+    archetypeId: "reptilian",
+    traitIds: [],
+    originFactionId: 1,
+  };
+  const planet = createHabitedPlanet();
+  planet.population = 300_000_000;
+  planet.speciesPopulations = [{ speciesId: species.id, population: planet.population }];
+  planet.builtDistricts = { city: 0, generator: 0, mining: 0, agriculture: 0 };
+  planet.buildings = {
+    city: ["administrativeComplex", null, null, null, null, null],
+    generator: [null, null, null],
+    mining: [null, null, null],
+    agriculture: [null, null, null],
+  };
+  planet.urbanSubDistricts = [
+    { kind: "residential", buildings: [null, null, null] },
+    { kind: "mixedIndustry", buildings: [null, null, null] },
+  ];
+  const allJobs = recalculatePlanetStateEconomy(planet, DEFAULT_LIMITS, [], {
+    species: [species],
+    rightsBySpeciesId: {
+      [species.id]: {
+        livingStandard: "basic",
+        citizenship: "fullCitizenship",
+        migration: "controlled",
+        workEligibility: "allJobs",
+      },
+    },
+  });
+  const laborOnly = recalculatePlanetStateEconomy(planet, DEFAULT_LIMITS, [], {
+    species: [species],
+    rightsBySpeciesId: {
+      [species.id]: {
+        livingStandard: "basic",
+        citizenship: "limitedRights",
+        migration: "controlled",
+        workEligibility: "laborOnly",
+      },
+    },
+  });
+
+  assert.equal(allJobs.economy.popGroups.find((group) => group.job === "administrator")?.population, 300_000_000);
+  assert.equal(laborOnly.economy.popGroups.find((group) => group.job === "administrator")?.population ?? 0, 0);
+  assert.equal(
+    laborOnly.economy.unemployedPopulation + (laborOnly.economy.popGroups.find((group) => group.job === "criminal")?.population ?? 0),
+    300_000_000,
+  );
 });

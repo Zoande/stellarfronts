@@ -27,6 +27,12 @@ import type { FactionTechnologyView, TechId } from "../data/Technology";
 import type { LeaderAssignment, LeaderState } from "../data/Leaders";
 import type { FactionGovernmentState, GovernmentLawId, GovernmentLawOptionId } from "../data/Government";
 import type {
+  FactionSpeciesRightsState,
+  LegalSpeciesRightsOptions,
+  SpeciesRights,
+  SpeciesState,
+} from "../data/Species";
+import type {
   BorderPolicy,
   DiplomacyChatMessage,
   DiplomacyPeaceTerms,
@@ -99,6 +105,7 @@ export type ServerUpdateField =
   | "technologies"
   | "leaders"
   | "governments"
+  | "species"
   | "diplomacy"
   | "market"
   | "combatContacts";
@@ -147,6 +154,7 @@ export type GameDetailScope =
   | "technology"
   | "leaders"
   | "government"
+  | "society"
   | "diplomacy"
   | "selection"
   | "hud";
@@ -265,6 +273,32 @@ export interface GovernmentDetailPayload {
   factionEconomies: FactionEconomyState[];
 }
 
+export interface SocietyPlanetSpeciesSummary {
+  planetId: string;
+  planetName: string;
+  starId: number;
+  starName: string;
+  population: number;
+  speciesPopulations: Array<{ speciesId: string; population: number }>;
+  averageHappiness: number;
+  averageHabitability: number;
+}
+
+export interface SocietyDetailPayload {
+  playerFactionId: number | null;
+  faction: FactionState | null;
+  species: SpeciesState[];
+  rights: FactionSpeciesRightsState | null;
+  legalOptions: LegalSpeciesRightsOptions;
+  government: FactionGovernmentState | null;
+  factionEconomy: FactionEconomyState | null;
+  planets: SocietyPlanetSpeciesSummary[];
+  laws: {
+    civilRights: string;
+    speciesPolicy: string;
+  };
+}
+
 export interface DiplomacyCountrySummary {
   faction: FactionState;
   isSelf: boolean;
@@ -326,6 +360,7 @@ export type GameDetailPayload =
   | TechnologyDetailPayload
   | LeadersDetailPayload
   | GovernmentDetailPayload
+  | SocietyDetailPayload
   | DiplomacyDetailPayload
   | SelectionDetailPayload
   | HudDetailPayload;
@@ -626,6 +661,12 @@ export interface SetGovernmentLawCommand {
   optionId: GovernmentLawOptionId;
 }
 
+export interface SetSpeciesRightsCommand {
+  type: "setSpeciesRights";
+  speciesId: string;
+  rights: Partial<SpeciesRights>;
+}
+
 export interface RetreatFleetCommand {
   type: "retreatFleet";
   fleetId: string;
@@ -790,6 +831,7 @@ export type ClientCommand =
   | AssignLeaderCommand
   | DismissLeaderCommand
   | SetGovernmentLawCommand
+  | SetSpeciesRightsCommand
   | SetUrbanSubDistrictCommand
   | MarketTradeCommand
   | AddMarketAutoTradeCommand
@@ -834,6 +876,7 @@ export interface GameSnapshot {
   technologies: FactionTechnologyView[];
   leaders: LeaderState[];
   governments: FactionGovernmentState[];
+  species: SpeciesState[];
   recentCombatContacts: ServerCombatContact[];
   diplomacy: DiplomacyMovementPayload;
 }
@@ -860,6 +903,7 @@ export interface GameUpdate {
   technologies?: FactionTechnologyView[];
   leaders?: LeaderState[];
   governments?: FactionGovernmentState[];
+  species?: SpeciesState[];
   recentCombatContacts?: ServerCombatContact[];
   diplomacy?: DiplomacyMovementPayload;
 }

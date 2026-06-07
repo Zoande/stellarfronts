@@ -1,4 +1,5 @@
 import type { FlagDesign } from '../flags/flagTypes';
+import type { SpeciesSetup } from '../data/Species';
 
 export type AccountType = 'observer' | 'user' | 'admin';
 
@@ -125,6 +126,7 @@ export interface GameMembership {
   factionId: number;
   countryName: string;
   flagDesign: FlagDesign | null;
+  speciesSetup: SpeciesSetup | null;
   joinedAt: number;
 }
 

@@ -48,6 +48,7 @@ import {
   progressPlanetConstructionQueue,
   recalculatePlanetStateEconomy,
   RESOURCE_KINDS,
+  sumSpeciesPopulation,
   URBAN_SUB_DISTRICT_KINDS,
 } from "../src/data/Economy";
 import {
@@ -106,10 +107,30 @@ import type {
   FactionEconomyState,
   PlanetState,
   PlanetModifier,
+  PlanetEconomySpeciesContext,
   ResourceKind,
   ResourceCounts,
   UrbanSubDistrictKind,
 } from "../src/data/Economy";
+import {
+  DEFAULT_SPECIES_RIGHTS,
+  HUMAN_SPECIES_ID,
+  createDefaultSpeciesForFaction,
+  createDefaultSpeciesRightsState,
+  createSpeciesFromSetup,
+  getLegalSpeciesRightsOptions,
+  normalizeSpeciesRights,
+  normalizeSpeciesRightsForLaws,
+  normalizeSpeciesState,
+} from "../src/data/Species";
+import type {
+  FactionSpeciesRightsState,
+  LegalSpeciesRightsOptions,
+  SpeciesLawSelections,
+  SpeciesId,
+  SpeciesRights,
+  SpeciesState,
+} from "../src/data/Species";
 import type {
   MarketAutoTradeOrder,
   MarketPlayerStats,
@@ -152,6 +173,7 @@ import type {
   FleetTacticalOrder,
   ServerEvent,
   ServerShip,
+  SocietyDetailPayload,
   ServerStarbase,
   ServerStarbaseSummary,
   SystemDetailPayload,
@@ -329,12 +351,14 @@ interface GameFleet extends ServerFleet {
 interface GameShip extends ServerShip {}
 
 interface GameState {
-  schemaVersion: 19;
+  schemaVersion: 20;
   stars: StarData[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
   factionTechnologies: FactionTechState[];
   governments: FactionGovernmentState[];
+  species: SpeciesState[];
+  speciesRights: FactionSpeciesRightsState[];
   diplomacy: DiplomacyState;
   market: MarketState;
   leaders: LeaderState[];
@@ -487,12 +511,189 @@ function getPlanetDistrictLimitsFromState(nextState: GameState, planetState: Pla
   return nextState.stars[planetState.starId]?.system.planets[planetState.planetIndex]?.objectDetails.districtLimits ?? undefined;
 }
 
+function getFactionFoundingSpeciesId(factionId: number): SpeciesId {
+  return `species-faction-${factionId}`;
+}
+
+function getFallbackHumanSpecies(): SpeciesState {
+  return {
+    id: HUMAN_SPECIES_ID,
+    name: "Human",
+    archetypeId: "humanoid",
+    traitIds: [],
+    originFactionId: null,
+  };
+}
+
+function ensureFactionFoundingSpeciesIds(factions: FactionInfo[]): boolean {
+  let changed = false;
+  for (const faction of factions) {
+    const expected = getFactionFoundingSpeciesId(faction.id);
+    if (faction.foundingSpeciesId === expected) continue;
+    faction.foundingSpeciesId = expected;
+    changed = true;
+  }
+  return changed;
+}
+
+function normalizeSpeciesForFactions(factions: FactionInfo[], rawSpecies: unknown): SpeciesState[] {
+  ensureFactionFoundingSpeciesIds(factions);
+  const rawById = new Map<string, Partial<SpeciesState>>();
+  if (Array.isArray(rawSpecies)) {
+    for (const raw of rawSpecies) {
+      const candidate = raw as Partial<SpeciesState>;
+      if (typeof candidate?.id !== "string" || !candidate.id.trim()) continue;
+      rawById.set(candidate.id.trim(), candidate);
+    }
+  }
+
+  const usedIds = new Set<SpeciesId>();
+  const species: SpeciesState[] = [];
+  const human = normalizeSpeciesState(rawById.get(HUMAN_SPECIES_ID), getFallbackHumanSpecies());
+  species.push(human);
+  usedIds.add(human.id);
+
+  for (const faction of factions) {
+    const fallback = createDefaultSpeciesForFaction(faction.id, faction.name);
+    const normalized = normalizeSpeciesState(rawById.get(fallback.id), fallback);
+    normalized.id = fallback.id;
+    normalized.originFactionId = faction.id;
+    faction.foundingSpeciesId = normalized.id;
+    if (usedIds.has(normalized.id)) continue;
+    usedIds.add(normalized.id);
+    species.push(normalized);
+  }
+
+  for (const [speciesId, raw] of rawById) {
+    if (usedIds.has(speciesId)) continue;
+    const fallback: SpeciesState = {
+      id: speciesId,
+      name: typeof raw.name === "string" && raw.name.trim() ? raw.name : speciesId,
+      archetypeId: "humanoid",
+      traitIds: [],
+      originFactionId: Number.isInteger(raw.originFactionId) ? Number(raw.originFactionId) : null,
+    };
+    const normalized = normalizeSpeciesState(raw, fallback);
+    usedIds.add(normalized.id);
+    species.push(normalized);
+  }
+
+  return species;
+}
+
+function getSpeciesLawSelections(nextState: GameState, factionId: number): SpeciesLawSelections {
+  const government = getFactionGovernment(nextState, factionId);
+  const selected = getSelectedGovernmentLawOptions(government);
+  return {
+    civilRights: selected.find((entry) => entry.law.id === "civilRights")?.option.id,
+    speciesPolicy: selected.find((entry) => entry.law.id === "speciesPolicy")?.option.id,
+  };
+}
+
+function normalizeSpeciesRightsForFactions(nextState: GameState, rawRights: unknown = nextState.speciesRights): FactionSpeciesRightsState[] {
+  const rawByFaction = new Map<number, FactionSpeciesRightsState>();
+  if (Array.isArray(rawRights)) {
+    for (const raw of rawRights) {
+      const candidate = raw as Partial<FactionSpeciesRightsState>;
+      if (!Number.isInteger(candidate?.factionId)) continue;
+      rawByFaction.set(Number(candidate.factionId), {
+        factionId: Number(candidate.factionId),
+        rightsBySpeciesId: candidate.rightsBySpeciesId ?? {},
+      });
+    }
+  }
+  const speciesIds = nextState.species.map((species) => species.id);
+  return nextState.factions.map((faction) => {
+    const existing = rawByFaction.get(faction.id) ?? createDefaultSpeciesRightsState(faction.id, speciesIds);
+    const laws = getSpeciesLawSelections(nextState, faction.id);
+    const rightsBySpeciesId: Record<SpeciesId, SpeciesRights> = {};
+    for (const speciesId of speciesIds) {
+      rightsBySpeciesId[speciesId] = normalizeSpeciesRightsForLaws(existing.rightsBySpeciesId?.[speciesId], laws);
+    }
+    return { factionId: faction.id, rightsBySpeciesId };
+  });
+}
+
+function getFactionSpeciesRightsState(nextState: GameState, factionId: number): FactionSpeciesRightsState {
+  return nextState.speciesRights.find((rights) => rights.factionId === factionId)
+    ?? createDefaultSpeciesRightsState(factionId, nextState.species.map((species) => species.id));
+}
+
+function getSpeciesRightsForFaction(nextState: GameState, factionId: number, speciesId: SpeciesId): SpeciesRights {
+  const rightsState = getFactionSpeciesRightsState(nextState, factionId);
+  return normalizeSpeciesRightsForLaws(
+    rightsState.rightsBySpeciesId?.[speciesId] ?? DEFAULT_SPECIES_RIGHTS,
+    getSpeciesLawSelections(nextState, factionId),
+  );
+}
+
+function getPlanetSpeciesContext(nextState: GameState, planetState: PlanetState): PlanetEconomySpeciesContext | undefined {
+  const ownerId = nextState.starOwnership[planetState.starId] ?? -1;
+  if (!Number.isInteger(ownerId) || ownerId < 0) {
+    return { species: nextState.species, rightsBySpeciesId: {} };
+  }
+  const rightsState = getFactionSpeciesRightsState(nextState, ownerId);
+  return {
+    species: nextState.species,
+    rightsBySpeciesId: rightsState.rightsBySpeciesId,
+  };
+}
+
+function getEmpireSpeciesIds(nextState: GameState, factionId: number): SpeciesId[] {
+  const ids = new Set<SpeciesId>();
+  for (const planetState of nextState.planetStates) {
+    if (!planetState.isHabited || (nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    for (const population of planetState.speciesPopulations ?? []) {
+      if (population.population > 0) ids.add(population.speciesId);
+    }
+  }
+  const foundingSpeciesId = nextState.factions.find((faction) => faction.id === factionId)?.foundingSpeciesId;
+  if (foundingSpeciesId && ids.size === 0) ids.add(foundingSpeciesId);
+  return Array.from(ids).sort((a, b) => a.localeCompare(b));
+}
+
+function assignFoundingSpeciesToOwnedPops(nextState: GameState): boolean {
+  let changed = false;
+  const factionById = new Map(nextState.factions.map((faction) => [faction.id, faction]));
+  nextState.planetStates = nextState.planetStates.map((planetState) => {
+    if (!planetState.isHabited) return planetState;
+    const ownerId = nextState.starOwnership[planetState.starId] ?? -1;
+    const faction = factionById.get(ownerId);
+    const foundingSpeciesId = faction?.foundingSpeciesId ?? (faction ? getFactionFoundingSpeciesId(faction.id) : null);
+    if (!foundingSpeciesId) return planetState;
+
+    const source = planetState.speciesPopulations?.length
+      ? planetState.speciesPopulations
+      : planetState.population > 0
+        ? [{ speciesId: foundingSpeciesId, population: planetState.population }]
+        : [];
+    const bySpecies = new Map<SpeciesId, number>();
+    for (const entry of source) {
+      const nextSpeciesId = entry.speciesId === HUMAN_SPECIES_ID ? foundingSpeciesId : entry.speciesId;
+      if (nextSpeciesId !== entry.speciesId) changed = true;
+      bySpecies.set(nextSpeciesId, (bySpecies.get(nextSpeciesId) ?? 0) + Math.max(0, Math.floor(entry.population)));
+    }
+    const speciesPopulations = Array.from(bySpecies.entries())
+      .filter(([, population]) => population > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([speciesId, population]) => ({ speciesId, population }));
+    const population = sumSpeciesPopulation(speciesPopulations);
+    if (population !== planetState.population || JSON.stringify(speciesPopulations) !== JSON.stringify(planetState.speciesPopulations ?? [])) {
+      changed = true;
+      return { ...planetState, population, speciesPopulations };
+    }
+    return planetState;
+  });
+  return changed;
+}
+
 function recalculatePlanetEconomies(nextState = state): void {
   nextState.planetStates = nextState.planetStates.map((planetState) => (
     recalculatePlanetStateEconomy(
       planetState,
       getPlanetDistrictLimitsFromState(nextState, planetState),
       getPlanetTechnologyModifiers(nextState, planetState),
+      getPlanetSpeciesContext(nextState, planetState),
     )
   ));
   applyPlanetStatesToStars(nextState.stars, nextState.planetStates);
@@ -1987,6 +2188,7 @@ function createInitialState(): GameState {
   const hyperlanes = buildHyperlanePairs(stars, cfg.width, cfg.height, cfg.shape, cfg.seed);
   const adjacency = buildHyperlaneAdjacency(hyperlanes, stars.length);
   const factions = buildFactions(stars, cfg);
+  const species = normalizeSpeciesForFactions(factions, []);
   ensureHabitedHomePlanets(stars, factions.map((faction) => faction.homeStarId));
   const homeStarIds = factions.map((faction) => faction.homeStarId);
   const planetStates = buildPlanetStatesFromStars(stars, homeStarIds);
@@ -2048,12 +2250,14 @@ function createInitialState(): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 19,
+    schemaVersion: 20,
     stars,
     planetStates,
     factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
     factionTechnologies: factions.map((faction) => normalizeFactionTechState(faction.id, undefined)),
     governments: createInitialGovernmentStates(factions.map((faction) => faction.id)),
+    species,
+    speciesRights: factions.map((faction) => createDefaultSpeciesRightsState(faction.id, species.map((entry) => entry.id))),
     diplomacy: createInitialDiplomacyState(factions.map((faction) => faction.id)),
     market: createInitialMarketState(factions.map((faction) => faction.id), startHour, GAME_START_YEAR),
     leaders: createInitialLeaders(factions.map((faction) => faction.id), startLeaderDay, GAME_START_YEAR),
@@ -2081,6 +2285,8 @@ function createInitialState(): GameState {
     },
   };
   syncSystemOwnershipFromStarbases(created);
+  assignFoundingSpeciesToOwnedPops(created);
+  created.speciesRights = normalizeSpeciesRightsForFactions(created);
   recalculatePlanetEconomies(created);
   refreshFactionEconomyDeltas(created);
   refreshDiscovery(created);
@@ -2091,7 +2297,7 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(statePath, "utf8");
     const parsed = JSON.parse(raw) as GameState;
-    parsed.schemaVersion = 19;
+    parsed.schemaVersion = 20;
     delete (parsed as GameState & { battles?: unknown }).battles;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
@@ -2099,6 +2305,11 @@ async function loadState(): Promise<GameState> {
     parsed.recentCombatContacts = [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
     parsed.clock = normalizeClock(parsed.clock);
+    const factionsBeforeSpecies = JSON.stringify(parsed.factions ?? []);
+    const rawSpecies = (parsed as GameState & { species?: unknown }).species;
+    parsed.species = normalizeSpeciesForFactions(parsed.factions, rawSpecies);
+    const speciesChanged = JSON.stringify(rawSpecies ?? []) !== JSON.stringify(parsed.species)
+      || factionsBeforeSpecies !== JSON.stringify(parsed.factions ?? []);
     const normalizedMarket = normalizeMarketState(
       parsed.market,
       parsed.factions.map((faction) => faction.id),
@@ -2150,6 +2361,16 @@ async function loadState(): Promise<GameState> {
       parsed.factions.map((faction) => faction.homeStarId),
     );
     parsed.planetStates = normalizedPlanetStates.planetStates;
+    const normalizedGovernments = normalizeGovernmentStatesForFactions(
+      parsed.factions.map((faction) => faction.id),
+      parsed.governments,
+    );
+    const governmentsChanged = JSON.stringify(parsed.governments ?? []) !== JSON.stringify(normalizedGovernments);
+    parsed.governments = normalizedGovernments;
+    const rawSpeciesRights = (parsed as GameState & { speciesRights?: unknown }).speciesRights;
+    parsed.speciesRights = normalizeSpeciesRightsForFactions(parsed, rawSpeciesRights);
+    const speciesRightsChanged = JSON.stringify(rawSpeciesRights ?? []) !== JSON.stringify(parsed.speciesRights);
+    const speciesPopulationChanged = assignFoundingSpeciesToOwnedPops(parsed);
     recalculatePlanetEconomies(parsed);
     const normalizedFactionEconomies = normalizeFactionEconomies(parsed);
     const factionEconomiesChanged = JSON.stringify(parsed.factionEconomies ?? []) !== JSON.stringify(normalizedFactionEconomies);
@@ -2157,12 +2378,6 @@ async function loadState(): Promise<GameState> {
     const normalizedFactionTechnologies = normalizeFactionTechnologies(parsed);
     const factionTechnologiesChanged = JSON.stringify(parsed.factionTechnologies ?? []) !== JSON.stringify(normalizedFactionTechnologies);
     parsed.factionTechnologies = normalizedFactionTechnologies;
-    const normalizedGovernments = normalizeGovernmentStatesForFactions(
-      parsed.factions.map((faction) => faction.id),
-      parsed.governments,
-    );
-    const governmentsChanged = JSON.stringify(parsed.governments ?? []) !== JSON.stringify(normalizedGovernments);
-    parsed.governments = normalizedGovernments;
     const normalizedDiplomacy = normalizeDiplomacyState(
       parsed.diplomacy,
       parsed.factions.map((faction) => faction.id),
@@ -2179,7 +2394,7 @@ async function loadState(): Promise<GameState> {
     recalculatePlanetEconomies(parsed);
     refreshFactionEconomyDeltas(parsed);
     const planetStateApplied = applyPlanetStatesToStars(parsed.stars, parsed.planetStates);
-    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || governmentsChanged || normalizedDiplomacy.changed || leadersChanged || homeStarbaseChanged || ownershipChanged) {
+    if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || governmentsChanged || speciesChanged || speciesRightsChanged || speciesPopulationChanged || normalizedDiplomacy.changed || leadersChanged || homeStarbaseChanged || ownershipChanged) {
       hasDirtyState = true;
     }
     refreshDiscovery(parsed);
@@ -2457,6 +2672,9 @@ function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField
   if (changed.includes("governments")) {
     update.governments = visibleState.governments;
   }
+  if (changed.includes("species")) {
+    update.species = visibleState.species;
+  }
   if (changed.includes("diplomacy")) {
     update.diplomacy = visibleState.diplomacy;
   }
@@ -2507,6 +2725,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
   const leaders = perspective.mode === "faction"
     ? state.leaders.filter((leader) => leader.factionId === perspective.factionId && leader.status !== "dead")
     : state.leaders.filter((leader) => leader.status !== "dead");
+  const species = state.species;
   const recentCombatContacts = visibleSet
     ? state.recentCombatContacts.filter((contact) => {
       const sourceStarId = contact.sourceKind === "fleet"
@@ -2540,6 +2759,7 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     technologies: getVisibleTechnologyViews(perspective),
     leaders,
     governments,
+    species,
     recentCombatContacts,
     diplomacy: createDiplomacyMovementPayload(perspective),
     planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
@@ -4038,6 +4258,73 @@ function createEligiblePeaceTransferSystems(
   return rows.sort((a, b) => a.starName.localeCompare(b.starName));
 }
 
+function createSocietyDetailPayload(perspective: GalaxyPerspective): SocietyDetailPayload {
+  const playerFactionId = perspective.mode === "faction" ? perspective.factionId : null;
+  const laws = playerFactionId === null
+    ? { civilRights: "civicRegistry", speciesPolicy: "managedResidency" }
+    : {
+      civilRights: getSpeciesLawSelections(state, playerFactionId).civilRights ?? "civicRegistry",
+      speciesPolicy: getSpeciesLawSelections(state, playerFactionId).speciesPolicy ?? "managedResidency",
+    };
+  const speciesIds = playerFactionId === null
+    ? state.species.map((species) => species.id)
+    : getEmpireSpeciesIds(state, playerFactionId);
+  const speciesIdSet = new Set(speciesIds);
+  const species = state.species.filter((entry) => speciesIdSet.has(entry.id));
+  const rights = playerFactionId === null
+    ? null
+    : {
+      factionId: playerFactionId,
+      rightsBySpeciesId: Object.fromEntries(species.map((entry) => [
+        entry.id,
+        getSpeciesRightsForFaction(state, playerFactionId, entry.id),
+      ])),
+    };
+  const faction = playerFactionId === null
+    ? null
+    : {
+      ...state.factions.find((candidate) => candidate.id === playerFactionId)!,
+      discoveredStarIds: state.discoveredByFaction[String(playerFactionId)] ?? [],
+    };
+  const planets = state.planetStates
+    .filter((planetState) => planetState.isHabited)
+    .filter((planetState) => playerFactionId === null || (state.starOwnership[planetState.starId] ?? -1) === playerFactionId)
+    .map((planetState) => {
+      const star = state.stars[planetState.starId];
+      const planet = getPlanetConfig(planetState);
+      const groups = planetState.economy.popGroups;
+      const groupPopulation = groups.reduce((sum, group) => sum + group.population, 0);
+      const averageHappiness = groupPopulation > 0
+        ? groups.reduce((sum, group) => sum + group.happiness * group.population, 0) / groupPopulation
+        : planetState.economy.happiness;
+      const averageHabitability = groupPopulation > 0
+        ? groups.reduce((sum, group) => sum + Number(group.habitability ?? planetState.habitability ?? 0) * group.population, 0) / groupPopulation
+        : Number(planetState.habitability ?? 0);
+      return {
+        planetId: planetState.id,
+        planetName: planet?.name ?? planetState.id,
+        starId: planetState.starId,
+        starName: star?.name ?? `System ${planetState.starId}`,
+        population: planetState.population,
+        speciesPopulations: (planetState.speciesPopulations ?? []).filter((population) => speciesIdSet.has(population.speciesId)),
+        averageHappiness,
+        averageHabitability,
+      };
+    });
+
+  return {
+    playerFactionId,
+    faction,
+    species,
+    rights,
+    legalOptions: getLegalSpeciesRightsOptions(laws),
+    government: playerFactionId === null ? null : getFactionGovernment(state, playerFactionId),
+    factionEconomy: playerFactionId === null ? null : state.factionEconomies.find((economy) => economy.factionId === playerFactionId) ?? null,
+    planets,
+    laws,
+  };
+}
+
 function createDetailPayload(
   perspective: GalaxyPerspective,
   scope: GameDetailScope,
@@ -4156,6 +4443,11 @@ function createDetailPayload(
       technologies: detailState.technologies,
       factionEconomies: detailState.factionEconomies,
     };
+    return { payload, revision: createRevision(payload), normalizedId: null };
+  }
+
+  if (scope === "society") {
+    const payload = createSocietyDetailPayload(perspective);
     return { payload, revision: createRevision(payload), normalizedId: null };
   }
 
@@ -4568,6 +4860,7 @@ function commitPlanetState(
     nextPlanetState,
     getPlanetDistrictLimitsFromState(state, nextPlanetState),
     getPlanetTechnologyModifiers(state, nextPlanetState),
+    getPlanetSpeciesContext(state, nextPlanetState),
   );
   applyPlanetStatesToStars(state.stars, state.planetStates);
   refreshFactionEconomyDeltas();
@@ -5067,6 +5360,7 @@ function completeFleetOrder(fleet: GameFleet): void {
       state.starbases.push(starbase);
       state.starOwnership[starId] = fleet.ownerId;
       syncSystemOwnershipFromStarbases();
+      recalculatePlanetEconomies();
       refreshFactionEconomyDeltas();
     }
     finalOrbitTarget = createStarbaseOrbitTarget(starbase);
@@ -5763,6 +6057,7 @@ function captureStarbase(starbase: ServerStarbase, ownerId: number): boolean {
   starbase.weaponCooldowns = {};
   state.starOwnership[starbase.starId] = ownerId;
   syncSystemOwnershipFromStarbases();
+  recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
   return true;
 }
@@ -6215,6 +6510,7 @@ function processPlanetConstruction(elapsedDays: number): boolean {
       elapsedDays,
       getPlanetDistrictLimitsFromState(state, planetState),
       getPlanetTechnologyModifiers(state, planetState),
+      getPlanetSpeciesContext(state, planetState),
     );
     if (!result.changed) return planetState;
     changed = true;
@@ -6373,6 +6669,7 @@ function processPopulationWeeks(targetWeek: number): boolean {
       getPlanetDistrictLimitsFromState(state, planetState),
       (GAME_DAYS_PER_WEEK * weeks) / GAME_DAYS_PER_QUARTER,
       getPlanetTechnologyModifiers(state, planetState),
+      getPlanetSpeciesContext(state, planetState),
     );
     if (nextPlanetState.population !== planetState.population) changed = true;
     if (nextPlanetState.population !== planetState.population) queuePlanetDetailRefresh(planetState.id);
@@ -6500,7 +6797,12 @@ function advanceState(now: number): Set<ServerUpdateField> {
   if (combatResult.shipsChanged) changed.add("ships");
   if (combatResult.fleetsChanged) changed.add("fleets");
   if (combatResult.starbasesChanged) changed.add("starbases");
-  if (combatResult.factionEconomiesChanged) changed.add("factionEconomies");
+  if (combatResult.factionEconomiesChanged) {
+    refreshDiscovery();
+    changed.add("visibility");
+    changed.add("planetStates");
+    changed.add("factionEconomies");
+  }
   if (combatResult.visibilityChanged) {
     changed.add("visibility");
   }
@@ -7163,7 +7465,7 @@ async function executeAdminCommand(
       state = createInitialState();
       await saveState(state);
       broadcastSnapshots();
-      return { message: "Galaxy reset.", changed: ["clock", "visibility", "planetStates", "factionEconomies", "ships", "shipDesigns", "fleets", "starbases", "combatContacts"] };
+      return { message: "Galaxy reset.", changed: ["clock", "visibility", "planetStates", "factionEconomies", "species", "ships", "shipDesigns", "fleets", "starbases", "combatContacts"] };
     }
     case "clear_recent_combat":
       state.recentCombatContacts = [];
@@ -7257,8 +7559,10 @@ async function executeAdminCommand(
       const starId = resolveSystemToken(parsed.args[0], context);
       const ownerToken = parsed.args[1] ?? "me";
       state.starOwnership[starId] = ownerToken === "none" ? -1 : resolveOwnerToken(ownerToken, context, perspective);
+      recalculatePlanetEconomies();
+      refreshFactionEconomyDeltas();
       refreshDiscovery();
-      return changedResult(`System ${starId} ownership changed.`, ["visibility"]);
+      return changedResult(`System ${starId} ownership changed.`, ["visibility", "planetStates", "factionEconomies"]);
     }
     case "set_home_system": {
       const owner = resolveOwnerToken(parsed.args[0], context, perspective);
@@ -7289,7 +7593,13 @@ async function executeAdminCommand(
       const owner = resolvePerspectiveOwner(context, perspective);
       const planets = token === "all_owned" ? state.planetStates.filter((planet) => state.starOwnership[planet.starId] === owner) : [resolvePlanetToken(token, context)];
       for (const planet of planets) {
-        const result = progressPlanetConstructionQueue(planet, 1_000_000, getPlanetDistrictLimitsFromState(state, planet));
+        const result = progressPlanetConstructionQueue(
+          planet,
+          1_000_000,
+          getPlanetDistrictLimitsFromState(state, planet),
+          getPlanetTechnologyModifiers(state, planet),
+          getPlanetSpeciesContext(state, planet),
+        );
         Object.assign(planet, result.state);
       }
       applyPlanetStatesToStars(state.stars, state.planetStates);
@@ -7313,8 +7623,15 @@ async function executeAdminCommand(
       const planet = resolvePlanetToken(parsed.args[0], context);
       const amount = numberArg(parsed.args[1], "population", name === "set_population" ? 0 : Number.NEGATIVE_INFINITY);
       planet.population = name === "add_population" ? Math.max(0, planet.population + amount) : amount;
-      planet.speciesPopulations = [{ speciesId: "human", population: planet.population }];
-      const recalculated = recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet));
+      const ownerId = state.starOwnership[planet.starId] ?? -1;
+      const foundingSpeciesId = state.factions.find((faction) => faction.id === ownerId)?.foundingSpeciesId ?? HUMAN_SPECIES_ID;
+      planet.speciesPopulations = [{ speciesId: foundingSpeciesId, population: planet.population }];
+      const recalculated = recalculatePlanetStateEconomy(
+        planet,
+        getPlanetDistrictLimitsFromState(state, planet),
+        getPlanetTechnologyModifiers(state, planet),
+        getPlanetSpeciesContext(state, planet),
+      );
       Object.assign(planet, recalculated);
       applyPlanetStatesToStars(state.stars, state.planetStates);
       refreshFactionEconomyDeltas();
@@ -7323,7 +7640,7 @@ async function executeAdminCommand(
     case "set_habitability": {
       const planet = resolvePlanetToken(parsed.args[0], context);
       planet.habitability = numberArg(parsed.args[1], "habitability", 0, 100);
-      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet)));
+      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet), getPlanetTechnologyModifiers(state, planet), getPlanetSpeciesContext(state, planet)));
       refreshFactionEconomyDeltas();
       return changedResult("Habitability updated.", ["planetStates", "factionEconomies"]);
     }
@@ -7334,7 +7651,7 @@ async function executeAdminCommand(
         ...planet.modifiers.filter((modifier) => modifier.id !== "admin-stability"),
         { id: "admin-stability", label: "Admin Stability", source: "Admin", target: "stability", operation: "add", value: value - 50 },
       ];
-      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet)));
+      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet), getPlanetTechnologyModifiers(state, planet), getPlanetSpeciesContext(state, planet)));
       refreshFactionEconomyDeltas();
       return changedResult("Stability test modifier updated.", ["planetStates", "factionEconomies"]);
     }
@@ -7343,7 +7660,7 @@ async function executeAdminCommand(
       const district = parsed.args[1] as DistrictKind;
       if (!isDistrictKind(district)) throw new Error("Invalid district.");
       planet.builtDistricts[district] += 1;
-      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet)));
+      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet), getPlanetTechnologyModifiers(state, planet), getPlanetSpeciesContext(state, planet)));
       applyPlanetStatesToStars(state.stars, state.planetStates);
       refreshFactionEconomyDeltas();
       return changedResult("District built.", ["planetStates", "factionEconomies"]);
@@ -7363,7 +7680,7 @@ async function executeAdminCommand(
         if (!isDistrictKind(area) || !isValidSlotIndex(slotIndex, planet.buildings[area].length)) throw new Error("Invalid building slot.");
         planet.buildings[area][slotIndex] = building;
       }
-      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet)));
+      Object.assign(planet, recalculatePlanetStateEconomy(planet, getPlanetDistrictLimitsFromState(state, planet), getPlanetTechnologyModifiers(state, planet), getPlanetSpeciesContext(state, planet)));
       refreshFactionEconomyDeltas();
       return changedResult("Building built.", ["planetStates", "factionEconomies"]);
     }
@@ -7842,17 +8159,19 @@ async function executeAdminCommand(
       state.starbases.push(starbase);
       state.starOwnership[starId] = owner;
       syncSystemOwnershipFromStarbases();
+      recalculatePlanetEconomies();
       refreshFactionEconomyDeltas();
       refreshDiscovery();
-      return changedResult("Starbase created.", ["starbases", "factionEconomies", "visibility"], [{ id: starbase.id, owner, system: starId, level }]);
+      return changedResult("Starbase created.", ["starbases", "planetStates", "factionEconomies", "visibility"], [{ id: starbase.id, owner, system: starId, level }]);
     }
     case "delete_starbase": {
       const starbase = resolveStarbaseToken(parsed.args[0], context);
       state.starbases = state.starbases.filter((candidate) => candidate.id !== starbase.id);
       syncSystemOwnershipFromStarbases();
+      recalculatePlanetEconomies();
       refreshFactionEconomyDeltas();
       refreshDiscovery();
-      return changedResult("Starbase deleted.", ["starbases", "factionEconomies", "visibility"]);
+      return changedResult("Starbase deleted.", ["starbases", "planetStates", "factionEconomies", "visibility"]);
     }
     case "upgrade_starbase_now": {
       const starbase = resolveStarbaseToken(parsed.args[0], context);
@@ -8018,12 +8337,54 @@ function handleSetGovernmentLaw(
   if (government.selectedLawOptionIds[lawId] === option.id) {
     return accept(socket, `${law.name} already uses ${option.name}.`);
   }
+  const previousRights = JSON.stringify(getFactionSpeciesRightsState(state, factionId));
   government.selectedLawOptionIds[lawId] = option.id;
+  state.speciesRights = normalizeSpeciesRightsForFactions(state);
+  const rightsChanged = previousRights !== JSON.stringify(getFactionSpeciesRightsState(state, factionId));
   recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
   hasDirtyState = true;
   accept(socket, `${law.name} set to ${option.name}.`);
-  broadcastUpdates(["governments", "planetStates", "factionEconomies", "fleets", "technologies"]);
+  const changed: ServerUpdateField[] = ["governments", "species", "planetStates", "factionEconomies", "fleets", "technologies"];
+  if (rightsChanged) changed.push("visibility");
+  broadcastUpdates(changed);
+}
+
+function handleSetSpeciesRights(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  speciesId: string,
+  rightsInput: Partial<SpeciesRights>,
+): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const species = state.species.find((candidate) => candidate.id === speciesId);
+  if (!species) return reject(socket, "Species not found.");
+  if (!getEmpireSpeciesIds(state, factionId).includes(species.id)) {
+    return reject(socket, "That species does not live in your empire.");
+  }
+
+  let rightsState = state.speciesRights.find((candidate) => candidate.factionId === factionId);
+  if (!rightsState) {
+    rightsState = createDefaultSpeciesRightsState(factionId, state.species.map((entry) => entry.id));
+    state.speciesRights.push(rightsState);
+  }
+  const current = getSpeciesRightsForFaction(state, factionId, species.id);
+  const requested = normalizeSpeciesRights({ ...current, ...rightsInput });
+  const normalized = normalizeSpeciesRightsForLaws(requested, getSpeciesLawSelections(state, factionId));
+  if (JSON.stringify(current) === JSON.stringify(normalized)) {
+    return accept(socket, `${species.name} rights already match current law.`);
+  }
+  rightsState.rightsBySpeciesId = {
+    ...rightsState.rightsBySpeciesId,
+    [species.id]: normalized,
+  };
+  state.speciesRights = normalizeSpeciesRightsForFactions(state);
+  recalculatePlanetEconomies();
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  accept(socket, `${species.name} rights updated.`);
+  broadcastUpdates(["species", "planetStates", "factionEconomies"]);
 }
 
 function validateLeaderCommand(socket: WebSocket, perspective: GalaxyPerspective, leaderId: string): {
@@ -8600,6 +8961,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     handleSetGovernmentLaw(session.socket, session.perspective, command.lawId, command.optionId);
     return;
   }
+  if (command.type === "setSpeciesRights") {
+    handleSetSpeciesRights(session.socket, session.perspective, command.speciesId, command.rights);
+    return;
+  }
   if (command.type === "recruitLeader") {
     handleRecruitLeader(session.socket, session.perspective, command.leaderId);
     return;
@@ -8812,9 +9177,15 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
 
 function touchMembershipNames(): void {
   let changed = false;
+  let speciesChanged = false;
   for (const membership of authStore.listGameMemberships(game.id)) {
     const faction = state.factions.find((candidate) => candidate.id === membership.factionId);
     if (!faction) continue;
+    const expectedSpeciesId = getFactionFoundingSpeciesId(faction.id);
+    if (faction.foundingSpeciesId !== expectedSpeciesId) {
+      faction.foundingSpeciesId = expectedSpeciesId;
+      changed = true;
+    }
     if (faction.name !== membership.countryName) {
       faction.name = membership.countryName;
       changed = true;
@@ -8825,10 +9196,30 @@ function touchMembershipNames(): void {
       faction.flagDesign = membership.flagDesign;
       changed = true;
     }
+    if (membership.speciesSetup) {
+      const nextSpecies = createSpeciesFromSetup(faction.id, membership.speciesSetup);
+      const index = state.species.findIndex((species) => species.id === nextSpecies.id);
+      const current = index >= 0 ? state.species[index] : null;
+      if (JSON.stringify(current) !== JSON.stringify(nextSpecies)) {
+        if (index >= 0) {
+          state.species[index] = nextSpecies;
+        } else {
+          state.species.push(nextSpecies);
+        }
+        speciesChanged = true;
+        changed = true;
+      }
+    }
   }
   if (!changed) return;
+  const speciesPopulationChanged = assignFoundingSpeciesToOwnedPops(state);
+  if (speciesChanged || speciesPopulationChanged) {
+    state.speciesRights = normalizeSpeciesRightsForFactions(state);
+    recalculatePlanetEconomies();
+    refreshFactionEconomyDeltas();
+  }
   hasDirtyState = true;
-  broadcastUpdates(["visibility"]);
+  broadcastUpdates(speciesChanged || speciesPopulationChanged ? ["visibility", "species", "planetStates", "factionEconomies"] : ["visibility"]);
 }
 
 state = await loadState();

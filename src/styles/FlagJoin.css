@@ -50,6 +50,7 @@
 }
 
 .flag-join__name-step input,
+.flag-join__select input,
 .flag-join__select select {
   min-height: 46px;
   border: 1px solid rgba(168, 182, 200, 0.5);
@@ -58,6 +59,142 @@
   color: #eef7ff;
   font: inherit;
   padding: 0 13px;
+}
+
+.flag-join__species-step {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.flag-join__species-section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.flag-join__species-heading {
+  color: #8fd6ff;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.flag-join__archetype-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  gap: 10px;
+}
+
+.flag-join__archetype,
+.flag-join__trait {
+  border: 1px solid rgba(102, 200, 255, 0.26);
+  border-radius: 6px;
+  background: rgba(11, 19, 31, 0.76);
+  color: #d6dde7;
+  cursor: pointer;
+  font: inherit;
+}
+
+.flag-join__archetype {
+  min-height: 86px;
+  display: grid;
+  place-items: center;
+  gap: 7px;
+  padding: 12px;
+}
+
+.flag-join__archetype span {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(126, 255, 220, 0.4);
+  border-radius: 50%;
+  background: rgba(30, 210, 174, 0.14);
+  color: #a8ffe3;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.flag-join__archetype strong,
+.flag-join__trait strong {
+  color: #eef7ff;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.flag-join__archetype:hover,
+.flag-join__archetype.is-selected,
+.flag-join__trait:hover,
+.flag-join__trait.is-selected {
+  border-color: rgba(143, 214, 255, 0.86);
+  box-shadow: 0 0 0 1px rgba(143, 214, 255, 0.24) inset;
+}
+
+.flag-join__archetype.is-selected,
+.flag-join__trait.is-selected {
+  background: linear-gradient(180deg, rgba(16, 69, 66, 0.88), rgba(5, 17, 24, 0.96));
+}
+
+.flag-join__trait-meter {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(102, 200, 255, 0.2);
+  border-radius: 6px;
+  background: rgba(5, 10, 17, 0.52);
+  color: rgba(238, 247, 255, 0.86);
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  padding: 10px 12px;
+  text-transform: uppercase;
+}
+
+.flag-join__trait-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+  max-height: min(410px, calc(100vh - 330px));
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.flag-join__trait {
+  min-height: 118px;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  padding: 12px;
+  position: relative;
+  text-align: left;
+}
+
+.flag-join__trait small {
+  color: rgba(214, 221, 231, 0.68);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.flag-join__trait-cost {
+  position: absolute;
+  top: 9px;
+  right: 10px;
+  color: #ffd568;
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+
+.flag-join__trait--negative .flag-join__trait-cost {
+  color: #8fffd7;
+}
+
+.flag-join__trait:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .flag-join__flag-step {
@@ -260,7 +397,8 @@
 
 @media (max-width: 860px) {
   .flag-join__flag-step,
-  .flag-join__creator {
+  .flag-join__creator,
+  .flag-join__archetype-grid {
     grid-template-columns: 1fr;
   }
 

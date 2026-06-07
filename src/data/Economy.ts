@@ -1,17 +1,20 @@
 import type { DistrictCounts, DistrictKind } from "./StarMap";
+import {
+  DEFAULT_SPECIES_RIGHTS,
+  HUMAN_SPECIES_ID,
+  canRightsWorkJob,
+  getSpeciesEconomyEffects,
+  getSpeciesJobOutputMultiplier,
+  normalizeSpeciesRights,
+} from "./Species";
+import type { SpeciesId, SpeciesRights, SpeciesState } from "./Species";
 
 export type { DistrictCounts, DistrictKind } from "./StarMap";
+export type { SpeciesId } from "./Species";
 
 export type ResourceKind = "food" | "minerals" | "energy" | "goods" | "alloys" | "research";
 
 export type ResourceCounts = Record<ResourceKind, number>;
-
-export type SpeciesId = "human";
-
-export interface SpeciesDefinition {
-  id: SpeciesId;
-  name: string;
-}
 
 export interface SpeciesPopulation {
   speciesId: SpeciesId;
@@ -219,6 +222,11 @@ export interface PlanetPopulationGrowth {
   factors: PlanetPopulationGrowthFactors;
 }
 
+export interface PlanetEconomySpeciesContext {
+  species: SpeciesState[];
+  rightsBySpeciesId?: Record<SpeciesId, SpeciesRights | undefined>;
+}
+
 export interface PlanetState {
   id: string;
   starId: number;
@@ -331,16 +339,7 @@ export const RESOURCE_LABELS: Record<ResourceKind, string> = {
   research: "Research",
 };
 
-export const HUMAN_SPECIES_ID: SpeciesId = "human";
-
-export const SPECIES_DEFINITIONS: Record<SpeciesId, SpeciesDefinition> = {
-  human: {
-    id: "human",
-    name: "Human",
-  },
-};
-
-export const SPECIES_IDS: SpeciesId[] = ["human"];
+export { HUMAN_SPECIES_ID };
 
 export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
   administrator: {
@@ -812,10 +811,11 @@ function normalizeSpeciesPopulations(
 
   const bySpecies = new Map<SpeciesId, number>();
   for (const entry of populations ?? []) {
-    if (!entry || !SPECIES_IDS.includes(entry.speciesId)) continue;
+    if (!entry || typeof entry.speciesId !== "string" || !entry.speciesId.trim()) continue;
+    const speciesId = entry.speciesId.trim();
     const population = Math.max(0, Math.floor(Number(entry.population) || 0));
     if (population <= 0) continue;
-    bySpecies.set(entry.speciesId, (bySpecies.get(entry.speciesId) ?? 0) + population);
+    bySpecies.set(speciesId, (bySpecies.get(speciesId) ?? 0) + population);
   }
 
   if (bySpecies.size === 0 && fallbackPopulation > 0) {
@@ -826,17 +826,15 @@ function normalizeSpeciesPopulations(
   const currentPopulation = Array.from(bySpecies.values()).reduce((sum, population) => sum + population, 0);
   if (currentPopulation > 0 && targetPopulation > 0 && currentPopulation !== targetPopulation) {
     let runningTotal = 0;
-    for (const speciesId of SPECIES_IDS) {
-      const current = bySpecies.get(speciesId) ?? 0;
+    for (const [speciesId, current] of bySpecies) {
       if (current <= 0) continue;
       const scaled = Math.max(0, Math.round(targetPopulation * (current / currentPopulation)));
       bySpecies.set(speciesId, scaled);
       runningTotal += scaled;
     }
     let remainder = targetPopulation - runningTotal;
-    for (const speciesId of SPECIES_IDS) {
+    for (const speciesId of bySpecies.keys()) {
       if (remainder === 0) break;
-      if (!bySpecies.has(speciesId)) continue;
       const step = remainder > 0 ? 1 : -1;
       const current = bySpecies.get(speciesId) ?? 0;
       if (step < 0 && current <= 0) continue;
@@ -845,7 +843,8 @@ function normalizeSpeciesPopulations(
     }
   }
 
-  return SPECIES_IDS
+  return Array.from(bySpecies.keys())
+    .sort((a, b) => a.localeCompare(b))
     .map((speciesId) => ({
       speciesId,
       population: bySpecies.get(speciesId) ?? 0,
@@ -853,7 +852,7 @@ function normalizeSpeciesPopulations(
     .filter((entry) => entry.population > 0);
 }
 
-function sumSpeciesPopulation(populations: SpeciesPopulation[]): number {
+export function sumSpeciesPopulation(populations: SpeciesPopulation[]): number {
   return populations.reduce((sum, entry) => sum + entry.population, 0);
 }
 
@@ -891,6 +890,41 @@ function getModifierMultiplier(modifiers: PlanetModifier[], target: PlanetModifi
   return applyModifiers(1, modifiers, target);
 }
 
+function getContextSpecies(context: PlanetEconomySpeciesContext | undefined, speciesId: SpeciesId): SpeciesState | undefined {
+  return context?.species.find((species) => species.id === speciesId)
+    ?? (speciesId === HUMAN_SPECIES_ID ? { id: HUMAN_SPECIES_ID, name: "Human", archetypeId: "humanoid", traitIds: [], originFactionId: null } : undefined);
+}
+
+function getContextRights(context: PlanetEconomySpeciesContext | undefined, speciesId: SpeciesId): SpeciesRights {
+  return normalizeSpeciesRights(context?.rightsBySpeciesId?.[speciesId] ?? DEFAULT_SPECIES_RIGHTS);
+}
+
+function getContextEffects(context: PlanetEconomySpeciesContext | undefined, speciesId: SpeciesId) {
+  return getSpeciesEconomyEffects(getContextSpecies(context, speciesId), getContextRights(context, speciesId));
+}
+
+function getContextSpeciesName(context: PlanetEconomySpeciesContext | undefined, speciesId: SpeciesId): string {
+  return getContextSpecies(context, speciesId)?.name ?? speciesId;
+}
+
+function canSpeciesWorkJob(speciesId: SpeciesId, jobClass: JobClass, context: PlanetEconomySpeciesContext | undefined): boolean {
+  return canRightsWorkJob(getContextRights(context, speciesId), jobClass);
+}
+
+function getSpeciesHousingNeedPopulation(populations: SpeciesPopulation[], context: PlanetEconomySpeciesContext | undefined): number {
+  return populations.reduce((sum, species) => (
+    sum + species.population * getContextEffects(context, species.speciesId).housingUsageMultiplier
+  ), 0);
+}
+
+function getWeightedSpeciesGrowthMultiplier(populations: SpeciesPopulation[], context: PlanetEconomySpeciesContext | undefined): number {
+  const total = sumSpeciesPopulation(populations);
+  if (total <= 0) return 1;
+  return populations.reduce((sum, species) => (
+    sum + (species.population / total) * getContextEffects(context, species.speciesId).growthMultiplier
+  ), 0);
+}
+
 function interpolate(value: number, inputMin: number, inputMax: number, outputMin: number, outputMax: number): number {
   if (inputMax === inputMin) return outputMin;
   const t = clamp((value - inputMin) / (inputMax - inputMin), 0, 1);
@@ -900,9 +934,11 @@ function interpolate(value: number, inputMin: number, inputMax: number, outputMi
 export function getEffectiveSpeciesHabitability(
   state: Pick<PlanetState, "habitability" | "features" | "modifiers">,
   speciesId: SpeciesId = HUMAN_SPECIES_ID,
+  context?: PlanetEconomySpeciesContext,
 ): number {
   const base = clamp(state.habitability ?? 0, 0, 100);
-  const modified = applyModifiers(base, getActiveModifiers(state), `habitability:${speciesId}`);
+  const modified = applyModifiers(base, getActiveModifiers(state), `habitability:${speciesId}`)
+    + getContextEffects(context, speciesId).habitabilityAdd;
   return clamp(Math.round(modified), 0, 100);
 }
 
@@ -1100,15 +1136,20 @@ function applyJobResourceEffect(
   production: ResourceCounts,
   upkeep: ResourceCounts,
   job: JobKind,
+  jobClass: JobClass,
+  speciesId: SpeciesId,
   population: number,
   modifiers: PlanetModifier[],
   productionMultiplier: number,
   upkeepMultiplier: number,
+  context?: PlanetEconomySpeciesContext,
 ): number {
   const units = population / PEOPLE_PER_MONTHLY_UNIT;
   const addJobOutput = (resource: ResourceKind, amount: number): void => {
     const generic = applyModifiers(amount, modifiers, "jobOutput");
-    addResource(production, resource, applyModifiers(generic, modifiers, `jobOutput:${job}:${resource}`) * productionMultiplier);
+    const species = getContextSpecies(context, speciesId);
+    const speciesMultiplier = getSpeciesJobOutputMultiplier(species, job, resource, jobClass);
+    addResource(production, resource, applyModifiers(generic, modifiers, `jobOutput:${job}:${resource}`) * productionMultiplier * speciesMultiplier);
   };
   const addJobUpkeep = (resource: ResourceKind, amount: number): void => {
     const generic = applyModifiers(amount, modifiers, "jobUpkeep");
@@ -1121,31 +1162,43 @@ function applyJobResourceEffect(
   for (const [resource, amount] of Object.entries(definition.upkeep ?? {}) as Array<[ResourceKind, number]>) {
     addJobUpkeep(resource, units * amount);
   }
-  return getJobAmenityEffect(job, population, modifiers, productionMultiplier);
+  return getJobAmenityEffect(job, speciesId, population, modifiers, productionMultiplier, context);
 }
 
 function applyGoodsUpkeep(
   upkeep: ResourceCounts,
   jobClass: JobClass,
+  speciesId: SpeciesId,
   population: number,
   modifiers: PlanetModifier[],
   upkeepMultiplier: number,
   perUnitOverride?: number,
+  context?: PlanetEconomySpeciesContext,
 ): void {
   const units = population / PEOPLE_PER_MONTHLY_UNIT;
   const upkeepPerUnit = perUnitOverride ?? (jobClass === "upper" ? 0.45 : jobClass === "middle" ? 0.25 : 0.08);
-  addResource(upkeep, "goods", applyModifiers(units * upkeepPerUnit, modifiers, `goodsUpkeep:${jobClass}`) * upkeepMultiplier);
+  addResource(
+    upkeep,
+    "goods",
+    applyModifiers(units * upkeepPerUnit, modifiers, `goodsUpkeep:${jobClass}`)
+      * upkeepMultiplier
+      * getContextEffects(context, speciesId).goodsUpkeepMultiplier,
+  );
 }
 
 function getJobAmenityEffect(
   job: JobKind,
+  speciesId: SpeciesId,
   population: number,
   modifiers: PlanetModifier[],
   productionMultiplier: number,
+  context?: PlanetEconomySpeciesContext,
 ): number {
   const units = population / PEOPLE_PER_MONTHLY_UNIT;
   const amenities = JOB_DEFINITIONS[job].amenities ?? 0;
-  return applyModifiers(units * amenities, modifiers, `jobAmenities:${job}`) * productionMultiplier;
+  return applyModifiers(units * amenities, modifiers, `jobAmenities:${job}`)
+    * productionMultiplier
+    * getContextEffects(context, speciesId).amenitiesMultiplier;
 }
 
 function getJobCrimeReductionEffect(
@@ -1261,6 +1314,7 @@ export function calculatePlanetEconomy(
   state: PlanetState,
   districtLimits?: DistrictCounts,
   externalModifiers: PlanetModifier[] = [],
+  speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetEconomySummary {
   if (!state.isHabited) return createEmptyPlanetEconomySummary();
 
@@ -1337,6 +1391,7 @@ export function calculatePlanetEconomy(
     const jobClass = JOB_CLASS_BY_KIND[job];
     for (const species of speciesPopulations) {
       if (capacityRemaining <= 0) break;
+      if (!canSpeciesWorkJob(species.speciesId, jobClass, speciesContext)) continue;
       const available = remainingBySpecies.get(species.speciesId) ?? 0;
       const population = Math.min(available, capacityRemaining);
       if (population <= 0) continue;
@@ -1356,20 +1411,23 @@ export function calculatePlanetEconomy(
   }
   capacity.unemployed = unemployedPopulation;
 
-  const housingRatio = totalPopulation > 0 ? housing / totalPopulation : 1;
+  const housingNeedPopulation = getSpeciesHousingNeedPopulation(speciesPopulations, speciesContext);
+  const housingRatio = housingNeedPopulation > 0 ? housing / housingNeedPopulation : 1;
   const sharedHousingHappiness = getHousingHappinessModifier(housingRatio);
   const calculateAssignmentEffects = (sourceAssignments: PopAssignment[]) => {
     let assignmentAmenities = 0;
     let assignmentCrimeReduction = 0;
     for (const assignment of sourceAssignments) {
       if (assignment.job === "unemployed") continue;
-      const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId);
+      const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId, speciesContext);
       const productionMultiplier = getHabitabilityProductionMultiplier(habitability);
       assignmentAmenities += getJobAmenityEffect(
         assignment.job,
+        assignment.speciesId,
         assignment.population,
         activeModifiers,
         productionMultiplier,
+        speciesContext,
       );
       assignmentCrimeReduction += getJobCrimeReductionEffect(assignment.job, assignment.population, productionMultiplier);
     }
@@ -1393,7 +1451,8 @@ export function calculatePlanetEconomy(
     let weightedHighHappinessStability = 0;
 
     for (const assignment of sourceAssignments) {
-      const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId);
+      const habitability = getEffectiveSpeciesHabitability(state, assignment.speciesId, speciesContext);
+      const speciesEffects = getContextEffects(speciesContext, assignment.speciesId);
       const happiness = clamp(Math.round(applyModifiers(
         50
           + getHabitabilityHappinessModifier(habitability)
@@ -1404,8 +1463,8 @@ export function calculatePlanetEconomy(
           + getJobHappinessPenalty(assignment.job),
         activeModifiers,
         "happiness",
-      )), 0, 100);
-      const speciesName = SPECIES_DEFINITIONS[assignment.speciesId].name;
+      ) + speciesEffects.happinessAdd), 0, 100);
+      const speciesName = getContextSpeciesName(speciesContext, assignment.speciesId);
       mergePopGroup(groups, {
         job: assignment.job,
         class: assignment.class,
@@ -1416,8 +1475,8 @@ export function calculatePlanetEconomy(
         population: assignment.population,
       });
       weightedHappiness += happiness * assignment.population;
-      weightedCrimePressure += getHappinessCrimePressure(happiness) * assignment.population;
-      weightedHighHappinessStability += Math.max(0, happiness - 80) / 20 * 15 * assignment.population;
+      weightedCrimePressure += Math.max(0, getHappinessCrimePressure(happiness) + speciesEffects.crimeAdd) * assignment.population;
+      weightedHighHappinessStability += (Math.max(0, happiness - 80) / 20 * 15 + speciesEffects.stabilityAdd) * assignment.population;
     }
 
     return {
@@ -1497,26 +1556,31 @@ export function calculatePlanetEconomy(
         production,
         upkeep,
         group.job,
+        group.class,
+        group.speciesId,
         group.population,
         activeModifiers,
         habitabilityProductionMultiplier * stabilityProductionMultiplier,
         habitabilityUpkeepMultiplier,
+        speciesContext,
       );
-      applyGoodsUpkeep(upkeep, group.class, group.population, activeModifiers, habitabilityUpkeepMultiplier);
+      applyGoodsUpkeep(upkeep, group.class, group.speciesId, group.population, activeModifiers, habitabilityUpkeepMultiplier, undefined, speciesContext);
     } else {
       applyGoodsUpkeep(
         upkeep,
         group.class,
+        group.speciesId,
         group.population,
         activeModifiers,
         habitabilityUpkeepMultiplier,
         UNEMPLOYED_GOODS_UPKEEP_PER_UNIT,
+        speciesContext,
       );
     }
   }
 
   for (const species of speciesPopulations) {
-    const habitability = getEffectiveSpeciesHabitability(state, species.speciesId);
+    const habitability = getEffectiveSpeciesHabitability(state, species.speciesId, speciesContext);
     addResource(upkeep, "food", applyModifiers(
       (species.population / PEOPLE_PER_MONTHLY_UNIT)
         * POP_FOOD_UPKEEP_PER_UNIT
@@ -1552,7 +1616,7 @@ export function calculatePlanetEconomy(
 
   return {
     ...summaryWithoutGrowth,
-    populationGrowth: calculatePopulationGrowth(state, summaryWithoutGrowth, districtLimits, externalModifiers),
+    populationGrowth: calculatePopulationGrowth(state, summaryWithoutGrowth, districtLimits, externalModifiers, speciesContext),
   };
 }
 
@@ -1577,13 +1641,16 @@ export function calculatePopulationGrowth(
   economy: Omit<PlanetEconomySummary, "populationGrowth">,
   districtLimits?: DistrictCounts,
   externalModifiers: PlanetModifier[] = [],
+  speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetPopulationGrowth {
   if (!state.isHabited || state.population <= 0) return createEmptyPopulationGrowth();
 
   const capacity = calculatePlanetCapacity(state, districtLimits, externalModifiers);
   const capacityPressure = capacity > 0 ? state.population / capacity : 1;
   const capacityCurve = clamp(1 - capacityPressure, -0.75, 1.15);
-  const housingRatio = state.population > 0 ? economy.housing / state.population : 1;
+  const speciesPopulations = normalizeSpeciesPopulations(state.speciesPopulations, state.population, state.isHabited);
+  const housingNeedPopulation = getSpeciesHousingNeedPopulation(speciesPopulations, speciesContext);
+  const housingRatio = housingNeedPopulation > 0 ? economy.housing / housingNeedPopulation : 1;
   const amenityNeed = state.population / PEOPLE_PER_MONTHLY_UNIT;
   const amenityRatio = amenityNeed > 0 ? economy.amenities / amenityNeed : 1;
   const unemploymentRatio = state.population > 0 ? economy.unemployedPopulation / state.population : 0;
@@ -1604,7 +1671,7 @@ export function calculatePopulationGrowth(
     BASE_POPULATION_GROWTH_RATE_PER_QUARTER * factors.capacity * managementMultiplier,
     getActiveModifiers(state, externalModifiers),
     "populationGrowth",
-  );
+  ) * getWeightedSpeciesGrowthMultiplier(state.speciesPopulations, speciesContext);
   const netPerQuarter = Math.round(state.population * ratePerQuarter);
 
   return {
@@ -1620,6 +1687,7 @@ export function recalculatePlanetStateEconomy(
   state: PlanetState,
   districtLimits?: DistrictCounts,
   externalModifiers: PlanetModifier[] = [],
+  speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetState {
   const speciesPopulations = normalizeSpeciesPopulations(
     state.speciesPopulations,
@@ -1639,7 +1707,7 @@ export function recalculatePlanetStateEconomy(
   };
   return {
     ...normalized,
-    economy: calculatePlanetEconomy(normalized, districtLimits, externalModifiers),
+    economy: calculatePlanetEconomy(normalized, districtLimits, externalModifiers, speciesContext),
   };
 }
 
@@ -1648,18 +1716,19 @@ export function applyPopulationGrowth(
   districtLimits?: DistrictCounts,
   quarters = 1,
   externalModifiers: PlanetModifier[] = [],
+  speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetState {
-  let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers);
+  let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers, speciesContext);
   if (!next.isHabited || quarters <= 0) return next;
 
   for (let i = 0; i < quarters; i++) {
     const growth = next.economy.populationGrowth.netPerQuarter;
-    const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth);
+    const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth, speciesContext);
     next = recalculatePlanetStateEconomy({
       ...next,
       population: sumSpeciesPopulation(speciesPopulations),
       speciesPopulations,
-    }, districtLimits, externalModifiers);
+    }, districtLimits, externalModifiers, speciesContext);
   }
 
   return next;
@@ -1670,20 +1739,25 @@ export function applyPopulationGrowthFraction(
   districtLimits: DistrictCounts | undefined,
   quarterFraction: number,
   externalModifiers: PlanetModifier[] = [],
+  speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetState {
-  const next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers);
+  const next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers, speciesContext);
   if (!next.isHabited || quarterFraction <= 0) return next;
 
   const growth = Math.round(next.economy.populationGrowth.netPerQuarter * quarterFraction);
-  const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth);
+  const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth, speciesContext);
   return recalculatePlanetStateEconomy({
     ...next,
     population: sumSpeciesPopulation(speciesPopulations),
     speciesPopulations,
-  }, districtLimits, externalModifiers);
+  }, districtLimits, externalModifiers, speciesContext);
 }
 
-function applyPopulationDeltaToSpecies(populations: SpeciesPopulation[], delta: number): SpeciesPopulation[] {
+function applyPopulationDeltaToSpecies(
+  populations: SpeciesPopulation[],
+  delta: number,
+  speciesContext?: PlanetEconomySpeciesContext,
+): SpeciesPopulation[] {
   if (delta === 0 || populations.length === 0) return populations.map((entry) => cloneSpeciesPopulation(entry));
   const total = sumSpeciesPopulation(populations);
   if (total <= 0) {
@@ -1693,9 +1767,14 @@ function applyPopulationDeltaToSpecies(populations: SpeciesPopulation[], delta: 
   }
 
   const targetTotal = Math.max(0, total + delta);
+  const growthWeights = delta > 0
+    ? populations.map((entry) => entry.population * getContextEffects(speciesContext, entry.speciesId).growthMultiplier)
+    : populations.map((entry) => entry.population);
+  const totalWeight = growthWeights.reduce((sum, weight) => sum + Math.max(0, weight), 0);
   let runningTotal = 0;
-  const next = populations.map((entry) => {
-    const population = Math.max(0, Math.round(targetTotal * (entry.population / total)));
+  const next = populations.map((entry, index) => {
+    const weight = totalWeight > 0 ? Math.max(0, growthWeights[index]) / totalWeight : entry.population / total;
+    const population = Math.max(0, Math.round(targetTotal * weight));
     runningTotal += population;
     return { speciesId: entry.speciesId, population };
   });
@@ -1862,8 +1941,9 @@ export function progressPlanetConstructionQueue(
   elapsedDays: number,
   districtLimits?: DistrictCounts,
   externalModifiers: PlanetModifier[] = [],
+  speciesContext?: PlanetEconomySpeciesContext,
 ): { state: PlanetState; changed: boolean; completed: PlanetConstructionQueueItem[] } {
-  let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers);
+  let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers, speciesContext);
   const limits = districtLimits ?? next.builtDistricts;
   let days = Math.max(0, elapsedDays);
   const completed: PlanetConstructionQueueItem[] = [];
@@ -1889,7 +1969,7 @@ export function progressPlanetConstructionQueue(
       withoutItem = completeConstructionItem(withoutItem, completedItem);
       completed.push(completedItem);
     }
-    next = recalculatePlanetStateEconomy(withoutItem, limits, externalModifiers);
+    next = recalculatePlanetStateEconomy(withoutItem, limits, externalModifiers, speciesContext);
     changed = true;
   }
 

@@ -9,6 +9,14 @@ import {
 import { FLAG_PRESETS } from '@/flags/flagPresets';
 import { renderFlagSvg } from '@/flags/renderFlagSvg';
 import type { FlagDesign } from '@/flags/flagTypes';
+import {
+  SPECIES_ARCHETYPES,
+  SPECIES_TRAITS,
+  SPECIES_TRAIT_MAX_COUNT,
+  SPECIES_TRAIT_POINT_BUDGET,
+  validateSpeciesTraits,
+} from '@/data/Species';
+import type { SpeciesArchetypeId, SpeciesSetup, SpeciesTraitId } from '@/data/Species';
 import '../styles/FlagJoin.css';
 
 interface FlagJoinFormProps {
@@ -20,10 +28,10 @@ interface FlagJoinFormProps {
   submitLabel?: string;
   busyLabel?: string;
   onCancel: () => void;
-  onSubmit: (countryName: string, flagDesign: FlagDesign) => void | Promise<void>;
+  onSubmit: (countryName: string, flagDesign: FlagDesign, speciesSetup: SpeciesSetup) => void | Promise<void>;
 }
 
-type JoinStep = 'name' | 'preset' | 'creator';
+type JoinStep = 'name' | 'species' | 'preset' | 'creator';
 
 interface CustomFlagOptions {
   containerId: string;
@@ -107,6 +115,10 @@ export function FlagJoinForm({
   const [step, setStep] = useState<JoinStep>('name');
   const [countryName, setCountryName] = useState('');
   const [attemptedName, setAttemptedName] = useState(false);
+  const [speciesName, setSpeciesName] = useState('');
+  const [attemptedSpecies, setAttemptedSpecies] = useState(false);
+  const [selectedArchetypeId, setSelectedArchetypeId] = useState<SpeciesArchetypeId>('humanoid');
+  const [selectedTraitIds, setSelectedTraitIds] = useState<SpeciesTraitId[]>([]);
   const [selectedPresetId, setSelectedPresetId] = useState(firstPreset.id);
   const [customOptions, setCustomOptions] = useState<CustomFlagOptions>(() => designToOptions(firstPreset.design));
 
@@ -115,6 +127,12 @@ export function FlagJoinForm({
   const activeDesign = step === 'creator' ? customDesign : selectedPreset.design;
   const nameIsValid = countryName.trim().length > 0;
   const nameError = attemptedName && !nameIsValid ? 'Empire name is required' : '';
+  const normalizedSpeciesName = speciesName.trim() || `${countryName.trim() || 'Empire'} Founders`;
+  const speciesValidation = validateSpeciesTraits(selectedTraitIds);
+  const speciesIsValid = normalizedSpeciesName.length > 0 && speciesValidation.valid;
+  const speciesErrors = attemptedSpecies && !speciesIsValid
+    ? (speciesValidation.errors.length > 0 ? speciesValidation.errors : ['Species name is required'])
+    : [];
 
   const updateCustomOption = (key: keyof CustomFlagOptions, value: string) => {
     setCustomOptions((current) => ({
@@ -126,18 +144,44 @@ export function FlagJoinForm({
   const continueFromName = () => {
     setAttemptedName(true);
     if (!nameIsValid) return;
+    setStep('species');
+  };
+
+  const continueFromSpecies = () => {
+    setAttemptedSpecies(true);
+    if (!speciesIsValid) return;
     setStep('preset');
   };
 
   const submitDesign = () => {
     if (!nameIsValid || busy) return;
-    void onSubmit(countryName.trim(), activeDesign);
+    if (!speciesIsValid) {
+      setAttemptedSpecies(true);
+      return;
+    }
+    void onSubmit(countryName.trim(), activeDesign, {
+      speciesName: normalizedSpeciesName,
+      archetypeId: selectedArchetypeId,
+      traitIds: selectedTraitIds,
+    });
+  };
+
+  const toggleTrait = (traitId: SpeciesTraitId) => {
+    setSelectedTraitIds((current) => (
+      current.includes(traitId)
+        ? current.filter((id) => id !== traitId)
+        : [...current, traitId]
+    ));
   };
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (step === 'name') {
       continueFromName();
+      return;
+    }
+    if (step === 'species') {
+      continueFromSpecies();
       return;
     }
     submitDesign();
@@ -152,9 +196,11 @@ export function FlagJoinForm({
   return (
     <form className={rootClass} onSubmit={handleSubmit}>
       <div className="flag-join__header">
-        <div className="flag-join__kicker">{step === 'name' ? 'Join Game' : 'Empire Flag'}</div>
-        <h2>{step === 'name' ? `Join ${gameName}` : countryName.trim()}</h2>
-        <p>{step === 'name' ? 'Name the empire you will command.' : gameName}</p>
+        <div className="flag-join__kicker">
+          {step === 'name' ? 'Join Game' : step === 'species' ? 'Founding Species' : 'Empire Flag'}
+        </div>
+        <h2>{step === 'name' ? `Join ${gameName}` : step === 'species' ? countryName.trim() : countryName.trim()}</h2>
+        <p>{step === 'name' ? 'Name the empire you will command.' : step === 'species' ? gameName : normalizedSpeciesName}</p>
       </div>
 
       {step === 'name' ? (
@@ -168,6 +214,68 @@ export function FlagJoinForm({
             onChange={(event) => setCountryName(event.target.value)}
           />
           {nameError && <div className="flag-join__error">{nameError}</div>}
+        </div>
+      ) : step === 'species' ? (
+        <div className="flag-join__species-step">
+          <label className="flag-join__select">
+            Species name
+            <input
+              value={speciesName}
+              maxLength={48}
+              placeholder={`${countryName.trim() || 'Empire'} Founders`}
+              onChange={(event) => setSpeciesName(event.target.value)}
+            />
+          </label>
+
+          <div className="flag-join__species-section">
+            <div className="flag-join__species-heading">Archetype</div>
+            <div className="flag-join__archetype-grid">
+              {SPECIES_ARCHETYPES.map((archetype) => (
+                <button
+                  key={archetype.id}
+                  type="button"
+                  className={`flag-join__archetype ${selectedArchetypeId === archetype.id ? 'is-selected' : ''}`}
+                  onClick={() => setSelectedArchetypeId(archetype.id)}
+                >
+                  <span>{archetype.icon}</span>
+                  <strong>{archetype.name}</strong>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flag-join__species-section">
+            <div className="flag-join__trait-meter">
+              <span>{selectedTraitIds.length}/{SPECIES_TRAIT_MAX_COUNT} traits</span>
+              <span>{speciesValidation.remainingPoints}/{SPECIES_TRAIT_POINT_BUDGET} points</span>
+            </div>
+            <div className="flag-join__trait-grid">
+              {SPECIES_TRAITS.map((trait) => {
+                const selected = selectedTraitIds.includes(trait.id);
+                const nextSelection = selected
+                  ? selectedTraitIds.filter((id) => id !== trait.id)
+                  : [...selectedTraitIds, trait.id];
+                const canSelect = selected || validateSpeciesTraits(nextSelection).valid;
+                return (
+                  <button
+                    key={trait.id}
+                    type="button"
+                    className={`flag-join__trait flag-join__trait--${trait.polarity} ${selected ? 'is-selected' : ''}`}
+                    disabled={!canSelect}
+                    onClick={() => toggleTrait(trait.id)}
+                  >
+                    <span className="flag-join__trait-cost">{trait.pointCost > 0 ? `-${trait.pointCost}` : `+${Math.abs(trait.pointCost)}`}</span>
+                    <strong>{trait.name}</strong>
+                    <small>{trait.description}</small>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {speciesErrors.map((message) => (
+            <div key={message} className="flag-join__error">{message}</div>
+          ))}
         </div>
       ) : (
         <div className={`flag-join__flag-step ${step === 'creator' ? 'is-creator' : ''}`}>
@@ -290,23 +398,23 @@ export function FlagJoinForm({
         <button
           type="button"
           className="flag-join__secondary"
-          onClick={step === 'creator' ? () => setStep('preset') : onCancel}
+          onClick={step === 'creator' ? () => setStep('preset') : step === 'species' ? () => setStep('name') : onCancel}
           disabled={busy}
         >
-          {step === 'creator' ? 'Back' : cancelLabel}
+          {step === 'creator' || step === 'species' ? 'Back' : cancelLabel}
         </button>
-        {step === 'preset' && (
+          {step === 'preset' && (
           <button
             type="button"
             className="flag-join__secondary"
-            onClick={() => setStep('name')}
+            onClick={() => setStep('species')}
             disabled={busy}
           >
             Back
           </button>
         )}
         <button type="submit" className="flag-join__primary" disabled={busy}>
-          {busy ? busyLabel : step === 'name' ? 'Choose Flag' : submitLabel}
+          {busy ? busyLabel : step === 'name' ? 'Species' : step === 'species' ? 'Choose Flag' : submitLabel}
         </button>
       </div>
     </form>

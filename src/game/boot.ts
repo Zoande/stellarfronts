@@ -28,6 +28,7 @@ import { TechnologyPanel } from "@/ui/TechnologyPanel";
 import { LeadersPanel } from "@/ui/LeadersPanel";
 import { GovernmentPanel } from "@/ui/GovernmentPanel";
 import { DiplomacyPanel } from "@/ui/DiplomacyPanel";
+import { SocietyPanel } from "@/ui/SocietyPanel";
 import { OPEN_LEADERS_PANEL_EVENT } from "@/ui/leaderEvents";
 import type { LeaderAssignmentTarget, OpenLeadersPanelEventDetail } from "@/ui/leaderEvents";
 import { AdminCommandPanel } from "@/ui/AdminCommandPanel";
@@ -46,6 +47,7 @@ import type {
   ServerFleet,
   ServerStarbase,
   ServerUpdateField,
+  SocietyDetailPayload,
   StarbaseDetailPayload,
   SystemDetailPayload,
   TechnologyDetailPayload,
@@ -95,6 +97,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let leadersPanel: LeadersPanel | null = null;
   let governmentPanel: GovernmentPanel | null = null;
   let diplomacyPanel: DiplomacyPanel | null = null;
+  let societyPanel: SocietyPanel | null = null;
   let adminCommandPanel: AdminCommandPanel | null = null;
   let leadersPanelAssignmentTarget: LeaderAssignmentTarget | null = null;
   let fleetManagerDetail: FleetManagerDetailPayload | null = null;
@@ -104,6 +107,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let leadersDetail: LeadersDetailPayload | null = null;
   let governmentDetail: GovernmentDetailPayload | null = null;
   let diplomacyDetail: DiplomacyDetailPayload | null = null;
+  let societyDetail: SocietyDetailPayload | null = null;
   let releaseFleetManagerDetail: (() => void) | null = null;
   let releasePlanetManagerDetail: (() => void) | null = null;
   let releaseMarketDetail: (() => void) | null = null;
@@ -111,6 +115,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let releaseLeadersDetail: (() => void) | null = null;
   let releaseGovernmentDetail: (() => void) | null = null;
   let releaseDiplomacyDetail: (() => void) | null = null;
+  let releaseSocietyDetail: (() => void) | null = null;
   let releaseActiveSystemDetail: (() => void) | null = null;
   const releaseStarbaseDetails = new Map<string, () => void>();
   const releasePlanetDetails = new Map<string, () => void>();
@@ -606,6 +611,41 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       },
     };
   };
+  const getSocietyPanelData = () => {
+    const playerFactionId = societyDetail?.playerFactionId ?? getPlayerFactionId();
+    const fallbackFaction = playerFactionId === null
+      ? null
+      : snapshot.factions.find((faction) => faction.id === playerFactionId) ?? null;
+    const fallbackSpecies = playerFactionId === null
+      ? snapshot.species
+      : snapshot.species.filter((species) => species.originFactionId === playerFactionId);
+    return {
+      playerFactionId,
+      faction: societyDetail?.faction ?? fallbackFaction,
+      species: societyDetail?.species ?? fallbackSpecies,
+      rights: societyDetail?.rights ?? null,
+      legalOptions: societyDetail?.legalOptions ?? {
+        livingStandards: [],
+        citizenship: [],
+        migration: [],
+        workEligibility: [],
+      },
+      government: societyDetail?.government ?? getCurrentFactionGovernment(),
+      factionEconomy: societyDetail?.factionEconomy ?? getCurrentFactionEconomy(),
+      planets: societyDetail?.planets ?? [],
+      laws: societyDetail?.laws ?? {
+        civilRights: "civicRegistry",
+        speciesPolicy: "managedResidency",
+      },
+      factionName: getCurrentFactionName(),
+      clockYear: getRenderClockYear(),
+      onSocietyCommand: (command: ClientCommand) => server.send(command),
+      onClose: () => {
+        releaseSocietyDetail?.();
+        releaseSocietyDetail = null;
+      },
+    };
+  };
   const openGovernmentPanel = (): void => {
     if (!governmentPanel) {
       governmentPanel = new GovernmentPanel();
@@ -638,6 +678,20 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
     diplomacyPanel.show(getDiplomacyPanelData());
   };
+  const openSocietyPanel = (): void => {
+    if (!societyPanel) {
+      societyPanel = new SocietyPanel();
+    }
+    if (!releaseSocietyDetail) {
+      releaseSocietyDetail = server.subscribeDetail<SocietyDetailPayload>("society", null, (event) => {
+        if (event.payload && "species" in event.payload) {
+          societyDetail = event.payload;
+          societyPanel?.refresh(getSocietyPanelData());
+        }
+      });
+    }
+    societyPanel.show(getSocietyPanelData());
+  };
   const refreshFleetManager = (): void => {
     fleetManagerPanel?.refresh(getFleetManagerData());
   };
@@ -659,6 +713,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const refreshDiplomacyPanel = (): void => {
     diplomacyPanel?.refresh(getDiplomacyPanelData());
   };
+  const refreshSocietyPanel = (): void => {
+    societyPanel?.refresh(getSocietyPanelData());
+  };
   const handleSidebarItem = (key: HudSidebarItemKey): void => {
     if (key === "fleets") {
       openFleetManager();
@@ -674,6 +731,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       openTechnologyPanel();
     } else if (key === "leaders") {
       openLeadersPanel(null);
+    } else if (key === "society") {
+      openSocietyPanel();
     }
   };
 
@@ -1131,6 +1190,16 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     ) {
       if (!releaseDiplomacyDetail) refreshDiplomacyPanel();
     }
+    if (
+      isFull
+      || has("species")
+      || has("planetStates")
+      || has("factionEconomies")
+      || has("governments")
+      || has("visibility")
+    ) {
+      if (!releaseSocietyDetail) refreshSocietyPanel();
+    }
   }
 
   async function switchScene(factory: () => IGameScene): Promise<void> {
@@ -1387,11 +1456,13 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     leadersPanel?.dispose();
     governmentPanel?.dispose();
     diplomacyPanel?.dispose();
+    societyPanel?.dispose();
     for (const release of releaseStarbaseDetails.values()) release();
     releaseStarbaseDetails.clear();
     for (const release of releasePlanetDetails.values()) release();
     releasePlanetDetails.clear();
     releaseSystemDetail();
+    releaseSocietyDetail?.();
     adminCommandPanel?.dispose();
     server.dispose();
     mgr.dispose();

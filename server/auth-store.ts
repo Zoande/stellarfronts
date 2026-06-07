@@ -15,6 +15,12 @@ import {
   createFlagDesign,
 } from '../src/flags/flagGenerator';
 import type { FlagDesign } from '../src/flags/flagTypes';
+import {
+  isSpeciesArchetypeId,
+  normalizeSpeciesSetup,
+  validateSpeciesTraits,
+} from '../src/data/Species';
+import type { SpeciesSetup } from '../src/data/Species';
 import type {
   AuthAccount,
   AccountType,
@@ -92,6 +98,7 @@ interface GameSummaryRow extends GameRow {
   faction_id: number | null;
   country_name: string | null;
   flag_design: string | null;
+  species_setup: string | null;
   joined_at: number | null;
   last_entered_at: number | null;
 }
@@ -102,6 +109,7 @@ interface MembershipRow {
   faction_id: number;
   country_name: string;
   flag_design: string | null;
+  species_setup: string | null;
   joined_at: number;
 }
 
@@ -165,6 +173,32 @@ function parseStoredFlagDesign(value: string | null): FlagDesign | null {
   if (!value) return null;
   try {
     return sanitizeFlagDesignInput(JSON.parse(value));
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeSpeciesSetupInput(input: unknown, fallbackName: string): SpeciesSetup {
+  if (!isRecord(input)) {
+    return normalizeSpeciesSetup(undefined, fallbackName);
+  }
+  if (!isSpeciesArchetypeId(input.archetypeId)) {
+    throw new AuthError('Invalid species archetype', 400);
+  }
+  const validation = validateSpeciesTraits(Array.isArray(input.traitIds) ? input.traitIds : []);
+  if (!validation.valid) {
+    throw new AuthError(validation.errors[0] ?? 'Invalid species traits', 400);
+  }
+  return {
+    ...normalizeSpeciesSetup(input, fallbackName),
+    traitIds: validation.normalizedTraitIds,
+  };
+}
+
+function parseStoredSpeciesSetup(value: string | null): SpeciesSetup | null {
+  if (!value) return null;
+  try {
+    return normalizeSpeciesSetup(JSON.parse(value));
   } catch {
     return null;
   }
@@ -315,6 +349,7 @@ export class AuthStore {
         faction_id INTEGER NOT NULL,
         country_name TEXT NOT NULL,
         flag_design TEXT,
+        species_setup TEXT,
         joined_at INTEGER NOT NULL,
         PRIMARY KEY(game_id, account_id),
         UNIQUE(game_id, faction_id),
@@ -341,6 +376,9 @@ export class AuthStore {
     const membershipColumns = this.db.prepare(`PRAGMA table_info(game_memberships)`).all() as Array<{ name: string }>;
     if (!membershipColumns.some((column) => column.name === 'flag_design')) {
       this.db.exec(`ALTER TABLE game_memberships ADD COLUMN flag_design TEXT`);
+    }
+    if (!membershipColumns.some((column) => column.name === 'species_setup')) {
+      this.db.exec(`ALTER TABLE game_memberships ADD COLUMN species_setup TEXT`);
     }
 
     this.db.prepare(`
@@ -442,13 +480,14 @@ export class AuthStore {
         own_members.faction_id,
         own_members.country_name,
         own_members.flag_design,
+        own_members.species_setup,
         own_members.joined_at,
         visits.last_entered_at
       FROM games g
       LEFT JOIN game_memberships all_members ON all_members.game_id = g.id
       LEFT JOIN game_memberships own_members ON own_members.game_id = g.id AND own_members.account_id = ?
       LEFT JOIN game_visits visits ON visits.game_id = g.id AND visits.account_id = ?
-      GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.flag_design, own_members.joined_at, visits.last_entered_at
+      GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.flag_design, own_members.species_setup, own_members.joined_at, visits.last_entered_at
       ORDER BY COALESCE(visits.last_entered_at, 0) DESC, g.created_at DESC, g.id ASC
     `).all(account.id, account.id) as GameSummaryRow[];
     return rows.map((row) => this.toGameSummary(row, account));
@@ -460,7 +499,7 @@ export class AuthStore {
 
   getGameMembership(gameId: string, accountId: number): GameMembership | null {
     const row = this.db.prepare(`
-      SELECT game_id, account_id, faction_id, country_name, flag_design, joined_at
+      SELECT game_id, account_id, faction_id, country_name, flag_design, species_setup, joined_at
       FROM game_memberships
       WHERE game_id = ? AND account_id = ?
     `).get(gameId, accountId) as MembershipRow | undefined;
@@ -469,7 +508,7 @@ export class AuthStore {
 
   listGameMemberships(gameId: string): GameMembership[] {
     const rows = this.db.prepare(`
-      SELECT game_id, account_id, faction_id, country_name, flag_design, joined_at
+      SELECT game_id, account_id, faction_id, country_name, flag_design, species_setup, joined_at
       FROM game_memberships
       WHERE game_id = ?
       ORDER BY faction_id ASC
@@ -477,7 +516,13 @@ export class AuthStore {
     return rows.map((row) => this.toMembership(row));
   }
 
-  joinGame(account: AuthAccount, gameId: string, countryNameInput: string, flagDesignInput?: unknown): GameMembership | null {
+  joinGame(
+    account: AuthAccount,
+    gameId: string,
+    countryNameInput: string,
+    flagDesignInput?: unknown,
+    speciesSetupInput?: unknown,
+  ): GameMembership | null {
     if (this.isPrivilegedGameAccount(account)) {
       if (!this.getGameById(gameId)) throw new AuthError('Game not found', 404);
       return null;
@@ -513,10 +558,11 @@ export class AuthStore {
       const joinedAt = Date.now();
       const flagDesign = sanitizeFlagDesignInput(flagDesignInput)
         ?? createFlagDesign({ seed: `${game.id}:${account.id}:${countryName}` });
+      const speciesSetup = sanitizeSpeciesSetupInput(speciesSetupInput, `${countryName} Founders`);
       this.db.prepare(`
-        INSERT INTO game_memberships (game_id, account_id, faction_id, country_name, flag_design, joined_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(game.id, account.id, factionId, countryName, JSON.stringify(flagDesign), joinedAt);
+        INSERT INTO game_memberships (game_id, account_id, faction_id, country_name, flag_design, species_setup, joined_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(game.id, account.id, factionId, countryName, JSON.stringify(flagDesign), JSON.stringify(speciesSetup), joinedAt);
       return this.getGameMembership(game.id, account.id);
     })();
     if (!membership) {
@@ -964,6 +1010,7 @@ export class AuthStore {
       factionId: row.faction_id,
       countryName: row.country_name,
       flagDesign: parseStoredFlagDesign(row.flag_design),
+      speciesSetup: parseStoredSpeciesSetup(row.species_setup),
       joinedAt: row.joined_at,
     };
   }
@@ -978,6 +1025,7 @@ export class AuthStore {
         faction_id: row.faction_id,
         country_name: row.country_name,
         flag_design: row.flag_design,
+        species_setup: row.species_setup,
         joined_at: row.joined_at,
       });
     const controlledCountries = Number(row.controlled_countries ?? 0);

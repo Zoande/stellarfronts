@@ -129,9 +129,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
-    const body = await readJsonBody<{ countryName?: unknown; flagDesign?: unknown }>(request);
+    const body = await readJsonBody<{ countryName?: unknown; flagDesign?: unknown; speciesSetup?: unknown }>(request);
     const countryName = typeof body.countryName === 'string' ? body.countryName : '';
-    const membership = authStore.joinGame(account, joinGameMatch[1], countryName, body.flagDesign);
+    const membership = authStore.joinGame(account, joinGameMatch[1], countryName, body.flagDesign, body.speciesSetup);
     const game = authStore.getGameSummaryForAccount(joinGameMatch[1], account);
     if (!game) {
       writeJson(response, 404, { error: 'Game not found' });

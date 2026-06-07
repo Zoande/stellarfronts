@@ -5,6 +5,7 @@ import type { TechId } from "./Technology";
 export type GovernmentLawId =
   | "economicPolicy"
   | "civilRights"
+  | "speciesPolicy"
   | "policingDoctrine"
   | "researchCharter"
   | "militaryDoctrine";
@@ -243,6 +244,48 @@ export const GOVERNMENT_LAW_DEFINITIONS: GovernmentLawDefinition[] = [
           { type: "planetModifier", target: "happiness", operation: "add", value: -8 },
           { type: "fleetModifier", target: "attack", value: 0.03 },
           { type: "flag", flag: "martial_law_unlocked" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "speciesPolicy",
+    name: "Species Policy",
+    icon: "SPC",
+    description: "Controls how broadly species rights may diverge across the empire.",
+    defaultOptionId: "managedResidency",
+    options: [
+      {
+        id: "pluralistProtections",
+        name: "Pluralist Protections",
+        summary: "Only inclusive species rights are legal.",
+        description: "Protects resident species from harsh legal categories and keeps migration relatively open.",
+        effects: [
+          { type: "planetModifier", target: "happiness", operation: "add", value: 2 },
+          { type: "empireStat", stat: "unity", value: 0.06 },
+          { type: "flag", flag: "species_pluralism" },
+        ],
+      },
+      {
+        id: "managedResidency",
+        name: "Managed Residency",
+        summary: "Balanced species rights with limited restrictions.",
+        description: "Allows normal residency controls without legalizing forced labor standards.",
+        effects: [
+          { type: "planetModifier", target: "stability", operation: "add", value: 1 },
+          { type: "empireStat", stat: "administrativeEfficiency", value: 0.02 },
+        ],
+      },
+      {
+        id: "stratifiedSpeciesCodes",
+        name: "Stratified Species Codes",
+        summary: "All non-lethal harsh rights are legal.",
+        description: "Allows severe work and living standard restrictions at a happiness and diplomacy cost.",
+        effects: [
+          { type: "planetModifier", target: "happiness", operation: "add", value: -3 },
+          { type: "planetModifier", target: "crime", operation: "multiply", value: 0.08 },
+          { type: "empireStat", stat: "diplomaticRelations", value: -6 },
+          { type: "flag", flag: "species_stratification" },
         ],
       },
     ],
