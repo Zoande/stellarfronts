@@ -262,10 +262,13 @@ export interface PlanetEconomySeed {
   features?: PlanetFeatureKind[];
   builtDistricts: DistrictCounts;
   districtLimits: DistrictCounts;
+  starterInfrastructure?: boolean;
+  startingPopulation?: number;
 }
 
 export const PEOPLE_PER_MONTHLY_UNIT = 1_000_000;
 export const STARTING_HABITED_POPULATION = 10_000_000_000;
+export const NEW_COLONY_POPULATION = 500_000_000;
 const BASE_POPULATION_GROWTH_RATE_PER_QUARTER = 0.01;
 const POP_FOOD_UPKEEP_PER_UNIT = 1.1;
 const UNEMPLOYED_GOODS_UPKEEP_PER_UNIT = 0.025;
@@ -1063,10 +1066,11 @@ export function createPlanetStateFromSeed(
 ): PlanetState {
   const baseBuiltDistricts = normalizeDistrictCounts(existing?.builtDistricts ?? seed.builtDistricts, seed.districtLimits);
   const isHabited = (existing?.isHabited ?? false) || seed.isHabited;
-  const builtDistricts = isHabited
+  const useStarterInfrastructure = isHabited && seed.starterInfrastructure !== false;
+  const builtDistricts = useStarterInfrastructure
     ? createStarterBuiltDistricts(seed.districtLimits, baseBuiltDistricts)
     : baseBuiltDistricts;
-  const buildings = isHabited
+  const buildings = useStarterInfrastructure
     ? normalizeBuildings(existing?.buildings ?? createStarterBuildings(seed.districtLimits))
     : normalizeBuildings(existing?.buildings);
   const urbanSubDistricts = isHabited
@@ -1074,7 +1078,7 @@ export function createPlanetStateFromSeed(
     : normalizeUrbanSubDistricts([]);
   const fallbackPopulation = isHabited
     ? existing?.population === undefined
-      ? STARTING_HABITED_POPULATION
+      ? Math.max(0, Math.floor(seed.startingPopulation ?? STARTING_HABITED_POPULATION))
       : Math.max(0, Math.floor(existing.population))
     : 0;
   const speciesPopulations = normalizeSpeciesPopulations(

@@ -1126,6 +1126,7 @@ export class SelectionPanel {
     const actionLabels: Record<ShipAction, string> = {
       move: "Move",
       build: "Build",
+      colonize: "Colonize",
       attack: "Attack",
       merge: "Merge",
       stop: "Stop",
@@ -1224,11 +1225,23 @@ export class SelectionPanel {
     const ships = data.ships ?? [];
     const shipCount = data.shipCount ?? Math.max(ships.length, 0);
     const selectionKey = this.getSelectionKey(data);
-    const secondaryAction: ShipAction = (data.actions ?? []).includes("build") ? "build" : "attack";
-    const secondaryClass = secondaryAction === "build" ? "fleetSelectionPrimaryBtn build" : "fleetSelectionPrimaryBtn attack";
-    const secondaryLabel = secondaryAction === "build" ? "Build structure" : "Attack target";
-    const secondaryIcon = secondaryAction === "build" ? "build" : "attack";
-    const secondaryText = secondaryAction === "build" ? "BUILD" : "ATTACK";
+    const secondaryAction: ShipAction = (data.actions ?? []).includes("build")
+      ? "build"
+      : (data.actions ?? []).includes("colonize")
+        ? "colonize"
+        : "attack";
+    const secondaryClass = secondaryAction === "build"
+      ? "fleetSelectionPrimaryBtn build"
+      : secondaryAction === "colonize"
+        ? "fleetSelectionPrimaryBtn build"
+        : "fleetSelectionPrimaryBtn attack";
+    const secondaryLabel = secondaryAction === "build"
+      ? "Build structure"
+      : secondaryAction === "colonize"
+        ? "Colonize planet"
+        : "Attack target";
+    const secondaryIcon = secondaryAction === "build" || secondaryAction === "colonize" ? "build" : "attack";
+    const secondaryText = secondaryAction === "build" ? "BUILD" : secondaryAction === "colonize" ? "COLONIZE" : "ATTACK";
     panel.dataset.selectionKey = selectionKey;
 
     panel.innerHTML = `

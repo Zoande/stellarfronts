@@ -186,7 +186,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     if (factionId === null) return [];
     const ownerByStar = expandStarOwnership();
     return snapshot.planetStates
-      .filter((planetState) => planetState.isHabited && (ownerByStar[planetState.starId] ?? -1) === factionId)
+      .filter((planetState) => (ownerByStar[planetState.starId] ?? -1) === factionId)
       .map((planetState) => {
         const star = snapshot.stars[planetState.starId];
         const planet = star?.system.planets[planetState.planetIndex];
@@ -1249,6 +1249,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           server.send({ type: "buildStarbase", fleetId, targetStarId });
         } else if (action === "attack") {
           server.send({ type: "attackSystem", fleetId, targetStarId });
+        } else if (action === "colonize") {
+          setSelectedFleetIds([fleetId]);
+          activeSystemScene?.selectFleetById(fleetId);
+          activeSystemScene?.startFleetAction(fleetId, "colonize");
         } else if (action === "retreatTo") {
           server.send({ type: "retreatFleetTo", fleetId, targetStarId });
         } else if (action === "emergencyRetreatTo") {

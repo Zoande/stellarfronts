@@ -61,6 +61,7 @@ test("unlock requirements point at existing locked content", () => {
   assert.deepEqual(getRequiredTechIdsForShipModule("utility_command_uplink"), ["fleet_command_systems"]);
   assert.deepEqual(getRequiredTechIdsForShipSection("weapon_section_corvette_tanker"), ["heavy_corvette_frames"]);
   assert.deepEqual(getRequiredTechIdsForShipHull("constructionShip"), ["spacefaring_foundations"]);
+  assert.deepEqual(getRequiredTechIdsForShipHull("colonizationShip"), ["spacefaring_foundations"]);
   assert.deepEqual(getRequiredTechIdsForShipHull("destroyer"), ["destroyer_hulls"]);
   assert.deepEqual(getRequiredTechIdsForShipHull("cruiser"), ["cruiser_hulls"]);
   assert.deepEqual(getRequiredTechIdsForShipHull("battleship"), ["battleship_hulls"]);

@@ -58,6 +58,7 @@ import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 export type ShipAction =
   | "move"
   | "build"
+  | "colonize"
   | "attack"
   | "merge"
   | "stop"
@@ -546,6 +547,12 @@ export interface OrbitPlanetCommand {
   planetId: string;
 }
 
+export interface ColonizePlanetCommand {
+  type: "colonizePlanet";
+  fleetId: string;
+  planetId: string;
+}
+
 export interface MergeFleetsCommand {
   type: "mergeFleets";
   targetFleetId: string;
@@ -814,6 +821,7 @@ export type ClientCommand =
   | MoveCommand
   | BuildCommand
   | OrbitPlanetCommand
+  | ColonizePlanetCommand
   | MergeFleetsCommand
   | StopFleetCommand
   | SetSpeedCommand

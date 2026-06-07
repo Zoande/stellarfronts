@@ -38,6 +38,21 @@ test("default construction ship design has utility systems and no weapons", () =
   assert.ok(stats.combat.maxHull > 0);
 });
 
+test("default colonization ship design has utility systems and no weapons", () => {
+  const design = createDefaultShipDesign(1, "colonizationShip", 2100);
+  const layout = getShipDesignLayout(design);
+  const stats = calculateShipDesignStats(design);
+
+  assert.deepEqual(design.weaponSectionModuleIds, []);
+  assert.deepEqual(design.defenseSectionModuleIds, []);
+  assert.equal(layout.weaponSlots.length, 0);
+  assert.equal(layout.defenseSlots.length, 0);
+  assert.equal(layout.utilitySlots.length, 3);
+  assert.equal(stats.combat.weaponMounts.length, 0);
+  assert.ok(stats.combat.maxHull > 0);
+  assert.ok(stats.cost.goods > 0);
+});
+
 test("default larger combat hulls produce valid scaled layouts", () => {
   const cases = [
     { kind: "destroyer" as const, weaponSections: 1, defenseSections: 1, utilities: 6, weapons: 3, defenses: 4 },

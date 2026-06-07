@@ -280,6 +280,29 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
       weaponMounts: [],
     },
   },
+  colonizationShip: {
+    kind: "colonizationShip",
+    label: "Colonization Ship",
+    baseClassName: "Odyssey",
+    description: "Civilian settlement ark carrying colonists, prefab habitats, and orbital landing craft.",
+    weaponSectionSlots: 0,
+    defenseSectionSlots: 0,
+    utilitySlots: 3,
+    speed: 0.78,
+    buildDays: 14,
+    alloyUpkeepPerDay: 12,
+    crewDemand: 1_000,
+    cost: resources({ minerals: 240, alloys: 180, goods: 120, food: 120 }),
+    upkeep: resources({ energy: 1.1, alloys: 0.12, goods: 0.1 }),
+    combat: {
+      maxShield: 35,
+      maxArmor: 30,
+      maxHull: 160,
+      evasion: 0.07,
+      sensorRange: 3,
+      weaponMounts: [],
+    },
+  },
 };
 
 export const SHIP_SECTION_MODULE_DEFINITIONS: Record<string, ShipSectionModuleDefinition> = {
@@ -1006,6 +1029,7 @@ const DEFAULT_WEAPON_SECTIONS: Record<StarbaseShipKind, string[]> = {
   cruiser: ["weapon_section_cruiser_line", "weapon_section_cruiser_line"],
   battleship: ["weapon_section_battleship_line", "weapon_section_battleship_line", "weapon_section_battleship_line"],
   constructionShip: [],
+  colonizationShip: [],
 };
 
 const DEFAULT_DEFENSE_SECTIONS: Record<StarbaseShipKind, string[]> = {
@@ -1014,6 +1038,7 @@ const DEFAULT_DEFENSE_SECTIONS: Record<StarbaseShipKind, string[]> = {
   cruiser: ["defense_section_cruiser_line", "defense_section_cruiser_line"],
   battleship: ["defense_section_battleship_line", "defense_section_battleship_line", "defense_section_battleship_line"],
   constructionShip: [],
+  colonizationShip: [],
 };
 
 const DEFAULT_UTILITY_MODULES: Record<StarbaseShipKind, string[]> = {
@@ -1052,6 +1077,11 @@ const DEFAULT_UTILITY_MODULES: Record<StarbaseShipKind, string[]> = {
     "utility_repair_drones",
   ],
   constructionShip: [
+    "utility_optical_array",
+    "utility_repair_drones",
+    "utility_shield_capacitor",
+  ],
+  colonizationShip: [
     "utility_optical_array",
     "utility_repair_drones",
     "utility_shield_capacitor",

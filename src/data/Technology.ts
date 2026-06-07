@@ -155,7 +155,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
   {
     id: "spacefaring_foundations",
     name: "Spacefaring Foundations",
-    description: "Baseline orbital navigation, corvette hulls, construction ships, and light swarmer combat layouts.",
+    description: "Baseline orbital navigation, corvette hulls, construction ships, colonization ships, and light swarmer combat layouts.",
     category: "logistics",
     tier: 0,
     cost: 0,
@@ -166,6 +166,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
     effects: [
       { type: "unlock_ship_hull", shipKind: "corvette" },
       { type: "unlock_ship_hull", shipKind: "constructionShip" },
+      { type: "unlock_ship_hull", shipKind: "colonizationShip" },
       { type: "unlock_ship_section", sectionModuleId: "weapon_section_corvette_swarmer" },
       { type: "unlock_ship_section", sectionModuleId: "defense_section_corvette_swarmer" },
     ],

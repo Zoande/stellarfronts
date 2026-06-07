@@ -1137,6 +1137,12 @@ export class SystemScene implements IGameScene {
         emissive: new Color3(1.0, 0.45, 0.08),
       };
     }
+    if (ship?.shipKind === "colonizationShip") {
+      return {
+        diffuse: new Color3(0.1, 0.34, 0.24),
+        emissive: new Color3(0.35, 1.0, 0.72),
+      };
+    }
     return {
       diffuse: new Color3(0.02, 0.14, 0.38),
       emissive: new Color3(0.08, 0.68, 1.0),
@@ -1602,6 +1608,14 @@ export class SystemScene implements IGameScene {
       this.issueBuildAtStar();
       return;
     }
+    if (this.activeFleetAction === "colonize") {
+      if (target.kind === "planet" && target.planetId) {
+        const fleetId = this.getPrimarySelectedFleetId();
+        if (fleetId) this.options.onFleetCommand?.({ type: "colonizePlanet", fleetId, planetId: target.planetId });
+      }
+      this.clearFleetAction();
+      return;
+    }
     if (this.activeFleetAction !== "move") {
       this.clearFleetAction();
       return;
@@ -1919,9 +1933,17 @@ export class SystemScene implements IGameScene {
     return this.getShipsForFleet(fleet.id).some((ship) => ship.shipKind === "constructionShip" && ship.hull > 0);
   }
 
+  private fleetCanColonize(fleet: ServerFleet | null | undefined): boolean {
+    if (!fleet || fleet.ownerId !== this.playerFactionId) return false;
+    return this.getShipsForFleet(fleet.id).some((ship) => ship.shipKind === "colonizationShip" && ship.hull > 0);
+  }
+
   private getFleetActions(fleet: ServerFleet): ShipAction[] {
-    const secondary: ShipAction = this.fleetCanBuildStarbase(fleet) ? "build" : "attack";
-    return ["move", secondary, "stop", "hold", "guard", "retreat", "retreatTo", "emergencyRetreatTo", "merge"];
+    const actions: ShipAction[] = ["move"];
+    if (this.fleetCanBuildStarbase(fleet)) actions.push("build");
+    if (this.fleetCanColonize(fleet)) actions.push("colonize");
+    actions.push("attack", "stop", "hold", "guard", "retreat", "retreatTo", "emergencyRetreatTo", "merge");
+    return actions;
   }
 
   private createFleetSelectionData(fleet: ServerFleet): SelectionData {
@@ -4011,6 +4033,12 @@ export class SystemScene implements IGameScene {
     const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId && candidate.currentStarId === this.star.id);
     if (!fleet) return false;
     this.selectFleetFromCard(fleet, false);
+    return true;
+  }
+
+  startFleetAction(fleetId: string, action: ShipAction): boolean {
+    if (!this.selectFleetById(fleetId)) return false;
+    this.beginFleetAction(action);
     return true;
   }
 

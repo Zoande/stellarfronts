@@ -16,7 +16,8 @@ export type StarbaseShipKind =
   | "destroyer"
   | "cruiser"
   | "battleship"
-  | "constructionShip";
+  | "constructionShip"
+  | "colonizationShip";
 
 export type WeaponKind = "laser" | "missile" | "pointDefense" | "railgun" | "plasma";
 
@@ -430,6 +431,15 @@ export const SHIP_MODEL_DEFINITIONS: Record<StarbaseShipKind, ShipModelDefinitio
     previewTargetSize: 3.7,
     trailOffsetY: -0.12,
   },
+  colonizationShip: {
+    modelPath: "/ships/colonization_ship/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    systemTargetSize: 1.12,
+    tacticalTargetSize: 0.9,
+    previewTargetSize: 3.9,
+    trailOffsetY: -0.14,
+  },
   destroyer: {
     modelPath: "/ships/destroyer/",
     modelFile: "model.glb",
@@ -496,6 +506,7 @@ export const STARBASE_SHIP_KINDS: StarbaseShipKind[] = [
   "cruiser",
   "battleship",
   "constructionShip",
+  "colonizationShip",
 ];
 
 export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDefinition> = {
@@ -533,6 +544,25 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
       maxArmor: 50,
       maxHull: 140,
       evasion: 0.08,
+      sensorRange: 3,
+      weaponMounts: [],
+    },
+  },
+  colonizationShip: {
+    kind: "colonizationShip",
+    label: "Colonization Ship",
+    className: "Odyssey-class",
+    description: "Civilian settlement ark carrying colonists, prefab habitats, and orbital landing craft.",
+    speed: 0.78,
+    buildDays: 14,
+    alloyUpkeepPerDay: 18,
+    crewDemand: 1_100,
+    upkeep: resources({ energy: 1.2, alloys: 0.18, goods: 0.12 }),
+    combat: {
+      maxShield: 60,
+      maxArmor: 45,
+      maxHull: 180,
+      evasion: 0.06,
       sensorRange: 3,
       weaponMounts: [],
     },

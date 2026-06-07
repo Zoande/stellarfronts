@@ -4,6 +4,7 @@ import {
   applyPlanetStatesToStars,
   buildPlanetStatesFromStars,
   createPlanetId,
+  createPlanetStateFromConfig,
   ensureHabitedHomePlanets,
   generateStarMap,
   HUMAN_BASE_HABITABILITY_BY_PLANET_TYPE,
@@ -17,7 +18,7 @@ import {
   getPlanetSystemOrbitRadius,
   normalizePlanetOrbitFields,
 } from "../src/data/SystemCoordinates";
-import { getEffectiveSpeciesHabitability } from "../src/data/Economy";
+import { getEffectiveSpeciesHabitability, NEW_COLONY_POPULATION } from "../src/data/Economy";
 
 const DISTRICT_KINDS: DistrictKind[] = ["city", "generator", "mining", "agriculture"];
 
@@ -74,6 +75,35 @@ test("home systems receive tagged 100 percent human homeworlds", () => {
   assert.equal(homeState?.features.includes("homePlanet"), true);
   assert.equal(homeState?.habitability, HUMAN_BASE_HABITABILITY_BY_PLANET_TYPE[PlanetType.Grassland]);
   assert.equal(homeState ? getEffectiveSpeciesHabitability(homeState) : 0, 100);
+});
+
+test("colonized planets can start with low population and no starter infrastructure", () => {
+  const stars = createTestStars();
+  const star = stars.find((candidate) => candidate.system.planets.some((planet) => planet.objectDetails.habitability && planet.objectDetails.habitability > 0));
+  assert.ok(star, "test map should contain a colonizable planet");
+  const planetIndex = star.system.planets.findIndex((planet) => planet.objectDetails.habitability && planet.objectDetails.habitability > 0);
+  const planet = star.system.planets[planetIndex];
+
+  const colony = createPlanetStateFromConfig(
+    star.id,
+    planetIndex,
+    planet,
+    {
+      isHabited: true,
+      population: NEW_COLONY_POPULATION,
+      speciesPopulations: [{ speciesId: "species-faction-1", population: NEW_COLONY_POPULATION }],
+      builtDistricts: { city: 0, generator: 0, mining: 0, agriculture: 0 },
+      constructionQueue: [],
+    },
+    undefined,
+    { starterInfrastructure: false, startingPopulation: NEW_COLONY_POPULATION },
+  );
+
+  assert.equal(colony.isHabited, true);
+  assert.equal(colony.population, NEW_COLONY_POPULATION);
+  assert.deepEqual(colony.builtDistricts, { city: 0, generator: 0, mining: 0, agriculture: 0 });
+  assert.equal(Object.values(colony.buildings).flat().every((building) => building === null), true);
+  assert.equal(colony.constructionQueue.length, 0);
 });
 
 test("legacy planet metadata migrates to stable IDs and clamped mutable state", () => {

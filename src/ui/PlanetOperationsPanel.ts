@@ -33,6 +33,7 @@ export interface PlanetOperationsPanelData {
 type PlanetStatusFilter = "all" | "healthy" | "deficit";
 type PlanetStabilityFilter = "all" | "stable" | "unstable" | "critical";
 type PlanetLeaderFilter = "all" | "assigned" | "unassigned";
+type PlanetOperationsTab = "habited" | "uninhabited";
 
 interface PlanetResourceMaxima {
   food: number;
@@ -72,6 +73,7 @@ export class PlanetOperationsPanel {
   private statusFilter: PlanetStatusFilter = "all";
   private stabilityFilter: PlanetStabilityFilter = "all";
   private leaderFilter: PlanetLeaderFilter = "all";
+  private activeTab: PlanetOperationsTab = "habited";
   private searchTerm = "";
   private readonly interactionGate = new PanelInteractionGate();
 
@@ -147,8 +149,12 @@ export class PlanetOperationsPanel {
   }
 
   private render(data: PlanetOperationsPanelData): string {
-    const visiblePlanets = this.getVisiblePlanets(data);
+    const visiblePlanets = this.activeTab === "habited"
+      ? this.getVisiblePlanets(data)
+      : this.getVisibleUninhabitedPlanets(data);
     const maxima = this.getResourceMaxima(visiblePlanets);
+    const habitedCount = data.planets.filter((entry) => entry.planetState.isHabited).length;
+    const uninhabitedCount = data.planets.filter((entry) => !entry.planetState.isHabited).length;
     const factionSubtitle = data.factionName ? `${data.factionName} Planet Command` : "Planet Command";
     return `
       <div class="poHeader" data-po-drag>
@@ -163,7 +169,7 @@ export class PlanetOperationsPanel {
         <div class="poSectionBar">
           <div class="poSectionTitle">
             <span class="poSectionIcon poSectionIcon-population" aria-hidden="true"></span>
-            <strong>Habited Planets</strong>
+            <strong>${this.activeTab === "habited" ? "Habited Planets" : "Uninhabited Planets"}</strong>
           </div>
           <div class="poSectionMeta">
             <span>${visiblePlanets.length} / ${data.planets.length} planets</span>
@@ -194,36 +200,59 @@ export class PlanetOperationsPanel {
           </label>
         </div>
         <div class="poTableShell">
-          <div class="poTableHeader">
-            <div>Planet</div>
-            ${RESOURCE_KINDS.map((resource) => `
-              <div class="poMetricHead">
-                ${this.renderStatIcon(resource)}
-                <span>${this.escapeHtml(RESOURCE_LABELS[resource])}</span>
-              </div>
-            `).join("")}
-            <div class="poMetricHead">${this.renderStatIcon("stability")}<span>Stability</span></div>
-            <div class="poMetricHead">${this.renderStatIcon("population")}<span>Population</span></div>
-            <div class="poMetricHead">${this.renderStatIcon("leader")}<span>Leader</span></div>
-            <div>Actions</div>
-          </div>
+          ${this.activeTab === "habited" ? this.renderHabitedHeader() : this.renderUninhabitedHeader()}
           <div class="poTableViewport">
             ${visiblePlanets.length
-              ? visiblePlanets.map((entry) => this.renderPlanetRow(data, entry, maxima)).join("")
+              ? visiblePlanets.map((entry) => (
+                this.activeTab === "habited"
+                  ? this.renderPlanetRow(data, entry, maxima)
+                  : this.renderUninhabitedPlanetRow(data, entry)
+              )).join("")
               : this.renderEmptyState(data)}
           </div>
         </div>
       </section>
       <nav class="poTabs">
-        <button class="active" type="button">
+        <button class="${this.activeTab === "habited" ? "active" : ""}" type="button" data-po-tab="habited">
           <span class="poSectionIcon poSectionIcon-population" aria-hidden="true"></span>
-          Habited
+          Habited (${habitedCount})
         </button>
-        <button class="disabled" type="button" disabled title="Uninhabited planet overview is not implemented yet.">
+        <button class="${this.activeTab === "uninhabited" ? "active" : ""}" type="button" data-po-tab="uninhabited">
           <span class="poSectionIcon poSectionIcon-uninhabited" aria-hidden="true"></span>
-          Uninhabited
+          Uninhabited (${uninhabitedCount})
         </button>
       </nav>
+    `;
+  }
+
+  private renderHabitedHeader(): string {
+    return `
+      <div class="poTableHeader">
+        <div>Planet</div>
+        ${RESOURCE_KINDS.map((resource) => `
+          <div class="poMetricHead">
+            ${this.renderStatIcon(resource)}
+            <span>${this.escapeHtml(RESOURCE_LABELS[resource])}</span>
+          </div>
+        `).join("")}
+        <div class="poMetricHead">${this.renderStatIcon("stability")}<span>Stability</span></div>
+        <div class="poMetricHead">${this.renderStatIcon("population")}<span>Population</span></div>
+        <div class="poMetricHead">${this.renderStatIcon("leader")}<span>Leader</span></div>
+        <div>Actions</div>
+      </div>
+    `;
+  }
+
+  private renderUninhabitedHeader(): string {
+    return `
+      <div class="poTableHeader poTableHeader-uninhabited">
+        <div>Planet</div>
+        <div>System</div>
+        <div>Type</div>
+        <div>Habitability</div>
+        <div>Districts</div>
+        <div>Actions</div>
+      </div>
     `;
   }
 
@@ -296,6 +325,38 @@ export class PlanetOperationsPanel {
     `;
   }
 
+  private renderUninhabitedPlanetRow(data: PlanetOperationsPanelData, entry: PlanetManagerPlanetEntry): string {
+    const habitability = entry.planetState.habitability ?? entry.planet.objectDetails.habitability ?? 0;
+    const limits = entry.planet.objectDetails.districtLimits;
+    const districtLimit = limits.city + limits.generator + limits.mining + limits.agriculture;
+    const canOpen = Boolean(data.onOpenPlanet);
+    const colonizableLabel = habitability > 0 ? "Colonizable" : "Unsuitable";
+    return `
+      <article class="poPlanetRow poPlanetRow-uninhabited" data-po-planet-row="${this.escapeAttribute(entry.planetState.id)}">
+        <div class="poPlanetCell">
+          <div class="poPlanetBadge">
+            <div class="poPlanetPortrait" style="background-image: url('${this.escapeAttribute(this.getPlanetTextureUrl(entry))}')"></div>
+            <span class="poPlanetOrbit" aria-hidden="true"></span>
+          </div>
+          <div class="poPlanetCopy">
+            <strong>${this.escapeHtml(entry.planet.name)}</strong>
+            <span>${this.escapeHtml(colonizableLabel)}</span>
+            <em class="poRoleChip ${habitability > 0 ? "balanced" : "deficit"}">${this.escapeHtml(`${Math.round(habitability)}% Habitability`)}</em>
+          </div>
+        </div>
+        <div class="poPlainCell"><strong>${this.escapeHtml(entry.starName)}</strong></div>
+        <div class="poPlainCell"><strong>${this.escapeHtml(entry.planet.objectDetails.typeName || entry.planet.type)}</strong></div>
+        <div class="poPlainCell ${habitability > 0 ? "positive" : "deficit"}"><strong>${Math.round(habitability)}%</strong></div>
+        <div class="poPlainCell"><strong>${districtLimit}</strong><small>district capacity</small></div>
+        <div class="poActionCell">
+          <button class="poOpenPlanet" type="button" ${canOpen ? `data-po-open-planet="${this.escapeAttribute(entry.planetState.id)}"` : "disabled"} aria-label="Open ${this.escapeAttribute(entry.planet.name)}">
+            <span aria-hidden="true"></span>
+          </button>
+        </div>
+      </article>
+    `;
+  }
+
   private renderResourceCell(entry: PlanetManagerPlanetEntry, resource: ResourceKind, maxValue: number): string {
     const economy = entry.planetState.economy;
     const value = economy.net[resource];
@@ -329,7 +390,7 @@ export class PlanetOperationsPanel {
 
   private renderEmptyState(data: PlanetOperationsPanelData): string {
     const message = data.planets.length === 0
-      ? "No owned habited planets."
+      ? this.activeTab === "habited" ? "No owned habited planets." : "No owned uninhabited planets."
       : "No planets match the current filters.";
     return `
       <div class="poEmpty">
@@ -360,6 +421,15 @@ export class PlanetOperationsPanel {
         if (key === "status") this.statusFilter = select.value as PlanetStatusFilter;
         if (key === "stability") this.stabilityFilter = select.value as PlanetStabilityFilter;
         if (key === "leader") this.leaderFilter = select.value as PlanetLeaderFilter;
+        this.show(data);
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-po-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const tab = button.dataset.poTab;
+        if (tab !== "habited" && tab !== "uninhabited") return;
+        this.activeTab = tab;
         this.show(data);
       });
     });
@@ -421,6 +491,22 @@ export class PlanetOperationsPanel {
           this.getPlaceholderRole(entry).label,
           leader?.name ?? "",
         ].some((value) => value.toLowerCase().includes(term));
+      })
+      .sort((a, b) => a.planet.name.localeCompare(b.planet.name));
+  }
+
+  private getVisibleUninhabitedPlanets(data: PlanetOperationsPanelData): PlanetManagerPlanetEntry[] {
+    const term = this.searchTerm.trim().toLowerCase();
+    return data.planets
+      .filter((entry) => !entry.planetState.isHabited)
+      .filter((entry) => {
+        if (!term) return true;
+        return [
+          entry.planet.name,
+          entry.starName,
+          entry.planet.type,
+          entry.planet.objectDetails.typeName,
+        ].some((value) => String(value).toLowerCase().includes(term));
       })
       .sort((a, b) => a.planet.name.localeCompare(b.planet.name));
   }
@@ -861,6 +947,12 @@ export class PlanetOperationsPanel {
   grid-template-columns: minmax(210px, 1.45fr) repeat(6, minmax(92px, 0.7fr)) 100px 112px 156px 64px;
 }
 
+.poTableHeader-uninhabited,
+.poPlanetRow-uninhabited {
+  min-width: 760px;
+  grid-template-columns: minmax(230px, 1.6fr) minmax(120px, 0.9fr) minmax(120px, 0.9fr) minmax(110px, 0.7fr) minmax(110px, 0.7fr) 64px;
+}
+
 .poTableHeader {
   height: 38px;
   align-items: center;
@@ -918,6 +1010,39 @@ export class PlanetOperationsPanel {
 .poPlanetRow > div {
   min-width: 0;
   border-right: 1px solid rgba(65, 213, 194, 0.22);
+}
+
+.poPlainCell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 10px;
+  color: rgba(219, 246, 240, 0.84);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.poPlainCell strong {
+  overflow: hidden;
+  color: #eafff8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.poPlainCell small {
+  color: rgba(180, 216, 208, 0.62);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.poPlainCell.positive strong {
+  color: #69ffe4;
+}
+
+.poPlainCell.deficit strong {
+  color: #ff8d8d;
 }
 
 .poPlanetCell {

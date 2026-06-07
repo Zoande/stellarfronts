@@ -8,6 +8,7 @@ import type { FactionInfo, GalaxyPerspective } from "../src/data/Factions";
 import {
   applyPlanetStatesToStars,
   buildPlanetStatesFromStars,
+  createPlanetStateFromConfig,
   ensureHabitedHomePlanets,
   generateStarMap,
   normalizeCelestialObjectDetails,
@@ -41,9 +42,11 @@ import {
   createInitialFactionEconomyState,
   DISTRICT_MINERAL_COSTS,
   filterInvalidQueuedBuildingsForSubDistrictChange,
+  getEffectiveSpeciesHabitability,
   getQueuedDistrictCount,
   hasQueuedBuildingTarget,
   isBuildingCompatible,
+  NEW_COLONY_POPULATION,
   PEOPLE_PER_MONTHLY_UNIT,
   progressPlanetConstructionQueue,
   recalculatePlanetStateEconomy,
@@ -2102,6 +2105,11 @@ function fleetHasConstructionShip(fleet: Pick<GameFleet, "shipIds">): boolean {
   return state.ships.some((ship) => shipIds.has(ship.id) && ship.shipKind === "constructionShip" && ship.hull > 0);
 }
 
+function getFleetColonizationShip(fleet: Pick<GameFleet, "shipIds">): GameShip | null {
+  const shipIds = new Set(fleet.shipIds);
+  return state.ships.find((ship) => shipIds.has(ship.id) && ship.shipKind === "colonizationShip" && ship.hull > 0) ?? null;
+}
+
 function syncShipsForDesign(nextState: GameState, design: ShipDesign): boolean {
   let changed = false;
   for (const ship of nextState.ships) {
@@ -3476,6 +3484,74 @@ function handleOrbitPlanet(socket: WebSocket, perspective: GalaxyPerspective, fl
   }
 }
 
+function handleColonizePlanet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const fleet = resolveFleetForCommand(fleetId, undefined);
+  if (!fleet) return reject(socket, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+
+  const planetState = getPlanetState(planetId);
+  if (!planetState) return reject(socket, "Planet not found.");
+  const planet = getPlanetConfig(planetState);
+  if (!planet) return reject(socket, "Planet details are unavailable.");
+  if ((state.starOwnership[planetState.starId] ?? -1) !== factionId) {
+    return reject(socket, "Planet must be in an owned system.");
+  }
+  if (planetState.isHabited || planet.isHabited === true) {
+    return reject(socket, "Planet is already colonized.");
+  }
+  if (fleet.currentStarId !== planetState.starId || fleet.orbitTargetPlanetId !== planetState.id) {
+    return reject(socket, "Fleet must be orbiting the target planet.");
+  }
+
+  const colonizationShip = getFleetColonizationShip(fleet);
+  if (!colonizationShip) return reject(socket, "Requires a colonization ship.");
+
+  const foundingSpeciesId = state.factions.find((faction) => faction.id === factionId)?.foundingSpeciesId
+    ?? getFactionFoundingSpeciesId(factionId);
+  const prospectiveState = createPlanetStateFromConfig(
+    planetState.starId,
+    planetState.planetIndex,
+    planet,
+    {
+      ...planetState,
+      isHabited: true,
+      population: NEW_COLONY_POPULATION,
+      speciesPopulations: [{ speciesId: foundingSpeciesId, population: NEW_COLONY_POPULATION }],
+      builtDistricts: { city: 0, generator: 0, mining: 0, agriculture: 0 },
+      buildings: undefined,
+      constructionQueue: [],
+    },
+    planetState.features,
+    { starterInfrastructure: false, startingPopulation: NEW_COLONY_POPULATION },
+  );
+  const habitability = getEffectiveSpeciesHabitability(
+    prospectiveState,
+    foundingSpeciesId,
+    getPlanetSpeciesContext(state, prospectiveState),
+  );
+  if (habitability <= 0) return reject(socket, "Planet habitability is too low to colonize.");
+
+  state.ships = state.ships.filter((ship) => ship.id !== colonizationShip.id);
+  const fleetChanged = syncFleetMembership(state);
+  state.planetStates = state.planetStates.map((candidate) => (
+    candidate.id === prospectiveState.id ? prospectiveState : candidate
+  ));
+  applyPlanetStatesToStars(state.stars, state.planetStates);
+  queuePlanetDetailRefresh(prospectiveState.id);
+  refreshFactionEconomyDeltas();
+  hasDirtyState = true;
+  accept(socket, `${planet.name} colonized.`);
+  broadcastUpdates([
+    "planetStates",
+    "habitedPlanetSystems",
+    "factionEconomies",
+    "ships",
+    ...(fleetChanged ? ["fleets" as const] : []),
+  ]);
+}
+
 function handleMergeFleets(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -4384,7 +4460,6 @@ function createDetailPayload(
     const detailState = createVisibleDetailState(perspective);
     const ownerId = perspective.mode === "faction" ? perspective.factionId : null;
     const planets = state.planetStates
-      .filter((planetState) => planetState.isHabited)
       .filter((planetState) => ownerId === null || (state.starOwnership[planetState.starId] ?? -1) === ownerId)
       .filter((planetState) => canAccessPlanet(perspective, planetState))
       .map((planetState) => {
@@ -9046,6 +9121,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "orbitPlanet") {
     handleOrbitPlanet(session.socket, session.perspective, command.fleetId, command.planetId);
+    return;
+  }
+  if (command.type === "colonizePlanet") {
+    handleColonizePlanet(session.socket, session.perspective, command.fleetId, command.planetId);
     return;
   }
   if (command.type === "mergeFleets") {
