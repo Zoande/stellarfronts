@@ -18,7 +18,7 @@ export type StarbaseShipKind =
   | "battleship"
   | "constructionShip";
 
-export type WeaponKind = "laser" | "missile" | "pointDefense";
+export type WeaponKind = "laser" | "missile" | "pointDefense" | "railgun" | "plasma";
 
 export interface WeaponMountDefinition {
   id?: string;
@@ -71,6 +71,20 @@ export const WEAPON_KIND_DEFINITIONS: Record<WeaponKind, {
     maxRangeBand: "close",
     optimalRangeBand: "close",
     cooldownRounds: 1,
+  },
+  railgun: {
+    range: 3,
+    minRangeBand: "close",
+    maxRangeBand: "long",
+    optimalRangeBand: "medium",
+    cooldownRounds: 1,
+  },
+  plasma: {
+    range: 3,
+    minRangeBand: "medium",
+    maxRangeBand: "long",
+    optimalRangeBand: "medium",
+    cooldownRounds: 2,
   },
 };
 

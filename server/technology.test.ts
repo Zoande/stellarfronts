@@ -46,6 +46,9 @@ test("baseline technologies are completed for current spacefaring factions", () 
   assert.ok(DEFAULT_COMPLETED_TECH_IDS.includes("planetary_infrastructure"));
   assert.ok(state.completedTechIds.includes("spacefaring_foundations"));
   assert.ok(state.completedTechIds.includes("orbital_operations"));
+  assert.equal(state.completedTechIds.includes("destroyer_hulls"), false);
+  assert.equal(state.completedTechIds.includes("cruiser_hulls"), false);
+  assert.equal(state.completedTechIds.includes("battleship_hulls"), false);
   assert.equal(state.progressByTechId.spacefaring_foundations.completed, true);
 });
 
@@ -53,12 +56,16 @@ test("unlock requirements point at existing locked content", () => {
   assert.deepEqual(getRequiredTechIdsForBuilding("agroIndustrialKitchens"), ["agro_industrial_supply_chains"]);
   assert.deepEqual(getRequiredTechIdsForStarbaseBuilding("orbitalFabricator"), ["microgravity_fabrication"]);
   assert.deepEqual(getRequiredTechIdsForShipModule("weapon_point_defense"), ["point_defense_networks"]);
+  assert.deepEqual(getRequiredTechIdsForShipModule("weapon_railgun_large"), ["kinetic_accelerators"]);
+  assert.deepEqual(getRequiredTechIdsForShipModule("weapon_plasma_projector_large"), ["plasma_containment"]);
+  assert.deepEqual(getRequiredTechIdsForShipModule("utility_command_uplink"), ["fleet_command_systems"]);
   assert.deepEqual(getRequiredTechIdsForShipSection("weapon_section_corvette_tanker"), ["heavy_corvette_frames"]);
   assert.deepEqual(getRequiredTechIdsForShipHull("constructionShip"), ["spacefaring_foundations"]);
   assert.deepEqual(getRequiredTechIdsForShipHull("destroyer"), ["destroyer_hulls"]);
   assert.deepEqual(getRequiredTechIdsForShipHull("cruiser"), ["cruiser_hulls"]);
   assert.deepEqual(getRequiredTechIdsForShipHull("battleship"), ["battleship_hulls"]);
   assert.deepEqual(getRequiredTechIdsForShipSection("weapon_section_battleship_line"), ["battleship_hulls"]);
+  assert.deepEqual(getRequiredTechIdsForShipSection("weapon_section_battleship_siege"), ["battleship_hulls"]);
 });
 
 test("all current buildings, hulls, modules, and sections have a technology mapping", () => {

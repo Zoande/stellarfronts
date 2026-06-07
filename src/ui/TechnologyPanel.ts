@@ -38,13 +38,13 @@ const TECHNOLOGY_SCROLL_SELECTORS = [
   ".techDetailBody",
 ] as const;
 
-const NODE_WIDTH = 218;
-const NODE_HEIGHT = 96;
-const COLUMN_GAP = 250;
-const ROW_GAP = 118;
-const TREE_PADDING_X = 36;
-const TREE_PADDING_Y = 28;
-const NODE_MIN_VERTICAL_GAP = 18;
+const NODE_WIDTH = 250;
+const NODE_HEIGHT = 112;
+const COLUMN_GAP = 340;
+const ROW_GAP = 154;
+const TREE_PADDING_X = 52;
+const TREE_PADDING_Y = 40;
+const NODE_MIN_VERTICAL_GAP = 34;
 
 const CATEGORY_LABELS: Record<string, string> = {
   agriculture: "Agriculture",
@@ -62,6 +62,7 @@ export class TechnologyPanel {
   private panelElement: HTMLDivElement | null = null;
   private currentData: TechnologyPanelData | null = null;
   private selectedTechId: TechId | null = null;
+  private techTreeZoom = 0.82;
   private position = { x: 62, y: 74 };
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
@@ -209,6 +210,21 @@ export class TechnologyPanel {
       if (!this.selectedTechId) return;
       data.onTechnologyCommand?.({ type: "setActiveTechnology", techId: this.selectedTechId });
     });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-tech-zoom]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.adjustTreeZoom(button.dataset.techZoom ?? "reset");
+        this.show(data);
+      });
+    });
+  }
+
+  private adjustTreeZoom(action: string): void {
+    if (action === "reset") {
+      this.techTreeZoom = 0.82;
+      return;
+    }
+    const delta = action === "in" ? 0.1 : -0.1;
+    this.techTreeZoom = Math.max(0.58, Math.min(1.25, Number((this.techTreeZoom + delta).toFixed(2))));
   }
 
   private applyPosition(): void {
@@ -316,27 +332,40 @@ export class TechnologyPanel {
     const layout = this.buildTreeLayout();
     const width = layout.width;
     const height = layout.height;
+    const zoom = this.techTreeZoom;
+    const scaledWidth = Math.ceil(width * zoom);
+    const scaledHeight = Math.ceil(height * zoom);
     return `
-      <div class="techTreeViewport">
-        <div class="techTreeCanvas" style="width:${width}px;height:${height}px;">
-          <svg class="techTreeLines" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true">
-            ${TECHNOLOGY_DEFINITIONS.flatMap((tech) => tech.prerequisites.map((prereqId) => {
-              const from = TECHNOLOGY_BY_ID[prereqId];
-              if (!from) return "";
-              const fromStatus = statusById.get(from.id);
-              const toStatus = statusById.get(tech.id);
-              const complete = fromStatus?.completed && toStatus?.completed;
-              const active = toStatus?.active;
-              const a = this.getNodeCenterFromLayout(from, layout.positions);
-              const b = this.getNodeCenterFromLayout(tech, layout.positions);
-              return `<path class="${complete ? "completed" : ""} ${active ? "active" : ""}" d="M ${a.x} ${a.y} C ${a.x + 90} ${a.y}, ${b.x - 90} ${b.y}, ${b.x} ${b.y}" />`;
-            })).join("")}
-          </svg>
-          ${TECHNOLOGY_DEFINITIONS.map((tech) => {
-            const status = statusById.get(tech.id);
-            if (!status) return "";
-            return this.renderNode(tech, status, selectedTechId === tech.id, layout.positions.get(tech.id));
-          }).join("")}
+      <div class="techTreeShell">
+        <div class="techTreeToolbar" aria-label="Technology tree zoom">
+          <button type="button" data-tech-zoom="out" aria-label="Zoom technology tree out">-</button>
+          <span>${Math.round(zoom * 100)}%</span>
+          <button type="button" data-tech-zoom="in" aria-label="Zoom technology tree in">+</button>
+          <button type="button" data-tech-zoom="reset" aria-label="Reset technology tree zoom">Fit</button>
+        </div>
+        <div class="techTreeViewport">
+          <div class="techTreeScene" style="width:${scaledWidth}px;height:${scaledHeight}px;">
+            <div class="techTreeCanvas" style="width:${width}px;height:${height}px;transform:scale(${zoom});">
+              <svg class="techTreeLines" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true">
+                ${TECHNOLOGY_DEFINITIONS.flatMap((tech) => tech.prerequisites.map((prereqId) => {
+                  const from = TECHNOLOGY_BY_ID[prereqId];
+                  if (!from) return "";
+                  const fromStatus = statusById.get(from.id);
+                  const toStatus = statusById.get(tech.id);
+                  const complete = fromStatus?.completed && toStatus?.completed;
+                  const active = toStatus?.active;
+                  const a = this.getNodeCenterFromLayout(from, layout.positions);
+                  const b = this.getNodeCenterFromLayout(tech, layout.positions);
+                  return `<path class="${complete ? "completed" : ""} ${active ? "active" : ""}" d="M ${a.x} ${a.y} C ${a.x + 120} ${a.y}, ${b.x - 120} ${b.y}, ${b.x} ${b.y}" />`;
+                })).join("")}
+              </svg>
+              ${TECHNOLOGY_DEFINITIONS.map((tech) => {
+                const status = statusById.get(tech.id);
+                if (!status) return "";
+                return this.renderNode(tech, status, selectedTechId === tech.id, layout.positions.get(tech.id));
+              }).join("")}
+            </div>
+          </div>
         </div>
       </div>
     `;
@@ -642,8 +671,8 @@ export class TechnologyPanel {
   position: fixed;
   z-index: 59;
   pointer-events: auto;
-  width: min(1200px, calc(100vw - 32px));
-  height: min(680px, calc(100vh - 32px));
+  width: min(1380px, calc(100vw - 32px));
+  height: min(760px, calc(100vh - 32px));
   transform: scale(var(--tech-panel-scale));
   transform-origin: top left;
   display: grid;
@@ -742,9 +771,48 @@ export class TechnologyPanel {
 .techBody {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 390px;
+  gap: 10px;
   padding: 8px;
+}
+.techTreeShell {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+}
+.techTreeToolbar {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid rgba(103, 255, 221, 0.22);
+  background: rgba(2, 13, 17, 0.78);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.3);
+}
+.techTreeToolbar button {
+  height: 28px;
+  min-width: 30px;
+  border: 1px solid rgba(103, 255, 221, 0.36);
+  background: rgba(6, 42, 38, 0.72);
+  color: #d8fff6;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.techTreeToolbar button:hover {
+  border-color: rgba(103, 255, 221, 0.76);
+}
+.techTreeToolbar span {
+  min-width: 38px;
+  color: rgba(206, 232, 226, 0.72);
+  font-size: 10px;
+  text-align: center;
 }
 .techTreeViewport {
   position: relative;
@@ -769,8 +837,12 @@ export class TechnologyPanel {
   background: rgba(103, 255, 221, 0.34);
   border-radius: 999px;
 }
+.techTreeScene {
+  position: relative;
+}
 .techTreeCanvas {
   position: relative;
+  transform-origin: top left;
 }
 .techTreeLines {
   position: absolute;
@@ -789,6 +861,7 @@ export class TechnologyPanel {
   stroke: rgba(255, 105, 201, 0.76);
 }
 .techNode {
+  --node-accent: #72e2ff;
   position: absolute;
   width: ${NODE_WIDTH}px;
   height: ${NODE_HEIGHT}px;
@@ -796,46 +869,72 @@ export class TechnologyPanel {
   flex-direction: column;
   align-items: flex-start;
   justify-content: flex-start;
-  padding: 9px 10px;
+  padding: 11px 12px;
   border: 1px solid rgba(103, 255, 221, 0.26);
+  border-left: 3px solid var(--node-accent);
   color: #eafff8;
-  background: linear-gradient(180deg, rgba(8, 38, 41, 0.96), rgba(2, 14, 18, 0.96));
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--node-accent) 12%, transparent), transparent 54%),
+    linear-gradient(180deg, rgba(8, 38, 41, 0.96), rgba(2, 14, 18, 0.96));
   cursor: pointer;
   text-align: left;
   box-shadow: 0 10px 22px rgba(0, 0, 0, 0.32);
 }
+.techNode.cat-agriculture {
+  --node-accent: #75ff9b;
+}
+.techNode.cat-industry {
+  --node-accent: #ffdc72;
+}
+.techNode.cat-military {
+  --node-accent: #ff5a78;
+}
+.techNode.cat-logistics {
+  --node-accent: #72e2ff;
+}
+.techNode.cat-energy {
+  --node-accent: #4cecff;
+}
+.techNode.cat-computing {
+  --node-accent: #b985ff;
+}
+.techNode.cat-society {
+  --node-accent: #ff9adf;
+}
 .techNode:hover,
 .techNode.selected {
-  border-color: rgba(114, 226, 255, 0.78);
-  box-shadow: 0 0 0 1px rgba(114, 226, 255, 0.24), 0 12px 26px rgba(0, 0, 0, 0.36);
+  border-color: color-mix(in srgb, var(--node-accent) 82%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--node-accent) 28%, transparent), 0 12px 26px rgba(0, 0, 0, 0.36);
 }
 .techNode.completed {
   border-color: rgba(103, 255, 221, 0.52);
+  border-left-color: #67ffdd;
 }
 .techNode.active {
   border-color: rgba(255, 105, 201, 0.78);
+  border-left-color: #ff69c9;
 }
 .techNode.locked {
-  opacity: 0.62;
+  opacity: 0.5;
 }
 .techNode.baseline {
   background: linear-gradient(180deg, rgba(21, 42, 45, 0.96), rgba(5, 20, 23, 0.96));
 }
 .techNodeMeta {
-  color: #72e2ff;
+  color: var(--node-accent);
   font-size: 9px;
   text-transform: uppercase;
   letter-spacing: 0;
 }
 .techNode strong {
   width: 100%;
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.15;
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.18;
   overflow-wrap: anywhere;
 }
 .techNode small {
-  margin-top: 5px;
+  margin-top: 7px;
   color: rgba(206, 232, 226, 0.66);
   font-size: 10px;
 }
