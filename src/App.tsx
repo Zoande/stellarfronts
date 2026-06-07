@@ -1,7 +1,6 @@
 import { BrowserRouter as Router } from 'react-router-dom';
 import { Analytics } from '@vercel/analytics/react';
 import LoginPage from './pages/LoginPage';
-import SignupPage from './pages/SignupPage';
 import GamePage from './pages/GamePage';
 import HomePage from './pages/HomePage';
 import DevPage from './pages/DevPage';
@@ -22,8 +21,6 @@ function MainAppFlow() {
     handleAuthBackgroundReady,
     handleAuthStartupLoadingHidden,
     handleLoginSubmit,
-    handleSignupClick,
-    handleBackToLogin,
     handleSignupSubmit,
     handleLogout,
     handleStartGameFromHome,
@@ -115,19 +112,12 @@ function MainAppFlow() {
           />
         )}
 
-        {authBackgroundReady && (auth.mode === 'signup'
-          ? (
-            <SignupPage
-              onSignupSubmit={handleSignupSubmit}
-              onBackToLogin={handleBackToLogin}
-            />
-          )
-          : (
-            <LoginPage
-              onLoginSubmit={handleLoginSubmit}
-              onSignupClick={handleSignupClick}
-            />
-          ))}
+        {authBackgroundReady && (
+          <LoginPage
+            onLoginSubmit={handleLoginSubmit}
+            onSignupSubmit={handleSignupSubmit}
+          />
+        )}
       </div>
       <Analytics />
     </Router>

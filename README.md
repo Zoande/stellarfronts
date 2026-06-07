@@ -1,419 +1,152 @@
 # StellarFronts Prototype
 
-StellarFronts is a browser-based space strategy prototype with a Vite/React client, a websocket game server, and a separate HTTP auth server. The current build is authenticated end to end: login and signup happen against the auth service, and the game server derives the player perspective from the authenticated account instead of trusting the browser.
+StellarFronts is a browser-based space strategy prototype with a Vite/React client, a WebSocket game server, and a separate HTTP auth server. It is a mixed 2D/3D strategy app: the browser frontend handles login, game selection, and the command UI, while BabylonJS powers the in-game scene and asset rendering.
 
-## Current State
+## At A Glance
 
-The project now includes session-backed accounts, a separate auth service, a multi-game catalog, server-side per-game membership checks, and a cleaned-up in-game logout path. Player accounts claim a generated country when they join a game, while observer and admin accounts may enter every game with full-map observer visibility.
+- The core loop is join a game, claim or resume a country, explore the galaxy, expand with starbases and districts, and manage economy and research over time.
+- The app uses a split client/server architecture: `src/` holds the React UI and shared gameplay data, while `server/` contains auth, state persistence, and real-time game simulation.
+- The game supports multiple account types, including normal players, observers, and admins, with observer/admin access controlling how much of the map you can see. Admin debug commands are included in game.
+- The command view uses BabylonJS, procedural skybox code, and loaded GLB ships/starbases to present the game world.
+- Asset warm-up happens in `src/utils/preloadAuthAssets.ts`, while the main 3D scene work lives in `src/components/BackgroundScene.tsx`, `src/ui/FleetManagerPanel.ts`, and `src/utils/proceduralSpaceSkybox.ts`.
+- The project is built around logistics, expansion, economy, research, market trading, and system control rather than only direct combat. All systems and balance are still a work in progress
 
-## Run Locally
+## Quick Start
 
 1. Install dependencies with `npm install`.
-2. Start the full stack with `npm run dev:all`.
-3. Open `http://localhost:5173` in your browser.
+2. Start the full local stack with `npm run dev:all`.
+3. Open `http://localhost:5173`.
 
-Available scripts:
+The local stack is:
 
-- `npm run dev` starts the client only.
-- `npm run server:dev` starts the websocket game server on `ws://localhost:8787`.
-- `npm run auth:dev` starts the auth server on `http://localhost:8788`.
+- Client: `http://localhost:5173`
+- Auth server: `http://localhost:8788`
+- Game server: `ws://localhost:8787`
+
+## Scripts
+
+- `npm run dev` starts the Vite client only.
+- `npm run server:dev` starts the WebSocket game server.
+- `npm run auth:dev` starts the HTTP auth server.
 - `npm run dev:all` starts client, auth, and game servers together.
-- `npm run server:test` runs the server tests.
-- `npm run server:typecheck` type-checks the server/shared TS files.
-- `npm run build` produces a production client build.
+- `npm run server:test` runs the server test suite.
+- `npm run server:typecheck` type-checks the server and shared TypeScript files.
+- `npm run build` runs the production TypeScript and Vite builds.
+- `npm run preview` previews the built client.
 
-## App Layout
+## What The App Does
 
-- Home route: command dashboard, account summary, and launch point.
-- Game route (`/game/:gameId`): BabylonJS-backed strategy view with an imperative HUD.
-- Login and signup routes: auth forms backed by the auth server.
+The app is split into pathname-driven flows in `src/App.tsx`:
 
-## Core Gameplay Loop
+- `/` shows the login/signup experience.
+- `/home` shows the game catalog and account summary.
+- `/game/:gameId` boots the BabylonJS command view for a specific game.
+- `/dev` opens the developer panel.
 
-The game is currently a logistics and expansion prototype rather than a full war game. The main loop is:
+The client uses React 19, Vite, React Router, BabylonJS 7, and Vercel Analytics. The space backdrop is procedural rather than image-only, and the command view mixes 3D scenes with HUD-style overlays.
 
-1. Log in and join a game from Home, or enter as the observer/admin account.
-2. Open the galaxy map and inspect discovered stars and connected systems.
-3. Move ships through the hyperlane network.
-4. Build starbases from ships, then upgrade them and add orbital infrastructure.
-5. Develop habited planets by adding districts, planet buildings, and urban sub-districts.
-6. Watch economy, population, and resource production change over time as the clock advances.
+## Authentication And Accounts
 
-## Economy System
+Authentication lives in `server/auth-server.ts` and `server/auth-store.ts`.
 
-The economy is implemented at both the planet and faction level.
+- Accounts are stored in SQLite at `server/state/auth.sqlite`.
+- Sessions use the HttpOnly cookie `sf_session`.
+- Passwords are hashed with PBKDF2.
+- The auth server exposes login, signup, logout, `me`, game listing, game join, and dev-panel endpoints.
+- Google and Microsoft OAuth endpoints exist, but they return `501` because OAuth is not enabled yet.
 
-Planet-level systems include:
-
-- Resource production and upkeep for food, minerals, energy, goods, alloys, and research.
-- Population, species population groups, employment, unemployment, housing, amenities, happiness, crime, and stability.
-- Job classes and job slots such as administrators, researchers, artisans, metallurgists, entertainers, enforcers, farmers, miners, technicians, clerks, and unemployed pops.
-- District construction for city, generator, mining, and agriculture districts.
-- Planet buildings with compatibility rules for district slots and urban sub-district slots.
-- Urban sub-district types that can be changed, with incompatible buildings being removed when a sub-district changes.
-- Construction queues for districts and buildings.
-- Population growth and decline based on housing, amenities, stability, crime, employment, and capacity pressure.
-
-Faction-level systems include:
-
-- Resource stockpiles and monthly resource deltas.
-- Economy updates driven by owned habited planets and orbital infrastructure.
-
-Habited planets start with a population baseline and starter infrastructure, so there is already a working economy loop at game start.
-
-## Military And Expansion
-
-The current military layer is focused on movement, control, and orbital buildup rather than direct combat.
-
-Implemented systems include:
-
-- Ships with transit phases for idle, departing, jumping hyperlane, arriving, and building starbase.
-- Ship movement across the hyperlane network.
-- Building a starbase from a ship at a target star.
-- Starbase levels from outpost to star fortress.
-- Starbase building slots with infrastructure like shipyards, solar arrays, hydroponics bays, orbital fabricators, alloy assembly docks, research annexes, and logistics depots.
-- Corvette production from completed shipyards.
-- Faction-bound starbase ownership and upkeep costs.
-- Fog-of-war style star visibility for faction perspectives.
-
-Important caveat: direct combat is not implemented yet. The protocol still has an `attack` ship action type in the shared types, but there is no server-side combat handler wired up in the current gameplay loop.
-
-## Exploration And Visibility
-
-The galaxy is procedurally generated and deterministic. The game includes:
-
-- A seeded galaxy map with 500 stars.
-- Faction home star assignment from the star field.
-- Observer and faction perspectives.
-- Faction visibility based on jump distance from the home system.
-- Galaxy and system scene transitions in the client.
-
-## Authentication
-
-Accounts are stored on the auth server in SQLite at `server/state/auth.sqlite`. Sessions use an HttpOnly cookie named `sf_session`, and the server keeps the session token hashed rather than storing it in plain text.
-
-Seeded accounts:
+Seeded accounts are created automatically:
 
 - `observer` / `observer`
-- `color_1` / `color_1`
-- `color_2` / `color_2`
-- `color_3` / `color_3`
-- `color_4` / `color_4`
-- `color_5` / `color_5`
-- `color_6` / `color_6`
-- `color_7` / `color_7`
-- `color_8` / `color_8`
-- `color_9` / `color_9`
-- `color_10` / `color_10`
-- `color_11` / `color_11`
-- `color_12` / `color_12`
-- `color_13` / `color_13`
-- `color_14` / `color_14`
-- `color_15` / `color_15`
+- `admin` uses the configured admin password, defaulting to `ABDUGYA1398`
+- `color_1` through `color_15` are seeded user accounts
 
-User-created accounts can use any unused username and password. Normal accounts claim one permanent generated country per game when they join it. The historical `color_*` seeded logins are treated as normal user accounts by the multi-game membership layer.
-
-Google and Microsoft login buttons are placeholders and currently disabled. Email verification is disabled for now.
+Observer and admin accounts can enter games without claiming a country. Normal accounts join a game by claiming one generated country.
 
 ## Persistence
 
-- Each game state lives under `server/state/games/<gameId>/game-state.json`.
-- Auth data lives in the SQLite auth database under `server/state/auth.sqlite`.
-- Auth database sidecar files are local runtime artifacts and are ignored by git.
+- Game state is stored under `server/state/games/<gameId>/game-state.json`.
+- Auth state and dev stats live in the SQLite database under `server/state/auth.sqlite`.
+- The game server saves dirty state on a timer, and deleted dev games also remove their saved state directory.
 
-## Dev Notes
+## Gameplay Systems
 
-- `server/index.ts` hosts the websocket game server.
-- `server/auth-server.ts` hosts the auth API.
-- The client talks to the auth server over HTTP and the game server over websocket.
-- The project uses PBKDF2 password hashing and SQLite for local persistence.
+The project is a logistics, expansion, and command prototype rather than a pure battle sandbox. The implemented systems include:
 
-## Deployment & Production Configuration
+- A deterministic procedural galaxy with 500 stars and 15 factions.
+- Faction visibility and fog-of-war based on jump distance from each home system.
+- Fleet movement across the hyperlane network with transit phases.
+- Starbase construction from fleets, plus starbase upgrades from outpost to star fortress.
+- Starbase buildings such as shipyards, solar arrays, hydroponics bays, orbital fabricators, alloy assembly docks, research annexes, and logistics depots.
+- Corvette production from completed shipyards.
+- Planet districts, planet buildings, and urban sub-districts with compatibility rules.
+- Resource production and upkeep for food, minerals, energy, goods, alloys, and research.
+- Population, jobs, housing, amenities, happiness, crime, stability, and growth pressure.
+- Research with active and passive pools, prerequisites, and unlocks.
+- Government laws, leaders, and leader assignment effects.
+- Market trading with player pressure and auto-trade orders.
+- Combat systems with tactical orders, attack-target and attack-system commands, range bands, shield/armor/hull damage resolution, and combat contacts tracked in system view.
+- Admin commands and a developer panel for game and account management.
 
-StellarFronts is designed to run across two deployment targets:
+## Data Model Highlights
 
-1. **Frontend**: Vercel (or other static host)
-2. **Backend**: Raspberry Pi with Cloudflare Tunnel
+The main shared data modules live under `src/data/` and `src/game/`:
 
-### Architecture
+- `src/data/Economy.ts` defines resources, jobs, districts, buildings, population growth, and upkeep logic.
+- `src/data/Starbase.ts` defines starbase levels, building kinds, ship kinds, and combat stats.
+- `src/data/Factions.ts` defines faction generation and visibility calculations.
+- `src/data/GalaxyMap.ts` defines the deterministic galaxy size, shape, and camera limits.
+- `src/data/Technology.ts` defines the tech tree and research effects.
+- `src/data/Market.ts` defines market state, pricing, and trade pressure.
+- `src/data/Government.ts` and `src/data/Leaders.ts` define laws, effects, and leaders.
+- `src/game/GameProtocol.ts` defines the client/server protocol and game state payloads.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Internet / Vercel                        │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │ https://stellarfronts.com (Frontend SPA)               │   │
-│  │ https://www.stellarfronts.com (Frontend SPA)           │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
-                              ↓
-┌──────────────────────────────────────────────────────────────────┐
-│              Cloudflare Tunnel (stellarfronts-game)              │
-│  ┌───────────────────────────────────────────────────────────┐   │
-│  │ api.stellarfronts.com ──→ localhost:8788 (Auth API)      │   │
-│  │ ws.stellarfronts.com  ──→ localhost:8787 (Game WebSocket)│   │
-│  └───────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
-                              ↓
-┌──────────────────────────────────────────────────────────────────┐
-│                    Raspberry Pi Backend                          │
-│  ┌───────────────────────────────────────────────────────────┐   │
-│  │ :8788 Auth Server (HTTP)                                 │   │
-│  │ :8787 Game Server (WebSocket)                            │   │
-│  │ Game state & auth database (SQLite)                      │   │
-│  └───────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────┘
-```
+## Development And Configuration
 
-### Frontend Environment Variables (Vercel)
+The repo includes `.env.example` with local development values and commented production examples.
 
-Set these in Vercel project settings or `.env.production`:
+Local development works without extra setup if you keep the default localhost values:
 
 ```env
-VITE_AUTH_SERVER_URL=https://api.stellarfronts.com
-VITE_WS_URL=wss://ws.stellarfronts.com
+VITE_AUTH_SERVER_URL=http://localhost:8788
+VITE_WS_URL=ws://localhost:8787
+AUTH_SERVER_PORT=8788
+GAME_SERVER_PORT=8787
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+WS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-### Backend Environment Variables (Raspberry Pi)
+Production examples in `.env.example` show a split frontend/backend deployment with separate auth and WebSocket endpoints, plus cookie domain and secure-cookie settings for cross-subdomain auth.
 
-Set these before starting the servers:
+`vercel.json` is set up for single-page-app rewrites, and `wrangler.jsonc` points Cloudflare-style static assets at `dist/`.
 
-```bash
-# Auth Server (port 8788)
-export AUTH_SERVER_PORT=8788
-export ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
-export ADMIN_PASSWORD=ABDUGYA1398
-export DEV_PANEL_PASSWORD=ABDUGYA1398
+## Current Limitations
 
-# Game/WebSocket Server (port 8787)
-export GAME_SERVER_PORT=8787
-export WS_ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
+- `src/pages/EmailVerificationPage.tsx` is a UI shell; there is no backend email verification flow yet.
+- OAuth login buttons exist in the UI, but the server explicitly returns `501` for those endpoints.
 
-# Session Cookies (for HTTPS + cross-subdomain)
-export COOKIE_DOMAIN=.stellarfronts.com
-export COOKIE_SECURE=true
-```
+## Verification
 
-### Cloudflare Tunnel Configuration
+The current README content is aligned with the checked-in code and repo config in:
 
-File: `~/.cloudflared/config.yml`
-
-```yaml
-tunnel: stellarfronts-game
-credentials-file: /home/pi/.cloudflare/TUNNEL_ID.json
-
-ingress:
-  - hostname: api.stellarfronts.com
-    service: http://localhost:8788
-    originRequest:
-      disableChunkedEncoding: false
-
-  - hostname: ws.stellarfronts.com
-    service: http://localhost:8787
-    originRequest:
-      disableChunkedEncoding: false
-
-  - service: http_status:404
-```
-
-### DNS Records (Cloudflare)
-
-Create CNAME records pointing to your Cloudflare Tunnel:
-
-```
-api.stellarfronts.com    CNAME    <TUNNEL_ID>.cfargotunnel.com    (Proxied)
-ws.stellarfronts.com     CNAME    <TUNNEL_ID>.cfargotunnel.com    (Proxied)
-```
-
-### Running on Raspberry Pi
-
-#### Option 1: Manual with npm (for testing)
-
-```bash
-cd ~/stellar-fronts
-export COOKIE_DOMAIN=.stellarfronts.com
-export COOKIE_SECURE=true
-export ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
-export WS_ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com
-export ADMIN_PASSWORD=ABDUGYA1398
-export DEV_PANEL_PASSWORD=ABDUGYA1398
-
-# Run both servers
-npm run server:dev &  # or: tsx server/index.ts
-npm run auth:dev      # or: tsx server/auth-server.ts
-```
-
-#### Option 2: systemd service (recommended for 24/7)
-
-Create `/etc/systemd/system/stellar-fronts-game.service`:
-
-```ini
-[Unit]
-Description=StellarFronts Game Server
-After=network.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/stellar-fronts
-Environment="COOKIE_DOMAIN=.stellarfronts.com"
-Environment="COOKIE_SECURE=true"
-Environment="ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com"
-Environment="WS_ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com"
-Environment="ADMIN_PASSWORD=ABDUGYA1398"
-Environment="DEV_PANEL_PASSWORD=ABDUGYA1398"
-ExecStart=/usr/bin/npm run server:dev
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Create `/etc/systemd/system/stellar-fronts-auth.service`:
-
-```ini
-[Unit]
-Description=StellarFronts Auth Server
-After=network.target
-
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/stellar-fronts
-Environment="COOKIE_DOMAIN=.stellarfronts.com"
-Environment="COOKIE_SECURE=true"
-Environment="ALLOWED_ORIGINS=https://stellarfronts.com,https://www.stellarfronts.com"
-Environment="ADMIN_PASSWORD=ABDUGYA1398"
-Environment="DEV_PANEL_PASSWORD=ABDUGYA1398"
-ExecStart=/usr/bin/npm run auth:dev
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable stellar-fronts-game stellar-fronts-auth stellar-fronts-tunnel
-sudo systemctl start stellar-fronts-game stellar-fronts-auth stellar-fronts-tunnel
-```
-
-### Verification Commands
-
-#### Test Local Auth API
-
-```bash
-# Health check
-curl http://localhost:8788/health
-
-# Login
-curl -X POST http://localhost:8788/api/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"observer","password":"observer"}'
-
-# Get session
-curl -b "sf_session=TOKEN" http://localhost:8788/api/me
-```
-
-#### Test Production Auth API (via Cloudflare)
-
-```bash
-# Health check
-curl https://api.stellarfronts.com/health
-
-# Login (will return Set-Cookie header)
-curl -v -c cookies.txt \
-  -X POST https://api.stellarfronts.com/api/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":"observer","password":"observer"}'
-
-# Get session (uses stored cookie)
-curl -v -b cookies.txt https://api.stellarfronts.com/api/me
-```
-
-#### Test WebSocket Locally
-
-```bash
-node -e "
-const WebSocket = require('ws');
-const ws = new WebSocket('ws://localhost:8787', {
-  headers: { Cookie: 'sf_session=TOKEN_FROM_LOGIN' }
-});
-ws.on('open', () => console.log('Connected'));
-ws.on('message', (m) => console.log('Received:', m.substring(0, 200)));
-ws.on('error', (e) => console.error('Error:', e.message));
-setTimeout(() => ws.close(), 5000);
-"
-```
-
-#### Test WebSocket Production (via Cloudflare)
-
-```bash
-node -e "
-const WebSocket = require('ws');
-const fetch = require('node-fetch');
-
-(async () => {
-  // 1. Login to get session cookie
-  const login = await fetch('https://api.stellarfronts.com/api/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: 'observer', password: 'observer' })
-  });
-  const setCookie = login.headers.get('set-cookie');
-  const sessionCookie = setCookie.split(';')[0];
-
-  // 2. Connect to WebSocket with cookie
-  const ws = new WebSocket('wss://ws.stellarfronts.com', {
-    headers: {
-      Cookie: sessionCookie,
-      Origin: 'https://stellarfronts.com'
-    }
-  });
-
-  ws.on('open', () => console.log('WebSocket connected'));
-  ws.on('message', (m) => console.log('Received:', m.toString().substring(0, 200)));
-  ws.on('error', (e) => console.error('Error:', e.message));
-  ws.on('close', (code) => console.log('Closed:', code));
-
-  setTimeout(() => ws.close(), 8000);
-})().catch(console.error);
-"
-```
-
-### CORS & Security Notes
-
-- **Auth server**: Only allows requests from `ALLOWED_ORIGINS`. Set to your frontend domains in production.
-- **WebSocket server**: Only allows connections from `WS_ALLOWED_ORIGINS`. Rejects requests with disallowed `Origin` header.
-- **Session cookies**: In production, set `COOKIE_DOMAIN=.stellarfronts.com` so the cookie is shared between `api.stellarfronts.com` and the frontend at `stellarfronts.com`.
-- **HTTPS**: Both APIs must use HTTPS in production. Cloudflare Tunnel handles TLS termination.
-
-### Troubleshooting
-
-**Issue: "CORS error" when login button clicked**
-- Ensure `ALLOWED_ORIGINS` includes your frontend domain.
-- Check browser console for exact origin being rejected.
-
-**Issue: WebSocket connection fails in production**
-- Verify `WS_ALLOWED_ORIGINS` includes your frontend domain.
-- Ensure `COOKIE_SECURE=true` so HttpOnly cookies are sent over HTTPS.
-- Check cookie has `Domain=.stellarfronts.com` so it's sent to `ws.stellarfronts.com`.
-
-**Issue: Cookie not shared between subdomains**
-- Verify `COOKIE_DOMAIN` is set to `.stellarfronts.com` (with leading dot).
-- Verify `COOKIE_SECURE=true` for HTTPS.
-- Check browser DevTools > Application > Cookies: domain should show `.stellarfronts.com`.
-
-### Local Development (No Env Vars Needed)
-
-```bash
-npm run dev:all
-# Frontend: http://localhost:5173
-# Auth: http://localhost:8788
-# Game: ws://localhost:8787
-```
-
-CORS and cookies work automatically for localhost + 127.0.0.1.
+- `package.json`
+- `src/App.tsx`
+- `src/auth/client.ts`
+- `server/auth-server.ts`
+- `server/auth-store.ts`
+- `server/index.ts`
+- `server/game-state-path.ts`
+- `src/data/Economy.ts`
+- `src/data/Starbase.ts`
+- `src/data/Factions.ts`
+- `src/data/GalaxyMap.ts`
+- `src/data/Technology.ts`
+- `src/data/Market.ts`
+- `src/data/Government.ts`
+- `src/data/Leaders.ts`
+- `src/game/GameProtocol.ts`
+- `server/combat.ts`
+- `server/combat.test.ts`
+- `.env.example`
+- `vercel.json`
+- `wrangler.jsonc`

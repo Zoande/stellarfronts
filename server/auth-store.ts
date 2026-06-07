@@ -559,7 +559,7 @@ export class AuthStore {
     const username = normalizeUsername(credentials.username);
     const accountRow = this.db.prepare(`SELECT * FROM accounts WHERE username = ?`).get(username) as AccountRow | undefined;
     if (!accountRow) {
-      throw new AuthError('Invalid username or password', 401);
+      throw new AuthError('Account not found', 404);
     }
 
     if (!passwordMatches(credentials.password, accountRow.password_salt, accountRow.password_hash)) {

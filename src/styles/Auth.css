@@ -246,6 +246,65 @@ body {
   border-radius: 2px;
 }
 
+.auth-dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(4, 8, 14, 0.58);
+  backdrop-filter: blur(6px);
+  z-index: 35;
+}
+
+.auth-dialog {
+  width: min(380px, 100%);
+  padding: 20px;
+  border: 1px solid rgba(112, 184, 255, 0.34);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(16, 22, 30, 0.98), rgba(9, 14, 22, 0.98));
+  box-shadow: 0 28px 60px rgba(0, 0, 0, 0.52);
+}
+
+.auth-dialog__eyebrow {
+  margin-bottom: 8px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--stellar-text-muted);
+}
+
+.auth-dialog h3 {
+  margin-bottom: 10px;
+  font-size: 22px;
+  line-height: 1.2;
+  color: #f3f7ff;
+}
+
+.auth-dialog p {
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--stellar-text);
+}
+
+.auth-dialog__actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.btn-secondary {
+  background: rgba(20, 27, 36, 0.92);
+  color: var(--stellar-text);
+  border: 1px solid rgba(136, 151, 171, 0.54);
+}
+
+.btn-secondary:hover {
+  border-color: rgba(112, 184, 255, 0.72);
+  box-shadow: 0 0 16px rgba(112, 184, 255, 0.16);
+}
+
 /* Buttons */
 .btn {
   padding: 12px 16px;
@@ -1111,13 +1170,19 @@ body {
   color: rgba(214, 221, 231, 0.72);
   font-size: 12px;
   white-space: nowrap;
+  position: relative;
+}
+
+.secure-badge--secure {
+  color: rgba(97, 221, 167, 0.96);
 }
 
 .secure-badge--warning {
   color: rgba(255, 190, 92, 0.92);
-  position: relative;
 }
 
+.secure-badge--secure::before,
+.secure-badge--secure::after,
 .secure-badge--warning::before,
 .secure-badge--warning::after {
   opacity: 0;
@@ -1126,6 +1191,7 @@ body {
   pointer-events: none;
 }
 
+.secure-badge--secure::before,
 .secure-badge--warning::before {
   content: '';
   position: absolute;
@@ -1136,6 +1202,7 @@ body {
   filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.45));
 }
 
+.secure-badge--secure::after,
 .secure-badge--warning::after {
   content: attr(data-tooltip);
   position: absolute;
@@ -1143,10 +1210,10 @@ body {
   right: 0;
   width: min(320px, 70vw);
   padding: 10px 12px;
-  border: 1px solid rgba(255, 190, 92, 0.45);
+  border: 1px solid rgba(112, 184, 255, 0.42);
   border-radius: 8px;
   background: rgba(12, 18, 28, 0.96);
-  color: rgba(247, 235, 213, 0.94);
+  color: rgba(231, 240, 250, 0.96);
   font-size: 11px;
   line-height: 1.5;
   text-transform: none;
@@ -1156,6 +1223,10 @@ body {
   z-index: 40;
 }
 
+.secure-badge--secure:hover::before,
+.secure-badge--secure:hover::after,
+.secure-badge--secure:focus-visible::before,
+.secure-badge--secure:focus-visible::after,
 .secure-badge--warning:hover::before,
 .secure-badge--warning:hover::after,
 .secure-badge--warning:focus-visible::before,
@@ -1172,6 +1243,11 @@ body {
   border-top-width: 3px;
   border-radius: 5px 5px 6px 6px;
   box-shadow: 0 0 12px rgba(97, 221, 167, 0.34);
+}
+
+.secure-badge--secure i {
+  border-color: #61dda7;
+  box-shadow: 0 0 12px rgba(97, 221, 167, 0.38);
 }
 
 .secure-badge--warning i {

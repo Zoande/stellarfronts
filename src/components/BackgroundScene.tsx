@@ -24,10 +24,29 @@ import {
   Vector3,
 } from '@babylonjs/core';
 import '@babylonjs/loaders';
-import { SHIP_MODEL_DEFINITIONS, STARBASE_MODEL_DEFINITIONS } from '../data/Starbase';
+import { SHIP_MODEL_DEFINITIONS } from '../data/Starbase';
 
-const AUTH_STARBASE_MODEL = STARBASE_MODEL_DEFINITIONS.starbase;
 const AUTH_SHIP_MODEL = SHIP_MODEL_DEFINITIONS.corvette;
+const AUTH_FLEET_MODELS = [
+  {
+    definition: SHIP_MODEL_DEFINITIONS.battleship,
+    position: new Vector3(-4.5, 38.2, -1.4),
+    rotation: Math.PI * 0.08,
+    scaleBoost: 3.4,
+  },
+  {
+    definition: SHIP_MODEL_DEFINITIONS.cruiser,
+    position: new Vector3(-2.2, 36.8, 1.4),
+    rotation: -Math.PI * 0.18,
+    scaleBoost: 3.0,
+  },
+  {
+    definition: SHIP_MODEL_DEFINITIONS.destroyer,
+    position: new Vector3(-3.8, 36.0, 4.0),
+    rotation: Math.PI * 0.28,
+    scaleBoost: 3.15,
+  },
+] as const;
 
 function rnd(seedRef: { v: number }) {
   seedRef.v = (seedRef.v * 1664525 + 1013904223) >>> 0;
@@ -329,7 +348,7 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
       -Math.PI / 2.2,
       Math.PI / 2.45,
       62,
-      new Vector3(5.5, 1.0, 0),
+      new Vector3(-10.0, -3.0, 0),
       scene,
     );
     camera.attachControl(canvas, true);
@@ -355,14 +374,14 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
     glow.intensity = 0.2;
 
     const root = new TransformNode('authModelRoot', scene);
-    root.position = new Vector3(3.4, -0.25, 0);
+    root.position = new Vector3(-15.8, -3.0, 0);
     root.rotation.y = 0.45;
     const clusterScale = 0.24;
     const clusterScaleInv = 1 / clusterScale;
     root.scaling.setAll(clusterScale);
 
     const shipPositions = [
-      new Vector3(3.0, 0.6, -0.2),
+      new Vector3(-14.2, -1.25, -0.2),
     ];
 
     const computeMeshBounds = (meshes: Mesh[]) => {
@@ -393,15 +412,13 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
           center: Vector3.Zero(),
         };
       }
-
       return {
         min,
         max,
         center: min.add(max).scale(0.5),
       };
     };
-
-    const trimStarbaseVertexData = (mesh: Mesh) => {
+    const trimShipVertexData = (mesh: Mesh) => {
       const allowedKinds = new Set(['position', 'normal', 'uv']);
       const kinds = mesh.getVerticesDataKinds();
       for (const kind of kinds) {
@@ -422,8 +439,8 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
       trailMeshes: Mesh[];
     }[] = [];
     const shipMaterials: StandardMaterial[] = [];
-    const faceShipAtStarbase = (ship: TransformNode) => {
-      const dir = starbaseRoot.position.subtract(ship.position);
+    const faceShipAtFleet = (ship: TransformNode, target: Vector3) => {
+      const dir = target.subtract(ship.position);
       dir.y = 0;
       dir.normalize();
       const yaw = Math.atan2(dir.x, dir.z);
@@ -434,19 +451,40 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
       );
     };
 
-    const starbaseRoot = new TransformNode('authStarbaseRoot', scene);
-    starbaseRoot.parent = root;
-    onLoadProgress?.(0.35, 'Importing starbase model');
-    starbaseRoot.position = new Vector3(51.4, 60.2, 0.1);
-    const starbaseBaseY = starbaseRoot.position.y;
+    const fleetRoot = new TransformNode('authFleetRoot', scene);
+    fleetRoot.parent = root;
+    onLoadProgress?.(0.35, 'Importing fleet models');
+    fleetRoot.position = new Vector3(-7.0, 32.8, 2.4);
+    const fleetBaseY = fleetRoot.position.y;
 
-    const starbasePromise = SceneLoader.ImportMeshAsync('', AUTH_STARBASE_MODEL.modelPath, AUTH_STARBASE_MODEL.modelFile, scene)
-      .then((result) => {
-        const meshes = result.meshes.filter((mesh): mesh is Mesh => typeof mesh.getTotalVertices === 'function' && mesh.getTotalVertices() > 0);
-        if (meshes.length === 0) {
-          console.warn('[AuthStarbase] No renderable meshes found in GLB');
+    const fleetPromise = Promise.all(
+      AUTH_FLEET_MODELS.map((entry, index) => SceneLoader.ImportMeshAsync('', entry.definition.modelPath, entry.definition.modelFile, scene)
+        .then((result) => ({ result, entry, index }))
+        .catch((error) => ({ error, entry, index }))),
+    ).then((results) => {
+      results.forEach((loaded) => {
+        if ('error' in loaded) {
+          console.warn('[AuthFleet] Failed to load GLB, using fallback.', loaded.error);
+          const fallback = MeshBuilder.CreateBox(`authFleetFallback_${loaded.index}`, { width: 2.2, height: 0.42, depth: 0.88 }, scene);
+          fallback.parent = fleetRoot;
+          fallback.position = loaded.entry.position.clone();
+          fallback.rotation.y = loaded.entry.rotation;
+          fallback.scaling.setAll(0.8 + loaded.index * 0.12);
+          const mat = new StandardMaterial(`authFleetFallbackMat_${loaded.index}`, scene);
+          mat.diffuseColor = new Color3(0.52, 0.6, 0.72);
+          mat.emissiveColor = new Color3(0.2, 0.28, 0.36);
+          mat.specularColor = new Color3(0.82, 0.88, 0.96);
+          fallback.material = mat;
           return;
         }
+
+        const { result, entry, index } = loaded;
+        const meshes = result.meshes.filter((mesh): mesh is Mesh => typeof mesh.getTotalVertices === 'function' && mesh.getTotalVertices() > 0);
+        if (meshes.length === 0) {
+          console.warn('[AuthFleet] No renderable meshes found in GLB');
+          return;
+        }
+
         const bounds = computeMeshBounds(meshes);
         const maxDimension = Math.max(
           0.001,
@@ -454,51 +492,46 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
           bounds.max.y - bounds.min.y,
           bounds.max.z - bounds.min.z,
         );
-        const starbaseTargetSize = 15;
-        const starbaseSizeScale = 3.45;
-        const starbaseScale = (starbaseTargetSize / maxDimension) * clusterScaleInv * starbaseSizeScale;
+        const targetSize = index === 0 ? 12 : index === 1 ? 10 : 9;
+        const sizeScale = entry.scaleBoost;
+        const modelScale = (targetSize / maxDimension) * clusterScaleInv * sizeScale;
 
-        const assetRoot = new TransformNode('authStarbaseAssetRoot', scene);
-        assetRoot.parent = starbaseRoot;
-        assetRoot.rotation.y = Math.PI * 0.16;
-        assetRoot.position = bounds.center.scale(-1);
+        const assetRoot = new TransformNode(`authFleetAssetRoot_${index}`, scene);
+        assetRoot.parent = fleetRoot;
+        assetRoot.rotation.y = entry.rotation;
+        assetRoot.position = entry.position.clone();
+        assetRoot.position.subtractInPlace(bounds.center);
 
-        const fallbackMat = new StandardMaterial('authStarbaseFallbackMat', scene);
-        fallbackMat.emissiveColor = new Color3(0.16, 0.2, 0.28);
-        fallbackMat.diffuseColor = new Color3(0.18, 0.22, 0.28);
-        fallbackMat.specularColor = new Color3(0.18, 0.2, 0.24);
+        const fallbackMat = new StandardMaterial(`authFleetFallbackMat_${index}`, scene);
+        fallbackMat.emissiveColor = new Color3(0.22, 0.3, 0.42);
+        fallbackMat.diffuseColor = new Color3(0.52, 0.6, 0.72);
+        fallbackMat.specularColor = new Color3(0.82, 0.88, 0.96);
 
         for (const mesh of meshes) {
-          trimStarbaseVertexData(mesh);
+          trimShipVertexData(mesh);
           mesh.parent = assetRoot;
           mesh.isPickable = false;
           mesh.alwaysSelectAsActiveMesh = true;
-          const mat = mesh.material as StandardMaterial | null;
-          if (!mat) {
-            mesh.material = fallbackMat;
-          }
+          const mat = (mesh.material as StandardMaterial | null) ?? fallbackMat;
+          mat.diffuseColor = new Color3(0.54, 0.62, 0.74);
+          mat.emissiveColor = new Color3(0.18, 0.26, 0.34);
+          mat.specularColor = new Color3(0.9, 0.94, 1.0);
+          mat.disableLighting = false;
+          mesh.material = mat;
           mesh.isVisible = true;
           glow.addIncludedOnlyMesh(mesh);
         }
 
-        starbaseRoot.scaling.setAll(starbaseScale);
+        assetRoot.scaling.setAll(modelScale * 0.72);
 
-        const starbaseLight = new PointLight('authStarbaseLight', new Vector3(0, 6, -10), scene);
-        starbaseLight.parent = starbaseRoot;
-        starbaseLight.intensity = 0.9;
-        starbaseLight.range = 28;
-        starbaseLight.diffuse = new Color3(0.58, 0.86, 1.0);
-        starbaseLight.specular = new Color3(0.85, 0.92, 1.0);
-      })
-      .catch((err) => {
-        console.warn('[AuthStarbase] Failed to load GLB, using fallback.', err);
-        const fallback = MeshBuilder.CreateTorus('authStarbaseFallback', { diameter: 2.2, thickness: 0.38, tessellation: 28 }, scene);
-        fallback.parent = starbaseRoot;
-        const mat = new StandardMaterial('authStarbaseFallbackMat', scene);
-        mat.diffuseColor = new Color3(0.18, 0.2, 0.24);
-        mat.emissiveColor = new Color3(0.16, 0.18, 0.22);
-        fallback.material = mat;
+        const shipLight = new PointLight(`authFleetLight_${index}`, new Vector3(0, 6, -8), scene);
+        shipLight.parent = assetRoot;
+        shipLight.intensity = 1.35;
+        shipLight.range = 28;
+        shipLight.diffuse = new Color3(0.78, 0.92, 1.0);
+        shipLight.specular = new Color3(0.95, 0.97, 1.0);
       });
+    });
 
     onLoadProgress?.(0.65, 'Importing ship model');
 
@@ -517,8 +550,8 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
           const shipRoot = new TransformNode(`authShipRoot_${i}`, scene);
           shipRoot.parent = root;
           shipRoot.position = shipPositions[i].clone();
-          shipRoot.scaling.setAll(baseScale * (0.88 + i * 0.015));
-          faceShipAtStarbase(shipRoot);
+          shipRoot.scaling.setAll(baseScale * 0.74 * (0.88 + i * 0.015));
+          faceShipAtFleet(shipRoot, fleetRoot.position);
           shipRoots.push(shipRoot);
 
           for (const mesh of meshes) {
@@ -615,8 +648,8 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
           const shipRoot = new TransformNode(`authShipFallbackRoot_${i}`, scene);
           shipRoot.parent = root;
           shipRoot.position = shipPositions[i].clone();
-          shipRoot.scaling.setAll(0.012);
-          faceShipAtStarbase(shipRoot);
+          shipRoot.scaling.setAll(0.009);
+          faceShipAtFleet(shipRoot, fleetRoot.position);
           shipRoots.push(shipRoot);
 
           const body = MeshBuilder.CreateBox(`authShipFallbackBody_${i}`, { width: 2.4, height: 0.34, depth: 0.8 }, scene);
@@ -684,8 +717,8 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
       const shipTurnAmount = dt * 0.09;
       const elapsed = performance.now() * 0.001;
       
-      starbaseRoot.rotate(Axis.Y, rotAmount, Space.LOCAL);
-      starbaseRoot.position.y = starbaseBaseY;
+      fleetRoot.rotate(Axis.Y, rotAmount, Space.LOCAL);
+      fleetRoot.position.y = fleetBaseY;
 
       for (const ship of shipAnimationState) {
         const motion = elapsed + ship.phase;
@@ -717,7 +750,7 @@ export default function BackgroundScene({ onLoadProgress, onReady }: BackgroundS
     const onResize = () => engine.resize();
     window.addEventListener('resize', onResize);
 
-    void Promise.all([starbasePromise, shipPromise]).then(() => {
+    void Promise.all([fleetPromise, shipPromise]).then(() => {
       if (!cancelled) {
         onLoadProgress?.(1, 'Login background is ready');
         onReady?.();

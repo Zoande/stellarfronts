@@ -27,12 +27,14 @@ import { MarketPanel } from "@/ui/MarketPanel";
 import { TechnologyPanel } from "@/ui/TechnologyPanel";
 import { LeadersPanel } from "@/ui/LeadersPanel";
 import { GovernmentPanel } from "@/ui/GovernmentPanel";
+import { DiplomacyPanel } from "@/ui/DiplomacyPanel";
 import { OPEN_LEADERS_PANEL_EVENT } from "@/ui/leaderEvents";
 import type { LeaderAssignmentTarget, OpenLeadersPanelEventDetail } from "@/ui/leaderEvents";
 import { AdminCommandPanel } from "@/ui/AdminCommandPanel";
 import { GameServerClient } from "./GameServerClient";
 import type {
   ClientCommand,
+  DiplomacyDetailPayload,
   FleetManagerDetailPayload,
   GameSnapshot,
   GovernmentDetailPayload,
@@ -92,6 +94,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let technologyPanel: TechnologyPanel | null = null;
   let leadersPanel: LeadersPanel | null = null;
   let governmentPanel: GovernmentPanel | null = null;
+  let diplomacyPanel: DiplomacyPanel | null = null;
   let adminCommandPanel: AdminCommandPanel | null = null;
   let leadersPanelAssignmentTarget: LeaderAssignmentTarget | null = null;
   let fleetManagerDetail: FleetManagerDetailPayload | null = null;
@@ -100,12 +103,14 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let technologyDetail: TechnologyDetailPayload | null = null;
   let leadersDetail: LeadersDetailPayload | null = null;
   let governmentDetail: GovernmentDetailPayload | null = null;
+  let diplomacyDetail: DiplomacyDetailPayload | null = null;
   let releaseFleetManagerDetail: (() => void) | null = null;
   let releasePlanetManagerDetail: (() => void) | null = null;
   let releaseMarketDetail: (() => void) | null = null;
   let releaseTechnologyDetail: (() => void) | null = null;
   let releaseLeadersDetail: (() => void) | null = null;
   let releaseGovernmentDetail: (() => void) | null = null;
+  let releaseDiplomacyDetail: (() => void) | null = null;
   let releaseActiveSystemDetail: (() => void) | null = null;
   const releaseStarbaseDetails = new Map<string, () => void>();
   const releasePlanetDetails = new Map<string, () => void>();
@@ -571,6 +576,36 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       releaseGovernmentDetail = null;
     },
   });
+  const getDiplomacyPanelData = () => {
+    const playerFactionId = diplomacyDetail?.playerFactionId ?? getPlayerFactionId();
+    return {
+      countries: diplomacyDetail?.countries ?? snapshot.factions.map((faction) => ({
+        faction,
+        isSelf: faction.id === playerFactionId,
+        atWar: false,
+        ourBorderPolicy: faction.id === playerFactionId ? "open" as const : "closed" as const,
+        theirBorderPolicy: faction.id === playerFactionId ? "open" as const : "closed" as const,
+        activeTreatyCount: 0,
+        pendingProposalCount: 0,
+        tradePrivilegeActive: false,
+        tradePrivilegeSuspended: false,
+      })),
+      wars: diplomacyDetail?.wars ?? [],
+      treaties: diplomacyDetail?.treaties ?? [],
+      proposals: diplomacyDetail?.proposals ?? [],
+      chatMessages: diplomacyDetail?.chatMessages ?? [],
+      eligiblePeaceTransferSystems: diplomacyDetail?.eligiblePeaceTransferSystems ?? [],
+      treatyArticles: diplomacyDetail?.treatyArticles ?? [],
+      playerFactionId,
+      factionName: getCurrentFactionName(),
+      clockYear: getRenderClockYear(),
+      onDiplomacyCommand: (command: ClientCommand) => server.send(command),
+      onClose: () => {
+        releaseDiplomacyDetail?.();
+        releaseDiplomacyDetail = null;
+      },
+    };
+  };
   const openGovernmentPanel = (): void => {
     if (!governmentPanel) {
       governmentPanel = new GovernmentPanel();
@@ -588,6 +623,20 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       });
     }
     governmentPanel.show(getGovernmentPanelData());
+  };
+  const openDiplomacyPanel = (): void => {
+    if (!diplomacyPanel) {
+      diplomacyPanel = new DiplomacyPanel();
+    }
+    if (!releaseDiplomacyDetail) {
+      releaseDiplomacyDetail = server.subscribeDetail<DiplomacyDetailPayload>("diplomacy", null, (event) => {
+        if (event.payload && "countries" in event.payload) {
+          diplomacyDetail = event.payload;
+          diplomacyPanel?.refresh(getDiplomacyPanelData());
+        }
+      });
+    }
+    diplomacyPanel.show(getDiplomacyPanelData());
   };
   const refreshFleetManager = (): void => {
     fleetManagerPanel?.refresh(getFleetManagerData());
@@ -607,11 +656,16 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   const refreshGovernmentPanel = (): void => {
     governmentPanel?.refresh(getGovernmentPanelData());
   };
+  const refreshDiplomacyPanel = (): void => {
+    diplomacyPanel?.refresh(getDiplomacyPanelData());
+  };
   const handleSidebarItem = (key: HudSidebarItemKey): void => {
     if (key === "fleets") {
       openFleetManager();
     } else if (key === "government") {
       openGovernmentPanel();
+    } else if (key === "diplomacy") {
+      openDiplomacyPanel();
     } else if (key === "planets") {
       openPlanetOperations();
     } else if (key === "market") {
@@ -976,6 +1030,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         activeGalaxyScene.setKnownStarIds(snapshot.knownStarIds);
         activeGalaxyScene.setStarOwnerships(expandStarOwnership());
       }
+      if (isFull || has("diplomacy")) {
+        activeGalaxyScene.setDiplomacyMovement(snapshot.diplomacy);
+      }
       if (isFull || has("visibility") || has("habitedPlanetSystems")) {
         activeGalaxyScene.setHabitedPlanetSystemIds(snapshot.habitedPlanetSystemIds);
       }
@@ -1010,6 +1067,12 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
     if (activeSystemScene) {
       activeSystemScene.setClockYear(getRenderClockYear());
+      if (isFull || has("visibility")) {
+        activeSystemScene.setStarOwnerships(expandStarOwnership());
+      }
+      if (isFull || has("diplomacy")) {
+        activeSystemScene.setDiplomacyMovement(snapshot.diplomacy);
+      }
       if (isFull || has("leaders")) {
         activeSystemScene.setLeaders(snapshot.leaders);
       }
@@ -1059,6 +1122,15 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     ) {
       if (!releaseGovernmentDetail) refreshGovernmentPanel();
     }
+    if (
+      isFull
+      || has("diplomacy")
+      || has("visibility")
+      || has("market")
+      || has("clock")
+    ) {
+      if (!releaseDiplomacyDetail) refreshDiplomacyPanel();
+    }
   }
 
   async function switchScene(factory: () => IGameScene): Promise<void> {
@@ -1093,6 +1165,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       promotedStarbaseSystemIds: getPromotedStarbaseSystemIds(),
       starbases: snapshot.starbases,
       starOwnership: expandStarOwnership(),
+      diplomacy: snapshot.diplomacy,
       visibleStarIds: snapshot.visibleStarIds,
       knownStarIds: snapshot.knownStarIds,
       selectedFleetIds,
@@ -1169,6 +1242,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           starbases: systemPayload.starbases,
           factions: systemPayload.factions,
           starOwnership: expandStarOwnership(),
+          diplomacy: snapshot.diplomacy,
           playerFactionId: snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : 0,
           playerShipStarId: getPrimaryFleetStarId(),
           shipTransit: getPrimaryTransit(),
@@ -1312,6 +1386,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     technologyPanel?.dispose();
     leadersPanel?.dispose();
     governmentPanel?.dispose();
+    diplomacyPanel?.dispose();
     for (const release of releaseStarbaseDetails.values()) release();
     releaseStarbaseDetails.clear();
     for (const release of releasePlanetDetails.values()) release();

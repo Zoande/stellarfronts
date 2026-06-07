@@ -36,6 +36,10 @@ export class SystemLabelOverlay {
     this.root.style.display = visible ? "" : "none";
   }
 
+  setInteractive(interactive: boolean): void {
+    this.root.classList.toggle("passthrough", !interactive);
+  }
+
   setItems(items: SystemLabelOverlayItem[]): void {
     this.items = items;
     const liveKeys = new Set(items.map((item) => item.key));
@@ -259,6 +263,10 @@ export class SystemLabelOverlay {
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.035);
   pointer-events: auto;
   transform: translateZ(0);
+}
+
+.systemLabelOverlay.passthrough .systemLabelNode {
+  pointer-events: none;
 }
 
 button.systemLabelNode {

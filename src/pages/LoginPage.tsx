@@ -3,7 +3,7 @@ import '../styles/Auth.css';
 
 interface LoginPageProps {
   onLoginSubmit: (username: string, password: string, rememberMe: boolean) => Promise<void>;
-  onSignupClick: () => void;
+  onSignupSubmit: (username: string, password: string) => Promise<void>;
 }
 
 const frontierCards = [
@@ -25,9 +25,9 @@ const frontierCards = [
 ];
 
 const commandSignals = [
-  ['Live Servers Online', 'All command relays nominal'],
-  ['Season 3 Active', 'Voidfront Reckoning'],
-  ['New Player Grants', 'Starter cache available'],
+  ['Servers Online', 'All login services nominal'],
+  ['Version 0.10', 'Beta testing open'],
+  ['New Player Slots', 'Available slots open in galaxies'],
 ];
 
 const operations = [
@@ -35,7 +35,7 @@ const operations = [
     image: '/textures/planet-banners/Grassland_banner_city.webp',
     label: 'Planetary Development',
     title: 'Build worlds that can survive the front',
-    text: 'Balance districts, orbital logistics, civilian output, and defensive needs while the frontier pushes back.',
+    text: 'Balance districts, orbital logistics, civilian output, and defensive needs while under pressure from enemy empires.',
   },
   {
     image: '/textures/planet-banners/Star_A_banner.webp',
@@ -45,9 +45,9 @@ const operations = [
   },
   {
     image: '/textures/starbase/Starbase_banner.webp',
-    label: 'Station Command',
-    title: 'Hold the relay, hold the war',
-    text: 'Starbases project supply, repair fleets, and define where your forces can safely return to command.',
+    label: 'Fleet Command',
+    title: 'Keep the strike group moving',
+    text: 'Cruisers, destroyers, and escorts keep patrol lanes clear while your flagships hunt down enemy fleets.',
   },
 ];
 
@@ -58,35 +58,90 @@ function isTrustedStellarfrontsHost(hostname: string): boolean {
 
 const untrustedHostWarning =
   'You are not on an official StellarFronts domain. Credentials could be stolen. ' +
-  'Switch to https://stellarfronts.com or a trusted subdomain unless you intended to use a local or test host.';
+  'Switch to https://stellarfronts.com or a trusted subdomain unless you intended to use a local or custom host.';
 
-export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPageProps) {
+const trustedHostTooltip =
+  'This login window is served from an official StellarFronts domain. If the badge ever changes to unverified, stop and check the address before signing in.';
+
+function isAccountNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.toLowerCase().includes('account not found');
+}
+
+export default function LoginPage({ onLoginSubmit, onSignupSubmit }: LoginPageProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [accountNotFoundOpen, setAccountNotFoundOpen] = useState(false);
   const [error, setError] = useState('');
   const isTrustedOrigin = typeof window === 'undefined'
     ? true
     : isTrustedStellarfrontsHost(window.location.hostname);
-  const secureBadgeClassName = `secure-badge${isTrustedOrigin ? '' : ' secure-badge--warning'}`;
-  const secureBadgeLabel = isTrustedOrigin ? 'Secure connection' : 'Unrecognized host';
-  const secureBadgeTooltip = isTrustedOrigin ? undefined : untrustedHostWarning;
-  const secureBadgeAriaLabel = isTrustedOrigin
-    ? undefined
-    : `${secureBadgeLabel}. ${secureBadgeTooltip}`;
+  const secureBadgeClassName = `secure-badge${isTrustedOrigin ? ' secure-badge--secure' : ' secure-badge--warning'}`;
+  const secureBadgeLabel = isTrustedOrigin ? 'Secure connection' : 'Unverified connection';
+  const secureBadgeTooltip = isTrustedOrigin ? trustedHostTooltip : untrustedHostWarning;
+  const secureBadgeAriaLabel = `${secureBadgeLabel}. ${secureBadgeTooltip}`;
+
+  const switchToSignup = () => {
+    setMode('signup');
+    setAccountNotFoundOpen(false);
+    setError('');
+    setConfirmPassword(password);
+  };
+
+  const switchToLogin = () => {
+    setMode('login');
+    setAccountNotFoundOpen(false);
+    setError('');
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim() || !password.trim()) {
-      setError('Please enter both username and password');
+      setError('Please enter both email or username and password');
       return;
     }
     try {
       setError('');
+      setAccountNotFoundOpen(false);
       await onLoginSubmit(username, password, rememberMe);
     } catch (submitError) {
+      if (isAccountNotFoundError(submitError)) {
+        setAccountNotFoundOpen(true);
+        setError('');
+        return;
+      }
+
       setError(submitError instanceof Error ? submitError.message : 'Login failed');
+    }
+  };
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!username.trim() || !password.trim()) {
+      setError('Please fill in all fields');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters');
+      return;
+    }
+
+    try {
+      setError('');
+      await onSignupSubmit(username, password);
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : 'Account creation failed');
     }
   };
 
@@ -98,7 +153,7 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
 
       <section className="auth-hero" aria-label="StellarFronts command login">
         <div className="auth-hero__copy">
-          <div className="auth-relay-tag">Kepler Veil Relay / Secure Bridge Access</div>
+          <div className="auth-relay-tag">Home Page / Login Page</div>
           <img
             className="auth-brand-logo"
             src="/branding/stellarfrontslogo.webp"
@@ -111,11 +166,11 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
             <i />
             <span />
           </div>
-          <h1 className="auth-hero-title">The Frontier Is Yours</h1>
+          <h1 className="auth-hero-title">Your Empire Is Waiting</h1>
           <p className="auth-hero-copy">
-            Dock with relay seven and rejoin the active command net before the
-            next jump window closes. Your fleets, stations, colonies, and
-            faction orders are waiting for identity sync.
+            Log in to access your fleets, stations,
+            colonies, and send orders. You must log in or create an
+            account before you can join or enter a game.
           </p>
 
           <div className="auth-signal-strip" aria-label="Current command signals">
@@ -153,17 +208,18 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
                 height="160"
               />
               <div>
-                <p className="auth-eyebrow">Bridge Access</p>
+                <p className="auth-eyebrow">Login Window</p>
                 <h2 className="stellar-title">Return to Command</h2>
-                <p className="auth-subtitle">Identity sync required</p>
+                <p className="auth-subtitle">{mode === 'signup' ? 'Account creation required' : 'Log in required'}</p>
               </div>
             </div>
 
-            <form onSubmit={handleLogin} className="auth-form">
+            {mode === 'login' ? (
+              <form onSubmit={handleLogin} className="auth-form">
               <div className="form-group">
                 <div className="form-row-label">
                   <label htmlFor="username">Email or Username</label>
-                  <span className="form-status">Registry online</span>
+                  <span className="form-status">Account registry online</span>
                 </div>
                 <div className="input-shell">
                   <svg className="input-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -226,7 +282,7 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
                   className={secureBadgeClassName}
                   data-tooltip={secureBadgeTooltip}
                   aria-label={secureBadgeAriaLabel}
-                  tabIndex={secureBadgeTooltip ? 0 : undefined}
+                  tabIndex={0}
                 >
                   <i aria-hidden="true" />
                   {secureBadgeLabel}
@@ -236,15 +292,101 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
               {error && <div className="form-error">{error}</div>}
 
               <button type="submit" className="btn btn-primary">
-                Enter Command Deck
+                Sign in
                 <svg className="btn-arrow" viewBox="0 0 24 24" aria-hidden="true">
                   <path d="M9 5.5 15.5 12 9 18.5" />
                 </svg>
               </button>
-            </form>
+              </form>
+            ) : (
+              <form onSubmit={handleSignup} className="auth-form">
+                <div className="form-group">
+                  <div className="form-row-label">
+                    <label htmlFor="signup-username">Email or Username</label>
+                    <span className="form-status">Create a new account</span>
+                  </div>
+                  <div className="input-shell">
+                    <svg className="input-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 12.4c2.3 0 4.2-1.9 4.2-4.2S14.3 4 12 4 7.8 5.9 7.8 8.2s1.9 4.2 4.2 4.2Zm0 1.8c-3.4 0-6.4 1.7-8.2 4.4-.4.6 0 1.4.8 1.4h14.8c.7 0 1.2-.8.8-1.4-1.8-2.7-4.8-4.4-8.2-4.4Z" />
+                    </svg>
+                    <input
+                      id="signup-username"
+                      type="text"
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value)}
+                      placeholder="Enter your email or username"
+                      className="form-input"
+                      autoComplete="username"
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <div className="form-row-label">
+                    <label htmlFor="signup-password">Password</label>
+                    <span className="form-status">Minimum 6 characters</span>
+                  </div>
+                  <div className="input-shell">
+                    <svg className="input-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M17.5 10.2h-.8V8.1a4.7 4.7 0 0 0-9.4 0v2.1h-.8c-.8 0-1.5.7-1.5 1.5v6.8c0 .8.7 1.5 1.5 1.5h11c.8 0 1.5-.7 1.5-1.5v-6.8c0-.8-.7-1.5-1.5-1.5Zm-8.2 0V8.1a2.7 2.7 0 0 1 5.4 0v2.1H9.3Z" />
+                    </svg>
+                    <input
+                      id="signup-password"
+                      type={showPassword ? 'text' : 'password'}
+                      value={password}
+                      onChange={(e) => {
+                        const nextPassword = e.target.value;
+                        setPassword(nextPassword);
+                        if (mode === 'signup' && confirmPassword === '') {
+                          setConfirmPassword(nextPassword);
+                        }
+                      }}
+                      placeholder="Create a password"
+                      className="form-input"
+                      autoComplete="new-password"
+                    />
+                    <button
+                      type="button"
+                      className="password-toggle"
+                      onClick={() => setShowPassword((current) => !current)}
+                      aria-pressed={showPassword}
+                    >
+                      {showPassword ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <div className="form-row-label">
+                    <label htmlFor="confirm-password">Confirm Password</label>
+                    <span className="form-status">Keep it in sync</span>
+                  </div>
+                  <div className="input-shell">
+                    <svg className="input-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M17.5 10.2h-.8V8.1a4.7 4.7 0 0 0-9.4 0v2.1h-.8c-.8 0-1.5.7-1.5 1.5v6.8c0 .8.7 1.5 1.5 1.5h11c.8 0 1.5-.7 1.5-1.5v-6.8c0-.8-.7-1.5-1.5-1.5Zm-8.2 0V8.1a2.7 2.7 0 0 1 5.4 0v2.1H9.3Z" />
+                    </svg>
+                    <input
+                      id="confirm-password"
+                      type={showPassword ? 'text' : 'password'}
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      placeholder="Confirm your password"
+                      className="form-input"
+                      autoComplete="new-password"
+                    />
+                  </div>
+                </div>
+
+                {error && <div className="form-error">{error}</div>}
+
+                <button type="submit" className="btn btn-primary">
+                  Create Account
+                </button>
+              </form>
+            )}
 
             <div className="divider">
-              <span>Sign in with</span>
+              <span>{mode === 'signup' ? 'Create with' : 'Sign in with'}</span>
             </div>
 
             <div className="oauth-buttons">
@@ -280,17 +422,55 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
             </div>
 
             <div className="auth-footer">
-              <p>
-                Need a command registry?{' '}
-                <button
-                  type="button"
-                  onClick={onSignupClick}
-                  className="link-button"
-                >
-                  Create command ID
-                </button>
-              </p>
+              {mode === 'login' ? (
+                <p>
+                  Need an account?{' '}
+                  <button
+                    type="button"
+                    onClick={switchToSignup}
+                    className="link-button"
+                  >
+                    Create account
+                  </button>
+                </p>
+              ) : (
+                <p>
+                  Already have an account?{' '}
+                  <button
+                    type="button"
+                    onClick={switchToLogin}
+                    className="link-button"
+                  >
+                    Log in
+                  </button>
+                </p>
+              )}
             </div>
+
+            {accountNotFoundOpen && (
+              <div className="auth-dialog-backdrop" role="presentation">
+                <section
+                  className="auth-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="account-not-found-title"
+                >
+                  <p className="auth-dialog__eyebrow">Login failed</p>
+                  <h3 id="account-not-found-title">Account not found</h3>
+                  <p>
+                    Go back and check the account name, or create a new account while keeping your current details.
+                  </p>
+                  <div className="auth-dialog__actions">
+                    <button type="button" className="btn btn-secondary" onClick={switchToLogin}>
+                      Go back
+                    </button>
+                    <button type="button" className="btn btn-primary" onClick={switchToSignup}>
+                      Create account
+                    </button>
+                  </div>
+                </section>
+              </div>
+            )}
           </div>
         </aside>
       </section>
@@ -298,11 +478,11 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
       <section className="auth-info-band" aria-label="Frontier overview">
         <div className="auth-section-heading">
           <span>Command Briefing</span>
-          <h2>Everything below the login stays alive while you scroll.</h2>
+          <h2>A galaxy that never sleeps.</h2>
           <p>
-            The bridge access card remains pinned for fast entry while the
-            surrounding panels preview the kind of command information players
-            return to after login.
+            Once logged in you can join a game and create and start commanding your empire. 
+            From there you can access your empire, manage your fleets, and send orders to your colonies and starbases. 
+            The galaxy is always active, so log in often to check on your empire and strike when the time is right.
           </p>
         </div>
 
@@ -323,29 +503,29 @@ export default function LoginPage({ onLoginSubmit, onSignupClick }: LoginPagePro
       <section className="auth-info-band auth-info-band--systems" aria-label="Active systems">
         <div className="auth-section-heading">
           <span>Active Systems</span>
-          <h2>Frontier channels ready for command sync.</h2>
+          <h2>Game features awaiting your command.</h2>
         </div>
 
         <div className="system-preview-grid">
           <article className="system-preview">
-            <img src="/flag-previews/aurora-vanguard.webp" alt="" loading="lazy" width="96" height="96" />
-            <strong>Aurora Vanguard</strong>
-            <span>Border patrols forming near Cygnus Prime</span>
+            <img src="/textures/own_ship_icon.webp" alt="" loading="lazy" width="96" height="96" />
+            <strong>Fog of war</strong>
+            <span>Border patrols keep your territory secure and ready to stop foreign invasions</span>
           </article>
           <article className="system-preview">
             <img src="/flag-previews/onyx-beacon.webp" alt="" loading="lazy" width="96" height="96" />
-            <strong>Onyx Beacon</strong>
-            <span>Starbase crews requesting fresh assignments</span>
+            <strong>Defenses</strong>
+            <span>Upgrade and build up your starbases to withstand enemy attacks or economic powerhouses</span>
           </article>
           <article className="system-preview">
             <img src="/flag-previews/golden-trace.webp" alt="" loading="lazy" width="96" height="96" />
-            <strong>Golden Trace</strong>
-            <span>Trade convoys awaiting clearance</span>
+            <strong>Grow your planets</strong>
+            <span>Explore the galaxy and colonize planets to grow your empire into a galactic power.</span>
           </article>
           <article className="system-preview">
-            <img src="/textures/own_ship_icon.webp" alt="" loading="lazy" width="96" height="96" />
-            <strong>Fleet Uplink</strong>
-            <span>Command ship telemetry available after login</span>
+            <img src="/flag-previews/aurora-vanguard.webp" alt="" loading="lazy" width="96" height="96" />
+            <strong>Technology System</strong>
+            <span>Shape your empire with advanced and organic research to get an edge on the rest of the galaxy.</span>
           </article>
         </div>
       </section>

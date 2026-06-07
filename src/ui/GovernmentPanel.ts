@@ -62,7 +62,25 @@ export class GovernmentPanel {
   private expandedLawId: GovernmentLawId = "researchCharter";
   private pendingRefreshData: GovernmentPanelData | null = null;
   private pendingRefreshTimer: number | null = null;
+  private position = { x: 48, y: 68 };
+  private dragOffset = { x: 0, y: 0 };
+  private isDragging = false;
   private readonly interactionGate = new PanelInteractionGate();
+
+  private readonly onPointerMove = (ev: PointerEvent): void => {
+    if (!this.isDragging || !this.panelElement) return;
+    ev.preventDefault();
+    const rect = this.panelElement.getBoundingClientRect();
+    this.position.x = Math.max(8, Math.min(window.innerWidth - rect.width - 8, ev.clientX - this.dragOffset.x));
+    this.position.y = Math.max(8, Math.min(window.innerHeight - rect.height - 8, ev.clientY - this.dragOffset.y));
+    this.applyPosition();
+  };
+
+  private readonly onPointerUp = (): void => {
+    this.isDragging = false;
+    window.removeEventListener("pointermove", this.onPointerMove);
+    window.removeEventListener("pointerup", this.onPointerUp);
+  };
 
   constructor() {
     this.root = document.getElementById("spaceHudRoot") as HTMLDivElement;
@@ -83,7 +101,12 @@ export class GovernmentPanel {
       this.root.appendChild(this.panelElement);
     }
     this.interactionGate.bind(this.panelElement);
+    const accent = data.playerFactionId !== null
+      ? this.colorToCss(data.factions.find((faction) => faction.id === data.playerFactionId)?.color, 0.95)
+      : "rgba(74, 236, 214, 0.95)";
+    this.panelElement.style.setProperty("--government-accent", accent);
     this.panelElement.innerHTML = this.render(data);
+    this.applyPosition();
     this.bindEvents(data);
     restoreScrollStateSoon(this.panelElement, scrollState);
   }
@@ -91,7 +114,7 @@ export class GovernmentPanel {
   public refresh(data: GovernmentPanelData): void {
     if (!this.panelElement) return;
     this.currentData = data;
-    if (this.interactionGate.isBusy(this.panelElement)) {
+    if (this.shouldDeferRefresh()) {
       this.pendingRefreshData = data;
       this.schedulePendingRefresh();
       return;
@@ -101,6 +124,7 @@ export class GovernmentPanel {
 
   public close(): void {
     const onClose = this.currentData?.onClose;
+    this.onPointerUp();
     this.clearPendingRefresh();
     this.interactionGate.clear();
     this.panelElement?.remove();
@@ -118,7 +142,7 @@ export class GovernmentPanel {
     this.pendingRefreshTimer = window.setTimeout(() => {
       this.pendingRefreshTimer = null;
       if (!this.pendingRefreshData || !this.panelElement) return;
-      if (this.interactionGate.isBusy(this.panelElement)) {
+      if (this.shouldDeferRefresh()) {
         this.schedulePendingRefresh();
         return;
       }
@@ -139,6 +163,17 @@ export class GovernmentPanel {
   private bindEvents(data: GovernmentPanelData): void {
     if (!this.panelElement) return;
     this.panelElement.querySelector<HTMLButtonElement>("[data-government-close]")?.addEventListener("click", () => this.close());
+    this.panelElement.querySelector<HTMLElement>("[data-government-drag]")?.addEventListener("pointerdown", (ev) => {
+      if (!this.panelElement) return;
+      if ((ev.target as HTMLElement).closest("button")) return;
+      ev.preventDefault();
+      const rect = this.panelElement.getBoundingClientRect();
+      this.dragOffset.x = ev.clientX - rect.left;
+      this.dragOffset.y = ev.clientY - rect.top;
+      this.isDragging = true;
+      window.addEventListener("pointermove", this.onPointerMove);
+      window.addEventListener("pointerup", this.onPointerUp);
+    });
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-government-tab]").forEach((button) => {
       button.addEventListener("click", () => {
         const tab = button.dataset.governmentTab as GovernmentTab | undefined;
@@ -186,6 +221,21 @@ export class GovernmentPanel {
     });
   }
 
+  private shouldDeferRefresh(): boolean {
+    return this.isDragging || this.interactionGate.isBusy(this.panelElement);
+  }
+
+  private applyPosition(): void {
+    if (!this.panelElement) return;
+    const rect = this.panelElement.getBoundingClientRect();
+    const maxX = Math.max(8, window.innerWidth - rect.width - 8);
+    const maxY = Math.max(8, window.innerHeight - rect.height - 8);
+    this.position.x = Math.max(8, Math.min(maxX, this.position.x));
+    this.position.y = Math.max(8, Math.min(maxY, this.position.y));
+    this.panelElement.style.left = `${this.position.x}px`;
+    this.panelElement.style.top = `${this.position.y}px`;
+  }
+
   private render(data: GovernmentPanelData): string {
     const factionName = data.factionName ?? "No faction selected";
     const effects = this.getActiveEffectRows(data);
@@ -195,7 +245,7 @@ export class GovernmentPanel {
 
     return `
       <div class="governmentFrame">
-        <header class="governmentHeader">
+        <header class="governmentHeader" data-government-drag>
           <div class="governmentIdentity">
             <div class="governmentBadge">G</div>
             <div>
@@ -205,19 +255,21 @@ export class GovernmentPanel {
           </div>
           <button class="governmentClose" type="button" data-government-close aria-label="Close government panel">X</button>
         </header>
-        <section class="governmentSummary">
-          ${this.renderSummaryItem("Government Type", "Technocratic Republic", "GOV")}
-          ${this.renderSummaryItem("Governance Effectiveness", this.formatSignedPercent(adminEffect), "EFF", adminEffect)}
-          ${this.renderSummaryItem("Research Allocation", `${Math.round(allocation.active * 100)} / ${Math.round(allocation.passive * 100)}`, "RES")}
-          ${this.renderSummaryItem("Open Positions", String(openPositions), "POS", -openPositions)}
+        <section class="governmentBody">
+          <section class="governmentSummary">
+            ${this.renderSummaryItem("Government Type", "Technocratic Republic", "GOV")}
+            ${this.renderSummaryItem("Governance Effectiveness", this.formatSignedPercent(adminEffect), "EFF", adminEffect)}
+            ${this.renderSummaryItem("Research Allocation", `${Math.round(allocation.active * 100)} / ${Math.round(allocation.passive * 100)}`, "RES")}
+            ${this.renderSummaryItem("Open Positions", String(openPositions), "POS", -openPositions)}
+          </section>
+          <main class="governmentContent ${this.activeTab}">
+            ${this.activeTab === "leaders" ? this.renderLeadersTab(data, effects) : this.renderLawsTab(data, effects)}
+          </main>
         </section>
         <nav class="governmentTabs">
           ${this.renderTab("leaders", "Leaders")}
           ${this.renderTab("laws", "Laws")}
         </nav>
-        <main class="governmentContent ${this.activeTab}">
-          ${this.activeTab === "leaders" ? this.renderLeadersTab(data, effects) : this.renderLawsTab(data, effects)}
-        </main>
       </div>
     `;
   }
@@ -622,6 +674,14 @@ export class GovernmentPanel {
       .join("")
       .slice(0, 2)
       .toUpperCase();
+  }
+
+  private colorToCss(color: [number, number, number] | undefined, alpha: number): string {
+    if (!color) return `rgba(74, 236, 214, ${alpha})`;
+    const r = Math.round(Math.max(0, Math.min(1, color[0])) * 255);
+    const g = Math.round(Math.max(0, Math.min(1, color[1])) * 255);
+    const b = Math.round(Math.max(0, Math.min(1, color[2])) * 255);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   }
 
   private injectStyles(): void {
@@ -1267,6 +1327,581 @@ export class GovernmentPanel {
   .governmentLeaderGrid {
     grid-template-columns: minmax(0, 1fr);
     overflow: visible;
+  }
+
+  .governmentLawHeader {
+    grid-template-columns: 36px minmax(0, 1fr) 24px;
+  }
+
+  .governmentLawHeader em,
+  .governmentLawHeader small {
+    grid-column: 2;
+  }
+
+  .governmentLawOptions {
+    padding-left: 10px;
+  }
+
+  .governmentLawOption button {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  .governmentOptionEffects,
+  .governmentLawOption em {
+    grid-column: 2;
+    justify-self: stretch;
+    text-align: left;
+  }
+}
+
+.governmentPanel {
+  --government-accent: rgba(74, 236, 214, 0.95);
+  --government-panel-scale: 0.84;
+  left: 48px;
+  top: 68px;
+  width: min(1228px, calc(100vw - 32px));
+  height: min(676px, calc(100vh - 32px));
+  transform: scale(var(--government-panel-scale));
+  transform-origin: top left;
+  z-index: 61;
+  color: #e9fff9;
+  user-select: none;
+}
+
+.governmentPanel * {
+  box-sizing: border-box;
+  letter-spacing: 0;
+}
+
+.governmentFrame {
+  position: relative;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 66px minmax(0, 1fr) 52px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--government-accent) 76%, transparent);
+  background:
+    radial-gradient(circle at 24% 0%, color-mix(in srgb, var(--government-accent) 13%, transparent), transparent 17rem),
+    radial-gradient(circle at 82% 18%, rgba(240, 214, 93, 0.1), transparent 18rem),
+    linear-gradient(180deg, rgba(4, 27, 30, 0.98), rgba(1, 11, 14, 0.99));
+  box-shadow: 0 28px 82px rgba(0, 0, 0, 0.58), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.governmentFrame::before,
+.governmentFrame::after {
+  content: "";
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.governmentFrame::before {
+  inset: 0;
+  border: 1px solid rgba(62, 255, 226, 0.12);
+  clip-path: polygon(0 24px, 24px 0, 36% 0, 37% 6px, 64% 6px, 65% 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 0 100%);
+}
+
+.governmentFrame::after {
+  left: 14px;
+  right: 14px;
+  top: 62px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--government-accent) 76%, transparent), transparent);
+}
+
+.governmentHeader {
+  min-width: 0;
+  min-height: 0;
+  padding: 9px 14px 8px;
+  cursor: grab;
+  background:
+    radial-gradient(circle at 23% -20%, color-mix(in srgb, var(--government-accent) 20%, transparent), transparent 13rem),
+    linear-gradient(90deg, rgba(7, 52, 55, 0.9), rgba(4, 19, 24, 0.95));
+  border-bottom: 1px solid rgba(87, 250, 223, 0.27);
+}
+
+.governmentIdentity {
+  gap: 12px;
+}
+
+.governmentBadge,
+.governmentSummaryIcon,
+.governmentLawIcon {
+  border: 1px solid color-mix(in srgb, var(--government-accent) 54%, transparent);
+  background:
+    radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--government-accent) 18%, transparent), transparent 72%),
+    rgba(3, 32, 37, 0.86);
+  color: color-mix(in srgb, var(--government-accent) 82%, #ffffff 18%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03), 0 0 14px color-mix(in srgb, var(--government-accent) 13%, transparent);
+}
+
+.governmentBadge {
+  width: 39px;
+  height: 39px;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--government-accent) 86%, #ffffff 14%), #f0d65d);
+  color: #061413;
+  font-size: 15px;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--government-accent) 28%, transparent), inset 0 0 0 2px rgba(5, 25, 31, 0.36);
+}
+
+.governmentTitle {
+  color: #eafff8;
+  font-size: 22px;
+  font-weight: 950;
+  line-height: 1.1;
+}
+
+.governmentSubtitle {
+  margin-top: 3px;
+  color: rgba(204, 236, 229, 0.7);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.governmentClose {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(98, 255, 228, 0.56);
+  background: rgba(6, 43, 43, 0.72);
+  color: #bffff4;
+  font-weight: 900;
+}
+
+.governmentClose:hover {
+  color: #ffffff;
+  border-color: rgba(141, 255, 236, 0.9);
+  background: rgba(10, 65, 61, 0.84);
+}
+
+.governmentBody {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 76px minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px 12px 0;
+}
+
+.governmentSummary {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  border: 0;
+  background: transparent;
+}
+
+.governmentSummaryItem {
+  min-height: 68px;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 13px;
+  border: 1px solid rgba(70, 225, 211, 0.32);
+  background:
+    linear-gradient(90deg, rgba(6, 46, 48, 0.72), rgba(2, 20, 25, 0.82)),
+    linear-gradient(180deg, color-mix(in srgb, var(--government-accent) 4%, transparent), transparent);
+}
+
+.governmentSummaryItem + .governmentSummaryItem {
+  border-left: 1px solid rgba(70, 225, 211, 0.32);
+}
+
+.governmentSummaryIcon {
+  width: 38px;
+  height: 38px;
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.governmentSummaryItem small {
+  color: rgba(209, 236, 231, 0.72);
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.governmentSummaryItem strong {
+  color: #f4fffb;
+  font-size: 18px;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.governmentPanel .positive { color: #aaf86b !important; }
+.governmentPanel .negative { color: #ff7b70 !important; }
+.governmentPanel .neutral { color: #ffe04f !important; }
+
+.governmentTabs {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 0 0;
+}
+
+.governmentTab {
+  min-width: 0;
+  min-height: 0;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 1px solid rgba(76, 223, 197, 0.32);
+  background: rgba(3, 26, 29, 0.72);
+  color: rgba(205, 236, 230, 0.72);
+  font-size: 13px;
+  font-weight: 950;
+}
+
+.governmentTab span {
+  width: 28px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(70, 225, 211, 0.32);
+  color: color-mix(in srgb, var(--government-accent) 88%, #ffffff 12%);
+  background: rgba(4, 30, 34, 0.58);
+  font-size: 9px;
+}
+
+.governmentTab.active {
+  color: #eafff8;
+  border-color: color-mix(in srgb, var(--government-accent) 78%, transparent);
+  background:
+    radial-gradient(circle at 50% 100%, color-mix(in srgb, var(--government-accent) 24%, transparent), transparent 13rem),
+    rgba(7, 56, 55, 0.82);
+}
+
+.governmentTab.active span {
+  color: #061413;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--government-accent) 86%, #ffffff 14%), #f0d65d);
+}
+
+.governmentContent {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 318px;
+  gap: 8px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.governmentLeaderGrid,
+.governmentLawsList,
+.governmentSideStack {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--government-accent) 58%, transparent) rgba(0, 0, 0, 0.26);
+}
+
+.governmentLeaderGrid {
+  gap: 8px;
+}
+
+.governmentLeaderCard {
+  min-height: 216px;
+  grid-template-columns: 138px minmax(0, 1fr);
+  gap: 10px;
+  border: 1px solid rgba(70, 225, 211, 0.3);
+  background:
+    linear-gradient(90deg, rgba(6, 45, 47, 0.72), rgba(2, 20, 25, 0.9)),
+    repeating-linear-gradient(90deg, rgba(75, 255, 231, 0.04) 0 1px, transparent 1px 96px);
+  padding: 8px;
+}
+
+.governmentLeaderCard.filled {
+  border-color: color-mix(in srgb, var(--government-accent) 42%, transparent);
+}
+
+.governmentLeaderCard.empty {
+  border-style: dashed;
+  background: rgba(3, 23, 27, 0.58);
+}
+
+.governmentLeaderPortrait {
+  min-height: 190px;
+  border: 1px solid rgba(97, 255, 229, 0.46);
+  background:
+    radial-gradient(circle at 50% 23%, rgba(240, 255, 252, 0.2), transparent 26%),
+    linear-gradient(145deg, rgba(64, 118, 106, 0.9), rgba(17, 31, 35, 0.95));
+  background-size: cover;
+  background-position: center;
+}
+
+.governmentLeaderPortrait.military {
+  background:
+    radial-gradient(circle at 50% 23%, rgba(255, 230, 190, 0.22), transparent 26%),
+    linear-gradient(145deg, rgba(104, 83, 70, 0.95), rgba(22, 27, 34, 0.94));
+}
+
+.governmentLeaderPortrait span {
+  width: 52px;
+  height: 52px;
+  border: 1px solid rgba(210, 250, 255, 0.36);
+  color: rgba(238, 255, 250, 0.88);
+  font-size: 16px;
+}
+
+.governmentLeaderRole {
+  color: color-mix(in srgb, var(--government-accent) 88%, #ffffff 12%);
+  font-size: 10px;
+  font-weight: 950;
+}
+
+.governmentLeaderName {
+  color: #f0d65d;
+  font-size: 16px;
+  font-weight: 950;
+}
+
+.governmentLeaderMeta,
+.governmentLevelEffect,
+.governmentMiniEffects span,
+.governmentLawHeader small,
+.governmentLawHeader em,
+.governmentLawOption small {
+  color: rgba(205, 235, 229, 0.72);
+  font-size: 10px;
+}
+
+.governmentTrait {
+  border: 1px solid rgba(64, 233, 211, 0.24);
+  background: rgba(3, 23, 27, 0.72);
+  color: rgba(213, 242, 235, 0.74);
+  font-size: 9px;
+}
+
+.governmentTrait.active {
+  color: #ffe04f;
+  border-color: rgba(240, 214, 93, 0.58);
+  background: rgba(58, 45, 14, 0.48);
+}
+
+.governmentMiniEffects span {
+  border: 1px solid rgba(64, 233, 211, 0.2);
+  background: rgba(1, 14, 18, 0.58);
+}
+
+.governmentLeaderActions button {
+  min-height: 30px;
+  border: 1px solid rgba(76, 223, 197, 0.42);
+  background: rgba(6, 42, 38, 0.72);
+  color: #d8fff6;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.governmentLeaderActions button:hover,
+.governmentLawOption button:not(:disabled):hover {
+  border-color: rgba(104, 255, 231, 0.8);
+  background: rgba(7, 48, 48, 0.86);
+}
+
+.governmentLawsList {
+  gap: 6px;
+}
+
+.governmentLaw {
+  border: 1px solid rgba(70, 225, 211, 0.3);
+  background:
+    linear-gradient(180deg, rgba(4, 28, 32, 0.94), rgba(2, 14, 18, 0.96)),
+    repeating-linear-gradient(90deg, rgba(75, 255, 231, 0.04) 0 1px, transparent 1px 96px);
+}
+
+.governmentLaw.expanded {
+  border-color: color-mix(in srgb, var(--government-accent) 72%, transparent);
+  box-shadow: inset 0 0 20px color-mix(in srgb, var(--government-accent) 8%, transparent);
+}
+
+.governmentLawHeader {
+  min-height: 54px;
+  grid-template-columns: 40px minmax(190px, 0.7fr) minmax(150px, 0.55fr) minmax(0, 1fr) 24px;
+  gap: 10px;
+  padding: 7px 10px;
+  background: linear-gradient(90deg, rgba(6, 46, 48, 0.72), rgba(2, 20, 25, 0.86));
+}
+
+.governmentLawHeader strong {
+  color: #effefa;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.governmentLawHeader em {
+  color: color-mix(in srgb, var(--government-accent) 88%, #ffffff 12%);
+  font-weight: 900;
+}
+
+.governmentLawHeader i {
+  color: #eafff8;
+  font-size: 14px;
+}
+
+.governmentLawIcon {
+  width: 30px;
+  height: 30px;
+  font-size: 9px;
+}
+
+.governmentLawOptions {
+  gap: 6px;
+  padding: 8px 10px 10px 58px;
+}
+
+.governmentLawOption button {
+  min-height: 48px;
+  grid-template-columns: 24px minmax(170px, 1fr) minmax(220px, 1.25fr) 126px;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 1px solid rgba(70, 225, 211, 0.25);
+  background: rgba(1, 14, 18, 0.68);
+}
+
+.governmentLawOption.active button {
+  border-color: rgba(240, 214, 93, 0.82);
+  background:
+    radial-gradient(circle at 4% 50%, rgba(240, 214, 93, 0.1), transparent 9rem),
+    rgba(4, 31, 33, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(240, 214, 93, 0.16);
+}
+
+.governmentRadio {
+  border-color: color-mix(in srgb, var(--government-accent) 74%, transparent);
+}
+
+.governmentLawOption.active .governmentRadio {
+  border-color: rgba(240, 214, 93, 0.92);
+  box-shadow: inset 0 0 0 4px rgba(240, 214, 93, 0.9);
+}
+
+.governmentLawOptionMain strong {
+  color: #f2fffb;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.governmentOptionEffects i {
+  border: 1px solid rgba(70, 225, 211, 0.18);
+  background: rgba(4, 30, 34, 0.52);
+  font-size: 9px;
+}
+
+.governmentLawOption em {
+  color: color-mix(in srgb, var(--government-accent) 88%, #ffffff 12%);
+  font-weight: 900;
+}
+
+.governmentSideStack {
+  gap: 8px;
+}
+
+.governmentSidePanel {
+  border: 1px solid rgba(70, 225, 211, 0.3);
+  background:
+    linear-gradient(180deg, rgba(4, 28, 32, 0.94), rgba(2, 14, 18, 0.96)),
+    repeating-linear-gradient(90deg, rgba(75, 255, 231, 0.04) 0 1px, transparent 1px 96px);
+  padding: 10px;
+}
+
+.governmentSideTitle {
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  border-bottom: 1px solid rgba(70, 225, 211, 0.2);
+  color: #effefa;
+  font-size: 11px;
+  font-weight: 950;
+}
+
+.governmentSideTitle span {
+  min-height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(70, 225, 211, 0.28);
+  background: rgba(4, 30, 34, 0.58);
+  color: color-mix(in srgb, var(--government-accent) 88%, #ffffff 12%);
+  font-size: 9px;
+}
+
+.governmentSideTitle em {
+  color: #f0d65d;
+  font-weight: 950;
+}
+
+.governmentEffectRow span,
+.governmentComplianceRows span,
+.governmentSanctionGrid span,
+.governmentSynergyList span,
+.governmentPlaceholderList span {
+  color: rgba(205, 235, 229, 0.7);
+}
+
+.governmentSynergyList div,
+.governmentPlaceholderList div {
+  border: 1px solid rgba(70, 225, 211, 0.18);
+  background: rgba(4, 30, 34, 0.5);
+}
+
+.governmentSynergyList strong,
+.governmentPlaceholderList strong {
+  color: color-mix(in srgb, var(--government-accent) 88%, #ffffff 12%);
+  font-weight: 950;
+}
+
+.governmentComplianceBar i {
+  border: 1px solid rgba(70, 225, 211, 0.14);
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.governmentComplianceBar b {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--government-accent) 86%, #ffffff 14%), #aaf86b);
+}
+
+@media (max-width: 1040px) {
+  .governmentPanel {
+    --government-panel-scale: 0.76;
+  }
+}
+
+@media (max-width: 980px) {
+  .governmentPanel {
+    width: calc(100vw - 16px);
+    height: calc(100vh - 16px);
+  }
+
+  .governmentFrame {
+    grid-template-rows: 62px minmax(0, 1fr) 52px;
+  }
+
+  .governmentBody {
+    grid-template-rows: auto minmax(0, 1fr);
+    padding: 8px 8px 0;
+  }
+
+  .governmentSummary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .governmentSummaryItem + .governmentSummaryItem {
+    border-left: 0;
+  }
+
+  .governmentContent {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .governmentLeaderGrid,
+  .governmentSideStack {
+    overflow: visible;
+  }
+
+  .governmentLeaderCard {
+    grid-template-columns: 112px minmax(0, 1fr);
+  }
+
+  .governmentLeaderPortrait {
+    min-height: 164px;
   }
 
   .governmentLawHeader {

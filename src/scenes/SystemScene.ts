@@ -64,6 +64,8 @@ import { OrbitSystem } from "../systems/OrbitSystem";
 import type { GalaxyShipTransit, HyperlaneExitPoint, ShipAction } from "../game/GameplayTypes";
 import type {
   ClientCommand,
+  DiplomacyMovementPayload,
+  FleetMovementSegment,
   FleetOrbitTarget,
   ServerCombatContact,
   ServerFleet,
@@ -121,6 +123,7 @@ export interface SystemSceneOptions {
   starbases?: ServerStarbaseSummary[];
   factions?: FactionInfo[];
   starOwnership?: number[];
+  diplomacy?: DiplomacyMovementPayload;
   playerFactionId?: number;
   planetStates?: PlanetState[];
   leaders?: LeaderState[];
@@ -160,6 +163,7 @@ const TACTICAL_SHIP_TRAIL_MAX_SEGMENT_DISTANCE = 3.2;
 const TACTICAL_SHIP_TRAIL_RADIUS = 0.026;
 const TACTICAL_SHIP_TRAIL_START_ALPHA = 0.58;
 const TACTICAL_SHIP_TRAIL_MAX_SEGMENTS_PER_SHIP = 32;
+const SYSTEM_SHIP_DIRECT_FOLLOW_SNAP_DISTANCE = 9;
 const FLEET_VISUAL_STACK_KEY_SIZE = 0.18;
 const FLEET_VISUAL_SEPARATION_DISTANCE = 1.05;
 const SELECTED_FLEET_ROUTE_LINE_Y_OFFSET = 0.08;
@@ -205,6 +209,8 @@ export class SystemScene implements IGameScene {
   private starbases: ServerStarbaseSummary[];
   private factions: FactionInfo[];
   private starOwnership: number[];
+  private openBorderFactionIds = new Set<number>();
+  private warFactionIds = new Set<number>();
   private playerFactionId: number;
   private planetStates: PlanetState[];
   private leaders: LeaderState[];
@@ -367,6 +373,7 @@ export class SystemScene implements IGameScene {
       this.starOwnership[this.star.id] = initialStarOwnerId ?? -1;
     }
     this.playerFactionId = options.playerFactionId ?? 0;
+    this.applyDiplomacyMovement(options.diplomacy);
     this.planetStates = this.systemStore?.getPlanetStates() ?? options.planetStates ?? [];
     this.leaders = this.systemStore?.getLeaders() ?? options.leaders ?? [];
     applyPlanetStatesToStars([this.star], this.planetStates);
@@ -738,15 +745,24 @@ export class SystemScene implements IGameScene {
 
     if (this.playerShipRoot) {
       const previousShipPosition = this.playerShipRoot.position.clone();
-      const t = Math.min(1, dt * 4.5);
-      this.playerShipBasePosition.x = this.playerShipBasePosition.x + (this.playerShipTargetPosition.x - this.playerShipBasePosition.x) * t;
-      this.playerShipBasePosition.y = this.playerShipBasePosition.y + (this.playerShipTargetPosition.y - this.playerShipBasePosition.y) * t;
-      this.playerShipBasePosition.z = this.playerShipBasePosition.z + (this.playerShipTargetPosition.z - this.playerShipBasePosition.z) * t;
+      const playerFleet = this.playerShipFleetId
+        ? this.serverFleets.find((fleet) => fleet.id === this.playerShipFleetId)
+        : null;
+      const directFollow = !!playerFleet && this.shouldDirectFollowFleet(playerFleet);
+      const distanceToTarget = Vector3.Distance(this.playerShipBasePosition, this.playerShipTargetPosition);
+      if (directFollow || distanceToTarget > SYSTEM_SHIP_DIRECT_FOLLOW_SNAP_DISTANCE) {
+        this.playerShipBasePosition.copyFrom(this.playerShipTargetPosition);
+      } else {
+        const t = Math.min(1, dt * 4.5);
+        this.playerShipBasePosition.x = this.playerShipBasePosition.x + (this.playerShipTargetPosition.x - this.playerShipBasePosition.x) * t;
+        this.playerShipBasePosition.y = this.playerShipBasePosition.y + (this.playerShipTargetPosition.y - this.playerShipBasePosition.y) * t;
+        this.playerShipBasePosition.z = this.playerShipBasePosition.z + (this.playerShipTargetPosition.z - this.playerShipBasePosition.z) * t;
+      }
       this.playerShipRoot.position.x = this.playerShipBasePosition.x;
       this.playerShipRoot.position.y =
         this.playerShipBasePosition.y + Math.sin(this.elapsed * 1.15) * 0.32;
       this.playerShipRoot.position.z = this.playerShipBasePosition.z;
-      this.updatePlayerShipHeading(dt);
+      this.updatePlayerShipHeading(previousShipPosition, this.playerShipRoot.position, dt);
       this.updatePlayerShipTrail(dt, previousShipPosition, this.playerShipRoot.position);
     }
     this.updateSelectedFleetRouteLine();
@@ -758,9 +774,16 @@ export class SystemScene implements IGameScene {
         const target = this.shipVisualTargets.get(shipId);
         if (!target) continue;
         const previousPosition = root.position.clone();
-        root.position.x = root.position.x + (target.x - root.position.x) * moveT;
-        root.position.y = root.position.y + (target.y - root.position.y) * moveT;
-        root.position.z = root.position.z + (target.z - root.position.z) * moveT;
+        const fleet = this.getFleetForShipVisual(root);
+        const directFollow = fleet ? this.shouldDirectFollowFleet(fleet) : false;
+        const distanceToTarget = Vector3.Distance(root.position, target);
+        if (directFollow || distanceToTarget > SYSTEM_SHIP_DIRECT_FOLLOW_SNAP_DISTANCE) {
+          root.position.copyFrom(target);
+        } else {
+          root.position.x = root.position.x + (target.x - root.position.x) * moveT;
+          root.position.y = root.position.y + (target.y - root.position.y) * moveT;
+          root.position.z = root.position.z + (target.z - root.position.z) * moveT;
+        }
         this.updateShipVisualHeading(root, previousPosition, root.position, dt);
         this.updateShipVisualTrail(shipId, dt, previousPosition, root.position);
       }
@@ -811,11 +834,11 @@ export class SystemScene implements IGameScene {
     this.updateRenderDebugOverlay();
   }
 
-  private updatePlayerShipHeading(deltaTime: number): void {
+  private updatePlayerShipHeading(previousPosition: Vector3, currentPosition: Vector3, deltaTime: number): void {
     if (!this.playerShipRoot) return;
-    const dx = this.playerShipTargetPosition.x - this.playerShipBasePosition.x;
-    const dz = this.playerShipTargetPosition.z - this.playerShipBasePosition.z;
-    if (Math.hypot(dx, dz) < 0.02) return;
+    const dx = currentPosition.x - previousPosition.x;
+    const dz = currentPosition.z - previousPosition.z;
+    if (Math.hypot(dx, dz) < 0.0008) return;
 
     const modelDef = SHIP_MODEL_DEFINITIONS[this.playerShipKind];
     const pitch = typeof modelDef.modelPitch === "number" ? modelDef.modelPitch : PLAYER_SHIP_MODEL_PITCH;
@@ -831,6 +854,28 @@ export class SystemScene implements IGameScene {
       currentYaw + yawDelta * turn,
       roll,
     );
+  }
+
+  private getFleetForShipVisual(root: TransformNode): ServerFleet | null {
+    const metadata = root.metadata as { fleetId?: string | null } | null;
+    const fleetId = metadata?.fleetId ?? null;
+    return fleetId ? this.serverFleets.find((fleet) => fleet.id === fleetId) ?? null : null;
+  }
+
+  private shouldDirectFollowFleet(fleet: ServerFleet): boolean {
+    if (fleet.orbitTargetPlanetId && !fleet.movementPlan) return true;
+    return this.getActiveLocalMovementSegment(fleet) !== null;
+  }
+
+  private getActiveLocalMovementSegment(fleet: ServerFleet): FleetMovementSegment | null {
+    const segment = fleet.movementPlan?.segments.find((candidate) => (
+      this.clockYear >= candidate.startYear
+      && this.clockYear < candidate.endYear
+      && candidate.kind !== "hyperlane"
+      && candidate.fromStarId === this.star.id
+      && candidate.toStarId === this.star.id
+    ));
+    return segment ?? null;
   }
 
   private updatePlayerShipTrail(deltaTime: number, previousPosition: Vector3, currentPosition: Vector3): void {
@@ -1345,6 +1390,7 @@ export class SystemScene implements IGameScene {
       candidate.id !== fleet.id
       && candidate.currentStarId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     ));
     if (hostileFleet) {
       this.options.onFleetCommand?.({
@@ -1358,6 +1404,7 @@ export class SystemScene implements IGameScene {
     const hostileStarbase = this.starbases.find((candidate) => (
       candidate.starId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     ));
     if (hostileStarbase) {
       this.options.onFleetCommand?.({
@@ -1376,10 +1423,19 @@ export class SystemScene implements IGameScene {
       candidate.id !== fleet.id
       && candidate.currentStarId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     )) || this.starbases.some((candidate) => (
       candidate.starId === fleet.currentStarId
       && candidate.ownerId !== fleet.ownerId
+      && this.warFactionIds.has(candidate.ownerId)
     ));
+  }
+
+  private canPlayerEnterStar(starId: number): boolean {
+    const owner = this.starOwnership[starId] ?? -1;
+    if (owner < 0 || owner === this.playerFactionId) return true;
+    if (this.warFactionIds.has(owner)) return true;
+    return this.openBorderFactionIds.has(owner);
   }
 
   private rebuildSystemActionTargetMarkers(): void {
@@ -1453,6 +1509,7 @@ export class SystemScene implements IGameScene {
     }
 
     for (const exit of this.hyperlaneExits) {
+      if (!this.canPlayerEnterStar(exit.starId)) continue;
       const markerPosition = exit.systemPosition ?? getHyperlaneExitSystemPosition(exit);
       const destinationPosition = getHyperlaneExitSystemPosition({ dx: -exit.dx, dz: -exit.dz });
       targets.push({
@@ -1512,12 +1569,26 @@ export class SystemScene implements IGameScene {
   private pickSystemActionTarget(ev: PointerEvent): SystemActionTarget | null {
     if (!this.actionTargetRenderer?.hasTargets) return null;
     const pick = this.inputController?.pick(ev, (mesh) => this.actionTargetRenderer?.hasMesh(mesh) === true);
-    if (!pick?.hit || !pick.pickedMesh) return null;
-    return this.actionTargetRenderer.getTargetForMesh(pick.pickedMesh as Mesh);
+    if (pick?.hit && pick.pickedMesh) {
+      const meshTarget = this.actionTargetRenderer.getTargetForMesh(pick.pickedMesh as Mesh);
+      if (meshTarget) return meshTarget;
+    }
+
+    const hit = this.getRawPointerSystemPlanePosition(ev);
+    if (!hit) return null;
+    return this.actionTargetRenderer.findTargetNearPosition(
+      hit,
+      (target) => this.getSystemActionMarkerRadius(target),
+      { radiusScale: 1.85, minimumRadius: 4.2 },
+    );
+  }
+
+  private getRawPointerSystemPlanePosition(ev: PointerEvent): Vector3 | null {
+    return this.inputController?.getSystemPlanePosition(ev, SYSTEM_FLEET_Y) ?? null;
   }
 
   private getPointerSystemPlanePosition(ev: PointerEvent): SystemPosition | null {
-    const hit = this.inputController?.getSystemPlanePosition(ev, 0);
+    const hit = this.getRawPointerSystemPlanePosition(ev);
     if (!hit) return null;
     const distance = Math.hypot(hit.x, hit.z);
     const scale = distance > SYSTEM_ACTION_MARKER_MAX_EMPTY_MOVE_RADIUS
@@ -1595,6 +1666,7 @@ export class SystemScene implements IGameScene {
   private updateSystemLabelOverlay(): void {
     if (!this.labelOverlay) return;
     this.labelOverlay.setVisible(this.labelsVisible);
+    this.labelOverlay.setInteractive(this.activeFleetAction === null);
     if (!this.labelsVisible) return;
     const items = this.createSystemLabelOverlayItems();
     this.labelOverlay.setItems(items);
@@ -3088,8 +3160,38 @@ export class SystemScene implements IGameScene {
       Array.from(shipKinds, (shipKind) => this.ensureTacticalShipTemplate(shipKind)),
     ).then(() => {
       if (refreshVersion !== this.shipVisualRefreshVersion) return;
+
+      const latestVisibleFleetViews = this.getVisibleFleetViews();
+      const latestLiveServerShipIds = new Set(this.serverShips.map((ship) => ship.id));
+      const latestServerShipById = new Map(this.serverShips.map((ship) => [ship.id, ship]));
+      const latestFleetViewByShipId = new Map<string, TacticalFleetView>();
+      for (const fleet of latestVisibleFleetViews) {
+        for (const shipId of fleet.shipIds) {
+          if (latestLiveServerShipIds.has(shipId)) {
+            latestFleetViewByShipId.set(shipId, fleet);
+          }
+        }
+      }
+      const latestShipIds = new Set(latestFleetViewByShipId.keys());
+      this.refreshFleetMarkers(latestVisibleFleetViews);
+      this.refreshStarbaseCombatRangeRing();
+
+      if (latestShipIds.size === 0) {
+        for (const [, root] of this.shipVisualRoots) {
+          root.dispose();
+        }
+        this.shipVisualRoots.clear();
+        this.shipVisualTargets.clear();
+        this.disposeAllShipVisualTrails();
+        this.refreshFleetMarkers([]);
+        if (this.playerShipRoot) {
+          this.playerShipRoot.setEnabled(this.starsVisible);
+        }
+        return;
+      }
+
       for (const [shipId, root] of Array.from(this.shipVisualRoots.entries())) {
-        if (!shipIds.has(shipId)) {
+        if (!latestShipIds.has(shipId)) {
           root.dispose();
           this.shipVisualRoots.delete(shipId);
           this.shipVisualTargets.delete(shipId);
@@ -3097,8 +3199,8 @@ export class SystemScene implements IGameScene {
         }
       }
 
-      for (const [shipId, fleet] of fleetViewByShipId) {
-        const ship = serverShipById.get(shipId);
+      for (const [shipId, fleet] of latestFleetViewByShipId) {
+        const ship = latestServerShipById.get(shipId);
         const shipKind = ship?.shipKind ?? "corvette";
         let existingRoot = this.shipVisualRoots.get(shipId);
         const existingKind = (existingRoot?.metadata as { shipKind?: StarbaseShipKind } | null)?.shipKind;
@@ -4038,6 +4140,21 @@ export class SystemScene implements IGameScene {
 
   setStarOwnerships(ownerByStar: number[]): void {
     this.starOwnership = ownerByStar;
+    if (this.activeFleetAction) {
+      this.rebuildSystemActionTargetMarkers();
+    }
+  }
+
+  setDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
+    this.applyDiplomacyMovement(diplomacy);
+    if (this.activeFleetAction) {
+      this.rebuildSystemActionTargetMarkers();
+    }
+  }
+
+  private applyDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
+    this.openBorderFactionIds = new Set(diplomacy?.openBorderFactionIds ?? []);
+    this.warFactionIds = new Set(diplomacy?.warFactionIds ?? []);
   }
 
   private syncStarbasePresence(): void {
