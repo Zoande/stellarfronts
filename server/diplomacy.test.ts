@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DIPLOMACY_CHAT_LIMIT_PER_PAIR,
+  MIGRATION_PACT_ARTICLE_ID,
   TRADE_PRIVILEGE_ARTICLE_ID,
   TREATY_DEFAULT_YEARS,
   TREATY_MAX_YEARS,
@@ -108,4 +109,31 @@ test("trade privilege partners are removed while the treaty is suspended by war"
   });
 
   assert.deepEqual(getActiveTreatyPartnersForArticle(base, 1, TRADE_PRIVILEGE_ARTICLE_ID), []);
+});
+
+test("migration pact normalizes as an active treaty article and suspends during war", () => {
+  const base: DiplomacyState = normalizeDiplomacyState({
+    treaties: [{
+      id: "treaty-1",
+      factionIds: [1, 2],
+      articleIds: [MIGRATION_PACT_ARTICLE_ID],
+      proposedByFactionId: 1,
+      acceptedByFactionId: 2,
+      startedAtYear: 2400,
+      minimumEndYear: 2410,
+    }],
+  }, [1, 2]).state;
+
+  assert.deepEqual(getActiveTreatyPartnersForArticle(base, 1, MIGRATION_PACT_ARTICLE_ID), [2]);
+
+  base.wars.push({
+    id: "war-1",
+    attackerFactionId: 2,
+    defenderFactionId: 1,
+    startedAtYear: 2401,
+    endedAtYear: null,
+    preWarOwnership: [],
+  });
+
+  assert.deepEqual(getActiveTreatyPartnersForArticle(base, 1, MIGRATION_PACT_ARTICLE_ID), []);
 });

@@ -310,6 +310,8 @@ export interface DiplomacyCountrySummary {
   pendingProposalCount: number;
   tradePrivilegeActive: boolean;
   tradePrivilegeSuspended: boolean;
+  migrationPactActive: boolean;
+  migrationPactSuspended: boolean;
 }
 
 export interface DiplomacyEligiblePeaceTransferSystem extends DiplomacySystemTransferTerm {
@@ -584,6 +586,14 @@ export interface BuildPlanetBuildingCommand {
   subDistrictIndex?: number;
 }
 
+export interface UpgradePlanetBuildingCommand {
+  type: "upgradePlanetBuilding";
+  planetId: string;
+  area: BuildingSlotArea;
+  slotIndex: number;
+  subDistrictIndex?: number;
+}
+
 export interface SetUrbanSubDistrictCommand {
   type: "setUrbanSubDistrict";
   planetId: string;
@@ -827,6 +837,7 @@ export type ClientCommand =
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
+  | UpgradePlanetBuildingCommand
   | CancelPlanetConstructionCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand

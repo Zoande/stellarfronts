@@ -617,6 +617,8 @@ export class TechnologyPanel {
     switch (effect.type) {
       case "unlock_building":
         return `Unlock building: ${BUILDING_LABELS[effect.building] ?? effect.building}`;
+      case "unlock_building_level":
+        return `Unlock building upgrade: ${BUILDING_LABELS[effect.building] ?? effect.building} level ${effect.level}`;
       case "unlock_starbase_building":
         return `Unlock starbase building: ${STARBASE_BUILDING_DEFINITIONS[effect.building]?.label ?? effect.building}`;
       case "unlock_ship_hull":

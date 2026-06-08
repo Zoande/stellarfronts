@@ -7,6 +7,7 @@ import {
   TREATY_DEFAULT_YEARS,
   TREATY_MAX_YEARS,
   TREATY_MIN_YEARS,
+  MIGRATION_PACT_ARTICLE_ID,
   TRADE_PRIVILEGE_ARTICLE_ID,
 } from "../data/Diplomacy";
 import type { BorderPolicy, DiplomacyProposal, DiplomacyTreaty, DiplomacyWar, PeaceMode } from "../data/Diplomacy";
@@ -160,6 +161,8 @@ export class DiplomacyPanel {
         <span class="diplomacyCountryBadges">
           <em class="${this.escapeAttribute(this.getAttitudeClass(attitude))}">${this.escapeHtml(attitude)}</em>
           ${country.tradePrivilegeSuspended ? '<em class="warn">Suspended</em>' : ""}
+          ${country.migrationPactActive ? '<em class="friendly">Migration</em>' : ""}
+          ${country.migrationPactSuspended ? '<em class="warn">Migration paused</em>' : ""}
           ${country.pendingProposalCount > 0 ? `<em>${country.pendingProposalCount}</em>` : ""}
         </span>
       </button>
@@ -172,6 +175,10 @@ export class DiplomacyPanel {
       ? "Trade suspended by war"
       : country.tradePrivilegeActive
         ? "Trade privilege active"
+        : country.migrationPactSuspended
+          ? "Migration pact suspended by war"
+          : country.migrationPactActive
+            ? "Migration pact active"
         : country.activeTreatyCount > 0
           ? `${country.activeTreatyCount} active treaty${country.activeTreatyCount === 1 ? "" : "ies"}`
           : "No active pact";
@@ -293,6 +300,15 @@ export class DiplomacyPanel {
         <article class="diplomacyCommandCard">
           <span class="diplomacyCardIcon diplomacyIcon-treaty" aria-hidden="true"></span>
           <div class="diplomacyCardBody">
+            <div class="diplomacyCardEyebrow">Migration Pact</div>
+            <strong>${country.migrationPactActive ? "Active" : country.migrationPactSuspended ? "Suspended" : "None"}</strong>
+            <p>${country.migrationPactSuspended ? "Migration pact is suspended by war." : country.migrationPactActive ? "Civilian migration is strongly encouraged between both empires." : "No migration pact."}</p>
+            <button type="button" data-diplomacy-tab="treaties" ${country.isSelf ? "disabled" : ""}>Treaty Desk</button>
+          </div>
+        </article>
+        <article class="diplomacyCommandCard">
+          <span class="diplomacyCardIcon diplomacyIcon-treaty" aria-hidden="true"></span>
+          <div class="diplomacyCardBody">
             <div class="diplomacyCardEyebrow">Treaties</div>
             <strong>${country.activeTreatyCount}</strong>
             <p>${proposals.length > 0 ? `${proposals.length} proposal${proposals.length === 1 ? "" : "s"} pending.` : "No pending proposal."}</p>
@@ -369,32 +385,35 @@ export class DiplomacyPanel {
   private renderTreatyProposal(data: DiplomacyPanelData, country: DiplomacyCountrySummary, treaties: DiplomacyTreaty[]): string {
     const tradeTreaty = treaties.find((treaty) => treaty.articleIds.includes(TRADE_PRIVILEGE_ARTICLE_ID));
     const tradeArticle = data.treatyArticles.find((article) => article.id === TRADE_PRIVILEGE_ARTICLE_ID);
-    const disabled = !data.onDiplomacyCommand || country.isSelf || !tradeArticle;
-    const articleName = tradeArticle?.name ?? "Trade Privilege";
-    const articleSummary = tradeArticle?.summary ?? "Share internal market supply and demand.";
-    const articleDescription = tradeArticle?.description ?? "Both countries include partner production and consumption in internal market quotes.";
+    const migrationTreaty = treaties.find((treaty) => treaty.articleIds.includes(MIGRATION_PACT_ARTICLE_ID));
+    const migrationArticle = data.treatyArticles.find((article) => article.id === MIGRATION_PACT_ARTICLE_ID);
+    const disabled = !data.onDiplomacyCommand || country.isSelf || (!tradeArticle && !migrationArticle);
     return `
       <form class="diplomacyTreatyCard diplomacyTreatyComposer" data-diplomacy-treaty-form>
         <div class="diplomacyCardHeader">
           <strong>Send Treaty</strong>
-          <span>${tradeTreaty ? "Renegotiation" : "New Proposal"}</span>
+          <span>${tradeTreaty || migrationTreaty ? "Renegotiation" : "New Proposal"}</span>
         </div>
-        <p>${this.escapeHtml(articleDescription)} ${tradeArticle?.suspendOnWar ? "Suspends while at war." : ""}</p>
+        <p>Choose bilateral terms. Treaty articles suspend while both countries are at war.</p>
         <div class="diplomacyTermGrid">
-          <label class="diplomacyTermCard">
-            <input type="checkbox" name="tradePrivilege" data-diplomacy-trade-term checked ${disabled ? "disabled" : ""}>
-            <span>
-              <strong>Our Terms</strong>
-              <small>${this.escapeHtml(articleName)} granted to ${this.escapeHtml(country.faction.name)}</small>
-            </span>
-          </label>
-          <label class="diplomacyTermCard">
-            <input type="checkbox" checked disabled>
-            <span>
-              <strong>Their Terms</strong>
-              <small>${this.escapeHtml(articleSummary)}</small>
-            </span>
-          </label>
+          ${tradeArticle ? `
+            <label class="diplomacyTermCard">
+              <input type="checkbox" name="tradePrivilege" data-diplomacy-treaty-term="${TRADE_PRIVILEGE_ARTICLE_ID}" checked ${disabled ? "disabled" : ""}>
+              <span>
+                <strong>${this.escapeHtml(tradeArticle.name)}</strong>
+                <small>${this.escapeHtml(tradeArticle.summary)}</small>
+              </span>
+            </label>
+          ` : ""}
+          ${migrationArticle ? `
+            <label class="diplomacyTermCard">
+              <input type="checkbox" name="migrationPact" data-diplomacy-treaty-term="${MIGRATION_PACT_ARTICLE_ID}" ${migrationTreaty ? "checked" : ""} ${disabled ? "disabled" : ""}>
+              <span>
+                <strong>${this.escapeHtml(migrationArticle.name)}</strong>
+                <small>${this.escapeHtml(migrationArticle.summary)}</small>
+              </span>
+            </label>
+          ` : ""}
         </div>
         <div class="diplomacyTreatySubmitRow">
           <label>
@@ -402,7 +421,7 @@ export class DiplomacyPanel {
             <input type="number" min="${TREATY_MIN_YEARS}" max="${TREATY_MAX_YEARS}" value="${this.treatyYears}" data-diplomacy-treaty-years ${disabled ? "disabled" : ""}>
           </label>
           <button type="submit" data-diplomacy-propose-trade data-disabled="${disabled ? "true" : "false"}" ${disabled ? "disabled" : ""}>
-            ${tradeTreaty ? "Send Renegotiation" : "Send Treaty"}
+            ${tradeTreaty || migrationTreaty ? "Send Renegotiation" : "Send Treaty"}
           </button>
         </div>
       </form>
@@ -427,7 +446,7 @@ export class DiplomacyPanel {
     const other = data.countries.find((country) => country.faction.id === otherId)?.faction;
     const label = proposal.kind === "peace"
       ? `${proposal.peaceTerms?.mode === "whitePeace" ? "White peace" : "Status quo"} peace`
-      : "Trade privilege treaty";
+      : `${proposal.articleIds.map((articleId) => this.articleName(articleId)).join(", ")} treaty`;
     return `
       <div class="diplomacyProposal">
         <span>
@@ -630,25 +649,31 @@ export class DiplomacyPanel {
       this.peaceMode = (ev.currentTarget as HTMLSelectElement).value === "whitePeace" ? "whitePeace" : "statusQuo";
     });
     const treatyForm = this.panelElement?.querySelector<HTMLFormElement>("[data-diplomacy-treaty-form]");
-    const treatyTerm = treatyForm?.querySelector<HTMLInputElement>("[data-diplomacy-trade-term]");
+    const treatyTerms = Array.from(treatyForm?.querySelectorAll<HTMLInputElement>("[data-diplomacy-treaty-term]") ?? []);
     const treatySend = treatyForm?.querySelector<HTMLButtonElement>("[data-diplomacy-propose-trade]");
     const syncTreatySendState = (): void => {
       if (!treatySend) return;
-      treatySend.disabled = treatySend.dataset.disabled === "true" || treatyTerm?.checked !== true;
+      treatySend.disabled = treatySend.dataset.disabled === "true" || !treatyTerms.some((term) => term.checked);
     };
-    treatyTerm?.addEventListener("change", syncTreatySendState);
+    treatyTerms.forEach((term) => term.addEventListener("change", syncTreatySendState));
     syncTreatySendState();
     treatyForm?.addEventListener("submit", (ev) => {
       ev.preventDefault();
       const target = this.getSelectedCountry(data);
-      if (!target || treatyTerm?.checked !== true) return;
+      const articleIds = treatyTerms
+        .filter((term) => term.checked)
+        .map((term) => term.dataset.diplomacyTreatyTerm)
+        .filter((articleId): articleId is typeof TRADE_PRIVILEGE_ARTICLE_ID | typeof MIGRATION_PACT_ARTICLE_ID => (
+          articleId === TRADE_PRIVILEGE_ARTICLE_ID || articleId === MIGRATION_PACT_ARTICLE_ID
+        ));
+      if (!target || articleIds.length === 0) return;
       const durationInput = treatyForm.querySelector<HTMLInputElement>("[data-diplomacy-treaty-years]");
       this.treatyYears = this.clampYears(durationInput?.value ?? this.treatyYears);
-      const existing = this.getTreatiesWith(data, target.faction.id).find((treaty) => treaty.articleIds.includes(TRADE_PRIVILEGE_ARTICLE_ID));
+      const existing = this.getTreatiesWith(data, target.faction.id)[0];
       data.onDiplomacyCommand?.({
         type: "proposeTreaty",
         targetFactionId: target.faction.id,
-        articleIds: [TRADE_PRIVILEGE_ARTICLE_ID],
+        articleIds,
         durationYears: this.treatyYears,
         replacesTreatyId: existing?.id ?? null,
       });
@@ -801,6 +826,7 @@ export class DiplomacyPanel {
     if (country.isSelf) return "Our country";
     if (country.atWar) return "Active war";
     if (country.tradePrivilegeActive) return "Trade privilege";
+    if (country.migrationPactActive) return "Migration pact";
     if (country.pendingProposalCount > 0) return "Proposal pending";
     return "No active pact";
   }
@@ -808,8 +834,8 @@ export class DiplomacyPanel {
   private getCountryAttitude(country: DiplomacyCountrySummary): string {
     if (country.isSelf) return "Command";
     if (country.atWar) return "Hostile";
-    if (country.tradePrivilegeActive && country.ourBorderPolicy === "open" && country.theirBorderPolicy === "open") return "Friendly";
-    if (country.tradePrivilegeActive || country.theirBorderPolicy === "open") return "Cooperative";
+    if ((country.tradePrivilegeActive || country.migrationPactActive) && country.ourBorderPolicy === "open" && country.theirBorderPolicy === "open") return "Friendly";
+    if (country.tradePrivilegeActive || country.migrationPactActive || country.theirBorderPolicy === "open") return "Cooperative";
     if (country.pendingProposalCount > 0) return "Cautious";
     return "Neutral";
   }
@@ -835,6 +861,7 @@ export class DiplomacyPanel {
     if (country.atWar) return 1;
     let score = 3;
     if (country.tradePrivilegeActive) score += 2;
+    if (country.migrationPactActive) score += 2;
     if (country.ourBorderPolicy === "open") score += 1;
     if (country.theirBorderPolicy === "open") score += 1;
     if (country.pendingProposalCount > 0) score -= 1;
@@ -843,6 +870,7 @@ export class DiplomacyPanel {
 
   private articleName(articleId: string): string {
     if (articleId === TRADE_PRIVILEGE_ARTICLE_ID) return "Trade Privilege";
+    if (articleId === MIGRATION_PACT_ARTICLE_ID) return "Migration Pact";
     return articleId;
   }
 

@@ -34,15 +34,18 @@ import {
   addResourceCounts,
   applyPopulationGrowthFraction,
   BUILDING_KINDS,
-  BUILDING_MINERAL_COSTS,
+  calculatePlanetCapacity,
   cloneResourceCounts,
   createBuildingConstructionQueueItem,
+  createBuildingUpgradeConstructionQueueItem,
   createDistrictConstructionQueueItem,
   createEmptyResourceCounts,
   createInitialFactionEconomyState,
-  DISTRICT_MINERAL_COSTS,
   filterInvalidQueuedBuildingsForSubDistrictChange,
   getEffectiveSpeciesHabitability,
+  getBuildingUpgradeTargetLevel,
+  getPlanetBuildingKind,
+  getPlanetBuildingLevel,
   getQueuedDistrictCount,
   hasQueuedBuildingTarget,
   isBuildingCompatible,
@@ -109,10 +112,12 @@ import type {
   DistrictKind,
   FactionEconomyState,
   PlanetState,
+  PlanetBuildingSlot,
   PlanetModifier,
   PlanetEconomySpeciesContext,
   ResourceKind,
   ResourceCounts,
+  SpeciesPopulation,
   UrbanSubDistrictKind,
 } from "../src/data/Economy";
 import {
@@ -223,6 +228,7 @@ import {
   getMissingPrerequisites,
   getPassiveProgressCap,
   getRequiredTechIdsForBuilding,
+  getRequiredTechIdsForBuildingLevel,
   getRequiredTechIdsForShipHull,
   getRequiredTechIdsForShipModule,
   getRequiredTechIdsForShipSection,
@@ -272,6 +278,7 @@ import type {
 import {
   TREATY_ARTICLE_DEFINITIONS,
   TRADE_PRIVILEGE_ARTICLE_ID,
+  MIGRATION_PACT_ARTICLE_ID,
   areFactionsAtWar,
   clampTreatyDurationYears,
   createInitialDiplomacyState,
@@ -346,6 +353,13 @@ const FLEET_RETREAT_THRESHOLDS: Record<FleetRetreatPolicy, number> = {
   medium: 0.5,
   high: 0.75,
 };
+const MIGRATION_BASE_WEEKLY_RATE = 0.00018;
+const MIGRATION_PRESSURE_WEEKLY_RATE = 0.0034;
+const MIGRATION_FOREIGN_BASE_MULTIPLIER = 0.045;
+const MIGRATION_PACT_MULTIPLIER = 0.58;
+const MIGRATION_MIN_SOURCE_POPULATION = 50_000_000;
+const MIGRATION_MIN_FLOW_POPULATION = 10_000;
+const MIGRATION_DESTINATION_CAPACITY_BUFFER = 1.02;
 
 interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
@@ -1106,8 +1120,11 @@ function getFactionTechnology(nextState: GameState, factionId: number): FactionT
   return nextState.factionTechnologies.find((techState) => techState.factionId === factionId);
 }
 
-function addInferredTechIdsFromBuilding(techIds: Set<TechId>, buildingKind: BuildingKind): void {
+function addInferredTechIdsFromBuilding(techIds: Set<TechId>, buildingKind: BuildingKind, level = 1): void {
   for (const techId of getRequiredTechIdsForBuilding(buildingKind)) techIds.add(techId);
+  for (let buildingLevel = 2; buildingLevel <= level; buildingLevel += 1) {
+    for (const techId of getRequiredTechIdsForBuildingLevel(buildingKind, buildingLevel)) techIds.add(techId);
+  }
 }
 
 function addInferredTechIdsFromStarbaseBuilding(techIds: Set<TechId>, buildingKind: StarbaseBuildingKind): void {
@@ -1131,12 +1148,14 @@ function inferCompletedTechIdsFromExistingAssets(nextState: GameState, factionId
   const techIds = new Set<TechId>();
   for (const planetState of nextState.planetStates) {
     if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
-    for (const buildingKind of Object.values(planetState.buildings).flat()) {
-      if (buildingKind) addInferredTechIdsFromBuilding(techIds, buildingKind);
+    for (const building of Object.values(planetState.buildings).flat()) {
+      const buildingKind = getPlanetBuildingKind(building);
+      if (buildingKind) addInferredTechIdsFromBuilding(techIds, buildingKind, getPlanetBuildingLevel(building));
     }
     for (const subDistrict of planetState.urbanSubDistricts) {
-      for (const buildingKind of subDistrict.buildings) {
-        if (buildingKind) addInferredTechIdsFromBuilding(techIds, buildingKind);
+      for (const building of subDistrict.buildings) {
+        const buildingKind = getPlanetBuildingKind(building);
+        if (buildingKind) addInferredTechIdsFromBuilding(techIds, buildingKind, getPlanetBuildingLevel(building));
       }
     }
     for (const queued of planetState.constructionQueue) {
@@ -1232,11 +1251,11 @@ function countOwnedPlanetBuildings(factionId: number, buildingKind: BuildingKind
   for (const planetState of state.planetStates) {
     if ((state.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
     for (const building of Object.values(planetState.buildings).flat()) {
-      if (building === buildingKind) count += 1;
+      if (getPlanetBuildingKind(building) === buildingKind) count += 1;
     }
     for (const subDistrict of planetState.urbanSubDistricts) {
       for (const building of subDistrict.buildings) {
-        if (building === buildingKind) count += 1;
+        if (getPlanetBuildingKind(building) === buildingKind) count += 1;
       }
     }
   }
@@ -4254,6 +4273,7 @@ function createDiplomacyDetailPayload(perspective: GalaxyPerspective): Diplomacy
       ? []
       : getActiveTreatiesBetween(state.diplomacy, playerFactionId, faction.id);
     const tradePrivilegeTreaty = activeBetween.some((treaty) => treaty.articleIds.includes(TRADE_PRIVILEGE_ARTICLE_ID));
+    const migrationPactTreaty = activeBetween.some((treaty) => treaty.articleIds.includes(MIGRATION_PACT_ARTICLE_ID));
     return {
       faction,
       isSelf: playerFactionId === faction.id,
@@ -4273,6 +4293,12 @@ function createDiplomacyDetailPayload(perspective: GalaxyPerspective): Diplomacy
       tradePrivilegeSuspended: playerFactionId !== null
         && tradePrivilegeTreaty
         && isTreatyArticleSuspended(state.diplomacy, TRADE_PRIVILEGE_ARTICLE_ID, playerFactionId, faction.id),
+      migrationPactActive: playerFactionId !== null
+        && migrationPactTreaty
+        && !isTreatyArticleSuspended(state.diplomacy, MIGRATION_PACT_ARTICLE_ID, playerFactionId, faction.id),
+      migrationPactSuspended: playerFactionId !== null
+        && migrationPactTreaty
+        && isTreatyArticleSuspended(state.diplomacy, MIGRATION_PACT_ARTICLE_ID, playerFactionId, faction.id),
     };
   });
   const wars = playerFactionId === null
@@ -5351,6 +5377,66 @@ function handleBuildPlanetBuilding(
   });
 }
 
+function handleUpgradePlanetBuilding(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  area: BuildingSlotArea,
+  slotIndex: number,
+  subDistrictIndex?: number,
+): void {
+  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!planetState) return;
+  const factionId = perspective.mode === "faction" ? perspective.factionId : null;
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+
+  let buildingSlot: PlanetBuildingSlot | undefined;
+  let subDistrictKind: UrbanSubDistrictKind | undefined;
+  if (area === "urbanSubDistrict") {
+    if (
+      subDistrictIndex === undefined
+      || !isValidSlotIndex(subDistrictIndex, planetState.urbanSubDistricts.length)
+    ) {
+      return reject(socket, "Invalid sub-district.");
+    }
+    const subDistrict = planetState.urbanSubDistricts[subDistrictIndex];
+    if (!isValidSlotIndex(slotIndex, subDistrict.buildings.length)) return reject(socket, "Invalid building slot.");
+    buildingSlot = subDistrict.buildings[slotIndex];
+    subDistrictKind = subDistrict.kind;
+  } else {
+    if (!isDistrictKind(area)) return reject(socket, "Invalid building area.");
+    const slots = planetState.buildings[area];
+    if (!isValidSlotIndex(slotIndex, slots.length)) return reject(socket, "Invalid building slot.");
+    buildingSlot = slots[slotIndex];
+  }
+
+  const buildingKind = getPlanetBuildingKind(buildingSlot);
+  if (!buildingKind) return reject(socket, "Building slot is empty.");
+  if (!isBuildingCompatible(buildingKind, area, subDistrictKind)) {
+    return reject(socket, "Building is incompatible with this district.");
+  }
+  const currentLevel = getPlanetBuildingLevel(buildingSlot);
+  const targetLevel = getBuildingUpgradeTargetLevel(buildingSlot);
+  if (!targetLevel) return reject(socket, "Building is already at maximum level.");
+  if (!requireUnlocked(socket, factionId, getRequiredTechIdsForBuildingLevel(buildingKind, targetLevel))) return;
+  if (hasQueuedBuildingTarget(planetState, area, slotIndex, subDistrictIndex)) {
+    return reject(socket, "Building slot is already queued.");
+  }
+
+  const item = createBuildingUpgradeConstructionQueueItem(
+    buildingKind,
+    currentLevel,
+    area,
+    slotIndex,
+    subDistrictIndex,
+  );
+  if (!spendMinerals(socket, factionId, item.mineralCost)) return;
+  commitPlanetState(socket, perspective, "Building upgrade queued.", {
+    ...planetState,
+    constructionQueue: [...planetState.constructionQueue, item],
+  });
+}
+
 function handleCancelPlanetConstruction(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -5391,9 +5477,10 @@ function handleSetUrbanSubDistrict(
     if (index !== subDistrictIndex) return subDistrict;
     return {
       kind: subDistrictKind,
-      buildings: subDistrict.buildings.map((building) => (
-        building && isBuildingCompatible(building, "urbanSubDistrict", subDistrictKind) ? building : null
-      )),
+      buildings: subDistrict.buildings.map((building) => {
+        const buildingKind = getPlanetBuildingKind(building);
+        return buildingKind && isBuildingCompatible(buildingKind, "urbanSubDistrict", subDistrictKind) ? building : null;
+      }),
     };
   });
 
@@ -6731,6 +6818,248 @@ function processStarbaseShipQueues(elapsedDays: number): { starbasesChanged: boo
   return { starbasesChanged, fleetsChanged };
 }
 
+interface MigrationPolicyFactors {
+  internal: number;
+  foreignOut: number;
+  foreignIn: number;
+  pressure: number;
+  attraction: number;
+}
+
+interface MigrationPlanetProfile {
+  index: number;
+  planet: PlanetState;
+  ownerId: number;
+  population: number;
+  capacity: number;
+  capacityRoom: number;
+  sourcePressure: number;
+  attraction: number;
+}
+
+function getMigrationPolicyFactors(factionId: number): MigrationPolicyFactors {
+  const optionId = getFactionGovernment(state, factionId).selectedLawOptionIds.migrationPolicy ?? "managedMigration";
+  if (optionId === "freeMovement") {
+    return { internal: 1.35, foreignOut: 1.15, foreignIn: 1.35, pressure: 1.1, attraction: 1.1 };
+  }
+  if (optionId === "migrationControls") {
+    return { internal: 0.45, foreignOut: 0.1, foreignIn: 0.25, pressure: 0.65, attraction: 0.75 };
+  }
+  if (optionId === "closedMovement") {
+    return { internal: 0.08, foreignOut: 0, foreignIn: 0, pressure: 0.28, attraction: 0.35 };
+  }
+  return { internal: 1, foreignOut: 0.45, foreignIn: 0.7, pressure: 1, attraction: 1 };
+}
+
+function getSpeciesMigrationRightsMultiplier(factionId: number, speciesId: SpeciesId): number {
+  const rights = getSpeciesRightsForFaction(state, factionId, speciesId);
+  if (rights.migration === "prohibited") return 0;
+  if (rights.migration === "free") return 1.15;
+  return 0.65;
+}
+
+function getProductiveJobCapacity(planetState: PlanetState): number {
+  return Object.entries(planetState.economy.jobCapacity)
+    .filter(([job]) => job !== "criminal" && job !== "unemployed")
+    .reduce((sum, [, population]) => sum + population, 0);
+}
+
+function getMigrationAmenityRatio(planetState: PlanetState): number {
+  if (planetState.population <= 0) return 1;
+  const amenityNeed = planetState.population / PEOPLE_PER_MONTHLY_UNIT;
+  return amenityNeed > 0 ? planetState.economy.amenities / amenityNeed : 1;
+}
+
+function getMigrationHousingRatio(planetState: PlanetState): number {
+  return planetState.population > 0 ? planetState.economy.housing / planetState.population : 1;
+}
+
+function createMigrationProfile(planetState: PlanetState, index: number): MigrationPlanetProfile | null {
+  if (!planetState.isHabited || planetState.population <= MIGRATION_MIN_SOURCE_POPULATION) return null;
+  const ownerId = state.starOwnership[planetState.starId] ?? -1;
+  if (!Number.isInteger(ownerId) || ownerId < 0) return null;
+
+  const population = planetState.population;
+  const economy = planetState.economy;
+  const capacity = Math.max(1, calculatePlanetCapacity(
+    planetState,
+    getPlanetDistrictLimitsFromState(state, planetState),
+    getPlanetTechnologyModifiers(state, planetState),
+  ));
+  const housingRatio = getMigrationHousingRatio(planetState);
+  const amenityRatio = getMigrationAmenityRatio(planetState);
+  const unemploymentRatio = population > 0 ? economy.unemployedPopulation / population : 0;
+  const jobRoomRatio = Math.max(0, getProductiveJobCapacity(planetState) - economy.employedPopulation) / population;
+  const capacityPressure = population / capacity;
+  const housingShortage = clamp(1 - housingRatio, 0, 1.4);
+  const amenityShortage = clamp(1 - amenityRatio, 0, 1.4);
+  const overCapacity = clamp(capacityPressure - 0.95, 0, 1.2);
+  const lowStability = clamp((55 - economy.stability) / 55, 0, 1.4);
+  const declinePressure = economy.populationGrowth.netPerQuarter < 0
+    ? clamp(Math.abs(economy.populationGrowth.netPerQuarter) / Math.max(1, population * 0.03), 0, 1)
+    : 0;
+  const sourcePressure = clamp(
+    0.04
+      + lowStability * 0.58
+      + clamp(unemploymentRatio / 0.22, 0, 1.5) * 0.62
+      + housingShortage * 0.5
+      + amenityShortage * 0.28
+      + overCapacity * 0.7
+      + declinePressure * 0.35,
+    0,
+    3,
+  );
+  const stabilityAttraction = clamp((economy.stability - 35) / 65, 0, 1.2);
+  const housingAttraction = clamp(housingRatio - 0.95, 0, 1.5);
+  const amenityAttraction = clamp(amenityRatio - 0.85, 0, 1.2);
+  const capacityAttraction = clamp(1 - capacityPressure, 0, 1.2);
+  const jobAttraction = clamp(jobRoomRatio / 0.18, 0, 1.4);
+  const policyAttraction = getMigrationPolicyFactors(ownerId).attraction;
+  const attraction = Math.max(
+    0,
+    (0.08
+      + stabilityAttraction * 1.05
+      + housingAttraction * 0.82
+      + amenityAttraction * 0.38
+      + capacityAttraction * 0.72
+      + jobAttraction * 1.08
+      - clamp((35 - economy.stability) / 35, 0, 1) * 0.55
+      - clamp(unemploymentRatio / 0.3, 0, 1) * 0.45)
+      * policyAttraction,
+  );
+
+  return {
+    index,
+    planet: planetState,
+    ownerId,
+    population,
+    capacity,
+    capacityRoom: Math.max(0, capacity * MIGRATION_DESTINATION_CAPACITY_BUFFER - population),
+    sourcePressure,
+    attraction,
+  };
+}
+
+function getMigrationRelationMultiplier(sourceOwnerId: number, targetOwnerId: number): number {
+  if (sourceOwnerId === targetOwnerId) return getMigrationPolicyFactors(sourceOwnerId).internal;
+  if (areFactionsAtWar(state.diplomacy, sourceOwnerId, targetOwnerId)) return 0;
+  const sourcePolicy = getMigrationPolicyFactors(sourceOwnerId);
+  const targetPolicy = getMigrationPolicyFactors(targetOwnerId);
+  if (sourcePolicy.foreignOut <= 0 || targetPolicy.foreignIn <= 0) return 0;
+  const hasPact = getActiveTreatyPartnersForArticle(state.diplomacy, sourceOwnerId, MIGRATION_PACT_ARTICLE_ID)
+    .includes(targetOwnerId);
+  const treatyMultiplier = hasPact ? MIGRATION_PACT_MULTIPLIER : MIGRATION_FOREIGN_BASE_MULTIPLIER;
+  return treatyMultiplier * sourcePolicy.foreignOut * targetPolicy.foreignIn;
+}
+
+function applySpeciesPopulationDelta(
+  populations: SpeciesPopulation[],
+  speciesId: SpeciesId,
+  delta: number,
+): SpeciesPopulation[] {
+  const bySpecies = new Map<SpeciesId, number>();
+  for (const population of populations) {
+    bySpecies.set(population.speciesId, (bySpecies.get(population.speciesId) ?? 0) + Math.max(0, Math.round(population.population)));
+  }
+  bySpecies.set(speciesId, Math.max(0, (bySpecies.get(speciesId) ?? 0) + Math.round(delta)));
+  return Array.from(bySpecies.entries())
+    .filter(([, population]) => population > 0)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([nextSpeciesId, population]) => ({ speciesId: nextSpeciesId, population }));
+}
+
+function processPopulationMigrationWeeks(weeks: number): boolean {
+  if (weeks <= 0) return false;
+  const profiles = state.planetStates
+    .map((planetState, index) => createMigrationProfile(planetState, index))
+    .filter((profile): profile is MigrationPlanetProfile => profile !== null);
+  if (profiles.length < 2) return false;
+
+  const inboundByPlanet = new Map<number, number>();
+  const deltasByPlanet = new Map<number, Map<SpeciesId, number>>();
+  const addDelta = (planetIndex: number, speciesId: SpeciesId, delta: number): void => {
+    if (Math.abs(delta) < MIGRATION_MIN_FLOW_POPULATION) return;
+    const bySpecies = deltasByPlanet.get(planetIndex) ?? new Map<SpeciesId, number>();
+    bySpecies.set(speciesId, (bySpecies.get(speciesId) ?? 0) + Math.round(delta));
+    deltasByPlanet.set(planetIndex, bySpecies);
+  };
+
+  for (const source of profiles) {
+    const sourcePolicy = getMigrationPolicyFactors(source.ownerId);
+    const weeklyRate = (MIGRATION_BASE_WEEKLY_RATE + MIGRATION_PRESSURE_WEEKLY_RATE * source.sourcePressure) * sourcePolicy.pressure;
+    if (weeklyRate <= 0) continue;
+
+    for (const species of source.planet.speciesPopulations) {
+      const sourceRightsMultiplier = getSpeciesMigrationRightsMultiplier(source.ownerId, species.speciesId);
+      if (sourceRightsMultiplier <= 0 || species.population <= MIGRATION_MIN_SOURCE_POPULATION) continue;
+
+      const candidates = profiles
+        .filter((target) => target.index !== source.index)
+        .map((target) => {
+          const relationMultiplier = getMigrationRelationMultiplier(source.ownerId, target.ownerId);
+          if (relationMultiplier <= 0) return null;
+          const targetRightsMultiplier = getSpeciesMigrationRightsMultiplier(target.ownerId, species.speciesId);
+          if (targetRightsMultiplier <= 0) return null;
+          const availableRoom = target.capacityRoom - (inboundByPlanet.get(target.index) ?? 0);
+          if (availableRoom < MIGRATION_MIN_FLOW_POPULATION) return null;
+          const habitability = getEffectiveSpeciesHabitability(
+            target.planet,
+            species.speciesId,
+            getPlanetSpeciesContext(state, target.planet),
+          );
+          if (habitability < 20) return null;
+          const habitabilityMultiplier = clamp((habitability - 10) / 80, 0.1, 1.2);
+          const attractionGap = Math.max(0, target.attraction - source.attraction + source.sourcePressure * 0.35);
+          if (attractionGap <= 0.02) return null;
+          const weight = relationMultiplier * targetRightsMultiplier * target.attraction * attractionGap * habitabilityMultiplier;
+          return weight > 0 ? { target, weight, availableRoom } : null;
+        })
+        .filter((candidate): candidate is { target: MigrationPlanetProfile; weight: number; availableRoom: number } => candidate !== null);
+
+      const totalWeight = candidates.reduce((sum, candidate) => sum + candidate.weight, 0);
+      if (totalWeight <= 0) continue;
+
+      const maxLeaving = Math.max(0, species.population - MIGRATION_MIN_SOURCE_POPULATION);
+      const desiredOutflow = Math.min(
+        maxLeaving,
+        species.population * weeklyRate * weeks * sourceRightsMultiplier,
+      );
+      if (desiredOutflow < MIGRATION_MIN_FLOW_POPULATION) continue;
+
+      let moved = 0;
+      for (const candidate of candidates) {
+        const share = desiredOutflow * (candidate.weight / totalWeight);
+        const flow = Math.min(
+          Math.round(share),
+          Math.floor(candidate.availableRoom),
+          Math.round(desiredOutflow - moved),
+        );
+        if (flow < MIGRATION_MIN_FLOW_POPULATION) continue;
+        addDelta(source.index, species.speciesId, -flow);
+        addDelta(candidate.target.index, species.speciesId, flow);
+        inboundByPlanet.set(candidate.target.index, (inboundByPlanet.get(candidate.target.index) ?? 0) + flow);
+        moved += flow;
+        if (moved >= desiredOutflow - MIGRATION_MIN_FLOW_POPULATION) break;
+      }
+    }
+  }
+
+  if (deltasByPlanet.size === 0) return false;
+  state.planetStates = state.planetStates.map((planetState, index) => {
+    const deltas = deltasByPlanet.get(index);
+    if (!deltas) return planetState;
+    let speciesPopulations = planetState.speciesPopulations.map((entry) => ({ ...entry }));
+    for (const [speciesId, delta] of deltas) {
+      speciesPopulations = applySpeciesPopulationDelta(speciesPopulations, speciesId, delta);
+    }
+    const population = sumSpeciesPopulation(speciesPopulations);
+    queuePlanetDetailRefresh(planetState.id);
+    return { ...planetState, population, speciesPopulations };
+  });
+  hasDirtyState = true;
+  return true;
+}
+
 function processPopulationWeeks(targetWeek: number): boolean {
   const previousWeek = state.clock.lastProcessedPopulationWeek ?? targetWeek;
   const weeks = Math.max(0, targetWeek - previousWeek);
@@ -6750,10 +7079,12 @@ function processPopulationWeeks(targetWeek: number): boolean {
     if (nextPlanetState.population !== planetState.population) queuePlanetDetailRefresh(planetState.id);
     return nextPlanetState;
   });
+  changed = processPopulationMigrationWeeks(weeks) || changed;
 
   state.clock.lastProcessedPopulationWeek = targetWeek;
   hasDirtyState = true;
   if (!changed) return false;
+  recalculatePlanetEconomies();
   applyPlanetStatesToStars(state.stars, state.planetStates);
   refreshFactionEconomyDeltas();
   hasDirtyState = true;
@@ -9147,6 +9478,17 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
       command.area,
       command.slotIndex,
       command.buildingKind,
+      command.subDistrictIndex,
+    );
+    return;
+  }
+  if (command.type === "upgradePlanetBuilding") {
+    handleUpgradePlanetBuilding(
+      session.socket,
+      session.perspective,
+      command.planetId,
+      command.area,
+      command.slotIndex,
       command.subDistrictIndex,
     );
     return;

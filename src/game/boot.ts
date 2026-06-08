@@ -594,6 +594,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         pendingProposalCount: 0,
         tradePrivilegeActive: false,
         tradePrivilegeSuspended: false,
+        migrationPactActive: false,
+        migrationPactSuspended: false,
       })),
       wars: diplomacyDetail?.wars ?? [],
       treaties: diplomacyDetail?.treaties ?? [],

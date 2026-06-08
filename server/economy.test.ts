@@ -7,10 +7,13 @@ import {
   BUILDING_MINERAL_COSTS,
   calculatePlanetEconomy,
   createBuildingConstructionQueueItem,
+  createBuildingUpgradeConstructionQueueItem,
   createEmptyResourceCounts,
   createDistrictConstructionQueueItem,
   createPlanetStateFromSeed,
   getEffectiveSpeciesHabitability,
+  getPlanetBuildingKind,
+  getPlanetBuildingLevel,
   getHabitabilityProductionMultiplier,
   getHabitabilityUpkeepMultiplier,
   isBuildingCompatible,
@@ -21,7 +24,7 @@ import {
   recalculatePlanetStateEconomy,
   STARTING_HABITED_POPULATION,
 } from "../src/data/Economy";
-import type { DistrictCounts, PlanetEconomySpeciesContext } from "../src/data/Economy";
+import type { DistrictCounts, PlanetBuildingSlot, PlanetEconomySpeciesContext } from "../src/data/Economy";
 import type { SpeciesState } from "../src/data/Species";
 
 const DEFAULT_LIMITS: DistrictCounts = {
@@ -50,6 +53,11 @@ function createHabitedPlanet() {
   });
 }
 
+function assertBuilding(slot: PlanetBuildingSlot, kind: string, level = 1): void {
+  assert.equal(getPlanetBuildingKind(slot), kind);
+  assert.equal(getPlanetBuildingLevel(slot), level);
+}
+
 test("starter habited planets receive population, starter districts, buildings, and economy", () => {
   const planet = createHabitedPlanet();
 
@@ -60,11 +68,11 @@ test("starter habited planets receive population, starter districts, buildings, 
     mining: 2,
     agriculture: 2,
   });
-  assert.equal(planet.buildings.city[0], "administrativeComplex");
-  assert.equal(planet.buildings.city[1], "housingComplex");
-  assert.equal(planet.buildings.generator[0], "energyGrid");
-  assert.equal(planet.buildings.mining[0], "mineralPurificationPlant");
-  assert.equal(planet.buildings.agriculture[0], "foodProcessingPlant");
+  assertBuilding(planet.buildings.city[0], "administrativeComplex");
+  assertBuilding(planet.buildings.city[1], "housingComplex");
+  assertBuilding(planet.buildings.generator[0], "energyGrid");
+  assertBuilding(planet.buildings.mining[0], "mineralPurificationPlant");
+  assertBuilding(planet.buildings.agriculture[0], "foodProcessingPlant");
   assert.equal(planet.urbanSubDistricts[0].kind, "residential");
   assert.equal(planet.urbanSubDistricts[1].kind, "mixedIndustry");
   assert.deepEqual(planet.speciesPopulations, [{ speciesId: "human", population: STARTING_HABITED_POPULATION }]);
@@ -192,7 +200,7 @@ test("changing city sub-district kind drops incompatible buildings during normal
 
   const normalized = recalculatePlanetStateEconomy(planet);
 
-  assert.equal(normalized.urbanSubDistricts[0].buildings[0], "researchLabs");
+  assertBuilding(normalized.urbanSubDistricts[0].buildings[0], "researchLabs");
   assert.equal(normalized.urbanSubDistricts[0].buildings[1], null);
 });
 
@@ -369,9 +377,26 @@ test("construction queue completes districts and buildings over time", () => {
   );
 
   assert.equal(result.state.builtDistricts.agriculture, planet.builtDistricts.agriculture + 1);
-  assert.equal(result.state.buildings.city[2], "housingComplex");
+  assertBuilding(result.state.buildings.city[2], "housingComplex");
   assert.equal(result.state.constructionQueue.length, 0);
   assert.equal(result.completed.length, 2);
+});
+
+test("building upgrades complete through construction and scale building effects", () => {
+  const planet = createHabitedPlanet();
+  const baseline = recalculatePlanetStateEconomy(planet, DEFAULT_LIMITS);
+  const upgradeItem = createBuildingUpgradeConstructionQueueItem("housingComplex", 1, "city", 1, undefined, "upgrade-test");
+  const queued = recalculatePlanetStateEconomy({
+    ...planet,
+    constructionQueue: [upgradeItem],
+  }, DEFAULT_LIMITS);
+
+  const result = progressPlanetConstructionQueue(queued, upgradeItem.totalDays, DEFAULT_LIMITS);
+  const upgraded = recalculatePlanetStateEconomy(result.state, DEFAULT_LIMITS);
+
+  assertBuilding(upgraded.buildings.city[1], "housingComplex", 2);
+  assert.equal(result.completed.length, 1);
+  assert.ok(upgraded.economy.housing > baseline.economy.housing);
 });
 
 test("building mineral costs are exposed for server validation and UI", () => {

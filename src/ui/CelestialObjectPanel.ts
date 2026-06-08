@@ -1,20 +1,28 @@
 import type { CelestialObjectDetails, DistrictCounts, DistrictKind, PlanetType, StarType } from "../data/StarMap";
 import {
   BUILDING_KINDS,
-  BUILDING_BUILD_DAYS,
   BUILDING_DEFINITIONS,
   BUILDING_LABELS,
-  BUILDING_MINERAL_COSTS,
+  BUILDING_MAX_LEVEL,
   createBuildingConstructionQueueItem,
+  createBuildingUpgradeConstructionQueueItem,
   createDistrictConstructionQueueItem,
   DISTRICT_BUILD_DAYS,
   DISTRICT_MINERAL_COSTS,
   filterInvalidQueuedBuildingsForSubDistrictChange,
+  getBuildingBuildDays,
+  getBuildingLevelEffectMultiplier,
+  getBuildingMineralCost,
+  getBuildingUpgradeBuildDays,
+  getBuildingUpgradeMineralCost,
+  getBuildingUpgradeTargetLevel,
   getCompatibleBuildings,
   getConstructionSpeedMultiplier,
   getEffectiveSpeciesHabitability,
   getHabitabilityProductionMultiplier,
   getHabitabilityUpkeepMultiplier,
+  getPlanetBuildingKind,
+  getPlanetBuildingLevel,
   JOB_FILL_ORDER,
   JOB_DEFINITIONS,
   JOB_LABELS,
@@ -34,6 +42,7 @@ import type {
   JobKind,
   PlanetConstructionQueueItem,
   PlanetFeatureKind,
+  PlanetBuildingSlot,
   PlanetModifierTarget,
   PlanetState,
   PopGroup,
@@ -46,6 +55,7 @@ import { GAME_DAYS_PER_YEAR } from "../game/GameTime";
 import {
   getFirstRequiredTechName,
   getRequiredTechIdsForBuilding,
+  getRequiredTechIdsForBuildingLevel,
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
@@ -619,6 +629,34 @@ export class CelestialObjectPanel {
     this.applyLocalPlanetState(freshData, planetState);
   }
 
+  private handleUpgradeBuilding(
+    data: CelestialObjectPanelData,
+    area?: BuildingSlotArea,
+    slotIndexValue?: string,
+    subDistrictIndexValue?: string,
+  ): void {
+    const freshData = this.getFreshData(data);
+    const planetState = freshData.planetState;
+    if (!planetState || !area || slotIndexValue === undefined) return;
+    const slotIndex = Number(slotIndexValue);
+    const subDistrictIndex = subDistrictIndexValue === undefined ? undefined : Number(subDistrictIndexValue);
+    const buildingSlot = this.getBuildingSlot(planetState, area, slotIndex, subDistrictIndex);
+    const buildingKind = getPlanetBuildingKind(buildingSlot);
+    const targetLevel = getBuildingUpgradeTargetLevel(buildingSlot);
+    if (!buildingKind || !targetLevel) return;
+    if (!this.isBuildingLevelUnlocked(freshData.technology, buildingKind, targetLevel)) return;
+    if (this.getQueuedBuildingForSlot(planetState, area, slotIndex, subDistrictIndex)) return;
+    const nextPlanetState = this.withQueuedBuildingUpgrade(planetState, { area, slotIndex, subDistrictIndex }, buildingKind, getPlanetBuildingLevel(buildingSlot));
+    freshData.onPlanetCommand?.({
+      type: "upgradePlanetBuilding",
+      planetId: planetState.id,
+      area,
+      slotIndex,
+      subDistrictIndex,
+    });
+    this.applyLocalPlanetState(freshData, nextPlanetState);
+  }
+
   private handleCancelPlanetConstruction(data: CelestialObjectPanelData, queueItemId?: string): void {
     const freshData = this.getFreshData(data);
     if (!freshData.planetState || !queueItemId) return;
@@ -1036,6 +1074,14 @@ export class CelestialObjectPanel {
           subDistrictIndex: button.dataset.coSubIndex === undefined ? undefined : Number(button.dataset.coSubIndex),
         });
       });
+    });
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-upgrade-building]").forEach((button) => {
+      this.bindClickOnce(button, () => this.handleUpgradeBuilding(
+        data,
+        button.dataset.coArea as BuildingSlotArea | undefined,
+        button.dataset.coSlotIndex,
+        button.dataset.coSubIndex,
+      ));
     });
     const closeBuildingPicker = this.queryIncludingRoot<HTMLButtonElement>(root, "[data-co-close-building-picker]");
     if (closeBuildingPicker) this.bindClickOnce(closeBuildingPicker, () => {
@@ -1702,7 +1748,7 @@ export class CelestialObjectPanel {
   private renderBuildingSlotsForArea(
     data: CelestialObjectPanelData,
     area: BuildingSlotArea,
-    slots: Array<BuildingKind | null>,
+    slots: PlanetBuildingSlot[],
     slotCount: number,
     subDistrictIndex?: number,
   ): string {
@@ -1714,19 +1760,44 @@ export class CelestialObjectPanel {
   private renderBuildingSlotForArea(
     data: CelestialObjectPanelData,
     area: BuildingSlotArea,
-    building: BuildingKind | null,
+    building: PlanetBuildingSlot,
     slotIndex: number,
     subDistrictIndex?: number,
   ): string {
     const attributes = this.getBuildingSlotViewAttributes(area, slotIndex, subDistrictIndex);
     if (!data.isHabited || !data.planetState) return `<span class="placeholder" ${attributes}></span>`;
-    if (building) {
-      const definition = BUILDING_DEFINITIONS[building];
+    const buildingKind = getPlanetBuildingKind(building);
+    if (buildingKind) {
+      const definition = BUILDING_DEFINITIONS[buildingKind];
+      const level = getPlanetBuildingLevel(building);
+      const targetLevel = getBuildingUpgradeTargetLevel(building);
+      const queued = this.getQueuedBuildingForSlot(
+        { ...data.planetState, constructionQueue: this.getEstimatedConstructionQueue(data.planetState) },
+        area,
+        slotIndex,
+        subDistrictIndex,
+      );
+      const upgradeQueued = queued?.kind === "buildingUpgrade";
+      const upgradeUnlocked = targetLevel !== null && this.isBuildingLevelUnlocked(data.technology, buildingKind, targetLevel);
+      const canUpgrade = Boolean(data.onPlanetCommand && targetLevel !== null && upgradeUnlocked && !queued);
+      const tagName = canUpgrade ? "button" : "span";
+      const controlAttrs = canUpgrade
+        ? `type="button" data-co-upgrade-building data-co-area="${this.escapeHtml(area)}" data-co-slot-index="${slotIndex}"${subDistrictIndex === undefined ? "" : ` data-co-sub-index="${subDistrictIndex}"`}`
+        : "";
+      const classes = [
+        "filled",
+        "coBuildingIconSlot",
+        targetLevel !== null && upgradeUnlocked ? "upgradeable" : "",
+        upgradeQueued ? "queuedUpgrade" : "",
+      ].filter(Boolean).join(" ");
       return `
-        <span class="filled coBuildingIconSlot" ${attributes} data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState, area, subDistrictIndex))}">
+        <${tagName} class="${classes}" ${controlAttrs} ${attributes} data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState, area, subDistrictIndex, queued, building, data.technology))}">
           <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
           <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
-        </span>
+          <small class="coBuildingLevel">Lv ${level}</small>
+          ${targetLevel !== null && upgradeUnlocked ? '<span class="coBuildingUpgradeArrow" aria-hidden="true">^</span>' : ""}
+          ${upgradeQueued && queued ? `<small data-co-queued-building-days data-co-queue-item="${this.escapeHtml(queued.id)}">${this.formatConstructionDays(queued.remainingDays)}</small>` : ""}
+        </${tagName}>
       `;
     }
     const queued = this.getQueuedBuildingForSlot(
@@ -1802,7 +1873,7 @@ export class CelestialObjectPanel {
               ? "Incompatible slot"
               : lockedByTechnology
                 ? `Requires ${this.getRequiredBuildingTechnologyName(building)}`
-                : `${BUILDING_MINERAL_COSTS[building]} minerals | ${BUILDING_BUILD_DAYS[building]} days`;
+                : `${getBuildingMineralCost(building)} minerals | ${getBuildingBuildDays(building)} days`;
             return `
               <button
                 type="button"
@@ -2338,16 +2409,20 @@ export class CelestialObjectPanel {
       if (subDistrict.kind !== "residential") amount = -planetState.builtDistricts.city * 500_000_000;
       subDistrictTotals.set(subDistrict.kind, (subDistrictTotals.get(subDistrict.kind) ?? 0) + amount);
       for (const building of subDistrict.buildings) {
-        if (!building) continue;
-        const housing = BUILDING_DEFINITIONS[building]?.housing ?? 0;
-        if (housing) rows.push({ label: BUILDING_LABELS[building], amount: housing });
+        const buildingKind = getPlanetBuildingKind(building);
+        if (!buildingKind) continue;
+        const level = getPlanetBuildingLevel(building);
+        const housing = (BUILDING_DEFINITIONS[buildingKind]?.housing ?? 0) * getBuildingLevelEffectMultiplier(level);
+        if (housing) rows.push({ label: `${BUILDING_LABELS[buildingKind]} Lv ${level}`, amount: housing });
       }
     }
     for (const [kind, amount] of subDistrictTotals) rows.push({ label: URBAN_SUB_DISTRICT_LABELS[kind], amount });
     for (const building of planetState.buildings.city) {
-      if (!building) continue;
-      const housing = BUILDING_DEFINITIONS[building]?.housing ?? 0;
-      if (housing) rows.push({ label: BUILDING_LABELS[building], amount: housing });
+      const buildingKind = getPlanetBuildingKind(building);
+      if (!buildingKind) continue;
+      const level = getPlanetBuildingLevel(building);
+      const housing = (BUILDING_DEFINITIONS[buildingKind]?.housing ?? 0) * getBuildingLevelEffectMultiplier(level);
+      if (housing) rows.push({ label: `${BUILDING_LABELS[buildingKind]} Lv ${level}`, amount: housing });
     }
     return rows;
   }
@@ -2554,18 +2629,46 @@ export class CelestialObjectPanel {
     area: BuildingSlotArea,
     subDistrictIndex?: number,
     queued?: PlanetConstructionQueueItem,
+    building?: PlanetBuildingSlot,
+    technology?: FactionTechnologyView | null,
   ): string {
-    const jobLines = this.renderBuildingJobLines(definition, planetState);
-    const productionLines = this.renderBuildingProductionLines(definition, planetState);
+    const level = Math.max(1, getPlanetBuildingLevel(building) || queued?.targetLevel || 1);
+    const targetLevel = getBuildingUpgradeTargetLevel(building);
+    const canUpgrade = targetLevel !== null && this.isBuildingLevelUnlocked(technology, definition.kind, targetLevel);
+    const levelLabel = targetLevel && canUpgrade
+      ? `Level ${level} -> ${targetLevel}`
+      : `Level ${level}${level >= BUILDING_MAX_LEVEL ? " (max)" : ""}`;
+    const buildCost = queued?.kind === "buildingUpgrade" && queued.targetLevel
+      ? queued.mineralCost
+      : building
+        ? targetLevel
+          ? getBuildingUpgradeMineralCost(definition.kind, level)
+          : 0
+        : getBuildingMineralCost(definition.kind, 1);
+    const buildDays = queued?.kind === "buildingUpgrade"
+      ? queued.remainingDays
+      : building
+        ? targetLevel
+          ? getBuildingUpgradeBuildDays(definition.kind, level)
+          : 0
+        : getBuildingBuildDays(definition.kind, 1);
+    const jobLines = this.renderBuildingJobLines(definition, planetState, level);
+    const productionLines = this.renderBuildingProductionLines(definition, planetState, level);
     const compatible = this.isDefinitionCompatible(definition, area, subDistrictIndex, planetState);
     return `
       <div class="coTooltipTitle">${this.escapeHtml(definition.label)}</div>
       <p>${this.escapeHtml(definition.description)}</p>
       <div class="coTooltipGrid">
-        <div><span>Cost</span><strong>${definition.mineralCost} Minerals</strong></div>
-        <div><span>Build Time</span><strong>${queued ? `${this.formatConstructionDays(queued.remainingDays)} left` : `${definition.buildDays} days`}</strong></div>
+        <div><span>Level</span><strong>${this.escapeHtml(levelLabel)}</strong></div>
+        <div><span>${building ? "Upgrade Cost" : "Cost"}</span><strong>${buildCost > 0 ? `${buildCost} Minerals` : "Maxed"}</strong></div>
+        <div><span>${building ? "Upgrade Time" : "Build Time"}</span><strong>${queued ? `${this.formatConstructionDays(queued.remainingDays)} left` : buildDays > 0 ? `${this.formatConstructionDays(buildDays)}` : "Maxed"}</strong></div>
         <div><span>Slot</span><strong>${compatible ? "Compatible" : "Incompatible"}</strong></div>
       </div>
+      ${building && targetLevel !== null ? `
+        <button class="coTooltipAction" type="button" ${canUpgrade ? "" : "disabled"}>
+          ${canUpgrade ? `Upgrade to level ${targetLevel}` : `Requires ${this.escapeHtml(this.getRequiredBuildingLevelTechnologyName(definition.kind, targetLevel))}`}
+        </button>
+      ` : ""}
       <div class="coTooltipSectionTitle">Jobs And Housing</div>
       <div class="coTooltipList">${jobLines.length ? jobLines.map((line) => `<span>${line}</span>`).join("") : "<span>No direct jobs.</span>"}</div>
       <div class="coTooltipSectionTitle">Predicted Monthly Output</div>
@@ -2573,24 +2676,26 @@ export class CelestialObjectPanel {
     `;
   }
 
-  private renderBuildingJobLines(definition: BuildingDefinition, planetState: PlanetState): string[] {
+  private renderBuildingJobLines(definition: BuildingDefinition, planetState: PlanetState, level = 1): string[] {
     const lines: string[] = [];
-    if (definition.housing) lines.push(`+${this.formatPeople(definition.housing)} Housing`);
+    const levelMultiplier = getBuildingLevelEffectMultiplier(level);
+    if (definition.housing) lines.push(`+${this.formatPeople(definition.housing * levelMultiplier)} Housing`);
     for (const effect of definition.jobs ?? []) {
-      const amount = effect.amount * (effect.perDistrict ? planetState.builtDistricts[effect.perDistrict] : 1);
+      const amount = effect.amount * (effect.perDistrict ? planetState.builtDistricts[effect.perDistrict] : 1) * levelMultiplier;
       const sign = amount >= 0 ? "+" : "-";
       lines.push(`${sign}${this.formatPeople(Math.abs(amount))} ${this.escapeHtml(JOB_LABELS[effect.job])}`);
     }
     return lines;
   }
 
-  private renderBuildingProductionLines(definition: BuildingDefinition, planetState: PlanetState): string[] {
+  private renderBuildingProductionLines(definition: BuildingDefinition, planetState: PlanetState, level = 1): string[] {
     const habitability = getEffectiveSpeciesHabitability(planetState);
     const outputMultiplier = getHabitabilityProductionMultiplier(habitability) * Math.max(0, 1 + (planetState.economy.stability - 50) * 0.005);
     const upkeepMultiplier = getHabitabilityUpkeepMultiplier(habitability);
+    const levelMultiplier = getBuildingLevelEffectMultiplier(level);
     const lines: string[] = [];
     for (const effect of definition.jobs ?? []) {
-      const amount = effect.amount * (effect.perDistrict ? planetState.builtDistricts[effect.perDistrict] : 1);
+      const amount = effect.amount * (effect.perDistrict ? planetState.builtDistricts[effect.perDistrict] : 1) * levelMultiplier;
       if (amount === 0) continue;
       const units = amount / 1_000_000;
       const job = JOB_DEFINITIONS[effect.job];
@@ -3031,6 +3136,27 @@ export class CelestialObjectPanel {
     };
   }
 
+  private withQueuedBuildingUpgrade(
+    planetState: PlanetState,
+    target: { area: BuildingSlotArea; slotIndex: number; subDistrictIndex?: number },
+    buildingKind: BuildingKind,
+    currentLevel: number,
+  ): PlanetState {
+    return {
+      ...planetState,
+      constructionQueue: [
+        ...planetState.constructionQueue,
+        createBuildingUpgradeConstructionQueueItem(
+          buildingKind,
+          currentLevel,
+          target.area,
+          target.slotIndex,
+          target.subDistrictIndex,
+        ),
+      ],
+    };
+  }
+
   private withChangedSubDistrict(
     planetState: PlanetState,
     subDistrictIndex: number,
@@ -3041,9 +3167,10 @@ export class CelestialObjectPanel {
       if (index !== subDistrictIndex) return subDistrict;
       return {
         kind: subDistrictKind,
-        buildings: subDistrict.buildings.map((building) => (
-          building && isBuildingCompatible(building, "urbanSubDistrict", subDistrictKind) ? building : null
-        )),
+        buildings: subDistrict.buildings.map((building) => {
+          const buildingKind = getPlanetBuildingKind(building);
+          return buildingKind && isBuildingCompatible(buildingKind, "urbanSubDistrict", subDistrictKind) ? building : null;
+        }),
       };
     });
 
@@ -3096,7 +3223,7 @@ export class CelestialObjectPanel {
     planetState: PlanetState,
   ): Array<{ area: BuildingSlotArea; slotIndex: number; subDistrictIndex?: number }> {
     const slots: Array<{ area: BuildingSlotArea; slotIndex: number; subDistrictIndex?: number }> = [];
-    const addDistrictSlots = (area: Exclude<DistrictKind, never>, buildings: Array<BuildingKind | null>): void => {
+    const addDistrictSlots = (area: Exclude<DistrictKind, never>, buildings: PlanetBuildingSlot[]): void => {
       buildings.forEach((building, slotIndex) => {
         if (!building && !this.getQueuedBuildingForSlot(planetState, area, slotIndex)) slots.push({ area, slotIndex });
       });
@@ -3130,6 +3257,20 @@ export class CelestialObjectPanel {
       && !this.getQueuedBuildingForSlot(planetState, target.area, target.slotIndex);
   }
 
+  private getBuildingSlot(
+    planetState: PlanetState,
+    area: BuildingSlotArea,
+    slotIndex: number,
+    subDistrictIndex?: number,
+  ): PlanetBuildingSlot | undefined {
+    if (!Number.isInteger(slotIndex)) return undefined;
+    if (area === "urbanSubDistrict") {
+      if (subDistrictIndex === undefined || !Number.isInteger(subDistrictIndex)) return undefined;
+      return planetState.urbanSubDistricts[subDistrictIndex]?.buildings[slotIndex];
+    }
+    return planetState.buildings[area]?.[slotIndex];
+  }
+
   private getQueuedDistrictCount(planetState: PlanetState, districtKind: DistrictKind): number {
     return planetState.constructionQueue.filter((item) => item.kind === "district" && item.districtKind === districtKind).length;
   }
@@ -3141,7 +3282,7 @@ export class CelestialObjectPanel {
     subDistrictIndex?: number,
   ): PlanetConstructionQueueItem | undefined {
     return planetState.constructionQueue.find((item) => (
-      item.kind === "building"
+      (item.kind === "building" || item.kind === "buildingUpgrade")
       && item.area === area
       && item.slotIndex === slotIndex
       && item.subDistrictIndex === subDistrictIndex
@@ -3183,12 +3324,26 @@ export class CelestialObjectPanel {
     return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
   }
 
+  private isBuildingLevelUnlocked(
+    technology: FactionTechnologyView | null | undefined,
+    building: BuildingKind,
+    level: number,
+  ): boolean {
+    const requiredTechIds = getRequiredTechIdsForBuildingLevel(building, level);
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
+  }
+
   private isTechnologyCompleted(technology: FactionTechnologyView | null | undefined, techId: TechId): boolean {
     return technology?.completedTechIds.includes(techId) === true;
   }
 
   private getRequiredBuildingTechnologyName(building: BuildingKind): string {
     return getFirstRequiredTechName(getRequiredTechIdsForBuilding(building));
+  }
+
+  private getRequiredBuildingLevelTechnologyName(building: BuildingKind, level: number): string {
+    return getFirstRequiredTechName(getRequiredTechIdsForBuildingLevel(building, level));
   }
 
   private openSubDistrictPicker(button: HTMLButtonElement, data: CelestialObjectPanelData, subDistrictIndex: number): void {
@@ -4152,6 +4307,20 @@ export class CelestialObjectPanel {
   isolation: isolate;
 }
 
+button.coBuildingIconSlot {
+  appearance: none;
+}
+
+.coBuildingIconSlot.upgradeable {
+  border-color: rgba(111, 255, 174, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(111, 255, 174, 0.22), 0 0 12px rgba(111, 255, 174, 0.15);
+}
+
+.coBuildingIconSlot.queuedUpgrade {
+  border-color: rgba(248, 218, 103, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(248, 218, 103, 0.2);
+}
+
 .coBuildingIconArt {
   position: absolute;
   inset: 0;
@@ -4176,6 +4345,40 @@ export class CelestialObjectPanel {
   color: #eafff8;
   font-size: 11px;
   letter-spacing: 0.04em;
+}
+
+.coBuildingLevel,
+.coBuildingUpgradeArrow {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.coBuildingLevel {
+  left: 2px;
+  bottom: 1px;
+  padding: 1px 3px;
+  border-radius: 2px;
+  background: rgba(4, 14, 16, 0.78);
+  color: rgba(226, 255, 244, 0.82);
+  font-size: 8px;
+  line-height: 1.1;
+}
+
+.coBuildingUpgradeArrow {
+  top: 2px;
+  right: 2px;
+  width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(111, 255, 174, 0.7);
+  border-radius: 50%;
+  background: rgba(5, 36, 22, 0.92);
+  color: #92ffb7;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 900;
 }
 
 .coEmbeddedBuildings button {
@@ -4219,6 +4422,15 @@ export class CelestialObjectPanel {
   color: rgba(255, 237, 169, 0.72);
   font-size: 9px;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+}
+
+.coEmbeddedBuildings .filled small[data-co-queued-building-days] {
+  right: 2px;
+  bottom: 1px;
+  left: auto;
+  padding: 1px 3px;
+  background: rgba(24, 17, 3, 0.82);
+  color: rgba(255, 237, 169, 0.84);
 }
 
 .coEmbeddedBuildings .placeholder {
@@ -5135,6 +5347,25 @@ export class CelestialObjectPanel {
 
 [data-co-tooltip] {
   cursor: help;
+}
+
+.coTooltipAction {
+  width: 100%;
+  margin: 6px 0 2px;
+  padding: 5px 8px;
+  border: 1px solid rgba(111, 255, 174, 0.5);
+  border-radius: 4px;
+  background: rgba(12, 57, 38, 0.86);
+  color: #dcffea;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.coTooltipAction:disabled {
+  border-color: rgba(157, 177, 170, 0.26);
+  background: rgba(32, 39, 39, 0.74);
+  color: rgba(212, 228, 222, 0.62);
 }
 
 .coTooltip.visible {
