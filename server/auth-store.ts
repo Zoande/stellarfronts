@@ -30,6 +30,13 @@ import type {
   DevStatsResponse,
   GameMembership,
   GameSummary,
+  NewsComment,
+  NewsCommentVote,
+  NewsContentBlock,
+  NewsPost,
+  NewsPostListItem,
+  NewsPostMutationPayload,
+  NewsPostStatus,
 } from '../src/auth/types';
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -111,6 +118,34 @@ interface MembershipRow {
   flag_design: string | null;
   species_setup: string | null;
   joined_at: number;
+}
+
+interface NewsPostRow {
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  cover_image_url: string | null;
+  blocks: string;
+  status: NewsPostStatus;
+  author_account_id: number;
+  author_username: string;
+  created_at: number;
+  updated_at: number;
+  published_at: number | null;
+  comment_count: number;
+}
+
+interface NewsCommentRow {
+  id: number;
+  post_id: string;
+  account_id: number;
+  author_username: string;
+  body: string;
+  created_at: number;
+  updated_at: number;
+  score: number;
+  user_vote: NewsCommentVote | null;
 }
 
 export interface StoredGame {
@@ -204,6 +239,153 @@ function parseStoredSpeciesSetup(value: string | null): SpeciesSetup | null {
   }
 }
 
+function sanitizePlainText(value: unknown, fieldName: string, maxLength: number, required = true): string {
+  if (typeof value !== 'string') {
+    if (!required && (value === undefined || value === null)) return '';
+    throw new AuthError(`${fieldName} is required`, 400);
+  }
+  const text = value.trim();
+  if (required && !text) {
+    throw new AuthError(`${fieldName} is required`, 400);
+  }
+  if (text.length > maxLength) {
+    throw new AuthError(`${fieldName} must be ${maxLength} characters or fewer`, 400);
+  }
+  return text;
+}
+
+function sanitizeImageUrl(value: unknown, fieldName = 'Image URL', required = true): string | null {
+  if (value === undefined || value === null || value === '') {
+    if (required) throw new AuthError(`${fieldName} is required`, 400);
+    return null;
+  }
+  if (typeof value !== 'string') {
+    throw new AuthError(`${fieldName} must be a URL`, 400);
+  }
+  const url = value.trim();
+  if (!url) {
+    if (required) throw new AuthError(`${fieldName} is required`, 400);
+    return null;
+  }
+  if (url.length > 2048) {
+    throw new AuthError(`${fieldName} must be 2048 characters or fewer`, 400);
+  }
+  if (url.startsWith('/') && !url.startsWith('//')) {
+    return url;
+  }
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return url;
+    }
+  } catch {
+    // Fall through to the shared error below.
+  }
+  throw new AuthError(`${fieldName} must be an http, https, or site-relative URL`, 400);
+}
+
+function sanitizeNewsPostStatus(value: unknown): NewsPostStatus {
+  if (value === undefined || value === null || value === '') return 'draft';
+  if (value === 'draft' || value === 'published') return value;
+  throw new AuthError('Invalid news post status', 400);
+}
+
+function sanitizeNewsBlockId(value: unknown): string {
+  if (typeof value === 'string' && /^[a-z0-9-]{4,80}$/i.test(value)) {
+    return value;
+  }
+  return createNewsBlockId();
+}
+
+function sanitizeNewsBlocks(value: unknown): NewsContentBlock[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  if (value.length > 80) {
+    throw new AuthError('News posts can contain up to 80 content blocks', 400);
+  }
+
+  return value.map((blockInput) => {
+    if (!isRecord(blockInput)) {
+      throw new AuthError('Invalid news content block', 400);
+    }
+
+    const id = sanitizeNewsBlockId(blockInput.id);
+    if (blockInput.type === 'heading') {
+      return {
+        id,
+        type: 'heading',
+        text: sanitizePlainText(blockInput.text, 'Heading text', 180, false),
+      };
+    }
+    if (blockInput.type === 'paragraph') {
+      return {
+        id,
+        type: 'paragraph',
+        text: sanitizePlainText(blockInput.text, 'Paragraph text', 5000, false),
+      };
+    }
+    if (blockInput.type === 'image') {
+      return {
+        id,
+        type: 'image',
+        imageUrl: sanitizeImageUrl(blockInput.imageUrl, 'Image URL', true) ?? '',
+        altText: sanitizePlainText(blockInput.altText, 'Image alt text', 180, false),
+        caption: sanitizePlainText(blockInput.caption, 'Image caption', 280, false),
+      };
+    }
+
+    throw new AuthError('Unsupported news content block type', 400);
+  });
+}
+
+function newsBlockHasContent(block: NewsContentBlock): boolean {
+  if (block.type === 'image') return !!block.imageUrl;
+  return block.text.trim().length > 0;
+}
+
+function sanitizeNewsPostPayload(value: unknown): NewsPostMutationPayload {
+  if (!isRecord(value)) {
+    throw new AuthError('News post payload is required', 400);
+  }
+
+  const status = sanitizeNewsPostStatus(value.status);
+  const payload: NewsPostMutationPayload = {
+    title: sanitizePlainText(value.title, 'Title', 140),
+    summary: sanitizePlainText(value.summary, 'Summary', 420),
+    coverImageUrl: sanitizeImageUrl(value.coverImageUrl, 'Cover image URL', false),
+    blocks: sanitizeNewsBlocks(value.blocks),
+    status,
+  };
+
+  if (status === 'published' && !payload.blocks.some(newsBlockHasContent)) {
+    throw new AuthError('Published news posts need at least one content block', 400);
+  }
+
+  return payload;
+}
+
+function sanitizeNewsCommentBody(value: unknown): string {
+  return sanitizePlainText(value, 'Comment', 1200);
+}
+
+function sanitizeNewsVote(value: unknown): NewsCommentVote {
+  if (value === -1 || value === 0 || value === 1) return value;
+  throw new AuthError('Vote must be -1, 0, or 1', 400);
+}
+
+function slugifyNewsTitle(title: string): string {
+  const slug = title
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 72)
+    .replace(/-+$/g, '');
+  return slug || 'news-post';
+}
+
 function normalizeUsername(username: string): string {
   return username.trim().toLowerCase();
 }
@@ -226,6 +408,14 @@ function createSessionToken(): string {
 
 function createGameId(): string {
   return randomBytes(12).toString('hex');
+}
+
+function createNewsPostId(): string {
+  return randomBytes(12).toString('hex');
+}
+
+function createNewsBlockId(): string {
+  return randomBytes(8).toString('hex');
 }
 
 function createGameSeed(): number {
@@ -366,11 +556,51 @@ export class AuthStore {
         FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS news_posts (
+        id TEXT PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        cover_image_url TEXT,
+        blocks TEXT NOT NULL,
+        status TEXT NOT NULL,
+        author_account_id INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        published_at INTEGER,
+        FOREIGN KEY(author_account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS news_comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        post_id TEXT NOT NULL,
+        account_id INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(post_id) REFERENCES news_posts(id) ON DELETE CASCADE,
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS news_comment_votes (
+        comment_id INTEGER NOT NULL,
+        account_id INTEGER NOT NULL,
+        vote INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY(comment_id, account_id),
+        FOREIGN KEY(comment_id) REFERENCES news_comments(id) ON DELETE CASCADE,
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
       CREATE INDEX IF NOT EXISTS idx_dev_sessions_expires_at ON dev_sessions(expires_at);
       CREATE INDEX IF NOT EXISTS idx_dev_events_type_time ON dev_events(event_type, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_dev_events_account_id ON dev_events(account_id);
       CREATE INDEX IF NOT EXISTS idx_game_memberships_account_id ON game_memberships(account_id);
       CREATE INDEX IF NOT EXISTS idx_game_visits_account_id ON game_visits(account_id, last_entered_at);
+      CREATE INDEX IF NOT EXISTS idx_news_posts_status_time ON news_posts(status, published_at, updated_at);
+      CREATE INDEX IF NOT EXISTS idx_news_comments_post_time ON news_comments(post_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_news_votes_comment ON news_comment_votes(comment_id);
     `);
 
     const membershipColumns = this.db.prepare(`PRAGMA table_info(game_memberships)`).all() as Array<{ name: string }>;
@@ -576,6 +806,177 @@ export class AuthStore {
     if (this.isPrivilegedGameAccount(account)) return { mode: 'observer' };
     const membership = this.getGameMembership(gameId, account.id);
     return membership ? { mode: 'faction', factionId: membership.factionId } : null;
+  }
+
+  listNewsPosts(options?: { includeDrafts?: boolean }): NewsPostListItem[] {
+    const includeDrafts = options?.includeDrafts === true;
+    const rows = this.db.prepare(`
+      SELECT
+        p.*,
+        a.username AS author_username,
+        COUNT(c.id) AS comment_count
+      FROM news_posts p
+      JOIN accounts a ON a.id = p.author_account_id
+      LEFT JOIN news_comments c ON c.post_id = p.id
+      ${includeDrafts ? '' : `WHERE p.status = 'published'`}
+      GROUP BY p.id
+      ORDER BY COALESCE(p.published_at, p.updated_at) DESC, p.created_at DESC
+    `).all() as NewsPostRow[];
+    return rows.map((row) => this.toNewsPostListItem(row));
+  }
+
+  getNewsPostBySlug(
+    slugInput: string,
+    viewer: AuthAccount | null = null,
+    options?: { includeDrafts?: boolean },
+  ): NewsPost | null {
+    const row = this.getNewsPostRowBySlug(slugInput, options?.includeDrafts === true);
+    if (!row) return null;
+    return this.toNewsPost(row, viewer);
+  }
+
+  getNewsPostById(
+    postId: string,
+    viewer: AuthAccount | null = null,
+    options?: { includeDrafts?: boolean },
+  ): NewsPost | null {
+    const row = this.getNewsPostRowById(postId, options?.includeDrafts === true);
+    if (!row) return null;
+    return this.toNewsPost(row, viewer);
+  }
+
+  createNewsPost(account: AuthAccount, payloadInput: unknown): NewsPost {
+    this.assertNewsAdmin(account);
+    const payload = sanitizeNewsPostPayload(payloadInput);
+    const now = Date.now();
+    const id = createNewsPostId();
+    const slug = this.createUniqueNewsSlug(payload.title);
+    const publishedAt = payload.status === 'published' ? now : null;
+
+    this.db.prepare(`
+      INSERT INTO news_posts (
+        id,
+        slug,
+        title,
+        summary,
+        cover_image_url,
+        blocks,
+        status,
+        author_account_id,
+        created_at,
+        updated_at,
+        published_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      slug,
+      payload.title,
+      payload.summary,
+      payload.coverImageUrl ?? null,
+      JSON.stringify(payload.blocks),
+      payload.status ?? 'draft',
+      account.id,
+      now,
+      now,
+      publishedAt,
+    );
+
+    const post = this.getNewsPostById(id, account, { includeDrafts: true });
+    if (!post) throw new AuthError('Could not create news post', 500);
+    return post;
+  }
+
+  updateNewsPost(account: AuthAccount, postId: string, payloadInput: unknown): NewsPost {
+    this.assertNewsAdmin(account);
+    const current = this.getNewsPostRowById(postId, true);
+    if (!current) throw new AuthError('News post not found', 404);
+
+    const payload = sanitizeNewsPostPayload(payloadInput);
+    const now = Date.now();
+    const nextStatus = payload.status ?? 'draft';
+    const publishedAt = nextStatus === 'published'
+      ? current.published_at ?? now
+      : null;
+
+    this.db.prepare(`
+      UPDATE news_posts
+      SET
+        title = ?,
+        summary = ?,
+        cover_image_url = ?,
+        blocks = ?,
+        status = ?,
+        updated_at = ?,
+        published_at = ?
+      WHERE id = ?
+    `).run(
+      payload.title,
+      payload.summary,
+      payload.coverImageUrl ?? null,
+      JSON.stringify(payload.blocks),
+      nextStatus,
+      now,
+      publishedAt,
+      current.id,
+    );
+
+    const post = this.getNewsPostById(current.id, account, { includeDrafts: true });
+    if (!post) throw new AuthError('Could not update news post', 500);
+    return post;
+  }
+
+  deleteNewsPost(account: AuthAccount, postId: string): NewsPostListItem | null {
+    this.assertNewsAdmin(account);
+    const current = this.getNewsPostRowById(postId, true);
+    if (!current) return null;
+    this.db.prepare(`DELETE FROM news_posts WHERE id = ?`).run(current.id);
+    return this.toNewsPostListItem(current);
+  }
+
+  createNewsComment(account: AuthAccount, slugInput: string, bodyInput: unknown): NewsComment {
+    const post = this.getNewsPostRowBySlug(slugInput, false);
+    if (!post) throw new AuthError('News post not found', 404);
+
+    const body = sanitizeNewsCommentBody(bodyInput);
+    const now = Date.now();
+    const result = this.db.prepare(`
+      INSERT INTO news_comments (post_id, account_id, body, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(post.id, account.id, body, now, now);
+
+    const comment = this.getNewsCommentById(Number(result.lastInsertRowid), account.id);
+    if (!comment) throw new AuthError('Could not create comment', 500);
+    return comment;
+  }
+
+  voteNewsComment(account: AuthAccount, commentId: number, voteInput: unknown): NewsComment {
+    const vote = sanitizeNewsVote(voteInput);
+    const current = this.getNewsCommentById(commentId, account.id);
+    if (!current) throw new AuthError('Comment not found', 404);
+
+    const post = this.getNewsPostRowById(current.postId, false);
+    if (!post) throw new AuthError('Comment not found', 404);
+
+    if (vote === 0) {
+      this.db.prepare(`
+        DELETE FROM news_comment_votes
+        WHERE comment_id = ? AND account_id = ?
+      `).run(current.id, account.id);
+    } else {
+      const now = Date.now();
+      this.db.prepare(`
+        INSERT INTO news_comment_votes (comment_id, account_id, vote, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(comment_id, account_id) DO UPDATE SET
+          vote = excluded.vote,
+          updated_at = excluded.updated_at
+      `).run(current.id, account.id, vote, now, now);
+    }
+
+    const comment = this.getNewsCommentById(current.id, account.id);
+    if (!comment) throw new AuthError('Could not update vote', 500);
+    return comment;
   }
 
   getAccountByUsername(username: string): AuthAccount | null {
@@ -1039,6 +1440,154 @@ export class AuthStore {
       joinable: isPrivileged || membership !== null || !isFull,
       lastEnteredAt: row.last_entered_at ?? null,
       membership,
+    };
+  }
+
+  private assertNewsAdmin(account: AuthAccount): void {
+    if (!this.isAdminAccount(account)) {
+      throw new AuthError('Administrator account required', 403);
+    }
+  }
+
+  private createUniqueNewsSlug(title: string): string {
+    const base = slugifyNewsTitle(title);
+    for (let suffix = 0; suffix < 1000; suffix += 1) {
+      const candidate = suffix === 0 ? base : `${base}-${suffix + 1}`;
+      const existing = this.db.prepare(`SELECT id FROM news_posts WHERE slug = ? COLLATE NOCASE`).get(candidate);
+      if (!existing) return candidate;
+    }
+    return `${base}-${randomBytes(3).toString('hex')}`;
+  }
+
+  private getNewsPostRowBySlug(slugInput: string, includeDrafts: boolean): NewsPostRow | null {
+    const slug = slugInput.trim().toLowerCase();
+    if (!slug) return null;
+    const row = this.db.prepare(`
+      SELECT
+        p.*,
+        a.username AS author_username,
+        COUNT(c.id) AS comment_count
+      FROM news_posts p
+      JOIN accounts a ON a.id = p.author_account_id
+      LEFT JOIN news_comments c ON c.post_id = p.id
+      WHERE p.slug = ? COLLATE NOCASE
+        ${includeDrafts ? '' : `AND p.status = 'published'`}
+      GROUP BY p.id
+    `).get(slug) as NewsPostRow | undefined;
+    return row ?? null;
+  }
+
+  private getNewsPostRowById(postId: string, includeDrafts: boolean): NewsPostRow | null {
+    const row = this.db.prepare(`
+      SELECT
+        p.*,
+        a.username AS author_username,
+        COUNT(c.id) AS comment_count
+      FROM news_posts p
+      JOIN accounts a ON a.id = p.author_account_id
+      LEFT JOIN news_comments c ON c.post_id = p.id
+      WHERE p.id = ?
+        ${includeDrafts ? '' : `AND p.status = 'published'`}
+      GROUP BY p.id
+    `).get(postId) as NewsPostRow | undefined;
+    return row ?? null;
+  }
+
+  private getNewsCommentRowsForPost(postId: string, viewerAccountId: number | null): NewsCommentRow[] {
+    return this.db.prepare(`
+      SELECT
+        c.id,
+        c.post_id,
+        c.account_id,
+        a.username AS author_username,
+        c.body,
+        c.created_at,
+        c.updated_at,
+        COALESCE(SUM(all_votes.vote), 0) AS score,
+        COALESCE(viewer_vote.vote, 0) AS user_vote
+      FROM news_comments c
+      JOIN accounts a ON a.id = c.account_id
+      LEFT JOIN news_comment_votes all_votes ON all_votes.comment_id = c.id
+      LEFT JOIN news_comment_votes viewer_vote
+        ON viewer_vote.comment_id = c.id AND viewer_vote.account_id = ?
+      WHERE c.post_id = ?
+      GROUP BY c.id, viewer_vote.vote
+      ORDER BY c.created_at ASC, c.id ASC
+    `).all(viewerAccountId ?? -1, postId) as NewsCommentRow[];
+  }
+
+  private getNewsCommentById(commentId: number, viewerAccountId: number | null): NewsComment | null {
+    const row = this.db.prepare(`
+      SELECT
+        c.id,
+        c.post_id,
+        c.account_id,
+        a.username AS author_username,
+        c.body,
+        c.created_at,
+        c.updated_at,
+        COALESCE(SUM(all_votes.vote), 0) AS score,
+        COALESCE(viewer_vote.vote, 0) AS user_vote
+      FROM news_comments c
+      JOIN accounts a ON a.id = c.account_id
+      LEFT JOIN news_comment_votes all_votes ON all_votes.comment_id = c.id
+      LEFT JOIN news_comment_votes viewer_vote
+        ON viewer_vote.comment_id = c.id AND viewer_vote.account_id = ?
+      WHERE c.id = ?
+      GROUP BY c.id, viewer_vote.vote
+    `).get(viewerAccountId ?? -1, commentId) as NewsCommentRow | undefined;
+    return row ? this.toNewsComment(row) : null;
+  }
+
+  private parseNewsBlocks(blocks: string): NewsContentBlock[] {
+    try {
+      return sanitizeNewsBlocks(JSON.parse(blocks));
+    } catch {
+      return [];
+    }
+  }
+
+  private toNewsPostListItem(row: NewsPostRow): NewsPostListItem {
+    return {
+      id: row.id,
+      slug: row.slug,
+      title: row.title,
+      summary: row.summary,
+      coverImageUrl: row.cover_image_url,
+      status: row.status === 'published' ? 'published' : 'draft',
+      author: {
+        id: row.author_account_id,
+        username: row.author_username,
+      },
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      publishedAt: row.published_at,
+      commentCount: Number(row.comment_count ?? 0),
+    };
+  }
+
+  private toNewsPost(row: NewsPostRow, viewer: AuthAccount | null): NewsPost {
+    return {
+      ...this.toNewsPostListItem(row),
+      blocks: this.parseNewsBlocks(row.blocks),
+      comments: this.getNewsCommentRowsForPost(row.id, viewer?.id ?? null).map((comment) => this.toNewsComment(comment)),
+    };
+  }
+
+  private toNewsComment(row: NewsCommentRow): NewsComment {
+    const userVote = row.user_vote === -1 || row.user_vote === 1 ? row.user_vote : 0;
+    return {
+      id: row.id,
+      postId: row.post_id,
+      author: {
+        id: row.account_id,
+        username: row.author_username,
+      },
+      body: row.body,
+      score: Number(row.score ?? 0),
+      userVote,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
     };
   }
 

@@ -8,6 +8,14 @@ import type {
   GamesResponse,
   GameSummary,
   JoinGameResponse,
+  NewsComment,
+  NewsCommentVote,
+  NewsMediaResponse,
+  NewsPost,
+  NewsPostListItem,
+  NewsPostMutationPayload,
+  NewsPostResponse,
+  NewsPostsResponse,
 } from './types';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
@@ -89,6 +97,61 @@ export async function createDevGame(name: string): Promise<void> {
 
 export async function deleteDevGame(gameId: string): Promise<void> {
   await requestJson(`/api/dev/games/${encodeURIComponent(gameId)}`, undefined, 'DELETE');
+}
+
+export async function getNewsPosts(): Promise<NewsPostListItem[]> {
+  const result = await requestJson<NewsPostsResponse>('/api/news/posts', undefined, 'GET');
+  return result.posts;
+}
+
+export async function getNewsPost(slug: string): Promise<NewsPost> {
+  const result = await requestJson<NewsPostResponse>(`/api/news/posts/${encodeURIComponent(slug)}`, undefined, 'GET');
+  return result.post;
+}
+
+export async function getAdminNewsPosts(): Promise<NewsPostListItem[]> {
+  const result = await requestJson<NewsPostsResponse>('/api/admin/news/posts', undefined, 'GET');
+  return result.posts;
+}
+
+export async function getAdminNewsPost(slug: string): Promise<NewsPost> {
+  const result = await requestJson<NewsPostResponse>(`/api/admin/news/posts/${encodeURIComponent(slug)}`, undefined, 'GET');
+  return result.post;
+}
+
+export async function createNewsPost(payload: NewsPostMutationPayload): Promise<NewsPost> {
+  const result = await requestJson<NewsPostResponse>('/api/admin/news/posts', payload);
+  return result.post;
+}
+
+export async function updateNewsPost(postId: string, payload: NewsPostMutationPayload): Promise<NewsPost> {
+  const result = await requestJson<NewsPostResponse>(`/api/admin/news/posts/${encodeURIComponent(postId)}`, payload);
+  return result.post;
+}
+
+export async function deleteNewsPost(postId: string): Promise<void> {
+  await requestJson(`/api/admin/news/posts/${encodeURIComponent(postId)}`, undefined, 'DELETE');
+}
+
+export async function uploadNewsImage(filename: string, mimeType: string, dataUrl: string): Promise<string> {
+  const result = await requestJson<NewsMediaResponse>('/api/admin/news/media', { filename, mimeType, dataUrl });
+  return result.url;
+}
+
+export async function createNewsComment(slug: string, body: string): Promise<NewsComment> {
+  const result = await requestJson<{ comment: NewsComment }>(
+    `/api/news/posts/${encodeURIComponent(slug)}/comments`,
+    { body },
+  );
+  return result.comment;
+}
+
+export async function voteNewsComment(commentId: number, vote: NewsCommentVote): Promise<NewsComment> {
+  const result = await requestJson<{ comment: NewsComment }>(
+    `/api/news/comments/${encodeURIComponent(String(commentId))}/vote`,
+    { vote },
+  );
+  return result.comment;
 }
 
 export async function requestOAuthPlaceholder(provider: 'google' | 'microsoft'): Promise<never> {

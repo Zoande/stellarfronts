@@ -563,6 +563,49 @@ body {
   border-radius: 8px;
 }
 
+.auth-community-nav {
+  position: relative;
+  z-index: 30;
+  width: min(1500px, calc(100% - 48px));
+  min-height: 32px;
+  margin: 0 auto -30px;
+  padding-top: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  color: rgba(214, 221, 231, 0.58);
+}
+
+.auth-community-nav a,
+.auth-community-nav button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-decoration: none;
+  text-transform: uppercase;
+  transition: color 160ms ease, text-shadow 160ms ease;
+}
+
+.auth-community-nav a {
+  color: #75cdf7;
+  text-shadow: 0 0 14px rgba(117, 205, 247, 0.28);
+}
+
+.auth-community-nav button {
+  cursor: default;
+}
+
+.auth-community-nav a:hover {
+  color: #f3f7ff;
+  text-shadow: 0 0 18px rgba(112, 184, 255, 0.46);
+}
+
 .auth-scanlines {
   position: fixed;
   inset: 0;
