@@ -5,6 +5,8 @@ import type { TechId } from "./Technology";
 export type GovernmentLawId =
   | "economicPolicy"
   | "civilRights"
+  | "speciesPolicy"
+  | "migrationPolicy"
   | "policingDoctrine"
   | "researchCharter"
   | "militaryDoctrine";
@@ -243,6 +245,102 @@ export const GOVERNMENT_LAW_DEFINITIONS: GovernmentLawDefinition[] = [
           { type: "planetModifier", target: "happiness", operation: "add", value: -8 },
           { type: "fleetModifier", target: "attack", value: 0.03 },
           { type: "flag", flag: "martial_law_unlocked" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "speciesPolicy",
+    name: "Species Policy",
+    icon: "SPC",
+    description: "Controls how broadly species rights may diverge across the empire.",
+    defaultOptionId: "managedResidency",
+    options: [
+      {
+        id: "pluralistProtections",
+        name: "Pluralist Protections",
+        summary: "Only inclusive species rights are legal.",
+        description: "Protects resident species from harsh legal categories and keeps migration relatively open.",
+        effects: [
+          { type: "planetModifier", target: "happiness", operation: "add", value: 2 },
+          { type: "empireStat", stat: "unity", value: 0.06 },
+          { type: "flag", flag: "species_pluralism" },
+        ],
+      },
+      {
+        id: "managedResidency",
+        name: "Managed Residency",
+        summary: "Balanced species rights with limited restrictions.",
+        description: "Allows normal residency controls without legalizing forced labor standards.",
+        effects: [
+          { type: "planetModifier", target: "stability", operation: "add", value: 1 },
+          { type: "empireStat", stat: "administrativeEfficiency", value: 0.02 },
+        ],
+      },
+      {
+        id: "stratifiedSpeciesCodes",
+        name: "Stratified Species Codes",
+        summary: "All non-lethal harsh rights are legal.",
+        description: "Allows severe work and living standard restrictions at a happiness and diplomacy cost.",
+        effects: [
+          { type: "planetModifier", target: "happiness", operation: "add", value: -3 },
+          { type: "planetModifier", target: "crime", operation: "multiply", value: 0.08 },
+          { type: "empireStat", stat: "diplomaticRelations", value: -6 },
+          { type: "flag", flag: "species_stratification" },
+        ],
+      },
+    ],
+  },
+  {
+    id: "migrationPolicy",
+    name: "Migration Policy",
+    icon: "MIG",
+    description: "Controls voluntary relocation between colonies and across foreign borders.",
+    defaultOptionId: "managedMigration",
+    options: [
+      {
+        id: "managedMigration",
+        name: "Managed Migration",
+        summary: "Balanced internal movement with limited external migration.",
+        description: "Citizens can relocate to better worlds through normal administrative channels.",
+        effects: [
+          { type: "empireStat", stat: "administrativeEfficiency", value: 0.01 },
+          { type: "flag", flag: "migration_managed" },
+        ],
+      },
+      {
+        id: "freeMovement",
+        name: "Free Movement",
+        summary: "High internal and treaty migration.",
+        description: "Removes most relocation barriers, helping labor flow away from unstable or overcrowded planets.",
+        effects: [
+          { type: "planetModifier", target: "happiness", operation: "add", value: 1 },
+          { type: "empireStat", stat: "diplomaticRelations", value: 2 },
+          { type: "flag", flag: "migration_free_movement" },
+        ],
+      },
+      {
+        id: "migrationControls",
+        name: "Migration Controls",
+        summary: "Slow, state-screened relocation.",
+        description: "Restricts most migration while preserving limited internal transfers from failing worlds.",
+        effects: [
+          { type: "planetModifier", target: "stability", operation: "add", value: 1 },
+          { type: "empireStat", stat: "diplomaticRelations", value: -3 },
+          { type: "flag", flag: "migration_controls" },
+        ],
+      },
+      {
+        id: "closedMovement",
+        name: "Closed Movement",
+        summary: "Blocks almost all voluntary migration.",
+        description: "Prevents foreign migration and sharply reduces internal transfers, trading flexibility for control.",
+        requiresTechId: "logistics_accounting",
+        effects: [
+          { type: "planetModifier", target: "stability", operation: "add", value: 2 },
+          { type: "planetModifier", target: "happiness", operation: "add", value: -2 },
+          { type: "empireStat", stat: "diplomaticRelations", value: -8 },
+          { type: "flag", flag: "migration_closed" },
         ],
       },
     ],

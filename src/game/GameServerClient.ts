@@ -129,7 +129,9 @@ export class GameServerClient {
             technologies: parsed.technologies ?? this.latestSnapshot.technologies,
             leaders: parsed.leaders ?? this.latestSnapshot.leaders,
             governments: parsed.governments ?? this.latestSnapshot.governments,
+            species: parsed.species ?? this.latestSnapshot.species,
             recentCombatContacts: parsed.recentCombatContacts ?? this.latestSnapshot.recentCombatContacts,
+            diplomacy: parsed.diplomacy ?? this.latestSnapshot.diplomacy,
           };
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);
           return;

@@ -711,6 +711,7 @@ export function createPlanetStateFromConfig(
   planet: PlanetConfig,
   existing?: Partial<PlanetState>,
   seedFeatures?: PlanetFeatureKind[],
+  options?: { starterInfrastructure?: boolean; startingPopulation?: number },
 ): PlanetState {
   return createPlanetStateFromSeed({
     id: planet.id || createPlanetId(starId, planetIndex),
@@ -721,6 +722,8 @@ export function createPlanetStateFromConfig(
     features: seedFeatures,
     builtDistricts: normalizeDistrictCounts(planet.objectDetails.builtDistricts, planet.objectDetails.districtLimits),
     districtLimits: planet.objectDetails.districtLimits,
+    starterInfrastructure: options?.starterInfrastructure,
+    startingPopulation: options?.startingPopulation,
   }, existing);
 }
 

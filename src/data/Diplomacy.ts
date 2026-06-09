@@ -1,12 +1,13 @@
 export type BorderPolicy = "open" | "closed";
-export type TreatyArticleId = "tradePrivilege";
+export type TreatyArticleId = "tradePrivilege" | "migrationPact";
 export type DiplomacyProposalKind = "treaty" | "peace";
 export type DiplomacyProposalStatus = "pending" | "accepted" | "declined" | "cancelled";
 export type PeaceMode = "whitePeace" | "statusQuo";
 
 export interface TreatyArticleEffect {
-  type: "marketSharedSupply";
-  shareFraction: number;
+  type: "marketSharedSupply" | "migrationMultiplier";
+  shareFraction?: number;
+  multiplier?: number;
 }
 
 export interface TreatyArticleDefinition {
@@ -96,15 +97,26 @@ export const TREATY_MAX_YEARS = 100;
 export const TREATY_DEFAULT_YEARS = 10;
 export const DIPLOMACY_CHAT_LIMIT_PER_PAIR = 200;
 export const TRADE_PRIVILEGE_ARTICLE_ID: TreatyArticleId = "tradePrivilege";
+export const MIGRATION_PACT_ARTICLE_ID: TreatyArticleId = "migrationPact";
 
-export const TREATY_ARTICLE_DEFINITIONS: TreatyArticleDefinition[] = [{
-  id: TRADE_PRIVILEGE_ARTICLE_ID,
-  name: "Trade Privilege",
-  summary: "Share 25% of internal market supply and demand.",
-  description: "Both countries include one quarter of the partner's production and consumption when calculating internal market quotes. Stockpiles are not transferred.",
-  suspendOnWar: true,
-  effects: [{ type: "marketSharedSupply", shareFraction: 0.25 }],
-}];
+export const TREATY_ARTICLE_DEFINITIONS: TreatyArticleDefinition[] = [
+  {
+    id: TRADE_PRIVILEGE_ARTICLE_ID,
+    name: "Trade Privilege",
+    summary: "Share 25% of internal market supply and demand.",
+    description: "Both countries include one quarter of the partner's production and consumption when calculating internal market quotes. Stockpiles are not transferred.",
+    suspendOnWar: true,
+    effects: [{ type: "marketSharedSupply", shareFraction: 0.25 }],
+  },
+  {
+    id: MIGRATION_PACT_ARTICLE_ID,
+    name: "Migration Pact",
+    summary: "Greatly increases voluntary population movement between both empires.",
+    description: "Both countries allow managed civilian relocation. Stable, housed, job-rich planets become much stronger migration targets, while failing worlds lose population faster.",
+    suspendOnWar: true,
+    effects: [{ type: "migrationMultiplier", multiplier: 4 }],
+  },
+];
 
 const TREATY_ARTICLE_BY_ID = new Map<TreatyArticleId, TreatyArticleDefinition>(
   TREATY_ARTICLE_DEFINITIONS.map((article) => [article.id, article]),
@@ -237,7 +249,7 @@ export function normalizeTreatyArticleIds(articleIds: unknown): TreatyArticleId[
   const normalized: TreatyArticleId[] = [];
   if (!Array.isArray(articleIds)) return normalized;
   for (const articleId of articleIds) {
-    if (articleId !== TRADE_PRIVILEGE_ARTICLE_ID) continue;
+    if (articleId !== TRADE_PRIVILEGE_ARTICLE_ID && articleId !== MIGRATION_PACT_ARTICLE_ID) continue;
     if (!normalized.includes(articleId)) normalized.push(articleId);
   }
   return normalized;

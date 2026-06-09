@@ -6,6 +6,7 @@ import { GameLogoutButton } from '@/components/GameLogoutButton';
 import { FlagJoinForm } from '@/components/FlagJoinForm';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import type { FlagDesign } from '@/flags/flagTypes';
+import type { SpeciesSetup } from '@/data/Species';
 import '../styles/Game.css';
 
 interface GamePageProps {
@@ -143,12 +144,12 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
     };
   }, [accountType, entryMode, gameId, username]);
 
-  const handleJoin = async (selectedCountryName: string, flagDesign: FlagDesign) => {
+  const handleJoin = async (selectedCountryName: string, flagDesign: FlagDesign, speciesSetup: SpeciesSetup) => {
     if (!entryGame || joinBusy) return;
     try {
       setJoinBusy(true);
       setEntryError('');
-      const result = await joinGame(entryGame.id, selectedCountryName, flagDesign);
+      const result = await joinGame(entryGame.id, selectedCountryName, flagDesign, speciesSetup);
       setEntryGame(result.game);
       setEntryMode('ready');
     } catch (error) {

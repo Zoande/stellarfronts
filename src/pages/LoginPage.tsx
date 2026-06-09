@@ -30,6 +30,8 @@ const commandSignals = [
   ['New Player Slots', 'Available slots open in galaxies'],
 ];
 
+const communityNavItems = ['Forums', 'Support', 'Privacy Policy', 'Terms and Conditions'];
+
 const operations = [
   {
     image: '/textures/planet-banners/Grassland_banner_city.webp',
@@ -150,6 +152,15 @@ export default function LoginPage({ onLoginSubmit, onSignupSubmit }: LoginPagePr
       <div className="auth-scanlines" aria-hidden="true" />
       <div className="auth-route auth-route--one" aria-hidden="true" />
       <div className="auth-route auth-route--two" aria-hidden="true" />
+
+      <nav className="auth-community-nav" aria-label="Community navigation">
+        <a href="/news">News</a>
+        {communityNavItems.map((item) => (
+          <button key={item} type="button" aria-disabled="true">
+            {item}
+          </button>
+        ))}
+      </nav>
 
       <section className="auth-hero" aria-label="StellarFronts command login">
         <div className="auth-hero__copy">

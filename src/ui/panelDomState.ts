@@ -61,6 +61,8 @@ export class PanelInteractionGate {
     root.addEventListener("pointerup", this.holdForRelease, { capture: true });
     root.addEventListener("pointercancel", this.holdForRelease, { capture: true });
     root.addEventListener("click", this.holdForRelease, { capture: true });
+    root.addEventListener("wheel", this.holdForScroll, { capture: true, passive: true });
+    root.addEventListener("scroll", this.holdForScroll, { capture: true });
   }
 
   isBusy(root: HTMLElement | null): boolean {
@@ -78,6 +80,10 @@ export class PanelInteractionGate {
 
   private readonly holdForRelease = (): void => {
     this.deferFor(120);
+  };
+
+  private readonly holdForScroll = (): void => {
+    this.deferFor(220);
   };
 
   private deferFor(durationMs: number): void {

@@ -27,6 +27,12 @@ import type { FactionTechnologyView, TechId } from "../data/Technology";
 import type { LeaderAssignment, LeaderState } from "../data/Leaders";
 import type { FactionGovernmentState, GovernmentLawId, GovernmentLawOptionId } from "../data/Government";
 import type {
+  FactionSpeciesRightsState,
+  LegalSpeciesRightsOptions,
+  SpeciesRights,
+  SpeciesState,
+} from "../data/Species";
+import type {
   BorderPolicy,
   DiplomacyChatMessage,
   DiplomacyPeaceTerms,
@@ -52,6 +58,7 @@ import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 export type ShipAction =
   | "move"
   | "build"
+  | "colonize"
   | "attack"
   | "merge"
   | "stop"
@@ -99,6 +106,7 @@ export type ServerUpdateField =
   | "technologies"
   | "leaders"
   | "governments"
+  | "species"
   | "diplomacy"
   | "market"
   | "combatContacts";
@@ -147,6 +155,7 @@ export type GameDetailScope =
   | "technology"
   | "leaders"
   | "government"
+  | "society"
   | "diplomacy"
   | "selection"
   | "hud";
@@ -265,6 +274,32 @@ export interface GovernmentDetailPayload {
   factionEconomies: FactionEconomyState[];
 }
 
+export interface SocietyPlanetSpeciesSummary {
+  planetId: string;
+  planetName: string;
+  starId: number;
+  starName: string;
+  population: number;
+  speciesPopulations: Array<{ speciesId: string; population: number }>;
+  averageHappiness: number;
+  averageHabitability: number;
+}
+
+export interface SocietyDetailPayload {
+  playerFactionId: number | null;
+  faction: FactionState | null;
+  species: SpeciesState[];
+  rights: FactionSpeciesRightsState | null;
+  legalOptions: LegalSpeciesRightsOptions;
+  government: FactionGovernmentState | null;
+  factionEconomy: FactionEconomyState | null;
+  planets: SocietyPlanetSpeciesSummary[];
+  laws: {
+    civilRights: string;
+    speciesPolicy: string;
+  };
+}
+
 export interface DiplomacyCountrySummary {
   faction: FactionState;
   isSelf: boolean;
@@ -275,6 +310,8 @@ export interface DiplomacyCountrySummary {
   pendingProposalCount: number;
   tradePrivilegeActive: boolean;
   tradePrivilegeSuspended: boolean;
+  migrationPactActive: boolean;
+  migrationPactSuspended: boolean;
 }
 
 export interface DiplomacyEligiblePeaceTransferSystem extends DiplomacySystemTransferTerm {
@@ -326,6 +363,7 @@ export type GameDetailPayload =
   | TechnologyDetailPayload
   | LeadersDetailPayload
   | GovernmentDetailPayload
+  | SocietyDetailPayload
   | DiplomacyDetailPayload
   | SelectionDetailPayload
   | HudDetailPayload;
@@ -511,6 +549,12 @@ export interface OrbitPlanetCommand {
   planetId: string;
 }
 
+export interface ColonizePlanetCommand {
+  type: "colonizePlanet";
+  fleetId: string;
+  planetId: string;
+}
+
 export interface MergeFleetsCommand {
   type: "mergeFleets";
   targetFleetId: string;
@@ -539,6 +583,14 @@ export interface BuildPlanetBuildingCommand {
   area: BuildingSlotArea;
   slotIndex: number;
   buildingKind: BuildingKind;
+  subDistrictIndex?: number;
+}
+
+export interface UpgradePlanetBuildingCommand {
+  type: "upgradePlanetBuilding";
+  planetId: string;
+  area: BuildingSlotArea;
+  slotIndex: number;
   subDistrictIndex?: number;
 }
 
@@ -624,6 +676,12 @@ export interface SetGovernmentLawCommand {
   type: "setGovernmentLaw";
   lawId: GovernmentLawId;
   optionId: GovernmentLawOptionId;
+}
+
+export interface SetSpeciesRightsCommand {
+  type: "setSpeciesRights";
+  speciesId: string;
+  rights: Partial<SpeciesRights>;
 }
 
 export interface RetreatFleetCommand {
@@ -773,11 +831,13 @@ export type ClientCommand =
   | MoveCommand
   | BuildCommand
   | OrbitPlanetCommand
+  | ColonizePlanetCommand
   | MergeFleetsCommand
   | StopFleetCommand
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
+  | UpgradePlanetBuildingCommand
   | CancelPlanetConstructionCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
@@ -790,6 +850,7 @@ export type ClientCommand =
   | AssignLeaderCommand
   | DismissLeaderCommand
   | SetGovernmentLawCommand
+  | SetSpeciesRightsCommand
   | SetUrbanSubDistrictCommand
   | MarketTradeCommand
   | AddMarketAutoTradeCommand
@@ -834,6 +895,7 @@ export interface GameSnapshot {
   technologies: FactionTechnologyView[];
   leaders: LeaderState[];
   governments: FactionGovernmentState[];
+  species: SpeciesState[];
   recentCombatContacts: ServerCombatContact[];
   diplomacy: DiplomacyMovementPayload;
 }
@@ -860,6 +922,7 @@ export interface GameUpdate {
   technologies?: FactionTechnologyView[];
   leaders?: LeaderState[];
   governments?: FactionGovernmentState[];
+  species?: SpeciesState[];
   recentCombatContacts?: ServerCombatContact[];
   diplomacy?: DiplomacyMovementPayload;
 }

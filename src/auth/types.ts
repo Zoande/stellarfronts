@@ -1,4 +1,5 @@
 import type { FlagDesign } from '../flags/flagTypes';
+import type { SpeciesSetup } from '../data/Species';
 
 export type AccountType = 'observer' | 'user' | 'admin';
 
@@ -125,6 +126,7 @@ export interface GameMembership {
   factionId: number;
   countryName: string;
   flagDesign: FlagDesign | null;
+  speciesSetup: SpeciesSetup | null;
   joinedAt: number;
 }
 
@@ -149,4 +151,88 @@ export interface GamesResponse {
 export interface JoinGameResponse {
   game: GameSummary;
   membership: GameMembership | null;
+}
+
+export type NewsPostStatus = 'draft' | 'published';
+export type NewsCommentVote = -1 | 0 | 1;
+
+export interface NewsAuthor {
+  id: number;
+  username: string;
+}
+
+export interface NewsHeadingBlock {
+  id: string;
+  type: 'heading';
+  text: string;
+}
+
+export interface NewsParagraphBlock {
+  id: string;
+  type: 'paragraph';
+  text: string;
+}
+
+export interface NewsImageBlock {
+  id: string;
+  type: 'image';
+  imageUrl: string;
+  altText: string;
+  caption: string;
+}
+
+export type NewsContentBlock = NewsHeadingBlock | NewsParagraphBlock | NewsImageBlock;
+
+export interface NewsComment {
+  id: number;
+  postId: string;
+  author: NewsAuthor;
+  body: string;
+  score: number;
+  userVote: NewsCommentVote;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface NewsPostListItem {
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  coverImageUrl: string | null;
+  status: NewsPostStatus;
+  author: NewsAuthor;
+  createdAt: number;
+  updatedAt: number;
+  publishedAt: number | null;
+  commentCount: number;
+}
+
+export interface NewsPost extends NewsPostListItem {
+  blocks: NewsContentBlock[];
+  comments: NewsComment[];
+}
+
+export interface NewsPostsResponse {
+  posts: NewsPostListItem[];
+}
+
+export interface NewsPostResponse {
+  post: NewsPost;
+}
+
+export interface NewsPostMutationPayload {
+  title: string;
+  summary: string;
+  coverImageUrl?: string | null;
+  blocks: NewsContentBlock[];
+  status?: NewsPostStatus;
+}
+
+export interface NewsCommentResponse {
+  comment: NewsComment;
+}
+
+export interface NewsMediaResponse {
+  url: string;
 }

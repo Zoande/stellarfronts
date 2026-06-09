@@ -38,6 +38,21 @@ test("default construction ship design has utility systems and no weapons", () =
   assert.ok(stats.combat.maxHull > 0);
 });
 
+test("default colonization ship design has utility systems and no weapons", () => {
+  const design = createDefaultShipDesign(1, "colonizationShip", 2100);
+  const layout = getShipDesignLayout(design);
+  const stats = calculateShipDesignStats(design);
+
+  assert.deepEqual(design.weaponSectionModuleIds, []);
+  assert.deepEqual(design.defenseSectionModuleIds, []);
+  assert.equal(layout.weaponSlots.length, 0);
+  assert.equal(layout.defenseSlots.length, 0);
+  assert.equal(layout.utilitySlots.length, 3);
+  assert.equal(stats.combat.weaponMounts.length, 0);
+  assert.ok(stats.combat.maxHull > 0);
+  assert.ok(stats.cost.goods > 0);
+});
+
 test("default larger combat hulls produce valid scaled layouts", () => {
   const cases = [
     { kind: "destroyer" as const, weaponSections: 1, defenseSections: 1, utilities: 6, weapons: 3, defenses: 4 },
@@ -135,4 +150,57 @@ test("optical targeting utility extends weapon range bands", () => {
 
   assert.equal(missile?.maxRangeBand, "extreme");
   assert.equal(stats.combat.sensorRange, 4);
+});
+
+test("new heavy sections and advanced modules calculate combat stats", () => {
+  const design = normalizeShipDesign({
+    id: "siege",
+    ownerId: 7,
+    shipKind: "battleship",
+    name: "Siege Battleship",
+    weaponSectionModuleIds: [
+      "weapon_section_battleship_siege",
+      "weapon_section_battleship_line",
+      "weapon_section_battleship_line",
+    ],
+    defenseSectionModuleIds: [
+      "defense_section_battleship_siege",
+      "defense_section_battleship_line",
+      "defense_section_battleship_line",
+    ],
+    weaponModuleIds: [
+      "weapon_plasma_projector_large",
+      "weapon_railgun_large",
+      "weapon_missile_rack_large",
+      "weapon_laser_cannon_large",
+      "weapon_laser_cannon_large",
+      "weapon_railgun_medium",
+      "weapon_railgun_medium",
+      "weapon_plasma_projector_large",
+      "weapon_missile_rack_large",
+      "weapon_missile_rack",
+      "weapon_laser_cannon_medium",
+    ],
+    defenseModuleIds: ["defense_armor_plating"],
+    utilityModuleIds: [
+      "utility_command_uplink",
+      "utility_armor_nanites",
+      "utility_optical_array",
+      "utility_fire_control",
+      "utility_reactor_capacitor",
+      "utility_repair_drones",
+      "utility_shield_capacitor",
+      "utility_command_uplink",
+    ],
+  }, 7, 2100);
+  const layout = getShipDesignLayout(design);
+  const stats = calculateShipDesignStats(design);
+  const weaponKinds = new Set(stats.combat.weaponMounts.map((mount) => mount.kind));
+
+  assert.equal(layout.weaponSlots.length, 11);
+  assert.equal(layout.defenseSlots.length, 10);
+  assert.equal(stats.combat.weaponMounts.length, 11);
+  assert.equal(weaponKinds.has("plasma"), true);
+  assert.equal(weaponKinds.has("railgun"), true);
+  assert.ok(stats.combat.sensorRange >= 6);
 });

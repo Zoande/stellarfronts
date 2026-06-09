@@ -4,6 +4,7 @@ import LoginPage from './pages/LoginPage';
 import GamePage from './pages/GamePage';
 import HomePage from './pages/HomePage';
 import DevPage from './pages/DevPage';
+import NewsPage from './pages/NewsPage';
 import { LoadingScreen } from './components/LoadingScreen';
 import BackgroundScene from './components/BackgroundScene';
 import { useAppFlow } from './hooks/useAppFlow';
@@ -127,11 +128,21 @@ function MainAppFlow() {
 function App() {
   const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
   const isDevRoute = currentPath === '/dev' || currentPath.startsWith('/dev/');
+  const isNewsRoute = currentPath === '/news' || currentPath.startsWith('/news/');
 
   if (isDevRoute) {
     return (
       <Router>
         <DevPage />
+      </Router>
+    );
+  }
+
+  if (isNewsRoute) {
+    return (
+      <Router>
+        <NewsPage />
+        <Analytics />
       </Router>
     );
   }

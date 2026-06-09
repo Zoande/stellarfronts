@@ -129,6 +129,7 @@ export class FleetManagerPanel {
   private shipPreviewCanvas: HTMLCanvasElement | null = null;
   private shipPreviewEngine: Engine | null = null;
   private shipPreviewScene: Scene | null = null;
+  private shipPreviewCamera: ArcRotateCamera | null = null;
   private shipPreviewRoot: TransformNode | null = null;
   private shipPreviewLoadPromise: Promise<void> | null = null;
   private shipPreviewResizeObserver: ResizeObserver | null = null;
@@ -299,6 +300,7 @@ export class FleetManagerPanel {
     camera.panningSensibility = 0;
     camera.attachControl(this.shipPreviewCanvas, true);
     scene.activeCamera = camera;
+    this.shipPreviewCamera = camera;
 
     const fill = new HemisphericLight("fleetManagerShipPreviewFill", new Vector3(0.2, 1, 0.35), scene);
     fill.intensity = 0.85;
@@ -438,6 +440,7 @@ export class FleetManagerPanel {
     this.shipPreviewCanvas = null;
     this.shipPreviewEngine = null;
     this.shipPreviewScene = null;
+    this.shipPreviewCamera = null;
     this.shipPreviewRoot = null;
     this.shipPreviewLoadPromise = null;
     this.lastLoadedShipKind = null;
@@ -680,6 +683,22 @@ export class FleetManagerPanel {
       if (!this.designerDraft?.id) return;
       data.onFleetCommand?.({ type: "decommissionShipDesign", designId: this.designerDraft.id });
     });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-fm-preview-zoom]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.adjustShipPreviewZoom(button.dataset.fmPreviewZoom ?? "reset");
+      });
+    });
+  }
+
+  private adjustShipPreviewZoom(action: string): void {
+    const camera = this.shipPreviewCamera;
+    if (!camera) return;
+    if (action === "reset") {
+      camera.radius = 6.2;
+      return;
+    }
+    const delta = action === "in" ? -0.55 : 0.55;
+    camera.radius = Math.max(camera.lowerRadiusLimit ?? 4.2, Math.min(camera.upperRadiusLimit ?? 8.5, camera.radius + delta));
   }
 
   private applyPosition(): void {
@@ -1127,28 +1146,45 @@ export class FleetManagerPanel {
           </div>
           <div class="fmDesignViewport" data-fm-ship-preview aria-label="Ship preview">
             <div class="fmPreviewOverlay">
-              <div class="fmTopSlotTray">
-                <div class="fmCoreSelector">
-                  <div class="fmSectionModuleRow">
+              <div class="fmPreviewZoomControls" aria-label="Ship preview zoom">
+                <button type="button" data-fm-preview-zoom="out" aria-label="Zoom ship preview out">-</button>
+                <button type="button" data-fm-preview-zoom="reset" aria-label="Reset ship preview zoom">1:1</button>
+                <button type="button" data-fm-preview-zoom="in" aria-label="Zoom ship preview in">+</button>
+              </div>
+              <div class="fmPreviewTopBands">
+                <div class="fmPreviewBand fmSectionBand">
+                  <span class="fmPreviewBandLabel">Sections</span>
+                  <div class="fmPreviewBandScroll">
+                    <div class="fmSectionModuleRow">
                     ${draft.weaponSectionModuleIds.map((moduleId, index) => this.renderSectionModuleSlot("weaponSection", index, moduleId)).join("")}
+                    </div>
                   </div>
                 </div>
-                <div class="fmPreviewSlotGroup fmWeaponGroup">
-                  <div class="fmSlotRow fmWeaponSlots">
-                    ${layout.weaponSlots.map((slot, index) => this.renderDesignSlot("weapon", index, draft.weaponModuleIds[index], slot)).join("")}
-                  </div>
-                </div>
-              </div>
-              <div class="fmBottomSlotTray">
-                <div class="fmPreviewSlotGroup fmDefenseGroup">
-                  <div class="fmSlotRow fmDefenseSlots">
-                    ${layout.defenseSlots.map((slot, index) => this.renderDesignSlot("defense", index, draft.defenseModuleIds[index], slot)).join("")}
+                <div class="fmPreviewBand">
+                  <span class="fmPreviewBandLabel">Weapons</span>
+                  <div class="fmPreviewBandScroll">
+                    <div class="fmSlotRow fmWeaponSlots">
+                      ${layout.weaponSlots.map((slot, index) => this.renderDesignSlot("weapon", index, draft.weaponModuleIds[index], slot)).join("")}
+                    </div>
                   </div>
                 </div>
               </div>
-              <div class="fmUtilityRail">
-                <div class="fmSlotColumn">
-                  ${layout.utilitySlots.map((slot, index) => this.renderDesignSlot("utility", index, draft.utilityModuleIds[index], slot)).join("")}
+              <div class="fmPreviewBottomBands">
+                <div class="fmPreviewBand">
+                  <span class="fmPreviewBandLabel">Defense</span>
+                  <div class="fmPreviewBandScroll">
+                    <div class="fmSlotRow fmDefenseSlots">
+                      ${layout.defenseSlots.map((slot, index) => this.renderDesignSlot("defense", index, draft.defenseModuleIds[index], slot)).join("")}
+                    </div>
+                  </div>
+                </div>
+                <div class="fmPreviewBand">
+                  <span class="fmPreviewBandLabel">Utility</span>
+                  <div class="fmPreviewBandScroll">
+                    <div class="fmSlotRow fmUtilitySlots">
+                      ${layout.utilitySlots.map((slot, index) => this.renderDesignSlot("utility", index, draft.utilityModuleIds[index], slot)).join("")}
+                    </div>
+                  </div>
                 </div>
               </div>
               ${this.selectedDesignerSlot ? `<div class="fmModulePalette fmPreviewPalette">${this.renderModulePalette()}</div>` : ""}
@@ -1187,6 +1223,7 @@ export class FleetManagerPanel {
     }
     const orderedKinds: StarbaseShipKind[] = STARBASE_SHIP_KINDS;
     return orderedKinds.map((shipKind) => {
+      if (!this.isShipHullUnlocked(data, shipKind)) return "";
       const designs = (groups.get(shipKind) ?? []).sort((a, b) => a.name.localeCompare(b.name));
       if (designs.length === 0) return "";
       const hull = SHIP_HULL_DEFINITIONS[shipKind];
@@ -1311,12 +1348,20 @@ export class FleetManagerPanel {
   }
 
   private ensureDesignerDraft(data: FleetManagerPanelData): void {
-    const available = this.getActiveDesigns(data, data.playerFactionId ?? undefined);
+    const available = this.getActiveDesigns(data, data.playerFactionId ?? undefined)
+      .filter((design) => this.isShipHullUnlocked(data, design.shipKind));
     const selected = this.selectedDesignId
       ? data.shipDesigns.find((design) => design.id === this.selectedDesignId)
       : null;
-    if (this.designerDraft && (!this.selectedDesignId || selected)) return;
-    const design = selected ?? available[0] ?? data.shipDesigns.find((candidate) => candidate.status === "active");
+    const selectedIsUnlocked = selected ? this.isShipHullUnlocked(data, selected.shipKind) : false;
+    if (
+      this.designerDraft
+      && (!this.selectedDesignId || (selected && selectedIsUnlocked))
+      && this.isShipHullUnlocked(data, this.designerDraft.shipKind)
+    ) {
+      return;
+    }
+    const design = selectedIsUnlocked ? selected : available[0] ?? null;
     this.selectedDesignId = design?.id ?? null;
     this.designerDraft = design ? this.cloneDesign(design) : null;
   }
@@ -1395,6 +1440,10 @@ export class FleetManagerPanel {
       if (!this.areRequiredTechsCompleted(technology, required)) return getFirstRequiredTechName(required);
     }
     return null;
+  }
+
+  private isShipHullUnlocked(data: FleetManagerPanelData, shipKind: StarbaseShipKind): boolean {
+    return this.areRequiredTechsCompleted(data.technology, getRequiredTechIdsForShipHull(shipKind));
   }
 
   private isShipModuleUnlocked(technology: FactionTechnologyView | null | undefined, moduleId: string): boolean {
@@ -3455,7 +3504,7 @@ export class FleetManagerPanel {
 
 .fmDesignViewport {
   position: relative;
-  min-height: 430px;
+  min-height: 500px;
   border: 1px solid rgba(103, 255, 221, 0.2);
   background:
     radial-gradient(circle at 24% 42%, rgba(36, 117, 122, 0.3), transparent 13rem),
@@ -3511,125 +3560,166 @@ export class FleetManagerPanel {
   pointer-events: none;
 }
 
-.fmTopSlotTray {
+.fmPreviewZoomControls {
   position: absolute;
-  top: 10px;
-  left: 10px;
-  right: 92px;
-  display: grid;
-  grid-template-rows: auto auto auto;
-  justify-items: center;
+  top: 12px;
+  right: 12px;
+  z-index: 5;
+  display: flex;
   gap: 4px;
   pointer-events: auto;
 }
 
-.fmCoreSelector {
-  width: min(230px, 100%);
+.fmPreviewZoomControls button {
+  width: 34px;
+  height: 28px;
+  border: 1px solid rgba(103, 255, 221, 0.38);
+  background: rgba(2, 17, 21, 0.74);
+  color: #d8fff6;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
 }
 
-.fmCoreSelector .fmSectionModuleRow {
-  margin: 0;
+.fmPreviewZoomControls button:hover {
+  border-color: rgba(103, 255, 221, 0.72);
+  background: rgba(8, 45, 49, 0.82);
 }
 
-.fmCoreSelector .fmSectionModuleSlot {
-  min-height: 30px;
-  grid-template-columns: 24px minmax(0, 1fr);
-  padding: 3px 8px;
+.fmPreviewTopBands,
+.fmPreviewBottomBands {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  z-index: 4;
+  display: grid;
+  gap: 5px;
+  pointer-events: auto;
+}
+
+.fmPreviewTopBands {
+  top: 12px;
+  right: 126px;
+}
+
+.fmPreviewBottomBands {
+  bottom: 12px;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+}
+
+.fmPreviewBand {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border: 1px solid rgba(103, 255, 221, 0.18);
   background: rgba(1, 10, 13, 0.46);
-  border-color: rgba(103, 255, 221, 0.38);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(2px);
 }
 
-.fmCoreSelector .fmSectionModuleSlot .fmModuleGlyph {
+.fmPreviewBandLabel {
+  color: rgba(206, 232, 226, 0.6);
+  font-size: 9px;
+  font-weight: 900;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fmPreviewBandScroll {
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+}
+
+.fmPreviewBandScroll::-webkit-scrollbar,
+.fmPaletteList::-webkit-scrollbar {
+  height: 5px;
+}
+
+.fmPreviewBandScroll::-webkit-scrollbar-thumb,
+.fmPaletteList::-webkit-scrollbar-thumb {
+  background: rgba(103, 255, 221, 0.32);
+  border-radius: 999px;
+}
+
+.fmPreviewBand .fmSlotRow,
+.fmPreviewBand .fmSectionModuleRow {
+  width: max-content;
+  min-width: 100%;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 5px;
+  margin: 0;
+  justify-content: flex-start;
+}
+
+.fmPreviewBand .fmSectionModuleSlot {
+  width: 176px;
+  min-height: 32px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  background: rgba(3, 25, 29, 0.72);
+  border-color: rgba(103, 255, 221, 0.3);
+}
+
+.fmPreviewBand .fmSectionModuleSlot .fmModuleGlyph {
   width: 20px;
   height: 20px;
   min-width: 20px;
 }
 
-.fmCoreSelector .fmSectionModuleSlot strong {
-  font-size: 11px;
-  text-align: center;
+.fmPreviewBand .fmSectionModuleSlot strong {
+  font-size: 10px;
+  text-align: left;
 }
 
-.fmCoreSelector .fmSectionModuleSlot small {
+.fmPreviewBand .fmSectionModuleSlot small {
   display: none;
 }
 
-.fmPreviewSlotGroup {
-  display: flex;
-  justify-content: center;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  padding: 0;
-  max-width: 100%;
-}
-
-.fmPreviewSlotGroup .fmSlotRow {
-  gap: 3px;
-  justify-content: center;
-}
-
-.fmPreviewSlotGroup .fmDesignSlot {
-  width: 58px;
-  height: 52px;
-  background: rgba(4, 15, 18, 0.34);
-  border-color: rgba(206, 232, 226, 0.22);
-  backdrop-filter: blur(1px);
-}
-
-.fmPreviewSlotGroup .fmDesignSlot .fmModuleGlyph {
-  width: 24px;
-  height: 24px;
-  min-width: 24px;
-}
-
-.fmPreviewSlotGroup .fmDesignSlot strong {
-  font-size: 8px;
-}
-
-.fmBottomSlotTray {
-  position: absolute;
-  left: 10px;
-  right: 92px;
-  bottom: 16px;
-  z-index: 3;
-  display: flex;
-  justify-content: center;
-  pointer-events: auto;
-}
-
-.fmUtilityRail {
-  position: absolute;
-  top: 92px;
-  right: 10px;
-  z-index: 3;
-  pointer-events: auto;
-}
-
-.fmSlotColumn {
-  display: grid;
-  gap: 7px;
-}
-
-.fmUtilityRail .fmDesignSlot {
-  width: 58px;
-  height: 58px;
+.fmPreviewBand .fmDesignSlot {
+  width: 46px;
+  height: 44px;
   grid-template-rows: 1fr;
-  background: rgba(4, 15, 18, 0.28);
+  flex: 0 0 auto;
+  padding: 4px;
+  background: rgba(4, 15, 18, 0.42);
   border-color: rgba(206, 232, 226, 0.24);
   backdrop-filter: blur(1px);
 }
 
-.fmUtilityRail .fmDesignSlot strong {
+.fmPreviewBand .fmDesignSlot .fmModuleGlyph {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+}
+
+.fmPreviewBand .fmDesignSlot strong {
   display: none;
+}
+
+.fmPreviewBand .fmDesignSlot small {
+  top: 2px;
+  right: 2px;
+  width: 14px;
+  height: 14px;
+  font-size: 8px;
 }
 
 .fmPreviewPalette {
   position: absolute;
-  left: 10px;
-  right: 10px;
-  bottom: 88px;
-  z-index: 3;
+  left: 12px;
+  right: 12px;
+  bottom: 122px;
+  z-index: 6;
   pointer-events: auto;
   border-color: rgba(103, 255, 221, 0.28);
   background: rgba(1, 10, 13, 0.78);
@@ -3771,6 +3861,37 @@ export class FleetManagerPanel {
   box-shadow: 0 0 0 1px rgba(255, 90, 120, 0.25);
 }
 
+.fmIcon-railgun::before {
+  width: 23px;
+  height: 5px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, #d8fff6, #72e2ff);
+  transform: rotate(-18deg);
+}
+
+.fmIcon-railgun::after {
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid #ffdc72;
+  border-bottom: 2px solid #ffdc72;
+  transform: translate(7px, -4px) rotate(-18deg);
+}
+
+.fmIcon-plasma::before {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffffff 0 16%, #75ff9b 18% 42%, #b985ff 56%, transparent 70%);
+  box-shadow: 0 0 12px rgba(185, 133, 255, 0.7);
+}
+
+.fmIcon-plasma::after {
+  width: 24px;
+  height: 3px;
+  background: rgba(117, 255, 155, 0.85);
+  transform: rotate(-32deg);
+}
+
 .fmIcon-shield::before {
   width: 18px;
   height: 22px;
@@ -3813,6 +3934,21 @@ export class FleetManagerPanel {
   border-top: 2px solid #b985ff;
   border-right: 2px solid #b985ff;
   transform: rotate(45deg);
+}
+
+.fmIcon-command::before {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #72e2ff;
+  border-radius: 50%;
+}
+
+.fmIcon-command::after {
+  width: 6px;
+  height: 6px;
+  background: #ffdc72;
+  border-radius: 50%;
+  box-shadow: -9px 4px 0 rgba(117, 255, 155, 0.9), 9px 4px 0 rgba(185, 133, 255, 0.9);
 }
 
 .fmIcon-power::before {
@@ -3875,6 +4011,37 @@ export class FleetManagerPanel {
   height: 18px;
   border: 2px solid #72e2ff;
   border-radius: 50% 50% 42% 42%;
+}
+
+.fmIcon-picket::before {
+  width: 22px;
+  height: 17px;
+  border-left: 3px solid #75ff9b;
+  border-top: 3px solid #72e2ff;
+  transform: skewX(-18deg);
+}
+
+.fmIcon-picket::after {
+  width: 17px;
+  height: 2px;
+  background: #ffdc72;
+  transform: rotate(-24deg);
+}
+
+.fmIcon-artillery::before {
+  width: 24px;
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ffdc72, #ff5a78);
+  transform: rotate(-28deg);
+}
+
+.fmIcon-artillery::after {
+  width: 13px;
+  height: 13px;
+  border: 2px solid #ffdc72;
+  border-radius: 50%;
+  transform: translate(-5px, 5px);
 }
 
 .fmIcon-utility::before,

@@ -3,6 +3,7 @@ import { getGames, joinGame } from '@/auth/client';
 import type { AuthAccount, GameSummary } from '@/auth/types';
 import { FlagJoinForm } from '@/components/FlagJoinForm';
 import type { FlagDesign } from '@/flags/flagTypes';
+import type { SpeciesSetup } from '@/data/Species';
 import '../styles/Home.css';
 
 interface HomePageProps {
@@ -155,12 +156,12 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
     setJoinTarget(game);
   };
 
-  const handleJoin = async (selectedCountryName: string, flagDesign: FlagDesign) => {
+  const handleJoin = async (selectedCountryName: string, flagDesign: FlagDesign, speciesSetup: SpeciesSetup) => {
     if (!joinTarget || joinBusy) return;
     try {
       setJoinBusy(true);
       setJoinError('');
-      const result = await joinGame(joinTarget.id, selectedCountryName, flagDesign);
+      const result = await joinGame(joinTarget.id, selectedCountryName, flagDesign, speciesSetup);
       setJoinTarget(null);
       setGames((current) => current.map((game) => (game.id === result.game.id ? result.game : game)));
       onContinuePlaying(result.game.id);

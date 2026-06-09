@@ -31,6 +31,7 @@ export interface TechnologyPassiveResearchRules {
 
 export type TechnologyEffect =
   | { type: "unlock_building"; building: BuildingKind }
+  | { type: "unlock_building_level"; building: BuildingKind; level: number }
   | { type: "unlock_starbase_building"; building: StarbaseBuildingKind }
   | { type: "unlock_ship_hull"; shipKind: StarbaseShipKind }
   | { type: "unlock_ship_module"; moduleId: string }
@@ -151,11 +152,46 @@ const modifier = (
   cap: number,
 ): TechnologyResearchModifier => ({ id, label, source, operation, value, cap });
 
+const SERVICE_BUILDINGS: BuildingKind[] = [
+  "housingComplex",
+  "administrativeComplex",
+  "commercialForum",
+  "entertainmentForum",
+  "securityOffice",
+];
+
+const RESOURCE_BUILDINGS: BuildingKind[] = [
+  "foodProcessingPlant",
+  "mineralPurificationPlant",
+  "energyGrid",
+];
+
+const INDUSTRY_BUILDINGS: BuildingKind[] = [
+  "civilianFabricators",
+  "alloyFoundries",
+  "agroIndustrialKitchens",
+  "oreSmelter",
+  "capacitorWorkshops",
+];
+
+const RESEARCH_BUILDINGS: BuildingKind[] = ["researchLabs"];
+
+const ALL_PLANET_BUILDINGS: BuildingKind[] = [
+  ...SERVICE_BUILDINGS,
+  ...RESOURCE_BUILDINGS,
+  ...INDUSTRY_BUILDINGS,
+  ...RESEARCH_BUILDINGS,
+];
+
+const unlockBuildingLevels = (buildings: BuildingKind[], level: number): TechnologyEffect[] => (
+  buildings.map((building) => ({ type: "unlock_building_level", building, level }))
+);
+
 export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
   {
     id: "spacefaring_foundations",
     name: "Spacefaring Foundations",
-    description: "Baseline orbital navigation, corvette hulls, construction ships, and light swarmer combat layouts.",
+    description: "Baseline orbital navigation, corvette hulls, construction ships, colonization ships, and light swarmer combat layouts.",
     category: "logistics",
     tier: 0,
     cost: 0,
@@ -166,6 +202,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
     effects: [
       { type: "unlock_ship_hull", shipKind: "corvette" },
       { type: "unlock_ship_hull", shipKind: "constructionShip" },
+      { type: "unlock_ship_hull", shipKind: "colonizationShip" },
       { type: "unlock_ship_section", sectionModuleId: "weapon_section_corvette_swarmer" },
       { type: "unlock_ship_section", sectionModuleId: "defense_section_corvette_swarmer" },
     ],
@@ -422,6 +459,207 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
     effects: [{ type: "construction_speed_mult", value: 0.1 }],
   },
   {
+    id: "urban_service_upgrades",
+    name: "Urban Service Upgrades",
+    description: "Prefab civic cores and modular service shafts unlock level 2 housing, administration, commerce, entertainment, and security buildings.",
+    category: "society",
+    tier: 1,
+    cost: 1500,
+    prerequisites: ["planetary_infrastructure"],
+    positionInTree: { x: 1, y: 6.05 },
+    passiveResearchRules: passive(0.14),
+    researchModifiers: [
+      modifier("administrator_job_bonus", "Administrators", "researchIncome", "multiplyBy", 0.00004, 0.2),
+      modifier("goods_income_bonus", "Goods income", "goodsIncome", "multiplyBy", 0.00003, 0.18),
+    ],
+    effects: [
+      ...unlockBuildingLevels(SERVICE_BUILDINGS, 2),
+      { type: "construction_speed_mult", value: 0.04 },
+    ],
+  },
+  {
+    id: "resource_processing_upgrades",
+    name: "Resource Processing Upgrades",
+    description: "Standardized extractor support plants unlock level 2 food, mineral, and energy processing buildings.",
+    category: "industry",
+    tier: 1,
+    cost: 1500,
+    prerequisites: ["planetary_infrastructure"],
+    positionInTree: { x: 1, y: 1.35 },
+    passiveResearchRules: passive(0.14),
+    researchModifiers: [
+      modifier("miner_job_bonus", "Miners", "minerJobs", "multiplyBy", 0.00008, 0.28),
+      modifier("technician_job_bonus", "Technicians", "technicianJobs", "multiplyBy", 0.00008, 0.28),
+      modifier("farmer_job_bonus", "Farmers", "farmerJobs", "multiplyBy", 0.00008, 0.28),
+    ],
+    effects: [
+      ...unlockBuildingLevels(RESOURCE_BUILDINGS, 2),
+      { type: "construction_speed_mult", value: 0.03 },
+    ],
+  },
+  {
+    id: "applied_lab_expansion",
+    name: "Applied Lab Expansion",
+    description: "Repeatable lab wings and shared instrumentation unlock level 2 research labs.",
+    category: "computing",
+    tier: 1,
+    cost: 1600,
+    prerequisites: ["applied_research_methods"],
+    positionInTree: { x: 1.55, y: 5.35 },
+    passiveResearchRules: passive(0.12),
+    researchModifiers: [
+      modifier("research_lab_bonus", "Research labs", "researchLabs", "multiplyBy", 0.08, 0.32),
+      modifier("research_income_bonus", "Research income", "researchIncome", "multiplyBy", 0.00004, 0.24),
+    ],
+    effects: [
+      ...unlockBuildingLevels(RESEARCH_BUILDINGS, 2),
+      { type: "job_output_mult", job: "researcher", resource: "research", value: 0.08 },
+    ],
+  },
+  {
+    id: "industrial_building_upgrades",
+    name: "Industrial Building Upgrades",
+    description: "High-throughput factory layouts unlock level 2 fabrication, foundry, kitchen, smelter, and capacitor workshop buildings.",
+    category: "industry",
+    tier: 2,
+    cost: 2600,
+    prerequisites: ["civilian_fabrication_models", "predictive_ore_sorting"],
+    positionInTree: { x: 2, y: 1.7 },
+    passiveResearchRules: passive(0.11),
+    researchModifiers: [
+      modifier("artisan_job_bonus", "Artisans", "artisanJobs", "multiplyBy", 0.00008, 0.28),
+      modifier("metallurgist_job_bonus", "Metallurgists", "metallurgistJobs", "multiplyBy", 0.00008, 0.28),
+      modifier("alloy_income_bonus", "Alloy income", "alloyIncome", "multiplyBy", 0.00004, 0.22),
+    ],
+    effects: [
+      ...unlockBuildingLevels(INDUSTRY_BUILDINGS, 2),
+      { type: "job_output_mult", job: "artisan", resource: "goods", value: 0.06 },
+      { type: "job_output_mult", job: "metallurgist", resource: "alloys", value: 0.06 },
+    ],
+  },
+  {
+    id: "vertical_city_planning",
+    name: "Vertical City Planning",
+    description: "Stacked utilities and high-density transit unlock level 3 service buildings.",
+    category: "society",
+    tier: 2,
+    cost: 3100,
+    prerequisites: ["urban_service_upgrades", "logistics_accounting"],
+    positionInTree: { x: 2, y: 6.05 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("research_income_bonus", "Research income", "researchIncome", "multiplyBy", 0.00004, 0.2),
+      modifier("goods_income_bonus", "Goods income", "goodsIncome", "multiplyBy", 0.00004, 0.2),
+    ],
+    effects: [
+      ...unlockBuildingLevels(SERVICE_BUILDINGS, 3),
+      { type: "construction_speed_mult", value: 0.05 },
+    ],
+  },
+  {
+    id: "automated_resource_complexes",
+    name: "Automated Resource Complexes",
+    description: "Sensor-directed logistics unlock level 3 food, mineral, and energy processing buildings.",
+    category: "industry",
+    tier: 2,
+    cost: 3200,
+    prerequisites: ["resource_processing_upgrades", "field_biochemistry", "industrial_tooling", "grid_harmonics"],
+    positionInTree: { x: 2.35, y: 1.35 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("miner_job_bonus", "Miners", "minerJobs", "multiplyBy", 0.00008, 0.28),
+      modifier("energy_income_bonus", "Energy income", "energyIncome", "multiplyBy", 0.00005, 0.22),
+      modifier("food_income_bonus", "Food income", "foodIncome", "multiplyBy", 0.00005, 0.22),
+    ],
+    effects: [
+      ...unlockBuildingLevels(RESOURCE_BUILDINGS, 3),
+      { type: "job_output_mult", job: "farmer", resource: "food", value: 0.08 },
+      { type: "job_output_mult", job: "miner", resource: "minerals", value: 0.08 },
+      { type: "job_output_mult", job: "technician", resource: "energy", value: 0.08 },
+    ],
+  },
+  {
+    id: "research_megacampuses",
+    name: "Research Megacampuses",
+    description: "Planet-scale campus administration unlocks level 3 and 4 research labs.",
+    category: "computing",
+    tier: 3,
+    cost: 5200,
+    prerequisites: ["applied_lab_expansion"],
+    positionInTree: { x: 3, y: 5.35 },
+    passiveResearchRules: passive(0.09),
+    researchModifiers: [
+      modifier("research_lab_bonus", "Research labs", "researchLabs", "multiplyBy", 0.07, 0.35),
+      modifier("research_income_bonus", "Research income", "researchIncome", "multiplyBy", 0.00004, 0.28),
+    ],
+    effects: [
+      ...unlockBuildingLevels(RESEARCH_BUILDINGS, 3),
+      ...unlockBuildingLevels(RESEARCH_BUILDINGS, 4),
+      { type: "job_output_mult", job: "researcher", resource: "research", value: 0.1 },
+    ],
+  },
+  {
+    id: "planetary_arcologies",
+    name: "Planetary Arcologies",
+    description: "Self-contained urban layers unlock level 4 service buildings and make extremely large populations possible only on mature worlds.",
+    category: "society",
+    tier: 3,
+    cost: 5600,
+    prerequisites: ["vertical_city_planning"],
+    positionInTree: { x: 3, y: 6.05 },
+    passiveResearchRules: passive(0.08),
+    researchModifiers: [
+      modifier("research_income_bonus", "Research income", "researchIncome", "multiplyBy", 0.00004, 0.26),
+      modifier("goods_income_bonus", "Goods income", "goodsIncome", "multiplyBy", 0.00004, 0.24),
+    ],
+    effects: [
+      ...unlockBuildingLevels(SERVICE_BUILDINGS, 4),
+      { type: "construction_speed_mult", value: 0.05 },
+    ],
+  },
+  {
+    id: "automated_planetary_industry",
+    name: "Automated Planetary Industry",
+    description: "Heavy automation unlocks level 4 industry and resource buildings.",
+    category: "industry",
+    tier: 3,
+    cost: 6200,
+    prerequisites: ["industrial_building_upgrades", "automated_resource_complexes"],
+    positionInTree: { x: 3.2, y: 1.5 },
+    passiveResearchRules: passive(0.08),
+    researchModifiers: [
+      modifier("alloy_income_bonus", "Alloy income", "alloyIncome", "multiplyBy", 0.00004, 0.26),
+      modifier("goods_income_bonus", "Goods income", "goodsIncome", "multiplyBy", 0.00004, 0.26),
+    ],
+    effects: [
+      ...unlockBuildingLevels(RESOURCE_BUILDINGS, 4),
+      ...unlockBuildingLevels(INDUSTRY_BUILDINGS, 3),
+      ...unlockBuildingLevels(INDUSTRY_BUILDINGS, 4),
+      { type: "job_output_mult", job: "artisan", resource: "goods", value: 0.08 },
+      { type: "job_output_mult", job: "metallurgist", resource: "alloys", value: 0.08 },
+    ],
+  },
+  {
+    id: "planetary_megastructure_methods",
+    name: "Planetary Megastructure Methods",
+    description: "Late-game city frames and industrial superstructures unlock level 5 planet buildings.",
+    category: "logistics",
+    tier: 4,
+    cost: 9800,
+    prerequisites: ["planetary_arcologies", "automated_planetary_industry", "research_megacampuses"],
+    positionInTree: { x: 4.2, y: 4.9 },
+    passiveResearchRules: passive(0.07),
+    researchModifiers: [
+      modifier("research_income_bonus", "Research income", "researchIncome", "multiplyBy", 0.00004, 0.3),
+      modifier("alloy_income_bonus", "Alloy income", "alloyIncome", "multiplyBy", 0.00004, 0.3),
+      modifier("ship_count_bonus", "Ships", "shipCount", "multiplyBy", 0.008, 0.2),
+    ],
+    effects: [
+      ...unlockBuildingLevels(ALL_PLANET_BUILDINGS, 5),
+      { type: "construction_speed_mult", value: 0.06 },
+    ],
+  },
+  {
     id: "integrated_fleet_logistics",
     name: "Integrated Fleet Logistics",
     description: "Standardized docking, supply, and assembly practices speed starbase ship queues.",
@@ -455,6 +693,90 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_ship_module", moduleId: "weapon_point_defense" },
       { type: "unlock_ship_module", moduleId: "weapon_point_defense_medium" },
       { type: "unlock_ship_module", moduleId: "weapon_point_defense_large" },
+    ],
+  },
+  {
+    id: "kinetic_accelerators",
+    name: "Kinetic Accelerators",
+    description: "Magnetic launch systems unlock railgun batteries for every standard hardpoint size.",
+    category: "military",
+    tier: 1,
+    cost: 1600,
+    prerequisites: ["missile_ordnance"],
+    positionInTree: { x: 1, y: 2.05 },
+    passiveResearchRules: passive(0.12),
+    researchModifiers: [
+      modifier("at_war_bonus", "At war", "atWar", "flatBonus", 0.12, 0.12),
+      modifier("fleet_power_bonus", "Fleet power", "fleetPower", "multiplyBy", 0.00004, 0.28),
+      modifier("alloy_income_bonus", "Alloy income", "alloyIncome", "multiplyBy", 0.00004, 0.18),
+    ],
+    effects: [
+      { type: "unlock_ship_module", moduleId: "weapon_railgun_small" },
+      { type: "unlock_ship_module", moduleId: "weapon_railgun_medium" },
+      { type: "unlock_ship_module", moduleId: "weapon_railgun_large" },
+    ],
+  },
+  {
+    id: "phase_lens_arrays",
+    name: "Phase Lens Arrays",
+    description: "Adaptive beam focusing unlocks phase lasers for every standard hardpoint size.",
+    category: "military",
+    tier: 2,
+    cost: 3100,
+    prerequisites: ["directed_energy_weapons", "grid_harmonics"],
+    positionInTree: { x: 2, y: 2.05 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("energy_income_bonus", "Energy income", "energyIncome", "multiplyBy", 0.00005, 0.22),
+      modifier("fleet_power_bonus", "Fleet power", "fleetPower", "multiplyBy", 0.00004, 0.25),
+      modifier("research_lab_bonus", "Research labs", "researchLabs", "multiplyBy", 0.04, 0.2),
+    ],
+    effects: [
+      { type: "unlock_ship_module", moduleId: "weapon_phase_laser_small" },
+      { type: "unlock_ship_module", moduleId: "weapon_phase_laser_medium" },
+      { type: "unlock_ship_module", moduleId: "weapon_phase_laser_large" },
+    ],
+  },
+  {
+    id: "autonomous_torpedo_guidance",
+    name: "Autonomous Torpedo Guidance",
+    description: "Independent targeting packages unlock swarmer missiles and torpedo racks.",
+    category: "military",
+    tier: 2,
+    cost: 3300,
+    prerequisites: ["missile_ordnance", "point_defense_networks"],
+    positionInTree: { x: 2, y: 2.42 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("at_war_bonus", "At war", "atWar", "flatBonus", 0.12, 0.12),
+      modifier("ship_count_bonus", "Ships", "shipCount", "multiplyBy", 0.01, 0.24),
+      modifier("alloy_income_bonus", "Alloy income", "alloyIncome", "multiplyBy", 0.00004, 0.2),
+    ],
+    effects: [
+      { type: "unlock_ship_module", moduleId: "weapon_swarmer_missile_small" },
+      { type: "unlock_ship_module", moduleId: "weapon_torpedo_medium" },
+      { type: "unlock_ship_module", moduleId: "weapon_torpedo_large" },
+    ],
+  },
+  {
+    id: "gauss_accelerators",
+    name: "Gauss Accelerators",
+    description: "High-field kinetic coils unlock gauss drivers, batteries, and capital cannons.",
+    category: "military",
+    tier: 3,
+    cost: 5200,
+    prerequisites: ["kinetic_accelerators", "destroyer_hulls"],
+    positionInTree: { x: 3, y: 2.02 },
+    passiveResearchRules: passive(0.09),
+    researchModifiers: [
+      modifier("at_war_bonus", "At war", "atWar", "flatBonus", 0.14, 0.14),
+      modifier("fleet_power_bonus", "Fleet power", "fleetPower", "multiplyBy", 0.00005, 0.34),
+      modifier("alloy_income_bonus", "Alloy income", "alloyIncome", "multiplyBy", 0.00004, 0.22),
+    ],
+    effects: [
+      { type: "unlock_ship_module", moduleId: "weapon_gauss_small" },
+      { type: "unlock_ship_module", moduleId: "weapon_gauss_medium" },
+      { type: "unlock_ship_module", moduleId: "weapon_gauss_large" },
     ],
   },
   {
@@ -497,6 +819,28 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_ship_hull", shipKind: "destroyer" },
       { type: "unlock_ship_section", sectionModuleId: "weapon_section_destroyer_line" },
       { type: "unlock_ship_section", sectionModuleId: "defense_section_destroyer_line" },
+      { type: "unlock_ship_section", sectionModuleId: "weapon_section_destroyer_picket" },
+      { type: "unlock_ship_section", sectionModuleId: "defense_section_destroyer_picket" },
+    ],
+  },
+  {
+    id: "plasma_containment",
+    name: "Plasma Containment",
+    description: "Magnetic bottle emitters unlock armor-burning plasma projectors for destroyers and capital hulls.",
+    category: "military",
+    tier: 3,
+    cost: 4600,
+    prerequisites: ["destroyer_hulls", "directed_energy_weapons"],
+    positionInTree: { x: 3, y: 2.25 },
+    passiveResearchRules: passive(0.09),
+    researchModifiers: [
+      modifier("at_war_bonus", "At war", "atWar", "flatBonus", 0.14, 0.14),
+      modifier("fleet_power_bonus", "Fleet power", "fleetPower", "multiplyBy", 0.00005, 0.35),
+      modifier("energy_income_bonus", "Energy income", "energyIncome", "multiplyBy", 0.00004, 0.2),
+    ],
+    effects: [
+      { type: "unlock_ship_module", moduleId: "weapon_plasma_projector_medium" },
+      { type: "unlock_ship_module", moduleId: "weapon_plasma_projector_large" },
     ],
   },
   {
@@ -518,6 +862,90 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_ship_hull", shipKind: "cruiser" },
       { type: "unlock_ship_section", sectionModuleId: "weapon_section_cruiser_line" },
       { type: "unlock_ship_section", sectionModuleId: "defense_section_cruiser_line" },
+      { type: "unlock_ship_section", sectionModuleId: "weapon_section_cruiser_artillery" },
+      { type: "unlock_ship_section", sectionModuleId: "defense_section_cruiser_artillery" },
+    ],
+  },
+  {
+    id: "fleet_command_systems",
+    name: "Fleet Command Systems",
+    description: "Distributed command suites and automated armor maintenance improve larger warship modules.",
+    category: "military",
+    tier: 4,
+    cost: 8200,
+    prerequisites: ["cruiser_hulls", "applied_research_methods"],
+    positionInTree: { x: 4, y: 2.25 },
+    passiveResearchRules: passive(0.08),
+    researchModifiers: [
+      modifier("ship_count_bonus", "Ships", "shipCount", "multiplyBy", 0.012, 0.28),
+      modifier("fleet_power_bonus", "Fleet power", "fleetPower", "multiplyBy", 0.00004, 0.35),
+      modifier("research_lab_bonus", "Research labs", "researchLabs", "multiplyBy", 0.04, 0.24),
+    ],
+    effects: [
+      { type: "unlock_ship_module", moduleId: "utility_command_uplink" },
+      { type: "unlock_ship_module", moduleId: "utility_armor_nanites" },
+    ],
+  },
+  {
+    id: "advanced_defense_matrices",
+    name: "Advanced Defense Matrices",
+    description: "Integrated shield, armor, and hull control unlocks late defensive modules.",
+    category: "military",
+    tier: 4,
+    cost: 7800,
+    prerequisites: ["fleet_command_systems"],
+    positionInTree: { x: 4.4, y: 2.05 },
+    passiveResearchRules: passive(0.08),
+    researchModifiers: [
+      modifier("fleet_power_bonus", "Fleet power", "fleetPower", "multiplyBy", 0.00005, 0.35),
+      modifier("research_lab_bonus", "Research labs", "researchLabs", "multiplyBy", 0.04, 0.24),
+      modifier("alloy_income_bonus", "Alloy income", "alloyIncome", "multiplyBy", 0.00004, 0.22),
+    ],
+    effects: [
+      { type: "unlock_ship_module", moduleId: "defense_phase_shield" },
+      { type: "unlock_ship_module", moduleId: "defense_composite_armor" },
+      { type: "unlock_ship_module", moduleId: "defense_reactive_hull" },
+    ],
+  },
+  {
+    id: "gravitic_fleet_drives",
+    name: "Gravitic Fleet Drives",
+    description: "Field propulsion and predictive combat systems unlock faster drives and battle AI.",
+    category: "logistics",
+    tier: 4,
+    cost: 8400,
+    prerequisites: ["fleet_command_systems", "grid_harmonics"],
+    positionInTree: { x: 4.6, y: 3.2 },
+    passiveResearchRules: passive(0.08),
+    researchModifiers: [
+      modifier("ship_count_bonus", "Ships", "shipCount", "multiplyBy", 0.012, 0.3),
+      modifier("energy_income_bonus", "Energy income", "energyIncome", "multiplyBy", 0.00004, 0.22),
+      modifier("research_income_bonus", "Research income", "researchIncome", "multiplyBy", 0.00004, 0.24),
+    ],
+    effects: [
+      { type: "unlock_ship_module", moduleId: "utility_gravitic_drive" },
+      { type: "unlock_ship_module", moduleId: "utility_battle_ai" },
+      { type: "starbase_ship_build_speed_mult", value: 0.08 },
+    ],
+  },
+  {
+    id: "fusion_plasma_lances",
+    name: "Fusion Plasma Lances",
+    description: "Late containment methods unlock high-yield fusion plasma projectors.",
+    category: "military",
+    tier: 5,
+    cost: 11600,
+    prerequisites: ["plasma_containment", "cruiser_hulls"],
+    positionInTree: { x: 5, y: 2.18 },
+    passiveResearchRules: passive(0.07),
+    researchModifiers: [
+      modifier("at_war_bonus", "At war", "atWar", "flatBonus", 0.16, 0.16),
+      modifier("fleet_power_bonus", "Fleet power", "fleetPower", "multiplyBy", 0.00004, 0.4),
+      modifier("energy_income_bonus", "Energy income", "energyIncome", "multiplyBy", 0.00004, 0.24),
+    ],
+    effects: [
+      { type: "unlock_ship_module", moduleId: "weapon_fusion_plasma_medium" },
+      { type: "unlock_ship_module", moduleId: "weapon_fusion_plasma_large" },
     ],
   },
   {
@@ -539,6 +967,8 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_ship_hull", shipKind: "battleship" },
       { type: "unlock_ship_section", sectionModuleId: "weapon_section_battleship_line" },
       { type: "unlock_ship_section", sectionModuleId: "defense_section_battleship_line" },
+      { type: "unlock_ship_section", sectionModuleId: "weapon_section_battleship_siege" },
+      { type: "unlock_ship_section", sectionModuleId: "defense_section_battleship_siege" },
     ],
   },
 ];
@@ -673,6 +1103,15 @@ function requiredTechIdsForEffect(predicate: (effect: TechnologyEffect) => boole
 
 export function getRequiredTechIdsForBuilding(building: BuildingKind): TechId[] {
   return requiredTechIdsForEffect((effect) => effect.type === "unlock_building" && effect.building === building);
+}
+
+export function getRequiredTechIdsForBuildingLevel(building: BuildingKind, level: number): TechId[] {
+  if (level <= 1) return getRequiredTechIdsForBuilding(building);
+  return requiredTechIdsForEffect((effect) => (
+    effect.type === "unlock_building_level"
+    && effect.building === building
+    && effect.level === level
+  ));
 }
 
 export function getRequiredTechIdsForStarbaseBuilding(building: StarbaseBuildingKind): TechId[] {

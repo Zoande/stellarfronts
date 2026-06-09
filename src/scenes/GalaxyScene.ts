@@ -1618,9 +1618,17 @@ export class GalaxyScene implements IGameScene {
     return this.getShipsForFleet(fleet.id).some((ship) => ship.shipKind === "constructionShip" && ship.hull > 0);
   }
 
+  private fleetCanColonize(fleet: ServerFleet | null | undefined): boolean {
+    if (!fleet || fleet.ownerId !== this.playerFactionId) return false;
+    return this.getShipsForFleet(fleet.id).some((ship) => ship.shipKind === "colonizationShip" && ship.hull > 0);
+  }
+
   private getFleetActions(fleet: ServerFleet | null | undefined): ShipAction[] {
-    const secondary: ShipAction = this.fleetCanBuildStarbase(fleet) ? "build" : "attack";
-    return ["move", secondary, "stop", "merge", "retreat", "retreatTo", "emergencyRetreatTo"];
+    const actions: ShipAction[] = ["move"];
+    if (this.fleetCanBuildStarbase(fleet)) actions.push("build");
+    if (this.fleetCanColonize(fleet)) actions.push("colonize");
+    actions.push("attack", "stop", "merge", "retreat", "retreatTo", "emergencyRetreatTo");
+    return actions;
   }
 
   private hasHostilePresenceAtStar(starId: number): boolean {
@@ -1739,6 +1747,20 @@ export class GalaxyScene implements IGameScene {
 
     if (action === "build") {
       this.openBuildPicker(() => this.activateShipActionTargeting("build"));
+      return;
+    }
+
+    if (action === "colonize") {
+      const fleetId = this.selectedCommandShipId;
+      const star = this.stars[this.selectedCommandShipStarId];
+      if (!fleetId || !star) {
+        this.clearShipAction();
+        return;
+      }
+      this.clearShipAction();
+      Promise.resolve(this.onEnterSystem(star))
+        .then(() => this.options.onShipCommand?.("colonize", star.id, fleetId))
+        .catch((error) => console.error("Failed to open system for colonization", error));
       return;
     }
 
