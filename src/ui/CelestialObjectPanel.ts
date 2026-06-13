@@ -23,6 +23,8 @@ import {
   getHabitabilityUpkeepMultiplier,
   getPlanetBuildingKind,
   getPlanetBuildingLevel,
+  AMENITY_NEED_PER_UNIT,
+  getAmenityNeed,
   JOB_FILL_ORDER,
   JOB_DEFINITIONS,
   JOB_LABELS,
@@ -1596,7 +1598,7 @@ export class CelestialObjectPanel {
   } {
     const economy = planetState.economy;
     const housingNeed = planetState.population;
-    const amenityNeed = planetState.population / PEOPLE_PER_MONTHLY_UNIT;
+    const amenityNeed = getAmenityNeed(planetState.population);
 
     return {
       housingBalance: economy.housing - housingNeed,
@@ -2099,15 +2101,15 @@ export class CelestialObjectPanel {
     const usageTooltip = this.renderPopulationUsageTooltip(
       "Amenities Usage",
       planetState,
-      (group) => group.population / PEOPLE_PER_MONTHLY_UNIT,
+      (group) => (group.population / PEOPLE_PER_MONTHLY_UNIT) * AMENITY_NEED_PER_UNIT,
       (value) => this.formatCompact(value),
     );
     return `
       <div class="coTooltipTitle">Amenities</div>
-      <p>Amenities production is compared against one amenity required per 1M population.</p>
+      <p>Amenities production is compared against ${AMENITY_NEED_PER_UNIT} amenity required per 1M population.</p>
       <div class="coTooltipGrid">
         ${this.renderTooltipGridItem("Production", this.formatCompact(planetState.economy.amenities), productionTooltip)}
-        ${this.renderTooltipGridItem("Usage", this.formatCompact(planetState.population / PEOPLE_PER_MONTHLY_UNIT), usageTooltip)}
+        ${this.renderTooltipGridItem("Usage", this.formatCompact(getAmenityNeed(planetState.population)), usageTooltip)}
         ${this.renderTooltipGridItem("Balance", this.formatSignedCompact(support.amenityBalance))}
         ${this.renderTooltipGridItem("Ratio", `${(support.amenityRatio * 100).toFixed(0)}%`)}
       </div>

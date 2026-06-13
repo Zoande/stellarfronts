@@ -47,6 +47,7 @@ import {
   getPlanetBuildingKind,
   getPlanetBuildingLevel,
   getQueuedDistrictCount,
+  getAmenityNeed,
   hasQueuedBuildingTarget,
   isBuildingCompatible,
   NEW_COLONY_POPULATION,
@@ -355,11 +356,20 @@ const FLEET_RETREAT_THRESHOLDS: Record<FleetRetreatPolicy, number> = {
 };
 const MIGRATION_BASE_WEEKLY_RATE = 0.00018;
 const MIGRATION_PRESSURE_WEEKLY_RATE = 0.0034;
-const MIGRATION_FOREIGN_BASE_MULTIPLIER = 0.045;
-const MIGRATION_PACT_MULTIPLIER = 0.58;
+// Cross-faction migration tiers. Foreign migration is gated on first contact ("met")
+// and scales up with diplomatic intimacy. Each tier is multiplied by the source/target
+// migration-policy factors before use.
+const MIGRATION_FOREIGN_MET_MULTIPLIER = 0.02; // discovered each other, closed/default borders
+const MIGRATION_FOREIGN_OPEN_BORDER_MULTIPLIER = 0.08; // met + mutually open borders
+const MIGRATION_PACT_MULTIPLIER = 0.35; // active migration-pact treaty
 const MIGRATION_MIN_SOURCE_POPULATION = 50_000_000;
 const MIGRATION_MIN_FLOW_POPULATION = 10_000;
 const MIGRATION_DESTINATION_CAPACITY_BUFFER = 1.02;
+// Distance falloff between the source and destination star (in hyperlane jumps).
+// Neighbouring systems exchange the most migrants; distant systems still trickle.
+const MIGRATION_DISTANCE_DECAY = 0.78; // multiplier applied per jump beyond the first
+const MIGRATION_DISTANCE_FLOOR = 0.12; // minimum share for very distant / unreachable systems
+const MIGRATION_DISTANCE_MAX_JUMPS = 16; // BFS cap; beyond this the floor is used
 
 interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
@@ -389,6 +399,9 @@ interface GameState {
   fleets: GameFleet[];
   recentCombatContacts: ServerCombatContact[];
   discoveredByFaction: Record<string, number[]>;
+  // Symmetric first-contact record: metByFaction[a] lists every faction id that
+  // faction a has discovered (and that has therefore discovered a). Monotonic.
+  metByFaction: Record<string, number[]>;
   lastKnownOwnershipByFaction: Record<string, number[]>;
   clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number; lastProcessedLeaderDay: number };
 }
@@ -775,13 +788,35 @@ function calculateFactionMarketMonthlyDelta(nextState: GameState, factionId: num
   return delta;
 }
 
-function getFactionResourceShortageSeverity(nextState: GameState, factionId: number, resource: ResourceKind): number {
+// Months of running deficit a full stockpile cushions before shortage penalties ramp in.
+// Gives a fresh empire (or a brief dip) breathing room instead of an instant death spiral.
+const SHORTAGE_GRACE_MONTHS = 3;
+
+// Stockpiles are clamped at 0, so a shortage is detected from the live trajectory: a
+// resource is in shortage when net income is negative and the stockpile buffer is running
+// out. Severity scales with how large the deficit is relative to total consumption and how
+// depleted the buffer is, both in [0, 1].
+function computeShortageSeverity(stockpile: number, monthlyDelta: number, consumption: number): number {
+  const deficit = Math.max(0, -monthlyDelta);
+  if (deficit <= 0) return 0;
+  const deficitFraction = clamp(deficit / Math.max(consumption, deficit, 1), 0, 1);
+  const bufferFactor = clamp(1 - Math.max(0, stockpile) / (deficit * SHORTAGE_GRACE_MONTHS), 0, 1);
+  return clamp(deficitFraction * bufferFactor, 0, 1);
+}
+
+function getFactionShortageSeverities(nextState: GameState, factionId: number): ResourceCounts {
+  const severities = createEmptyResourceCounts();
   const economy = nextState.factionEconomies.find((candidate) => candidate.factionId === factionId);
-  if (!economy) return 0;
-  const shortage = Math.max(0, -economy.stockpiles[resource]);
-  if (shortage <= 0) return 0;
-  const monthlyPressure = Math.max(250, Math.abs(economy.monthlyDelta[resource]) * 0.5);
-  return clamp(Math.sqrt(shortage / monthlyPressure), 0, 1);
+  if (!economy) return severities;
+  const flow = calculateFactionResourceFlow(nextState, factionId);
+  for (const resource of RESOURCE_KINDS) {
+    severities[resource] = computeShortageSeverity(
+      economy.stockpiles[resource],
+      economy.monthlyDelta[resource],
+      flow.consumption[resource],
+    );
+  }
+  return severities;
 }
 
 function shortageModifier(
@@ -803,11 +838,7 @@ function shortageModifier(
 }
 
 function getFactionShortagePlanetModifiers(nextState: GameState, factionId: number): PlanetModifier[] {
-  const food = getFactionResourceShortageSeverity(nextState, factionId, "food");
-  const goods = getFactionResourceShortageSeverity(nextState, factionId, "goods");
-  const energy = getFactionResourceShortageSeverity(nextState, factionId, "energy");
-  const minerals = getFactionResourceShortageSeverity(nextState, factionId, "minerals");
-  const alloys = getFactionResourceShortageSeverity(nextState, factionId, "alloys");
+  const { food, goods, energy, minerals, alloys } = getFactionShortageSeverities(nextState, factionId);
   const modifiers: PlanetModifier[] = [];
 
   if (food > 0) {
@@ -854,10 +885,7 @@ function getFactionFleetShortageEffects(nextState: GameState, factionId: number)
   speedMultiplier: number;
   shieldMultiplier: number;
 } {
-  const food = getFactionResourceShortageSeverity(nextState, factionId, "food");
-  const goods = getFactionResourceShortageSeverity(nextState, factionId, "goods");
-  const energy = getFactionResourceShortageSeverity(nextState, factionId, "energy");
-  const alloys = getFactionResourceShortageSeverity(nextState, factionId, "alloys");
+  const { food, goods, energy, alloys } = getFactionShortageSeverities(nextState, factionId);
   return {
     attackMultiplier: clamp(1 - energy * 0.35 - alloys * 0.3 - goods * 0.15 - food * 0.1, 0.35, 1),
     speedMultiplier: clamp(1 - energy * 0.3 - alloys * 0.2 - food * 0.1, 0.4, 1),
@@ -2298,6 +2326,7 @@ function createInitialState(): GameState {
     fleets,
     recentCombatContacts: [],
     discoveredByFaction: {},
+    metByFaction: {},
     lastKnownOwnershipByFaction: {},
     clock: {
       year: GAME_START_YEAR,
@@ -2328,6 +2357,7 @@ async function loadState(): Promise<GameState> {
     delete (parsed as GameState & { battles?: unknown }).battles;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
+    parsed.metByFaction = parsed.metByFaction ?? {};
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.recentCombatContacts = [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
@@ -2509,6 +2539,22 @@ function computeCurrentVisibleSet(nextState: GameState, factionId: number): Set<
   return visible;
 }
 
+function markFactionsMet(nextState: GameState, a: number, b: number): void {
+  if (a === b || a < 0 || b < 0) return;
+  for (const [self, other] of [[a, b], [b, a]] as const) {
+    const key = String(self);
+    const met = new Set<number>(nextState.metByFaction[key] ?? []);
+    if (met.has(other)) continue;
+    met.add(other);
+    nextState.metByFaction[key] = Array.from(met).sort((x, y) => x - y);
+  }
+}
+
+function haveFactionsMet(nextState: GameState, a: number, b: number): boolean {
+  if (a === b) return true;
+  return (nextState.metByFaction[String(a)] ?? []).includes(b);
+}
+
 function refreshDiscovery(nextState = state): void {
   for (const faction of nextState.factions) {
     const visible = computeCurrentVisibleSet(nextState, faction.id);
@@ -2522,6 +2568,16 @@ function refreshDiscovery(nextState = state): void {
       lastKnown[starId] = nextState.starOwnership[starId] ?? -1;
     }
     nextState.lastKnownOwnershipByFaction[String(faction.id)] = lastKnown.slice(0, nextState.stars.length);
+  }
+
+  // First contact: a faction has "met" every other faction whose territory it has
+  // ever discovered. Derived from the (monotonic) discovered sets, recorded symmetrically.
+  for (const faction of nextState.factions) {
+    const discovered = nextState.discoveredByFaction[String(faction.id)] ?? [];
+    for (const starId of discovered) {
+      const owner = nextState.starOwnership[starId] ?? -1;
+      if (owner >= 0 && owner !== faction.id) markFactionsMet(nextState, faction.id, owner);
+    }
   }
 }
 
@@ -6518,6 +6574,11 @@ function processEconomyHours(targetHour: number): { economyChanged: boolean; tec
       economy.stockpiles,
       resourceGain,
     );
+    // Stockpiles never go negative; a sustained deficit instead drives shortage penalties
+    // (see computeShortageSeverity) once the buffer is exhausted.
+    for (const resource of RESOURCE_KINDS) {
+      economy.stockpiles[resource] = Math.max(0, economy.stockpiles[resource]);
+    }
     economy.stockpiles.research = 0;
     economy.lastProcessedHour = targetHour;
     economy.lastProcessedMonth = gameYearToMonthIndex(elapsedHoursToGameYear(targetHour));
@@ -6866,7 +6927,7 @@ function getProductiveJobCapacity(planetState: PlanetState): number {
 
 function getMigrationAmenityRatio(planetState: PlanetState): number {
   if (planetState.population <= 0) return 1;
-  const amenityNeed = planetState.population / PEOPLE_PER_MONTHLY_UNIT;
+  const amenityNeed = getAmenityNeed(planetState.population);
   return amenityNeed > 0 ? planetState.economy.amenities / amenityNeed : 1;
 }
 
@@ -6943,13 +7004,50 @@ function createMigrationProfile(planetState: PlanetState, index: number): Migrat
 function getMigrationRelationMultiplier(sourceOwnerId: number, targetOwnerId: number): number {
   if (sourceOwnerId === targetOwnerId) return getMigrationPolicyFactors(sourceOwnerId).internal;
   if (areFactionsAtWar(state.diplomacy, sourceOwnerId, targetOwnerId)) return 0;
+  // Empires that have never made contact do not exchange any population.
+  if (!haveFactionsMet(state, sourceOwnerId, targetOwnerId)) return 0;
   const sourcePolicy = getMigrationPolicyFactors(sourceOwnerId);
   const targetPolicy = getMigrationPolicyFactors(targetOwnerId);
   if (sourcePolicy.foreignOut <= 0 || targetPolicy.foreignIn <= 0) return 0;
   const hasPact = getActiveTreatyPartnersForArticle(state.diplomacy, sourceOwnerId, MIGRATION_PACT_ARTICLE_ID)
     .includes(targetOwnerId);
-  const treatyMultiplier = hasPact ? MIGRATION_PACT_MULTIPLIER : MIGRATION_FOREIGN_BASE_MULTIPLIER;
-  return treatyMultiplier * sourcePolicy.foreignOut * targetPolicy.foreignIn;
+  const bordersMutuallyOpen = getBorderPolicy(state.diplomacy, sourceOwnerId, targetOwnerId) === "open"
+    && getBorderPolicy(state.diplomacy, targetOwnerId, sourceOwnerId) === "open";
+  const tierMultiplier = hasPact
+    ? MIGRATION_PACT_MULTIPLIER
+    : bordersMutuallyOpen
+      ? MIGRATION_FOREIGN_OPEN_BORDER_MULTIPLIER
+      : MIGRATION_FOREIGN_MET_MULTIPLIER;
+  return tierMultiplier * sourcePolicy.foreignOut * targetPolicy.foreignIn;
+}
+
+// Hyperlane jump distance from a source star to every reachable star, capped at maxJumps.
+function computeJumpDistances(adjacency: number[][], sourceStarId: number, maxJumps: number): Map<number, number> {
+  const distances = new Map<number, number>();
+  if (sourceStarId < 0 || sourceStarId >= adjacency.length) return distances;
+  distances.set(sourceStarId, 0);
+  const queue: number[] = [sourceStarId];
+  let head = 0;
+  while (head < queue.length) {
+    const starId = queue[head++];
+    const distance = distances.get(starId) ?? 0;
+    if (distance >= maxJumps) continue;
+    for (const neighborId of adjacency[starId] ?? []) {
+      if (neighborId < 0 || neighborId >= adjacency.length || distances.has(neighborId)) continue;
+      distances.set(neighborId, distance + 1);
+      queue.push(neighborId);
+    }
+  }
+  return distances;
+}
+
+// Falloff applied to a migration flow based on hyperlane distance between the two systems.
+// Neighbouring systems exchange the most; distant/unreachable systems still trickle (floor).
+function getMigrationDistanceMultiplier(distances: Map<number, number>, targetStarId: number): number {
+  const distance = distances.get(targetStarId);
+  if (distance === undefined) return MIGRATION_DISTANCE_FLOOR;
+  if (distance <= 1) return 1;
+  return clamp(Math.pow(MIGRATION_DISTANCE_DECAY, distance - 1), MIGRATION_DISTANCE_FLOOR, 1);
 }
 
 function applySpeciesPopulationDelta(
@@ -6988,6 +7086,7 @@ function processPopulationMigrationWeeks(weeks: number): boolean {
     const sourcePolicy = getMigrationPolicyFactors(source.ownerId);
     const weeklyRate = (MIGRATION_BASE_WEEKLY_RATE + MIGRATION_PRESSURE_WEEKLY_RATE * source.sourcePressure) * sourcePolicy.pressure;
     if (weeklyRate <= 0) continue;
+    const sourceDistances = computeJumpDistances(state.adjacency, source.planet.starId, MIGRATION_DISTANCE_MAX_JUMPS);
 
     for (const species of source.planet.speciesPopulations) {
       const sourceRightsMultiplier = getSpeciesMigrationRightsMultiplier(source.ownerId, species.speciesId);
@@ -7009,9 +7108,11 @@ function processPopulationMigrationWeeks(weeks: number): boolean {
           );
           if (habitability < 20) return null;
           const habitabilityMultiplier = clamp((habitability - 10) / 80, 0.1, 1.2);
+          const distanceMultiplier = getMigrationDistanceMultiplier(sourceDistances, target.planet.starId);
           const attractionGap = Math.max(0, target.attraction - source.attraction + source.sourcePressure * 0.35);
           if (attractionGap <= 0.02) return null;
-          const weight = relationMultiplier * targetRightsMultiplier * target.attraction * attractionGap * habitabilityMultiplier;
+          const weight = relationMultiplier * targetRightsMultiplier * target.attraction * attractionGap
+            * habitabilityMultiplier * distanceMultiplier;
           return weight > 0 ? { target, weight, availableRoom } : null;
         })
         .filter((candidate): candidate is { target: MigrationPlanetProfile; weight: number; availableRoom: number } => candidate !== null);
