@@ -26,6 +26,7 @@ import type {
 } from "../data/Government";
 import type { ClientCommand } from "../game/GameProtocol";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { ensurePanelThemeStyles } from "./panelTheme";
 import type { LeaderAssignmentTarget } from "./leaderEvents";
 
 export interface GovernmentPanelData {
@@ -59,7 +60,7 @@ export class GovernmentPanel {
   private panelElement: HTMLDivElement | null = null;
   private currentData: GovernmentPanelData | null = null;
   private activeTab: GovernmentTab = "leaders";
-  private expandedLawId: GovernmentLawId = "researchCharter";
+  private expandedLawId: GovernmentLawId | null = null;
   private pendingRefreshData: GovernmentPanelData | null = null;
   private pendingRefreshTimer: number | null = null;
   private position = { x: 48, y: 68 };
@@ -89,6 +90,7 @@ export class GovernmentPanel {
       this.root.id = "spaceHudRoot";
       document.body.appendChild(this.root);
     }
+    ensurePanelThemeStyles();
     this.injectStyles();
   }
 
@@ -105,6 +107,7 @@ export class GovernmentPanel {
       ? this.colorToCss(data.factions.find((faction) => faction.id === data.playerFactionId)?.color, 0.95)
       : "rgba(74, 236, 214, 0.95)";
     this.panelElement.style.setProperty("--government-accent", accent);
+    this.panelElement.style.setProperty("--panel-accent", accent);
     this.panelElement.innerHTML = this.render(data);
     this.applyPosition();
     this.bindEvents(data);
@@ -186,7 +189,7 @@ export class GovernmentPanel {
       button.addEventListener("click", () => {
         const lawId = button.dataset.governmentLaw as GovernmentLawId | undefined;
         if (!lawId) return;
-        this.expandedLawId = this.expandedLawId === lawId ? "researchCharter" : lawId;
+        this.expandedLawId = this.expandedLawId === lawId ? null : lawId;
         this.show(data);
       });
     });
@@ -706,12 +709,28 @@ export class GovernmentPanel {
   height: 100%;
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
-  border: 1px solid rgba(0, 216, 255, 0.5);
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 76%, transparent);
   background:
-    radial-gradient(circle at 80% 0%, rgba(0, 216, 255, 0.14), transparent 22rem),
-    linear-gradient(180deg, rgba(3, 17, 25, 0.98), rgba(2, 8, 13, 0.98));
-  box-shadow: 0 22px 64px rgba(0, 0, 0, 0.62), inset 0 0 44px rgba(0, 216, 255, 0.08);
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--panel-accent) 12%, transparent), transparent 20rem),
+    linear-gradient(180deg, rgba(7, 20, 24, 0.985), rgba(2, 9, 12, 0.99));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   overflow: hidden;
+}
+
+.governmentContent,
+.governmentLawsList,
+.governmentSideStack {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--panel-accent) 45%, transparent) transparent;
+}
+.governmentContent::-webkit-scrollbar,
+.governmentLawsList::-webkit-scrollbar,
+.governmentSideStack::-webkit-scrollbar { width: 7px; }
+.governmentContent::-webkit-scrollbar-thumb,
+.governmentLawsList::-webkit-scrollbar-thumb,
+.governmentSideStack::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--panel-accent) 40%, transparent);
+  border-radius: 999px;
 }
 
 .governmentHeader {
@@ -720,7 +739,10 @@ export class GovernmentPanel {
   justify-content: space-between;
   min-height: 62px;
   padding: 9px 12px 9px 16px;
-  border-bottom: 1px solid rgba(0, 216, 255, 0.24);
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 28%, transparent);
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--panel-accent) 22%, rgba(6, 20, 23, 0.92)),
+    rgba(3, 11, 14, 0.94));
 }
 
 .governmentIdentity {
@@ -1089,14 +1111,14 @@ export class GovernmentPanel {
 .governmentLawOptions {
   display: grid;
   gap: 5px;
-  padding: 7px 10px 10px 72px;
+  padding: 7px 12px 10px 18px;
 }
 
 .governmentLawOption button {
   width: 100%;
   min-height: 42px;
   display: grid;
-  grid-template-columns: 24px minmax(170px, 1fr) minmax(220px, 1.4fr) 138px;
+  grid-template-columns: 20px minmax(0, 1.1fr) minmax(0, 1.3fr) auto;
   align-items: center;
   gap: 9px;
   border: 1px solid rgba(0, 216, 255, 0.25);

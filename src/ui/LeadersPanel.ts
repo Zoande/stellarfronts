@@ -412,6 +412,7 @@ export class LeadersPanel {
     style.id = STYLE_ID;
     style.textContent = `
 .leadersPanel {
+  --panel-accent: rgba(96, 240, 184, 0.95);
   position: fixed;
   z-index: 98;
   width: min(1010px, calc(100vw - 28px));
@@ -425,11 +426,11 @@ export class LeadersPanel {
   height: 100%;
   display: flex;
   flex-direction: column;
-  border: 1px solid rgba(64, 202, 153, 0.42);
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 76%, transparent);
   background:
-    radial-gradient(circle at 78% 10%, rgba(78, 255, 185, 0.12), transparent 18rem),
-    linear-gradient(180deg, rgba(4, 26, 21, 0.98), rgba(2, 10, 12, 0.98));
-  box-shadow: 0 22px 54px rgba(0, 0, 0, 0.58), inset 0 0 32px rgba(47, 179, 132, 0.08);
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--panel-accent) 12%, transparent), transparent 20rem),
+    linear-gradient(180deg, rgba(7, 20, 24, 0.985), rgba(2, 9, 12, 0.99));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   overflow: hidden;
 }
 
@@ -438,7 +439,10 @@ export class LeadersPanel {
   align-items: center;
   justify-content: space-between;
   padding: 8px 14px 7px;
-  border-bottom: 1px solid rgba(65, 202, 153, 0.26);
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 28%, transparent);
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--panel-accent) 22%, rgba(6, 20, 23, 0.92)),
+    rgba(3, 11, 14, 0.94));
   cursor: grab;
 }
 

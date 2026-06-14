@@ -3425,6 +3425,7 @@ export class CelestialObjectPanel {
     style.textContent = `
 .celestialObjectPanel {
   --object-accent: rgba(102, 236, 199, 0.95);
+  --panel-accent: var(--object-accent);
   --co-panel-scale: 0.8;
   position: fixed;
   display: flex;
@@ -3436,11 +3437,11 @@ export class CelestialObjectPanel {
   transform-origin: top left;
   pointer-events: auto;
   color: var(--hud-ink, #d6dde7);
-  border: 1px solid rgba(73, 156, 129, 0.82);
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 76%, transparent);
   background:
-    linear-gradient(180deg, rgba(12, 34, 28, 0.92), rgba(5, 10, 14, 0.96)),
-    radial-gradient(circle at 20% 0%, rgba(96, 234, 190, 0.14), transparent 32rem);
-  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.58), inset 0 0 0 1px rgba(149, 255, 220, 0.08);
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--panel-accent) 12%, transparent), transparent 20rem),
+    linear-gradient(180deg, rgba(7, 20, 24, 0.985), rgba(2, 9, 12, 0.99));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
   z-index: 88;
 }
@@ -3453,10 +3454,10 @@ export class CelestialObjectPanel {
   gap: 12px;
   padding: 0 12px;
   cursor: move;
-  background:
-    linear-gradient(90deg, rgba(26, 63, 51, 0.92), rgba(17, 35, 33, 0.72)),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.07), transparent 48%);
-  border-bottom: 1px solid rgba(110, 212, 181, 0.38);
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--panel-accent) 22%, rgba(6, 20, 23, 0.92)),
+    rgba(3, 11, 14, 0.94));
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 28%, transparent);
   user-select: none;
 }
 

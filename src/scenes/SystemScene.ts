@@ -94,6 +94,9 @@ import { SystemInputController } from "./system/SystemInputController";
 import { SystemActionTargetRenderer } from "./system/SystemActionTargetRenderer";
 import type { SystemActionTarget } from "./system/SystemActionTargetRenderer";
 import { SystemViewStore } from "./system/SystemViewStore";
+import { ContextActionMenu } from "./shared/ContextActionMenu";
+import type { ContextMenuItem } from "./shared/ContextActionMenu";
+import type { PointerTarget } from "./shared/PointerTarget";
 import { createProceduralSpaceSkybox, getSystemSkyboxSettings } from "../utils/proceduralSpaceSkybox";
 
 type ExitSystemHandler = () => void | Promise<void>;
@@ -279,6 +282,7 @@ export class SystemScene implements IGameScene {
   private selectedFleetIds = new Set<string>();
   private activeFleetAction: ShipAction | null = null;
   private actionTargetRenderer: SystemActionTargetRenderer | null = null;
+  private readonly contextMenu = new ContextActionMenu();
   private pointerObserver: Observer<PointerInfo> | null = null;
   private starOccluded = false;
   private renderDebugEnabled = false;
@@ -332,7 +336,15 @@ export class SystemScene implements IGameScene {
   private readonly onEscapeKey = (ev: KeyboardEvent): void => {
     if (ev.key !== "Escape") return;
     ev.preventDefault();
+    if (this.contextMenu.isOpen) {
+      this.contextMenu.close();
+      return;
+    }
     this.requestExit();
+  };
+
+  private readonly onCanvasContextMenu = (ev: MouseEvent): void => {
+    ev.preventDefault();
   };
 
   constructor(
@@ -1474,11 +1486,31 @@ export class SystemScene implements IGameScene {
         markerPosition: { x: 0, y: SYSTEM_FLEET_Y, z: 0 },
       }];
     }
-    if (this.activeFleetAction !== "move") return [];
+    const isColonize = this.activeFleetAction === "colonize";
+    if (this.activeFleetAction !== "move" && !isColonize) return [];
 
     const targets: SystemActionTarget[] = [];
+
+    // Planets are valid targets for both move (orbit) and colonize.
+    for (let i = 0; i < this.planetConfigs.length; i++) {
+      const planet = this.planetConfigs[i];
+      const mesh = this.planetMeshes[i];
+      if (!planet || !mesh) continue;
+      targets.push(this.resolveSystemActionTargetMarkerPosition({
+        kind: "planet",
+        label: planet.name,
+        starId: this.star.id,
+        planetId: planet.id,
+        position: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
+        markerPosition: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
+      }));
+    }
+
+    // Colonize only targets planets; everything below is movement-only.
+    if (isColonize) return targets;
+
     const starPosition = getSystemStarOrbitPosition();
-    targets.push({
+    targets.unshift({
       kind: "star",
       label: this.star.name,
       starId: this.star.id,
@@ -1498,20 +1530,6 @@ export class SystemScene implements IGameScene {
         position: starbaseOrbitPosition,
         markerPosition: starbasePosition,
       });
-    }
-
-    for (let i = 0; i < this.planetConfigs.length; i++) {
-      const planet = this.planetConfigs[i];
-      const mesh = this.planetMeshes[i];
-      if (!planet || !mesh) continue;
-      targets.push(this.resolveSystemActionTargetMarkerPosition({
-        kind: "planet",
-        label: planet.name,
-        starId: this.star.id,
-        planetId: planet.id,
-        position: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
-        markerPosition: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
-      }));
     }
 
     for (const exit of this.hyperlaneExits) {
@@ -1574,19 +1592,46 @@ export class SystemScene implements IGameScene {
 
   private pickSystemActionTarget(ev: PointerEvent): SystemActionTarget | null {
     if (!this.actionTargetRenderer?.hasTargets) return null;
+
+    // Prefer the actual visible planet sphere so orbit/colonize hit what you see.
+    const planetPick = this.inputController?.pickWithTolerance(ev, (mesh) => this.planetMeshes.includes(mesh));
+    if (planetPick?.hit && planetPick.pickedMesh) {
+      const index = this.planetMeshes.findIndex((mesh) => mesh === planetPick.pickedMesh);
+      const planetId = index >= 0 ? this.planetConfigs[index]?.id : undefined;
+      const planetTarget = planetId ? this.buildPlanetActionTarget(planetId) : null;
+      if (planetTarget) return planetTarget;
+    }
+
+    // Then the action marker meshes themselves.
     const pick = this.inputController?.pick(ev, (mesh) => this.actionTargetRenderer?.hasMesh(mesh) === true);
     if (pick?.hit && pick.pickedMesh) {
       const meshTarget = this.actionTargetRenderer.getTargetForMesh(pick.pickedMesh as Mesh);
       if (meshTarget) return meshTarget;
     }
 
+    // Finally a modest proximity snap (kept small so empty-space clicks aren't hijacked).
     const hit = this.getRawPointerSystemPlanePosition(ev);
     if (!hit) return null;
     return this.actionTargetRenderer.findTargetNearPosition(
       hit,
       (target) => this.getSystemActionMarkerRadius(target),
-      { radiusScale: 1.85, minimumRadius: 4.2 },
+      { radiusScale: 1.35, minimumRadius: 3.0 },
     );
+  }
+
+  private buildPlanetActionTarget(planetId: string): SystemActionTarget | null {
+    const index = this.planetConfigs.findIndex((planet) => planet.id === planetId);
+    const planet = index >= 0 ? this.planetConfigs[index] : null;
+    const mesh = index >= 0 ? this.planetMeshes[index] : null;
+    if (!planet || !mesh) return null;
+    return {
+      kind: "planet",
+      label: planet.name,
+      starId: this.star.id,
+      planetId: planet.id,
+      position: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
+      markerPosition: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
+    };
   }
 
   private getRawPointerSystemPlanePosition(ev: PointerEvent): Vector3 | null {
@@ -3637,10 +3682,20 @@ export class SystemScene implements IGameScene {
   }
 
   private installObjectLabelClicks(): void {
+    this.engine.getRenderingCanvas()?.addEventListener("contextmenu", this.onCanvasContextMenu);
     this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
       if (pointerInfo.type !== PointerEventTypes.POINTERDOWN) return;
       const ev = pointerInfo.event as PointerEvent;
+
+      // Right-click: open the context action menu for the resolved target.
+      if (ev.button === 2) {
+        ev.preventDefault();
+        this.openSystemContextMenu(ev);
+        return;
+      }
       if (ev.button !== 0) return;
+      this.contextMenu.close();
+
       if (this.tryIssueActiveFleetActionAtPointer(ev)) {
         ev.preventDefault();
         return;
@@ -3680,7 +3735,7 @@ export class SystemScene implements IGameScene {
     for (const root of this.shipVisualRoots.values()) {
       for (const mesh of root.getChildMeshes()) shipMeshes.add(mesh as Mesh);
     }
-    const pick = this.inputController?.pick(ev, (mesh) => shipMeshes.has(mesh));
+    const pick = this.inputController?.pickWithTolerance(ev, (mesh) => shipMeshes.has(mesh));
     if (!pick?.hit || !pick.pickedMesh) return false;
     const metadata = pick.pickedMesh.metadata as { fleetId?: string | null } | null;
     if (metadata?.fleetId) {
@@ -3699,7 +3754,7 @@ export class SystemScene implements IGameScene {
       ...this.planetMeshes,
       ...(this.starMesh ? [this.starMesh] : []),
     ]);
-    const objectPick = this.inputController?.pick(ev, (mesh) => objectMeshes.has(mesh));
+    const objectPick = this.inputController?.pickWithTolerance(ev, (mesh) => objectMeshes.has(mesh));
     if (objectPick?.hit && objectPick.pickedMesh) {
       const planetIndex = this.planetMeshes.findIndex((mesh) => mesh === objectPick.pickedMesh);
       if (planetIndex >= 0) {
@@ -3718,6 +3773,217 @@ export class SystemScene implements IGameScene {
     }
 
     return false;
+  }
+
+  /**
+   * Resolve "what is under the pointer" to a scene-agnostic {@link PointerTarget}.
+   * Picks the actual visible meshes (planet spheres, starbase, star, ships, fleet
+   * markers, hyperlane gates) so orbit/colonize hit the planet you can see, and
+   * falls back to an unclamped ground-plane point for empty space.
+   */
+  private resolvePointerTarget(ev: PointerEvent): PointerTarget {
+    // Planet sphere first — clicking the visible planet must orbit/colonize it.
+    const planetPick = this.inputController?.pickWithTolerance(ev, (mesh) => this.planetMeshes.includes(mesh));
+    if (planetPick?.hit && planetPick.pickedMesh) {
+      const index = this.planetMeshes.findIndex((mesh) => mesh === planetPick.pickedMesh);
+      const planet = index >= 0 ? this.planetConfigs[index] : null;
+      const mesh = index >= 0 ? this.planetMeshes[index] : null;
+      if (planet && mesh) {
+        return {
+          kind: "planet",
+          id: planet.id,
+          starId: this.star.id,
+          label: planet.name,
+          position: { x: mesh.position.x, y: SYSTEM_FLEET_Y, z: mesh.position.z },
+        };
+      }
+    }
+
+    // Starbase structure.
+    if (this.starbaseRoot) {
+      const starbaseMeshes = new Set<Mesh>(this.starbaseRoot.getChildMeshes().map((mesh) => mesh as Mesh));
+      const starbasePick = this.inputController?.pickWithTolerance(ev, (mesh) => starbaseMeshes.has(mesh));
+      if (starbasePick?.hit) {
+        const starbase = this.getStarbasesInCurrentSystem()[0];
+        if (starbase) {
+          const position = this.starbaseRoot.position;
+          return {
+            kind: "starbase",
+            id: starbase.id,
+            starId: this.star.id,
+            ownerId: starbase.ownerId,
+            label: "Starbase",
+            position: { x: position.x, y: SYSTEM_FLEET_Y, z: position.z },
+          };
+        }
+      }
+    }
+
+    // Ships / fleet markers.
+    const fleetTarget = this.resolveFleetPointerTarget(ev);
+    if (fleetTarget) return fleetTarget;
+
+    // Star body.
+    if (this.starMesh) {
+      const starPick = this.inputController?.pickWithTolerance(ev, (mesh) => mesh === this.starMesh);
+      if (starPick?.hit) {
+        return { kind: "star", starId: this.star.id, label: this.star.name, position: getSystemStarOrbitPosition() };
+      }
+    }
+
+    // Hyperlane gate.
+    const point = this.inputController?.getCanvasPoint(ev);
+    if (point) {
+      const gatePick = this.objectRenderer.pick(point.canvasX, point.canvasY, (definition) => definition.kind === "hyperlane");
+      const connectedStarId = gatePick?.entry.definition.metadata?.connectedStarId as number | undefined;
+      if (connectedStarId !== undefined) {
+        const exit = this.hyperlaneExits.find((candidate) => candidate.starId === connectedStarId);
+        const destination = exit
+          ? getHyperlaneExitSystemPosition({ dx: -exit.dx, dz: -exit.dz })
+          : { x: 0, y: SYSTEM_FLEET_Y, z: 0 };
+        return { kind: "hyperlaneGate", starId: this.star.id, toStarId: connectedStarId, label: exit?.name ?? "Hyperlane", position: destination };
+      }
+    }
+
+    // Empty space → ground-plane point, bounded to the system play area.
+    const plane = this.getPointerSystemPlanePosition(ev);
+    if (plane) return { kind: "empty", label: "Deep Space", position: plane };
+    return { kind: "empty", label: "Deep Space" };
+  }
+
+  private resolveFleetPointerTarget(ev: PointerEvent): PointerTarget | null {
+    const toTarget = (fleetId: string): PointerTarget | null => {
+      const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+      if (!fleet) return null;
+      return { kind: "fleet", id: fleet.id, ownerId: fleet.ownerId, label: "Fleet", position: this.getFleetRenderPosition(fleet) };
+    };
+
+    if (this.shipVisualRoots.size > 0) {
+      const shipMeshes = new Set<Mesh>();
+      for (const root of this.shipVisualRoots.values()) {
+        for (const mesh of root.getChildMeshes()) shipMeshes.add(mesh as Mesh);
+      }
+      const pick = this.inputController?.pickWithTolerance(ev, (mesh) => shipMeshes.has(mesh));
+      const fleetId = (pick?.pickedMesh?.metadata as { fleetId?: string | null } | null)?.fleetId;
+      if (fleetId) {
+        const target = toTarget(fleetId);
+        if (target) return target;
+      }
+    }
+
+    const point = this.inputController?.getCanvasPoint(ev);
+    if (point) {
+      const pick = this.objectRenderer.pick(point.canvasX, point.canvasY, (definition) => definition.kind === "fleet");
+      const fleetId = pick?.entry.definition.metadata?.fleetId as string | undefined;
+      if (fleetId) {
+        const target = toTarget(fleetId);
+        if (target) return target;
+      }
+    }
+    return null;
+  }
+
+  private openSystemContextMenu(ev: PointerEvent): void {
+    const target = this.resolvePointerTarget(ev);
+    const fleetId = this.getPrimarySelectedFleetId();
+    const fleet = fleetId ? this.serverFleets.find((candidate) => candidate.id === fleetId) ?? null : null;
+    const ownFleet = fleet && fleet.ownerId === this.playerFactionId ? fleet : null;
+    const items = ownFleet
+      ? this.buildFleetContextItems(ownFleet, target)
+      : this.buildInspectContextItems(target);
+    if (items.length === 0) return;
+    const title = target.label ?? "Options";
+    this.contextMenu.open({ x: ev.clientX, y: ev.clientY, title, items });
+  }
+
+  private buildFleetContextItems(fleet: ServerFleet, target: PointerTarget): ContextMenuItem[] {
+    const items: ContextMenuItem[] = [];
+    const moveHere = (): void => {
+      if (target.position) this.issueMoveToSystemPosition(target.position);
+    };
+    const isHostile = (ownerId: number | null | undefined): boolean =>
+      ownerId != null && ownerId !== this.playerFactionId && this.warFactionIds.has(ownerId);
+
+    switch (target.kind) {
+      case "planet": {
+        const planetId = target.id;
+        if (planetId) {
+          items.push({ label: `Orbit ${target.label ?? "Planet"}`, onSelect: () => this.options.onFleetCommand?.({ type: "orbitPlanet", fleetId: fleet.id, planetId }) });
+          if (this.fleetCanColonize(fleet)) {
+            items.push({ label: `Colonize ${target.label ?? "Planet"}`, onSelect: () => this.options.onFleetCommand?.({ type: "colonizePlanet", fleetId: fleet.id, planetId }) });
+          }
+        }
+        if (target.position) items.push({ label: "Move Here", onSelect: moveHere });
+        break;
+      }
+      case "starbase": {
+        if (target.position) {
+          const orbitTarget = this.createFleetOrbitTarget({
+            kind: "starbase", label: "Starbase", starId: this.star.id, starbaseId: target.id,
+            position: target.position, markerPosition: target.position,
+          });
+          items.push({ label: "Orbit Starbase", onSelect: () => this.issueMoveToSystemPosition(target.position!, this.star.id, orbitTarget) });
+          items.push({ label: "Move Here", onSelect: moveHere });
+        }
+        if (isHostile(target.ownerId) && target.id) {
+          items.push({ label: "Attack Starbase", onSelect: () => this.options.onFleetCommand?.({ type: "attackTarget", fleetId: fleet.id, targetKind: "starbase", targetId: target.id! }) });
+        }
+        break;
+      }
+      case "star": {
+        if (target.position) {
+          const orbitTarget = this.createFleetOrbitTarget({
+            kind: "star", label: this.star.name, starId: this.star.id,
+            position: target.position, markerPosition: { x: 0, y: SYSTEM_FLEET_Y, z: 0 },
+          });
+          items.push({ label: "Orbit Star", onSelect: () => this.issueMoveToSystemPosition(target.position!, this.star.id, orbitTarget) });
+        }
+        if (this.fleetCanBuildStarbase(fleet)) {
+          items.push({ label: "Build Starbase", onSelect: () => this.issueBuildAtStar() });
+        }
+        break;
+      }
+      case "hyperlaneGate": {
+        if (target.toStarId !== undefined && target.position) {
+          items.push({
+            label: `Travel to ${target.label ?? "System"}`,
+            onSelect: () => this.options.onFleetCommand?.({ type: "moveFleet", fleetId: fleet.id, targetStarId: target.toStarId!, targetSystemPosition: target.position!, orbitTarget: null }),
+          });
+        }
+        break;
+      }
+      case "fleet": {
+        if (isHostile(target.ownerId) && target.id) {
+          items.push({ label: "Attack Fleet", onSelect: () => this.options.onFleetCommand?.({ type: "attackTarget", fleetId: fleet.id, targetKind: "fleet", targetId: target.id! }) });
+        }
+        if (target.position) items.push({ label: "Move Here", onSelect: moveHere });
+        break;
+      }
+      default: {
+        if (target.position) items.push({ label: "Move Here", onSelect: moveHere });
+        break;
+      }
+    }
+    return items;
+  }
+
+  private buildInspectContextItems(target: PointerTarget): ContextMenuItem[] {
+    const items: ContextMenuItem[] = [];
+    if (target.kind === "planet" && target.id) {
+      const planet = this.planetConfigs.find((candidate) => candidate.id === target.id);
+      if (planet) items.push({ label: "Open Details", onSelect: () => void this.showPlanetObjectPanel(planet) });
+    } else if (target.kind === "star") {
+      items.push({ label: "Open Details", onSelect: () => this.showStarObjectPanel() });
+    } else if (target.kind === "starbase" && target.id) {
+      const starbaseId = target.id;
+      items.push({ label: "Open Details", onSelect: () => this.selectStarbaseById(starbaseId) });
+    } else if (target.kind === "fleet" && target.id) {
+      const fleet = this.serverFleets.find((candidate) => candidate.id === target.id);
+      if (fleet) {
+        items.push({ label: "Select Fleet", onSelect: () => { this.selectFleetFromCard(fleet, false); this.refreshFleetMarkers(); } });
+      }
+    }
+    return items;
   }
 
   private async showPlanetObjectPanel(planet: PlanetConfig): Promise<void> {
@@ -4281,6 +4547,8 @@ export class SystemScene implements IGameScene {
 
   dispose(): void {
     window.removeEventListener("keydown", this.onEscapeKey);
+    this.engine.getRenderingCanvas()?.removeEventListener("contextmenu", this.onCanvasContextMenu);
+    this.contextMenu.dispose();
     if (this.pointerObserver) {
       this.scene.onPointerObservable.remove(this.pointerObserver);
       this.pointerObserver = null;
