@@ -247,6 +247,7 @@ import {
 import {
   calculateLeaderLevel,
   createInitialLeaders,
+  createLeaderCandidate,
   formatLeaderClass,
   getLeaderAssignmentClass,
   getLeaderTraitDefinition,
@@ -255,6 +256,19 @@ import {
   refreshLeaderPool,
 } from "../src/data/Leaders";
 import type { LeaderAssignment, LeaderClass, LeaderFleetEffects, LeaderState } from "../src/data/Leaders";
+import type { GameEffect, FactionModifierState } from "../src/data/GameEffects";
+import {
+  getEventDefinition,
+  LEADER_OFFER_EVENT_ID,
+  LOST_IN_TRANSIT_EVENT_ID,
+} from "../src/data/Events";
+import type { ActiveEvent } from "../src/data/Events";
+import {
+  SHORTAGE_SITUATION_ID,
+  getSituationDefinition,
+  situationInstanceId,
+} from "../src/data/Situations";
+import type { ActiveSituation } from "../src/data/Situations";
 import {
   buildSystemDetailPayload,
   createSystemDetailRevision,
@@ -389,6 +403,9 @@ interface GameState {
   diplomacy: DiplomacyState;
   market: MarketState;
   leaders: LeaderState[];
+  situations: ActiveSituation[];
+  events: ActiveEvent[];
+  factionModifiers: FactionModifierState[];
   hyperlanes: Array<[number, number]>;
   adjacency: number[][];
   factions: FactionInfo[];
@@ -804,17 +821,16 @@ function computeShortageSeverity(stockpile: number, monthlyDelta: number, consum
   return clamp(deficitFraction * bufferFactor, 0, 1);
 }
 
+// Single source of truth for shortage severity: the Resource Shortage *situation*.
+// Its per-resource progress (0-100, advanced/receded each tick by processSituations
+// using computeShortageSeverity) drives all shortage penalties below. This replaces the
+// former instantaneous penalty so effects escalate and recede smoothly with the meter.
 function getFactionShortageSeverities(nextState: GameState, factionId: number): ResourceCounts {
   const severities = createEmptyResourceCounts();
-  const economy = nextState.factionEconomies.find((candidate) => candidate.factionId === factionId);
-  if (!economy) return severities;
-  const flow = calculateFactionResourceFlow(nextState, factionId);
   for (const resource of RESOURCE_KINDS) {
-    severities[resource] = computeShortageSeverity(
-      economy.stockpiles[resource],
-      economy.monthlyDelta[resource],
-      flow.consumption[resource],
-    );
+    const instanceId = situationInstanceId(SHORTAGE_SITUATION_ID, factionId, resource);
+    const situation = nextState.situations.find((candidate) => candidate.id === instanceId);
+    severities[resource] = situation ? clamp(situation.progress / 100, 0, 1) : 0;
   }
   return severities;
 }
@@ -1253,6 +1269,7 @@ function getPlanetTechnologyModifiers(nextState: GameState, planetState: PlanetS
       ...getTechnologyPlanetModifiers(nextState, ownerId),
       ...getGovernmentPlanetModifiers(nextState, ownerId),
       ...getFactionShortagePlanetModifiers(nextState, ownerId),
+      ...getActiveFactionPlanetModifiers(nextState, ownerId),
       ...getPlanetLeaderModifiers(nextState, planetState, ownerId),
     ]
     : [];
@@ -2316,6 +2333,9 @@ function createInitialState(): GameState {
     diplomacy: createInitialDiplomacyState(factions.map((faction) => faction.id)),
     market: createInitialMarketState(factions.map((faction) => faction.id), startHour, GAME_START_YEAR),
     leaders: createInitialLeaders(factions.map((faction) => faction.id), startLeaderDay, GAME_START_YEAR),
+    situations: [],
+    events: [],
+    factionModifiers: [],
     hyperlanes,
     adjacency,
     factions,
@@ -2358,6 +2378,9 @@ async function loadState(): Promise<GameState> {
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.metByFaction = parsed.metByFaction ?? {};
+    parsed.situations = Array.isArray(parsed.situations) ? parsed.situations : [];
+    parsed.events = Array.isArray(parsed.events) ? parsed.events : [];
+    parsed.factionModifiers = Array.isArray(parsed.factionModifiers) ? parsed.factionModifiers : [];
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.recentCombatContacts = [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
@@ -2764,6 +2787,12 @@ function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField
   if (changed.includes("combatContacts") || changed.includes("visibility")) {
     update.recentCombatContacts = visibleState.recentCombatContacts;
   }
+  if (changed.includes("situations")) {
+    update.situations = visibleState.situations;
+  }
+  if (changed.includes("events")) {
+    update.events = visibleState.events;
+  }
   return update;
 }
 
@@ -2809,6 +2838,13 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     ? state.leaders.filter((leader) => leader.factionId === perspective.factionId && leader.status !== "dead")
     : state.leaders.filter((leader) => leader.status !== "dead");
   const species = state.species;
+  // Events and situations are private to the owning faction.
+  const situations = perspective.mode === "faction"
+    ? state.situations.filter((situation) => situation.factionId === perspective.factionId)
+    : [];
+  const events = perspective.mode === "faction"
+    ? state.events.filter((event) => event.factionId === perspective.factionId)
+    : [];
   const recentCombatContacts = visibleSet
     ? state.recentCombatContacts.filter((contact) => {
       const sourceStarId = contact.sourceKind === "fleet"
@@ -2848,6 +2884,8 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
     factionEconomies,
     habitedPlanetSystemIds: createHabitedPlanetSystemIds(knownSet),
+    situations,
+    events,
   };
 }
 
@@ -5747,7 +5785,7 @@ function advanceFleet(fleet: GameFleet, scaledMs: number): boolean {
 function processMissingInActionFleets(): boolean {
   let changed = false;
   for (const fleet of state.fleets) {
-    if (fleet.phase !== "missingInAction" || fleet.retreatState?.mode !== "emergencyFtl") continue;
+    if (fleet.phase !== "missingInAction" || fleet.retreatState?.status !== "mia") continue;
     const miaUntilYear = fleet.retreatState.miaUntilYear ?? state.clock.year;
     if (state.clock.year < miaUntilYear) continue;
     const targetStarId = fleet.retreatState.targetStarId;
@@ -5768,6 +5806,306 @@ function processMissingInActionFleets(): boolean {
   if (changed) {
     refreshDiscovery();
     hasDirtyState = true;
+  }
+  return changed;
+}
+
+// ===========================================================================
+// Events & Situations engine
+// ===========================================================================
+// Generic, data-driven framework: event choices and situation thresholds both
+// emit GameEffect[] which `applyGameEffects` is the single place to apply. New
+// content is data (Events.ts / Situations.ts) plus, occasionally, a new effect.
+
+const SHORTAGE_SITUATION_RESOURCES: ResourceKind[] = ["food", "minerals", "energy", "goods", "alloys"];
+const SHORTAGE_PROGRESS_RISE_PER_DAY = 9; // climb rate (per day) at full deficit severity
+const SHORTAGE_PROGRESS_FALL_PER_DAY = 6; // recovery rate (per day) once the deficit clears
+const LEADER_OFFER_CHANCE_PER_DAY = 0.0006; // very rare, per faction
+const LOST_IN_TRANSIT_CHANCE_PER_DAY = 0.0018; // very rare, per jumping fleet
+const LOST_IN_TRANSIT_MIN_DAYS = 25;
+const LOST_IN_TRANSIT_MAX_DAYS = 210;
+
+let eventInstanceSeq = 0;
+
+function nextEventInstanceId(): string {
+  eventInstanceSeq += 1;
+  return `evt-${Date.now().toString(36)}-${eventInstanceSeq.toString(36)}`;
+}
+
+function probabilityOverDays(chancePerDay: number, elapsedDays: number): number {
+  if (chancePerDay <= 0 || elapsedDays <= 0) return 0;
+  return 1 - Math.pow(1 - Math.min(1, chancePerDay), elapsedDays);
+}
+
+function resolveEventTokens(template: string, context?: Record<string, unknown>): string {
+  return template.replace(/\{(\w+)\}/g, (_match, key: string) => {
+    const value = context?.[key];
+    return value === undefined || value === null ? "" : String(value);
+  });
+}
+
+function fleetDisplayName(fleet: GameFleet): string {
+  return `Fleet ${fleet.id.slice(-4).toUpperCase()}`;
+}
+
+function queueFactionEvent(factionId: number, defId: string, context?: Record<string, unknown>): ActiveEvent | null {
+  const definition = getEventDefinition(defId);
+  if (!definition) return null;
+  const event: ActiveEvent = {
+    id: nextEventInstanceId(),
+    defId,
+    factionId,
+    createdAtYear: state.clock.year,
+    expiresAtYear: state.clock.year + gameDaysToYears(definition.timeoutDays),
+    title: resolveEventTokens(definition.title, context),
+    body: resolveEventTokens(definition.body, context),
+    category: definition.category,
+    imageUrl: definition.imageUrl,
+    choices: definition.choices,
+    defaultChoiceId: definition.defaultChoiceId,
+    context,
+  };
+  state.events.push(event);
+  hasDirtyState = true;
+  return event;
+}
+
+function addFactionModifierState(
+  factionId: number,
+  id: string,
+  label: string,
+  modifiers: PlanetModifier[],
+  durationDays: number | null,
+): void {
+  state.factionModifiers = state.factionModifiers.filter((entry) => !(entry.factionId === factionId && entry.id === id));
+  state.factionModifiers.push({
+    id,
+    factionId,
+    label,
+    source: `effect:${id}`,
+    modifiers,
+    expiresAtYear: durationDays !== null ? state.clock.year + gameDaysToYears(durationDays) : null,
+  });
+  hasDirtyState = true;
+}
+
+function getActiveFactionPlanetModifiers(nextState: GameState, factionId: number): PlanetModifier[] {
+  const modifiers: PlanetModifier[] = [];
+  for (const entry of nextState.factionModifiers) {
+    if (entry.factionId === factionId) modifiers.push(...entry.modifiers);
+  }
+  return modifiers;
+}
+
+function expireFactionModifiers(): boolean {
+  const before = state.factionModifiers.length;
+  state.factionModifiers = state.factionModifiers.filter(
+    (entry) => entry.expiresAtYear === null || state.clock.year < entry.expiresAtYear,
+  );
+  return state.factionModifiers.length !== before;
+}
+
+function generatePowerfulLeaderCandidate(factionId: number): LeaderState {
+  const leaderClass: LeaderClass = Math.random() < 0.5 ? "military" : "civilian";
+  const base = createLeaderCandidate(
+    factionId,
+    leaderClass,
+    getLeaderDayIndex(state.clock.year),
+    Math.floor(Math.random() * 100000),
+    state.clock.year,
+    "pool",
+  );
+  const xp = 1200 + Math.floor(Math.random() * 900);
+  return { ...base, xp, level: calculateLeaderLevel(xp) };
+}
+
+function buildLeaderOfferContext(factionId: number): Record<string, unknown> {
+  const leader = generatePowerfulLeaderCandidate(factionId);
+  return { leaderName: leader.name, leaderClass: formatLeaderClass(leader.class), leader };
+}
+
+function spawnLeaderFromEffect(factionId: number, effect: Extract<GameEffect, { type: "spawnLeader" }>, context?: Record<string, unknown>): void {
+  const offered = context?.leader as LeaderState | undefined;
+  const leader: LeaderState = offered
+    ? { ...offered, factionId, status: "recruited", recruitedAtYear: state.clock.year }
+    : { ...generatePowerfulLeaderCandidate(factionId), status: "recruited", recruitedAtYear: state.clock.year };
+  if (effect.bonusLevel && effect.bonusLevel > 0) {
+    leader.level = Math.max(leader.level, leader.level + effect.bonusLevel);
+  }
+  state.leaders.push(leader);
+  hasDirtyState = true;
+}
+
+function sendFleetMissing(fleetId: string, days: number): boolean {
+  const fleet = state.fleets.find((candidate) => candidate.id === fleetId);
+  if (!fleet || fleet.phase === "missingInAction") return false;
+  const returnStarId = fleet.targetStarId ?? fleet.route[fleet.route.length - 1] ?? fleet.currentStarId;
+  fleet.retreatState = {
+    mode: "lostInTransit",
+    status: "mia",
+    targetStarId: returnStarId,
+    startedAtYear: state.clock.year,
+    miaUntilYear: state.clock.year + gameDaysToYears(days),
+  };
+  fleet.hyperlanePosition = null;
+  setFleetPhase(fleet, "missingInAction");
+  hasDirtyState = true;
+  return true;
+}
+
+// The single place GameEffects mutate the world. Callers that need immediate
+// economy feedback (player decisions) recalc afterwards; the tick path lets the
+// next economy pass pick changes up.
+function applyGameEffects(factionId: number, effects: GameEffect[], context?: Record<string, unknown>): void {
+  for (const effect of effects) {
+    switch (effect.type) {
+      case "addResource": {
+        const economy = getFactionEconomy(factionId);
+        if (economy) {
+          economy.stockpiles[effect.resource] = Math.max(0, (economy.stockpiles[effect.resource] ?? 0) + effect.amount);
+          hasDirtyState = true;
+        }
+        break;
+      }
+      case "factionModifier":
+        addFactionModifierState(factionId, effect.id, effect.label, effect.modifiers, effect.durationDays ?? null);
+        break;
+      case "clearFactionModifier":
+        state.factionModifiers = state.factionModifiers.filter((entry) => !(entry.factionId === factionId && entry.id === effect.id));
+        hasDirtyState = true;
+        break;
+      case "triggerEvent":
+        queueFactionEvent(factionId, effect.eventId, context);
+        break;
+      case "spawnLeader":
+        spawnLeaderFromEffect(factionId, effect, context);
+        break;
+      case "fleetMissing":
+        sendFleetMissing(effect.fleetId, effect.days);
+        break;
+      case "adjustSituation": {
+        const situation = state.situations.find((candidate) => candidate.id === effect.situationId && candidate.factionId === factionId);
+        if (situation) {
+          const max = getSituationDefinition(situation.defId)?.max ?? 100;
+          situation.progress = clamp(situation.progress + effect.delta, 0, max);
+          hasDirtyState = true;
+        }
+        break;
+      }
+      case "notify":
+        // Notifications are derived client-side from situations/events; nothing to persist.
+        break;
+    }
+  }
+}
+
+function fireSituationThresholds(situation: ActiveSituation, previousProgress: number): boolean {
+  const definition = getSituationDefinition(situation.defId);
+  if (!definition) return false;
+  let changed = false;
+  for (const threshold of definition.thresholds) {
+    if (previousProgress < threshold.at && situation.progress >= threshold.at) {
+      applyGameEffects(situation.factionId, threshold.effects, { resource: situation.subject, situationId: situation.id });
+      changed = true;
+    }
+  }
+  if (situation.progress > situation.lastThreshold) situation.lastThreshold = situation.progress;
+  return changed;
+}
+
+function processSituations(elapsedGameDays: number): boolean {
+  if (elapsedGameDays <= 0) return false;
+  let changed = expireFactionModifiers();
+  for (const faction of state.factions) {
+    const economy = getFactionEconomy(faction.id);
+    if (!economy) continue;
+    const flow = calculateFactionResourceFlow(state, faction.id);
+    for (const resource of SHORTAGE_SITUATION_RESOURCES) {
+      const targetSeverity = computeShortageSeverity(
+        economy.stockpiles[resource],
+        economy.monthlyDelta[resource],
+        flow.consumption[resource],
+      );
+      const targetProgress = targetSeverity * 100;
+      const instanceId = situationInstanceId(SHORTAGE_SITUATION_ID, faction.id, resource);
+      let situation = state.situations.find((candidate) => candidate.id === instanceId);
+      if (targetProgress <= 0 && !situation) continue;
+      if (!situation) {
+        situation = {
+          id: instanceId,
+          defId: SHORTAGE_SITUATION_ID,
+          factionId: faction.id,
+          subject: resource,
+          progress: 0,
+          startedAtYear: state.clock.year,
+          lastThreshold: 0,
+        };
+        state.situations.push(situation);
+        changed = true;
+      }
+      const previous = situation.progress;
+      if (targetProgress > situation.progress) {
+        situation.progress = Math.min(
+          targetProgress,
+          situation.progress + SHORTAGE_PROGRESS_RISE_PER_DAY * Math.max(0.25, targetSeverity) * elapsedGameDays,
+        );
+      } else {
+        situation.progress = Math.max(targetProgress, situation.progress - SHORTAGE_PROGRESS_FALL_PER_DAY * elapsedGameDays);
+      }
+      if (situation.progress !== previous) changed = true;
+      if (fireSituationThresholds(situation, previous)) changed = true;
+      if (situation.progress <= 0.01 && targetProgress <= 0) {
+        state.situations = state.situations.filter((candidate) => candidate !== situation);
+        changed = true;
+      }
+    }
+  }
+  if (changed) hasDirtyState = true;
+  return changed;
+}
+
+function processRandomEvents(elapsedGameDays: number): boolean {
+  if (elapsedGameDays <= 0) return false;
+  let changed = false;
+
+  const lostChance = probabilityOverDays(LOST_IN_TRANSIT_CHANCE_PER_DAY, elapsedGameDays);
+  for (const fleet of state.fleets) {
+    if (fleet.phase !== "jumpingHyperlane") continue;
+    if (Math.random() >= lostChance) continue;
+    const days = LOST_IN_TRANSIT_MIN_DAYS + Math.random() * (LOST_IN_TRANSIT_MAX_DAYS - LOST_IN_TRANSIT_MIN_DAYS);
+    if (sendFleetMissing(fleet.id, days)) {
+      queueFactionEvent(fleet.ownerId, LOST_IN_TRANSIT_EVENT_ID, { fleetName: fleetDisplayName(fleet) });
+      changed = true;
+    }
+  }
+
+  const offerChance = probabilityOverDays(LEADER_OFFER_CHANCE_PER_DAY, elapsedGameDays);
+  for (const faction of state.factions) {
+    if (Math.random() >= offerChance) continue;
+    if (state.events.some((event) => event.factionId === faction.id && event.defId === LEADER_OFFER_EVENT_ID)) continue;
+    queueFactionEvent(faction.id, LEADER_OFFER_EVENT_ID, buildLeaderOfferContext(faction.id));
+    changed = true;
+  }
+
+  if (changed) hasDirtyState = true;
+  return changed;
+}
+
+function resolveActiveEvent(event: ActiveEvent, choiceId: string): void {
+  const choice = event.choices.find((candidate) => candidate.id === choiceId)
+    ?? event.choices.find((candidate) => candidate.id === event.defaultChoiceId);
+  state.events = state.events.filter((candidate) => candidate.id !== event.id);
+  if (choice) applyGameEffects(event.factionId, choice.effects, event.context);
+  hasDirtyState = true;
+}
+
+function processEventTimeouts(): boolean {
+  let changed = false;
+  for (const event of [...state.events]) {
+    if (state.clock.year >= event.expiresAtYear) {
+      resolveActiveEvent(event, event.defaultChoiceId);
+      changed = true;
+    }
   }
   return changed;
 }
@@ -7398,6 +7736,23 @@ function advanceState(now: number): Set<ServerUpdateField> {
     changed.add("habitedPlanetSystems");
   }
 
+  // Situations advance from the freshly-computed economy deltas; their progress
+  // feeds shortage penalties on the next economy pass (one-tick lag is fine).
+  if (processSituations(elapsedGameDays)) {
+    changed.add("situations");
+    changed.add("factionEconomies");
+  }
+  if (processRandomEvents(elapsedGameDays)) {
+    changed.add("events");
+    changed.add("fleets");
+    changed.add("visibility");
+  }
+  if (processEventTimeouts()) {
+    changed.add("events");
+    changed.add("factionEconomies");
+    changed.add("leaders");
+  }
+
   return changed;
 }
 
@@ -8094,6 +8449,46 @@ async function executeAdminCommand(
       }
       refreshFactionEconomyDeltas();
       return changedResult("Resources updated.", ["factionEconomies"]);
+    }
+    case "trigger_event": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      const eventId = parsed.args[1];
+      if (!eventId || !getEventDefinition(eventId)) throw new Error("Unknown event id.");
+      const eventContext = eventId === LEADER_OFFER_EVENT_ID ? buildLeaderOfferContext(owner) : undefined;
+      if (!queueFactionEvent(owner, eventId, eventContext)) throw new Error("Failed to queue event.");
+      return changedResult(`Queued event ${eventId}.`, ["events"]);
+    }
+    case "set_situation": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      const resource = parsed.args[1] as ResourceKind;
+      if (!RESOURCE_KINDS.includes(resource)) throw new Error("Invalid resource.");
+      const progress = numberArg(parsed.args[2], "progress", 0, 100);
+      const instanceId = situationInstanceId(SHORTAGE_SITUATION_ID, owner, resource);
+      const existing = state.situations.find((candidate) => candidate.id === instanceId);
+      if (existing) {
+        existing.progress = progress;
+        existing.lastThreshold = Math.max(existing.lastThreshold, progress);
+      } else {
+        state.situations.push({
+          id: instanceId,
+          defId: SHORTAGE_SITUATION_ID,
+          factionId: owner,
+          subject: resource,
+          progress,
+          startedAtYear: state.clock.year,
+          lastThreshold: progress,
+        });
+      }
+      recalculatePlanetEconomies();
+      refreshFactionEconomyDeltas();
+      return changedResult(`Shortage(${resource}) progress set to ${progress}.`, ["situations", "factionEconomies"]);
+    }
+    case "lose_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0] ?? "selected", context);
+      const days = parsed.args[1] ? numberArg(parsed.args[1], "days", 0) : 60;
+      if (!sendFleetMissing(fleet.id, days)) throw new Error("Fleet cannot be sent missing.");
+      refreshDiscovery();
+      return changedResult("Fleet sent missing in transit.", ["fleets", "visibility"]);
     }
     case "complete_planet_queue": {
       const token = parsed.args[0] ?? "selected";
@@ -8821,6 +9216,23 @@ function isGovernmentLawOptionUnlocked(factionId: number, option: GovernmentLawO
   return Boolean(techState && isTechnologyCompleted(techState, option.requiresTechId));
 }
 
+function handleResolveEvent(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  eventId: string,
+  choiceId: string,
+): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const event = state.events.find((candidate) => candidate.id === eventId && candidate.factionId === factionId);
+  if (!event) return reject(socket, "Event is no longer available.");
+  if (!event.choices.some((choice) => choice.id === choiceId)) return reject(socket, "Unknown event choice.");
+  resolveActiveEvent(event, choiceId);
+  recalculatePlanetEconomies();
+  refreshFactionEconomyDeltas();
+  accept(socket, "Decision recorded.");
+}
+
 function handleSetGovernmentLaw(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -9466,6 +9878,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "setGovernmentLaw") {
     handleSetGovernmentLaw(session.socket, session.perspective, command.lawId, command.optionId);
+    return;
+  }
+  if (command.type === "resolveEvent") {
+    handleResolveEvent(session.socket, session.perspective, command.eventId, command.choiceId);
     return;
   }
   if (command.type === "setSpeciesRights") {

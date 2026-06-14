@@ -132,6 +132,8 @@ export class GameServerClient {
             species: parsed.species ?? this.latestSnapshot.species,
             recentCombatContacts: parsed.recentCombatContacts ?? this.latestSnapshot.recentCombatContacts,
             diplomacy: parsed.diplomacy ?? this.latestSnapshot.diplomacy,
+            situations: parsed.situations ?? this.latestSnapshot.situations,
+            events: parsed.events ?? this.latestSnapshot.events,
           };
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);
           return;

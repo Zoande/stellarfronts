@@ -10,7 +10,8 @@ export type AdminCommandCategory =
   | "fleets"
   | "doctrine"
   | "combat"
-  | "starbases";
+  | "starbases"
+  | "events";
 
 export interface AdminCommandContext {
   currentStarId?: number | null;
@@ -179,6 +180,10 @@ export const ADMIN_COMMAND_DEFINITIONS: AdminCommandDefinition[] = [
   command("set_starbase_health", "starbases", "set_starbase_health <starbaseId|selected> shield=<value|percent%> armor=<value|percent%> hull=<value|percent%>", "Set starbase health layers."),
   command("add_starbase_building", "starbases", "add_starbase_building <starbaseId|selected> <slotIndex> <buildingKind>", "Add a starbase building immediately."),
   command("remove_starbase_building", "starbases", "remove_starbase_building <starbaseId|selected> <slotIndex>", "Remove a starbase building."),
+
+  command("trigger_event", "events", "trigger_event <owner|me> <eventId>", "Queue an event for a faction (e.g. leaderRecruitmentOffer)."),
+  command("set_situation", "events", "set_situation <owner|me> <resource> <progress 0-100>", "Set a resource-shortage situation's progress."),
+  command("lose_fleet", "events", "lose_fleet <fleetId|selected> [days]", "Send a fleet missing in transit."),
 ];
 
 const DEFINITIONS_BY_NAME = new Map<string, AdminCommandDefinition>();
