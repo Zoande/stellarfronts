@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createDevGame, deleteDevGame, getDevStats, loginToDevPanel, logoutFromDevPanel } from '../auth/client';
 import type { DevActivitySeriesPoint, DevStatsResponse } from '../auth/types';
+import DevVersionPanel from './DevVersionPanel';
 import '../styles/Dev.css';
 
 const REFRESH_INTERVAL_MS = 10_000;
@@ -472,6 +473,8 @@ export default function DevPage() {
           </table>
         </div>
       </section>
+
+      <DevVersionPanel />
 
       <footer className="dev-footer">
         Last refreshed {formatDate(stats.generatedAt)}

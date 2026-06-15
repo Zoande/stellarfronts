@@ -17,6 +17,9 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import type { IncomingMessage } from "node:http";
+import { WebSocketServer, WebSocket } from "ws";
+import type { RawData } from "ws";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
@@ -28,9 +31,13 @@ const CONTROL_PORT = Number(process.env.CONTROL_PORT ?? 8790);
 const CONTROL_TOKEN = process.env.CONTROL_TOKEN ?? "dev-control-token";
 const VERSIONS_ROOT = path.join(process.cwd(), "versions");
 const DEV_VERSION_ID = "dev";
-const DEV_PORT = Number(process.env.GAME_SERVER_PORT ?? 8787);
+// The public game WS port (what Cloudflare tunnels). The orchestrator binds this
+// as a gateway and proxies each connection to the right internal version process.
+const GATEWAY_PORT = Number(process.env.PUBLIC_GAME_PORT ?? process.env.GAME_SERVER_PORT ?? 8787);
+// Per-version game-server processes listen on internal ports (never exposed).
+const DEV_INTERNAL_PORT = Number(process.env.DEV_INTERNAL_PORT ?? 8809);
 const PORT_BASE = Number(process.env.VERSION_PORT_BASE ?? 8810);
-const WS_HOST = process.env.GAME_SERVER_HOST ?? "localhost";
+const GIT_REMOTE = process.env.GIT_REMOTE ?? "origin";
 const RESTART_DELAY_MS = 2000;
 const RECONCILE_INTERVAL_MS = 5000;
 
@@ -41,7 +48,22 @@ interface VersionProcess {
   restarts: number;
 }
 
+interface VersionSpec {
+  id: string;
+  worktreePath: string;
+  port: number;
+}
+
 const processes = new Map<string, VersionProcess>();
+
+/** Resolve the runnable spec for a version id (dev = the deployed working tree). */
+function versionSpec(versionId: string): VersionSpec | null {
+  if (versionId === DEV_VERSION_ID) {
+    return { id: DEV_VERSION_ID, worktreePath: process.cwd(), port: DEV_INTERNAL_PORT };
+  }
+  const version = authStore.getGameVersion(versionId);
+  return version ? { id: version.id, worktreePath: version.worktreePath, port: version.port } : null;
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -66,7 +88,8 @@ function runCapture(command: string, args: string[], cwd?: string): Promise<{ co
 
 function allocatePort(): number {
   const used = new Set(authStore.listGameVersions().map((version) => version.port));
-  used.add(DEV_PORT);
+  used.add(DEV_INTERNAL_PORT);
+  used.add(GATEWAY_PORT);
   let port = PORT_BASE;
   while (used.has(port)) port += 1;
   return port;
@@ -79,13 +102,35 @@ async function probeManifest(worktreePath: string): Promise<{ protocolVersion: n
   return manifest;
 }
 
+interface RemoteRef { ref: string; sha: string; type: "tag" | "branch"; }
+
+/** List selectable refs (tags + branches) from the GitHub remote. */
+async function listRemoteRefs(): Promise<RemoteRef[]> {
+  const result = await runCapture("git", ["ls-remote", "--tags", "--heads", GIT_REMOTE]);
+  if (result.code !== 0) throw new Error(`git ls-remote failed: ${result.stderr || result.stdout}`);
+  const refs: RemoteRef[] = [];
+  for (const line of result.stdout.split("\n").map((value) => value.trim()).filter(Boolean)) {
+    const [sha, fullRef] = line.split(/\s+/);
+    if (!fullRef) continue;
+    if (fullRef.startsWith("refs/tags/")) {
+      refs.push({ ref: fullRef.replace("refs/tags/", "").replace(/\^\{\}$/, ""), sha, type: "tag" });
+    } else if (fullRef.startsWith("refs/heads/")) {
+      refs.push({ ref: fullRef.replace("refs/heads/", ""), sha, type: "branch" });
+    }
+  }
+  return refs;
+}
+
 async function registerVersion(gitRef: string, requestedId?: string, requestedPort?: number): Promise<StoredGameVersion> {
   const id = sanitizeId(requestedId ?? gitRef);
   if (id === DEV_VERSION_ID) throw new Error('"dev" is the reserved working-tree version.');
   const worktreePath = path.join(VERSIONS_ROOT, id);
   if (!existsSync(worktreePath)) {
     await mkdir(VERSIONS_ROOT, { recursive: true });
-    const result = await runCapture("git", ["worktree", "add", worktreePath, gitRef]);
+    // Fetch so any tag/branch/SHA from GitHub is available, then check it out
+    // detached (immutable snapshot — a branch ref won't drift afterwards).
+    await runCapture("git", ["fetch", GIT_REMOTE, "--tags", "--prune"]);
+    const result = await runCapture("git", ["worktree", "add", "--detach", worktreePath, gitRef]);
     if (result.code !== 0) throw new Error(`git worktree add failed: ${result.stderr || result.stdout}`);
   }
   const manifest = await probeManifest(worktreePath);
@@ -104,41 +149,42 @@ async function registerVersion(gitRef: string, requestedId?: string, requestedPo
   return version;
 }
 
-function resolveVersionPort(versionId: string): number {
-  if (versionId === DEV_VERSION_ID) return DEV_PORT;
-  return authStore.getGameVersion(versionId)?.port ?? DEV_PORT;
+/** Internal port of the process hosting a game (for the gateway proxy). */
+function resolveGameInternalPort(game: StoredGame): number | null {
+  if (game.versionId === DEV_VERSION_ID) return DEV_INTERNAL_PORT;
+  return authStore.getGameVersion(game.versionId)?.port ?? null;
 }
 
-function resolveGameEndpoint(game: StoredGame): { host: string; port: number; protocolVersion: number | null } {
+// Public-facing info for a game (clients always connect to the single gateway).
+function resolveGameEndpoint(game: StoredGame): { versionId: string; status: string; protocolVersion: number | null } {
   const version = game.versionId === DEV_VERSION_ID ? null : authStore.getGameVersion(game.versionId);
   return {
-    host: WS_HOST,
-    port: game.versionId === DEV_VERSION_ID ? DEV_PORT : version?.port ?? DEV_PORT,
+    versionId: game.versionId,
+    status: game.status,
     protocolVersion: version?.protocolVersion ?? game.protocolVersion ?? null,
   };
 }
 
-function spawnVersionProcess(version: StoredGameVersion): void {
-  if (processes.has(version.id)) return;
+function spawnVersionProcess(spec: VersionSpec): void {
+  if (processes.has(spec.id)) return;
   const child = spawn("npx", ["tsx", path.join("server", "index.ts")], {
-    cwd: version.worktreePath,
+    cwd: spec.worktreePath,
     shell: true,
-    env: { ...process.env, GAME_SERVER_PORT: String(version.port), SF_VERSION_ID: version.id },
+    env: { ...process.env, GAME_SERVER_PORT: String(spec.port), SF_VERSION_ID: spec.id },
   });
-  const entry: VersionProcess = { child, port: version.port, stopping: false, restarts: 0 };
-  processes.set(version.id, entry);
-  child.stdout?.on("data", (chunk) => process.stdout.write(`[v:${version.id}] ${chunk}`));
-  child.stderr?.on("data", (chunk) => process.stderr.write(`[v:${version.id}] ${chunk}`));
+  const entry: VersionProcess = { child, port: spec.port, stopping: false, restarts: 0 };
+  processes.set(spec.id, entry);
+  child.stdout?.on("data", (chunk) => process.stdout.write(`[v:${spec.id}] ${chunk}`));
+  child.stderr?.on("data", (chunk) => process.stderr.write(`[v:${spec.id}] ${chunk}`));
   child.on("exit", (code) => {
-    console.warn(`[Orchestrator] version ${version.id} process exited (code ${code}).`);
-    processes.delete(version.id);
+    console.warn(`[Orchestrator] version ${spec.id} process exited (code ${code}).`);
+    processes.delete(spec.id);
     if (entry.stopping) return;
     // Auto-restart on crash if it still has active games.
     void delay(RESTART_DELAY_MS).then(() => {
-      if (authStore.listGamesByVersion(version.id).some((game) => game.status === "active")) {
-        const fresh = authStore.getGameVersion(version.id);
-        if (fresh) spawnVersionProcess(fresh);
-      }
+      const stillActive = authStore.listGames().some((game) => game.versionId === spec.id && game.status === "active");
+      const fresh = versionSpec(spec.id);
+      if (stillActive && fresh) spawnVersionProcess(fresh);
     });
   });
 }
@@ -151,12 +197,19 @@ async function stopVersionProcess(versionId: string): Promise<void> {
   processes.delete(versionId);
 }
 
-// Ensure exactly the right per-version processes are running for the catalog.
+// Ensure exactly the right per-version processes are running for the catalog
+// (including the built-in "dev" working-tree version).
 async function reconcile(): Promise<void> {
-  for (const version of authStore.listGameVersions()) {
-    const hasActive = authStore.listGamesByVersion(version.id).some((game) => game.status === "active");
-    if (hasActive && !processes.has(version.id)) spawnVersionProcess(version);
-    if (!hasActive && processes.has(version.id)) await stopVersionProcess(version.id);
+  const activeVersionIds = new Set(
+    authStore.listGames().filter((game) => game.status === "active").map((game) => game.versionId),
+  );
+  for (const versionId of activeVersionIds) {
+    if (processes.has(versionId)) continue;
+    const spec = versionSpec(versionId);
+    if (spec) spawnVersionProcess(spec);
+  }
+  for (const versionId of Array.from(processes.keys())) {
+    if (!activeVersionIds.has(versionId)) await stopVersionProcess(versionId);
   }
 }
 
@@ -279,6 +332,7 @@ const server = http.createServer(async (request, response) => {
     const gameMatch = url.pathname.match(/^\/games\/([a-z0-9]+)\/(reset|update|stop|start|archive|rollback|endpoint)$/i);
 
     if (method === "GET" && url.pathname === "/versions") return send(response, 200, { versions: authStore.listGameVersions() });
+    if (method === "GET" && url.pathname === "/remote-versions") return send(response, 200, { refs: await listRemoteRefs() });
     if (method === "GET" && url.pathname === "/games") return send(response, 200, { games: listGamesWithEndpoints() });
     if (method === "GET" && url.pathname === "/compat") return send(response, 200, { games: compatReport(String(url.searchParams.get("to") ?? "")) });
 
@@ -313,8 +367,48 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
+// ---- WS gateway: one public game port → the right internal version process ----
+// Clients always connect here (the port Cloudflare tunnels). We look up the game's
+// version, open an upstream WS to that internal process forwarding the auth cookie
+// + origin, and pipe both directions. Cloudflare config never changes per version.
+const gateway = new WebSocketServer({ port: GATEWAY_PORT });
+gateway.on("connection", (client: WebSocket, request: IncomingMessage) => {
+  const url = new URL(request.url ?? "/", "ws://localhost");
+  const gameId = url.searchParams.get("gameId") ?? "";
+  const game = authStore.getGameById(gameId);
+  if (!game || game.status !== "active") {
+    client.close(1011, "Game not available.");
+    return;
+  }
+  const port = resolveGameInternalPort(game);
+  if (!port) {
+    client.close(1011, "No host process for this game.");
+    return;
+  }
+  const upstream = new WebSocket(`ws://127.0.0.1:${port}${request.url ?? "/"}`, {
+    headers: { cookie: request.headers.cookie ?? "", origin: request.headers.origin ?? "" },
+  });
+  const pending: RawData[] = [];
+  client.on("message", (data: RawData) => {
+    if (upstream.readyState === WebSocket.OPEN) upstream.send(data);
+    else pending.push(data);
+  });
+  upstream.on("open", () => {
+    for (const data of pending) upstream.send(data);
+    pending.length = 0;
+  });
+  upstream.on("message", (data: RawData) => {
+    if (client.readyState === WebSocket.OPEN) client.send(data);
+  });
+  client.on("close", () => upstream.close());
+  upstream.on("close", () => client.close());
+  upstream.on("error", () => client.close(1011, "Upstream error."));
+  client.on("error", () => upstream.close());
+});
+
 server.listen(CONTROL_PORT, () => {
   console.log(`✓ Orchestrator control API on http://localhost:${CONTROL_PORT}`);
+  console.log(`✓ Game WS gateway on ws://localhost:${GATEWAY_PORT} (proxies to internal version processes)`);
   void reconcile();
   setInterval(() => { void reconcile(); }, RECONCILE_INTERVAL_MS);
 });

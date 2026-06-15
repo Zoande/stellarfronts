@@ -513,6 +513,9 @@ export class AuthStore {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
+    // Several processes share this catalog (auth + orchestrator + each version's
+    // game server). Wait out brief write contention instead of throwing SQLITE_BUSY.
+    this.db.pragma('busy_timeout = 5000');
     this.initialize();
   }
 
