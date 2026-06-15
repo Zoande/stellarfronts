@@ -539,6 +539,31 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  const endpointMatch = url.pathname.match(/^\/api\/games\/([a-z0-9]+)\/endpoint$/i);
+  if (request.method === 'GET' && endpointMatch) {
+    const account = getAuthenticatedAccount(request);
+    if (!account) {
+      writeJson(response, 401, { error: 'Authentication required' });
+      return;
+    }
+    const game = authStore.getGameById(endpointMatch[1]);
+    if (!game) {
+      writeJson(response, 404, { error: 'Game not found' });
+      return;
+    }
+    // Resolve which game-server process (port) hosts this game's version so the
+    // client connects to the right one. "dev" = the default working-tree server.
+    const devPort = Number(process.env.GAME_SERVER_PORT ?? 8787);
+    const version = game.versionId === 'dev' ? null : authStore.getGameVersion(game.versionId);
+    writeJson(response, 200, {
+      versionId: game.versionId,
+      status: game.status,
+      port: game.versionId === 'dev' ? devPort : version?.port ?? devPort,
+      protocolVersion: version?.protocolVersion ?? game.protocolVersion ?? null,
+    });
+    return;
+  }
+
   const joinGameMatch = url.pathname.match(/^\/api\/games\/([a-z0-9]+)\/join$/i);
   if (request.method === 'POST' && joinGameMatch) {
     const account = getAuthenticatedAccount(request);

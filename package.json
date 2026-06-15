@@ -7,6 +7,8 @@
     "dev": "vite",
     "server:dev": "tsx server/index.ts",
     "auth:dev": "tsx server/auth-server.ts",
+    "orchestrator:dev": "tsx server/orchestrator.ts",
+    "control": "tsx scripts/control.ts",
     "server:test": "node --import tsx --test server/*.test.ts",
     "dev:all": "concurrently \"npm run server:dev\" \"npm run auth:dev\" \"npm run dev\"",
     "server:typecheck": "tsc -p tsconfig.server.json --noEmit",

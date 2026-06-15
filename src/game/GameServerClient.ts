@@ -73,13 +73,38 @@ export class GameServerClient {
   private detailCache = new Map<string, CachedDetail>();
   private adminCommandRequests = new Map<string, PendingRequest<AdminCommandResult>>();
 
-  constructor(gameId?: string, private readonly url = getWebSocketUrl(gameId)) {}
+  constructor(private readonly gameId?: string, private readonly urlOverride?: string) {}
+
+  /**
+   * Resolve which game-server process (port) hosts this game's code version by
+   * asking the auth API, then connect there. Falls back to the default endpoint
+   * if resolution fails (keeps single-server/dev setups working).
+   */
+  private async resolveWebSocketUrl(): Promise<string> {
+    const fallback = getWebSocketUrl(this.gameId);
+    if (!this.gameId) return fallback;
+    try {
+      const authBase = (typeof import.meta !== "undefined" && import.meta.env?.VITE_AUTH_SERVER_URL
+        ? import.meta.env.VITE_AUTH_SERVER_URL
+        : "http://localhost:8788").replace(/\/$/, "");
+      const response = await fetch(`${authBase}/api/games/${this.gameId}/endpoint`, { credentials: "include" });
+      if (!response.ok) return fallback;
+      const data = await response.json() as { port?: number };
+      if (!data.port) return fallback;
+      const resolved = new URL(fallback);
+      resolved.port = String(data.port);
+      return resolved.toString();
+    } catch {
+      return fallback;
+    }
+  }
 
   async connect(): Promise<GameSnapshot> {
     if (this.latestSnapshot) return this.latestSnapshot;
 
+    const url = this.urlOverride ?? await this.resolveWebSocketUrl();
     return new Promise((resolve, reject) => {
-      const socket = new WebSocket(this.url);
+      const socket = new WebSocket(url);
       this.socket = socket;
       let resolved = false;
 
@@ -186,7 +211,7 @@ export class GameServerClient {
       });
 
       socket.addEventListener("error", () => {
-        if (!resolved) reject(new Error("Could not connect to game server at ws://localhost:8787"));
+        if (!resolved) reject(new Error(`Could not connect to game server at ${url}`));
       });
 
       socket.addEventListener("close", () => {

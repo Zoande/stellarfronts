@@ -328,9 +328,18 @@ import type { AuthAccount, DevGameRuntimeRow, DevGameRuntimeStats } from "../src
 import { authStore, parseSessionTokenFromCookie } from "./auth-store";
 import type { StoredGame } from "./auth-store";
 import { getGameStateDirectory, getGameStatePath } from "./game-state-path";
+import { VERSION_MANIFEST, canMigrateFromSchema } from "./versionManifest";
+
+// Probe mode: the orchestrator runs each worktree with `--print-version` to read
+// its committed identity (protocol/schema/migratesFrom) without booting a server.
+if (process.argv.includes("--print-version")) {
+  process.stdout.write(`${JSON.stringify(VERSION_MANIFEST)}\n`);
+  process.exit(0);
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.GAME_SERVER_PORT ?? 8787);
+const SF_VERSION_ID = VERSION_MANIFEST.versionId;
 const DISCOVERY_JUMPS = 2;
 const DEPART_DURATION_MS = 20_000;
 const JUMP_DURATION_MS = 10_000;
@@ -2373,6 +2382,15 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(statePath, "utf8");
     const parsed = JSON.parse(raw) as GameState;
+    // Refuse to load a state this build cannot migrate (e.g. a newer schema
+    // opened by an older version). The orchestrator gates updates so this is a
+    // last-line guard against save corruption.
+    const onDiskSchema = Number(parsed.schemaVersion);
+    if (Number.isFinite(onDiskSchema) && !canMigrateFromSchema(VERSION_MANIFEST, onDiskSchema)) {
+      throw new Error(
+        `Game ${game.id} state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
+      );
+    }
     parsed.schemaVersion = 20;
     delete (parsed as GameState & { battles?: unknown }).battles;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
@@ -2488,9 +2506,54 @@ async function loadState(): Promise<GameState> {
 
 async function saveState(nextState = state): Promise<void> {
   await mkdir(path.dirname(statePath), { recursive: true });
-  await writeFile(statePath, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  // Stamp the writing build's identity so the orchestrator/catalog know which
+  // code last wrote this save and which schema it is on.
+  const stamped = {
+    ...nextState,
+    codeVersion: SF_VERSION_ID,
+    protocolVersion: VERSION_MANIFEST.protocolVersion,
+  };
+  await writeFile(statePath, `${JSON.stringify(stamped, null, 2)}\n`, "utf8");
+  authStore.recordGameStateVersions(game.id, nextState.schemaVersion, VERSION_MANIFEST.protocolVersion);
   lastSaveAt = Date.now();
   hasDirtyState = false;
+}
+
+const ownerLockPath = path.join(getGameStateDirectory(game.id), ".owner");
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Exclusive ownership: refuse to open a game already held by a live process of a
+// different version (belt-and-suspenders on top of the version filter, covering
+// the brief window during an update before the old process releases it).
+async function acquireOwnership(): Promise<void> {
+  await mkdir(path.dirname(ownerLockPath), { recursive: true });
+  try {
+    const existing = JSON.parse(await readFile(ownerLockPath, "utf8")) as { versionId: string; pid: number };
+    if (existing.pid !== process.pid && existing.versionId !== SF_VERSION_ID && isPidAlive(existing.pid)) {
+      throw new Error(`Game ${game.id} is owned by version ${existing.versionId} (pid ${existing.pid}).`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("is owned by version")) throw error;
+    // No readable lock → free to take ownership.
+  }
+  await writeFile(ownerLockPath, JSON.stringify({ versionId: SF_VERSION_ID, pid: process.pid, startedAt: Date.now() }));
+}
+
+async function releaseOwnership(): Promise<void> {
+  try {
+    const existing = JSON.parse(await readFile(ownerLockPath, "utf8")) as { pid: number };
+    if (existing.pid === process.pid) await rm(ownerLockPath, { force: true });
+  } catch {
+    // Lock already gone.
+  }
 }
 
 function phaseDuration(phase: ShipTransitPhase, fleet?: Pick<ServerFleet, "id" | "ownerId" | "speed">): number {
@@ -10160,6 +10223,7 @@ function touchMembershipNames(): void {
   broadcastUpdates(speciesChanged || speciesPopulationChanged ? ["visibility", "species", "planetStates", "factionEconomies"] : ["visibility"]);
 }
 
+await acquireOwnership();
 state = await loadState();
 touchMembershipNames();
 advanceState(Date.now());
@@ -10247,6 +10311,7 @@ async function dispose(message = "Game runtime stopped.", deleteState = false): 
     return;
   }
   await saveState(state);
+  await releaseOwnership();
 }
 
 return {
@@ -10318,13 +10383,25 @@ async function syncGameRuntimes(): Promise<void> {
   if (runtimeSyncing) return;
   runtimeSyncing = true;
   try {
-    const games = authStore.listGames();
+    // This process only hosts games assigned to its own code version and still
+    // active — the isolation that lets old games stay on old code. A game whose
+    // version/status changed away from us is dropped (another process owns it now).
+    const games = authStore.listGames().filter(
+      (game) => game.versionId === SF_VERSION_ID && game.status === "active",
+    );
     const gameById = new Map(games.map((game) => [game.id, game]));
     await Promise.all(games.map((game) => ensureRuntime(game)));
     await Promise.all(Array.from(runtimes.entries()).map(async ([gameId, runtime]) => {
       if (gameById.has(gameId)) return;
       runtimes.delete(gameId);
-      await runtime.dispose("This game was deleted.", true);
+      // Only truly-deleted games (gone from the catalog) lose their saved state.
+      // Games that merely left this process (stopped/archived/reassigned to
+      // another version) must keep their state and release ownership cleanly.
+      const stillExists = authStore.getGameById(gameId) !== null;
+      await runtime.dispose(
+        stillExists ? "This game is no longer hosted here." : "This game was deleted.",
+        !stillExists,
+      );
     }));
   } finally {
     lastRuntimeSyncAt = Date.now();
@@ -10394,6 +10471,13 @@ async function handleConnection(socket: WebSocket, request: Parameters<NonNullab
   const perspective = game ? authStore.getGamePerspective(account, game.id) : null;
   if (!game) {
     sendServerEvent(socket, { type: "serverInfo", message: "Game not found." });
+    socket.close();
+    return;
+  }
+  if (game.versionId !== SF_VERSION_ID || game.status !== "active") {
+    // Another version's process owns this game (or it is stopped/archived).
+    // The client should re-resolve its endpoint via the auth API.
+    sendServerEvent(socket, { type: "serverInfo", message: "Game is hosted on a different version. Reconnect to refresh." });
     socket.close();
     return;
   }
