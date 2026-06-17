@@ -546,14 +546,17 @@ const HUD_STYLE = `
   color: rgba(255, 129, 111, 0.95);
 }
 
+/* Anchored just to the right of the faction flag (flag right edge ≈ 73px after the
+   resource bar's 1.3 scale) and below the resource strip, so notifications always
+   sit beside the flag rather than under it. */
 #spaceHudNotifications {
   position: absolute;
-  top: 64px;
-  left: 12px;
+  top: 60px;
+  left: 84px;
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  max-width: min(60vw, 720px);
+  max-width: min(56vw, 660px);
   pointer-events: auto;
   z-index: 6;
 }
@@ -865,6 +868,13 @@ const HUD_STYLE = `
 
   .spaceHudResourceItem {
     min-width: 94px;
+  }
+
+  /* Resources wrap to multiple rows on narrow screens; drop the strip below them. */
+  #spaceHudNotifications {
+    top: 108px;
+    left: 64px;
+    max-width: calc(100vw - 76px);
   }
 
   #spaceHudSidebar {
