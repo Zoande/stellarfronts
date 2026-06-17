@@ -247,7 +247,7 @@ import {
 import {
   calculateLeaderLevel,
   createInitialLeaders,
-  createLeaderCandidate,
+  createLegendaryLeaderCandidate,
   formatLeaderClass,
   getLeaderAssignmentClass,
   getLeaderTraitDefinition,
@@ -5883,7 +5883,11 @@ function processMissingInActionFleets(): boolean {
 const SHORTAGE_SITUATION_RESOURCES: ResourceKind[] = ["food", "minerals", "energy", "goods", "alloys"];
 const SHORTAGE_PROGRESS_RISE_PER_DAY = 9; // climb rate (per day) at full deficit severity
 const SHORTAGE_PROGRESS_FALL_PER_DAY = 6; // recovery rate (per day) once the deficit clears
-const LEADER_OFFER_CHANCE_PER_DAY = 0.0006; // very rare, per faction
+// Legendary leader offer — intentionally very rare. Tuning: at 1x speed a real week
+// is ~25,200 game-days (1 game-hour = 1 real second → 1 game-day = 24 real seconds),
+// and this rolls per faction. With 15 factions, 2/(15 * 25200) ≈ 5.3e-6 averages
+// roughly two offers across the galaxy per real-life week.
+const LEADER_OFFER_CHANCE_PER_DAY = 5.3e-6; // very rare, per faction
 const LOST_IN_TRANSIT_CHANCE_PER_DAY = 0.0018; // very rare, per jumping fleet
 const LOST_IN_TRANSIT_MIN_DAYS = 25;
 const LOST_IN_TRANSIT_MAX_DAYS = 210;
@@ -5970,16 +5974,13 @@ function expireFactionModifiers(): boolean {
 
 function generatePowerfulLeaderCandidate(factionId: number): LeaderState {
   const leaderClass: LeaderClass = Math.random() < 0.5 ? "military" : "civilian";
-  const base = createLeaderCandidate(
+  return createLegendaryLeaderCandidate(
     factionId,
     leaderClass,
     getLeaderDayIndex(state.clock.year),
     Math.floor(Math.random() * 100000),
     state.clock.year,
-    "pool",
   );
-  const xp = 1200 + Math.floor(Math.random() * 900);
-  return { ...base, xp, level: calculateLeaderLevel(xp) };
 }
 
 function buildLeaderOfferContext(factionId: number): Record<string, unknown> {
@@ -9293,6 +9294,11 @@ function handleResolveEvent(
   resolveActiveEvent(event, choiceId);
   recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
+  // Resolving applies arbitrary GameEffects (spawn a leader, trigger another event,
+  // grant resources, adjust a situation, lose a fleet, ...). Broadcast every scope
+  // those can touch so the change reaches clients live — otherwise the resolved
+  // event's notification lingers until a full reload (the leader-offer bug).
+  broadcastUpdates(["events", "leaders", "situations", "fleets", "factionEconomies", "planetStates"]);
   accept(socket, "Decision recorded.");
 }
 
