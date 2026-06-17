@@ -329,6 +329,75 @@ import { authStore, parseSessionTokenFromCookie } from "./auth-store";
 import type { StoredGame } from "./auth-store";
 import { getGameStateDirectory, getGameStatePath } from "./game-state-path";
 import { VERSION_MANIFEST, canMigrateFromSchema } from "./versionManifest";
+import {
+  DISCOVERY_JUMPS,
+  DEPART_DURATION_MS,
+  JUMP_DURATION_MS,
+  ARRIVE_DURATION_MS,
+  BUILD_DURATION_MS,
+  SAVE_INTERVAL_MS,
+  SERVER_TICK_INTERVAL_MS,
+  RUNTIME_STATS_INTERVAL_MS,
+  RUNTIME_CATALOG_SYNC_INTERVAL_MS,
+  DEFAULT_TICK_SIZE_DAYS,
+  DEFAULT_TICK_SPEED_SECONDS,
+  DEFAULT_SHIP_SPEED,
+  STARBASE_ARMOR_REPAIR_FRACTION_PER_DAY,
+  STARBASE_HULL_REPAIR_FRACTION_PER_DAY,
+  STARBASE_ARMOR_REPAIR_ALLOY_COST_PER_POINT,
+  STARBASE_HULL_REPAIR_ALLOY_COST_PER_POINT,
+  STARBASE_REPAIR_ENERGY_COST_PER_POINT,
+  EMERGENCY_RETREAT_SHIELD_LOSS_FRACTION,
+  EMERGENCY_RETREAT_ARMOR_DAMAGE_FRACTION,
+  EMERGENCY_RETREAT_HULL_DAMAGE_FRACTION,
+  EMERGENCY_RETREAT_SHIP_LOSS_CHANCE,
+  EMERGENCY_RETREAT_MIN_MIA_DAYS,
+  EMERGENCY_RETREAT_DISTANCE_MIA_DIVISOR,
+  SYSTEM_FLEET_SPEED_UNITS_PER_DAY,
+  SYSTEM_PLANET_ORBIT_DISTANCE,
+  STARBASE_TACTICAL_RADIUS,
+  RECENT_COMBAT_CONTACT_HISTORY,
+  FLEET_GUARD_RADIUS,
+  FLEET_EVADE_DISTANCE,
+  FLEET_SOFT_SEPARATION_FACTOR,
+  FLEET_RETREAT_THRESHOLDS,
+  MIGRATION_BASE_WEEKLY_RATE,
+  MIGRATION_PRESSURE_WEEKLY_RATE,
+  MIGRATION_FOREIGN_MET_MULTIPLIER,
+  MIGRATION_FOREIGN_OPEN_BORDER_MULTIPLIER,
+  MIGRATION_PACT_MULTIPLIER,
+  MIGRATION_MIN_SOURCE_POPULATION,
+  MIGRATION_MIN_FLOW_POPULATION,
+  MIGRATION_DESTINATION_CAPACITY_BUFFER,
+  MIGRATION_DISTANCE_DECAY,
+  MIGRATION_DISTANCE_FLOOR,
+  MIGRATION_DISTANCE_MAX_JUMPS,
+} from "./game/constants";
+import type {
+  GameFleet,
+  GameShip,
+  GameState,
+  DetailSubscription,
+  ClientSession,
+  GameRuntime,
+} from "./game/types";
+import {
+  FLEET_FORMATIONS,
+  COMBAT_STANCES,
+  FLEET_BEHAVIORS,
+  FLEET_CHASE_POLICIES,
+  FLEET_RETREAT_POLICIES,
+  FLEET_TACTICAL_ORDER_TYPES,
+  isFleetFormation,
+  isCombatStance,
+  normalizeCombatStance,
+  isFleetBehavior,
+  isFleetChasePolicy,
+  isFleetRetreatPolicy,
+  isFleetTacticalOrderType,
+} from "./game/validators";
+import { computeSpeedMultiplier, normalizeClock } from "./game/clock";
+import { initServer } from "./game/server-bootstrap";
 
 // Probe mode: the orchestrator runs each worktree with `--print-version` to read
 // its committed identity (protocol/schema/migratesFrom) without booting a server.
@@ -340,150 +409,9 @@ if (process.argv.includes("--print-version")) {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.GAME_SERVER_PORT ?? 8787);
 const SF_VERSION_ID = VERSION_MANIFEST.versionId;
-const DISCOVERY_JUMPS = 2;
-const DEPART_DURATION_MS = 20_000;
-const JUMP_DURATION_MS = 10_000;
-const ARRIVE_DURATION_MS = 30_000;
-const BUILD_DURATION_MS = 180_000;
-const SAVE_INTERVAL_MS = 5_000;
-const SERVER_TICK_INTERVAL_MS = 100;
-const RUNTIME_STATS_INTERVAL_MS = 5_000;
-const RUNTIME_CATALOG_SYNC_INTERVAL_MS = 1_000;
 const GAME_SERVER_STARTED_AT = Date.now();
-const DEFAULT_TICK_SIZE_DAYS = 1 / 24;
-const DEFAULT_TICK_SPEED_SECONDS = 1;
-const DEFAULT_SHIP_SPEED = STARBASE_SHIP_DEFINITIONS.corvette.speed;
-const STARBASE_ARMOR_REPAIR_FRACTION_PER_DAY = 0.025;
-const STARBASE_HULL_REPAIR_FRACTION_PER_DAY = 0.012;
-const STARBASE_ARMOR_REPAIR_ALLOY_COST_PER_POINT = 0.035;
-const STARBASE_HULL_REPAIR_ALLOY_COST_PER_POINT = 0.06;
-const STARBASE_REPAIR_ENERGY_COST_PER_POINT = 0.015;
-const EMERGENCY_RETREAT_SHIELD_LOSS_FRACTION = 1;
-const EMERGENCY_RETREAT_ARMOR_DAMAGE_FRACTION = 0.18;
-const EMERGENCY_RETREAT_HULL_DAMAGE_FRACTION = 0.12;
-const EMERGENCY_RETREAT_SHIP_LOSS_CHANCE = 0.06;
-const EMERGENCY_RETREAT_MIN_MIA_DAYS = 8;
-const EMERGENCY_RETREAT_DISTANCE_MIA_DIVISOR = 14;
-const SYSTEM_FLEET_SPEED_UNITS_PER_DAY = 10.4;
-const SYSTEM_PLANET_ORBIT_DISTANCE = 3.4;
-const STARBASE_TACTICAL_RADIUS = 7;
-const RECENT_COMBAT_CONTACT_HISTORY = 160;
-const FLEET_GUARD_RADIUS = 72;
-const FLEET_EVADE_DISTANCE = 34;
-const FLEET_SOFT_SEPARATION_FACTOR = 0.35;
-const FLEET_RETREAT_THRESHOLDS: Record<FleetRetreatPolicy, number> = {
-  none: 0,
-  low: 0.25,
-  medium: 0.5,
-  high: 0.75,
-};
-const MIGRATION_BASE_WEEKLY_RATE = 0.00018;
-const MIGRATION_PRESSURE_WEEKLY_RATE = 0.0034;
-// Cross-faction migration tiers. Foreign migration is gated on first contact ("met")
-// and scales up with diplomatic intimacy. Each tier is multiplied by the source/target
-// migration-policy factors before use.
-const MIGRATION_FOREIGN_MET_MULTIPLIER = 0.02; // discovered each other, closed/default borders
-const MIGRATION_FOREIGN_OPEN_BORDER_MULTIPLIER = 0.08; // met + mutually open borders
-const MIGRATION_PACT_MULTIPLIER = 0.35; // active migration-pact treaty
-const MIGRATION_MIN_SOURCE_POPULATION = 50_000_000;
-const MIGRATION_MIN_FLOW_POPULATION = 10_000;
-const MIGRATION_DESTINATION_CAPACITY_BUFFER = 1.02;
-// Distance falloff between the source and destination star (in hyperlane jumps).
-// Neighbouring systems exchange the most migrants; distant systems still trickle.
-const MIGRATION_DISTANCE_DECAY = 0.78; // multiplier applied per jump beyond the first
-const MIGRATION_DISTANCE_FLOOR = 0.12; // minimum share for very distant / unreachable systems
-const MIGRATION_DISTANCE_MAX_JUMPS = 16; // BFS cap; beyond this the floor is used
 
-interface GameFleet extends ServerFleet {
-  phaseElapsedMs: number;
-}
 
-interface GameShip extends ServerShip {}
-
-interface GameState {
-  schemaVersion: 20;
-  stars: StarData[];
-  planetStates: PlanetState[];
-  factionEconomies: FactionEconomyState[];
-  factionTechnologies: FactionTechState[];
-  governments: FactionGovernmentState[];
-  species: SpeciesState[];
-  speciesRights: FactionSpeciesRightsState[];
-  diplomacy: DiplomacyState;
-  market: MarketState;
-  leaders: LeaderState[];
-  situations: ActiveSituation[];
-  events: ActiveEvent[];
-  factionModifiers: FactionModifierState[];
-  hyperlanes: Array<[number, number]>;
-  adjacency: number[][];
-  factions: FactionInfo[];
-  starOwnership: number[];
-  starbases: ServerStarbase[];
-  shipDesigns: ShipDesign[];
-  ships: GameShip[];
-  fleets: GameFleet[];
-  recentCombatContacts: ServerCombatContact[];
-  discoveredByFaction: Record<string, number[]>;
-  // Symmetric first-contact record: metByFaction[a] lists every faction id that
-  // faction a has discovered (and that has therefore discovered a). Monotonic.
-  metByFaction: Record<string, number[]>;
-  lastKnownOwnershipByFaction: Record<string, number[]>;
-  clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number; lastProcessedLeaderDay: number };
-}
-
-interface DetailSubscription {
-  scope: GameDetailScope;
-  id: string | number | null;
-  lastRevision: string | null;
-}
-
-interface ClientSession {
-  socket: WebSocket;
-  account: AuthAccount;
-  perspective: GalaxyPerspective;
-  detailSubscriptions: Map<string, DetailSubscription>;
-  sentInitialSnapshot: boolean;
-}
-
-interface GameRuntime {
-  game: StoredGame;
-  attachClient: (socket: WebSocket, account: AuthAccount, perspective: GalaxyPerspective) => void;
-  touchMembershipNames: () => void;
-  tick: (now: number) => void;
-  save: () => Promise<void>;
-  dispose: (message?: string, deleteState?: boolean) => Promise<void>;
-  getStats: () => DevGameRuntimeRow;
-}
-
-const FLEET_FORMATIONS: FleetFormation[] = ["line", "vanguard", "echelon", "defensive"];
-const COMBAT_STANCES: CombatStance[] = ["passive", "evade", "holdPosition", "guardArea", "defendSystem", "aggressive", "hunt"];
-const FLEET_BEHAVIORS: FleetBehavior[] = ["artillery", "line", "brawler", "swarm", "defender"];
-const FLEET_CHASE_POLICIES: FleetChasePolicy[] = ["none", "system", "friendlySystems", "neutralSystems", "enemySystems"];
-const FLEET_RETREAT_POLICIES: FleetRetreatPolicy[] = ["none", "low", "medium", "high"];
-const FLEET_TACTICAL_ORDER_TYPES: FleetTacticalOrderType[] = ["move", "attack", "hold", "guard", "retreat"];
-
-function computeSpeedMultiplier(tickSizeDays: number, tickSpeedSeconds: number, paused: boolean): number {
-  if (paused) return 0;
-  return Math.max(0, tickSizeDays * 24 / Math.max(0.01, tickSpeedSeconds));
-}
-
-function normalizeClock(clock: Partial<GameState["clock"]> | undefined, now = Date.now()): GameState["clock"] {
-  const tickSizeDays = Math.max(0.000001, Number(clock?.tickSizeDays) || DEFAULT_TICK_SIZE_DAYS);
-  const tickSpeedSeconds = Math.max(0.01, Number(clock?.tickSpeedSeconds) || DEFAULT_TICK_SPEED_SECONDS);
-  const paused = clock?.paused === true;
-  return {
-    year: Number.isFinite(clock?.year) ? Number(clock?.year) : GAME_START_YEAR,
-    tickSizeDays,
-    tickSpeedSeconds,
-    paused,
-    speedMultiplier: computeSpeedMultiplier(tickSizeDays, tickSpeedSeconds, paused),
-    syncedAtMs: Number(clock?.syncedAtMs) || now,
-    lastUpdatedAt: Number(clock?.lastUpdatedAt) || now,
-    lastProcessedPopulationWeek: Number(clock?.lastProcessedPopulationWeek) || gameYearToWeekIndex(Number(clock?.year) || GAME_START_YEAR),
-    lastProcessedLeaderDay: Number(clock?.lastProcessedLeaderDay) || Math.floor((Number(clock?.year) || GAME_START_YEAR) * GAME_DAYS_PER_YEAR),
-  };
-}
 
 async function createGameRuntime(game: StoredGame): Promise<GameRuntime> {
 const statePath = getGameStatePath(game.id);
@@ -509,35 +437,6 @@ function syncClockSpeedFields(): void {
   );
 }
 
-function isFleetFormation(value: string | undefined): value is FleetFormation {
-  return !!value && FLEET_FORMATIONS.includes(value as FleetFormation);
-}
-
-function isCombatStance(value: string | undefined): value is CombatStance {
-  return !!value && COMBAT_STANCES.includes(value as CombatStance);
-}
-
-function normalizeCombatStance(value: unknown): CombatStance {
-  if (value === "defensive") return "defendSystem";
-  if (typeof value === "string" && isCombatStance(value)) return value;
-  return "aggressive";
-}
-
-function isFleetBehavior(value: unknown): value is FleetBehavior {
-  return typeof value === "string" && FLEET_BEHAVIORS.includes(value as FleetBehavior);
-}
-
-function isFleetChasePolicy(value: unknown): value is FleetChasePolicy {
-  return typeof value === "string" && FLEET_CHASE_POLICIES.includes(value as FleetChasePolicy);
-}
-
-function isFleetRetreatPolicy(value: unknown): value is FleetRetreatPolicy {
-  return typeof value === "string" && FLEET_RETREAT_POLICIES.includes(value as FleetRetreatPolicy);
-}
-
-function isFleetTacticalOrderType(value: unknown): value is FleetTacticalOrderType {
-  return typeof value === "string" && FLEET_TACTICAL_ORDER_TYPES.includes(value as FleetTacticalOrderType);
-}
 
 function createRuntimeId(prefix: string, parts: Array<string | number | undefined> = []): string {
   runtimeIdCounter += 1;
@@ -10331,192 +10230,6 @@ return {
 };
 }
 
-// Parse comma-separated allowed WebSocket origins from environment
-// Default: localhost dev environments
-const DEFAULT_WS_ALLOWED_ORIGINS = [
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-];
-
-function parseWsAllowedOrigins(): Set<string> {
-  const envOrigins = process.env.WS_ALLOWED_ORIGINS;
-  if (envOrigins) {
-    return new Set(envOrigins.split(',').map((o) => o.trim()).filter(Boolean));
-  }
-  return new Set(DEFAULT_WS_ALLOWED_ORIGINS);
-}
-
-const wsAllowedOrigins = parseWsAllowedOrigins();
-
-function isWebSocketOriginAllowed(origin: string | undefined): boolean {
-  // Allow requests without Origin header (for CLI/server-side tests)
-  if (!origin) return true;
-  return wsAllowedOrigins.has(origin);
-}
-
-const runtimes = new Map<string, GameRuntime>();
-const runtimeLoads = new Map<string, Promise<GameRuntime>>();
-let lastRuntimeStatsAt = 0;
-let lastRuntimeSyncAt = 0;
-let runtimeSyncing = false;
-
-function sendServerEvent(socket: WebSocket, event: ServerEvent): void {
-  if (socket.readyState !== WebSocket.OPEN) return;
-  socket.send(JSON.stringify(event));
-}
-
-async function ensureRuntime(game: StoredGame): Promise<GameRuntime> {
-  const current = runtimes.get(game.id);
-  if (current) return current;
-  const loading = runtimeLoads.get(game.id);
-  if (loading) return loading;
-
-  const load = createGameRuntime(game)
-    .then((runtime) => {
-      runtimes.set(game.id, runtime);
-      runtimeLoads.delete(game.id);
-      return runtime;
-    })
-    .catch((error) => {
-      runtimeLoads.delete(game.id);
-      throw error;
-    });
-  runtimeLoads.set(game.id, load);
-  return load;
-}
-
-async function syncGameRuntimes(): Promise<void> {
-  if (runtimeSyncing) return;
-  runtimeSyncing = true;
-  try {
-    // This process only hosts games assigned to its own code version and still
-    // active — the isolation that lets old games stay on old code. A game whose
-    // version/status changed away from us is dropped (another process owns it now).
-    const games = authStore.listGames().filter(
-      (game) => game.versionId === SF_VERSION_ID && game.status === "active",
-    );
-    const gameById = new Map(games.map((game) => [game.id, game]));
-    await Promise.all(games.map((game) => ensureRuntime(game)));
-    await Promise.all(Array.from(runtimes.entries()).map(async ([gameId, runtime]) => {
-      if (gameById.has(gameId)) return;
-      runtimes.delete(gameId);
-      // Only truly-deleted games (gone from the catalog) lose their saved state.
-      // Games that merely left this process (stopped/archived/reassigned to
-      // another version) must keep their state and release ownership cleanly.
-      const stillExists = authStore.getGameById(gameId) !== null;
-      await runtime.dispose(
-        stillExists ? "This game is no longer hosted here." : "This game was deleted.",
-        !stillExists,
-      );
-    }));
-  } finally {
-    lastRuntimeSyncAt = Date.now();
-    runtimeSyncing = false;
-  }
-}
-
-function buildRuntimeStats(): DevGameRuntimeStats {
-  const games = Array.from(runtimes.values()).map((runtime) => runtime.getStats());
-  const activeAccounts = Array.from(new Set(games.flatMap((game) => game.activeAccounts)))
-    .sort((a, b) => a.localeCompare(b));
-  return {
-    online: true,
-    activeConnections: games.reduce((sum, game) => sum + game.activeConnections, 0),
-    activeAccounts,
-    serverStartedAt: GAME_SERVER_STARTED_AT,
-    lastHeartbeatAt: Date.now(),
-    gameYear: games.length === 1 ? games[0].gameYear : null,
-    paused: games.length > 0 && games.every((game) => game.paused),
-    speedMultiplier: games.length === 1 ? games[0].speedMultiplier : 0,
-    starCount: games.reduce((sum, game) => sum + game.starCount, 0),
-    factionCount: games.reduce((sum, game) => sum + game.factionCount, 0),
-    fleetCount: games.reduce((sum, game) => sum + game.fleetCount, 0),
-    shipCount: games.reduce((sum, game) => sum + game.shipCount, 0),
-    starbaseCount: games.reduce((sum, game) => sum + game.starbaseCount, 0),
-    planetCount: 0,
-    habitedPlanetCount: games.reduce((sum, game) => sum + game.habitedPlanetCount, 0),
-    combatContactCount: 0,
-    gameCount: games.length,
-    games,
-  };
-}
-
-function publishRuntimeStats(force = false): void {
-  const now = Date.now();
-  if (!force && now - lastRuntimeStatsAt < RUNTIME_STATS_INTERVAL_MS) return;
-  lastRuntimeStatsAt = now;
-  try {
-    authStore.setGameRuntimeStats(buildRuntimeStats());
-  } catch (error) {
-    console.error("[GameServer] Failed to publish runtime stats", error);
-  }
-}
-
-await syncGameRuntimes();
-publishRuntimeStats(true);
-
-async function handleConnection(socket: WebSocket, request: Parameters<NonNullable<Parameters<WebSocketServer["on"]>[1]>>[1]): Promise<void> {
-  const origin = request.headers.origin;
-  if (!isWebSocketOriginAllowed(origin)) {
-    console.warn(`[GameServer] Rejected WebSocket connection from disallowed origin: ${origin}`);
-    socket.close(1008, "Origin not allowed");
-    return;
-  }
-
-  const token = parseSessionTokenFromCookie(request.headers.cookie);
-  const account = token ? authStore.getAccountFromSessionToken(token) : null;
-  if (!account) {
-    sendServerEvent(socket, { type: "serverInfo", message: "Authentication required." });
-    socket.close();
-    return;
-  }
-
-  const url = new URL(request.url ?? "/", `ws://${request.headers.host ?? "localhost"}`);
-  const gameId = url.searchParams.get("gameId") ?? "";
-  const game = authStore.getGameById(gameId);
-  const perspective = game ? authStore.getGamePerspective(account, game.id) : null;
-  if (!game) {
-    sendServerEvent(socket, { type: "serverInfo", message: "Game not found." });
-    socket.close();
-    return;
-  }
-  if (game.versionId !== SF_VERSION_ID || game.status !== "active") {
-    // Another version's process owns this game (or it is stopped/archived).
-    // The client should re-resolve its endpoint via the auth API.
-    sendServerEvent(socket, { type: "serverInfo", message: "Game is hosted on a different version. Reconnect to refresh." });
-    socket.close();
-    return;
-  }
-  if (!perspective) {
-    sendServerEvent(socket, { type: "serverInfo", message: "Join this game before entering it." });
-    socket.close();
-    return;
-  }
-
-  const runtime = await ensureRuntime(game);
-  runtime.attachClient(socket, account, perspective);
-  publishRuntimeStats(true);
-}
-
-const wss = new WebSocketServer({ port: PORT });
-wss.on("connection", (socket, request) => {
-  void handleConnection(socket, request).catch((error) => {
-    console.error("[GameServer] Failed to accept connection", error);
-    sendServerEvent(socket, { type: "serverInfo", message: "Could not enter game." });
-    socket.close();
-  });
-});
-
-setInterval(() => {
-  const now = Date.now();
-  for (const runtime of runtimes.values()) runtime.tick(now);
-  publishRuntimeStats();
-  if (now - lastRuntimeSyncAt >= RUNTIME_CATALOG_SYNC_INTERVAL_MS) {
-    void syncGameRuntimes().then(() => publishRuntimeStats(true))
-      .catch((error) => console.error("[GameServer] Failed to sync game runtimes", error));
-  }
-}, SERVER_TICK_INTERVAL_MS);
-
-console.log(`[GameServer] Listening on ws://localhost:${PORT}`);
+await initServer(createGameRuntime);
 
 

@@ -1,0 +1,55 @@
+import { STARBASE_SHIP_DEFINITIONS } from "../../src/data/Starbase";
+import type { FleetRetreatPolicy } from "../../src/game/CombatTypes";
+
+export const DISCOVERY_JUMPS = 2;
+export const DEPART_DURATION_MS = 20_000;
+export const JUMP_DURATION_MS = 10_000;
+export const ARRIVE_DURATION_MS = 30_000;
+export const BUILD_DURATION_MS = 180_000;
+export const SAVE_INTERVAL_MS = 5_000;
+export const SERVER_TICK_INTERVAL_MS = 100;
+export const RUNTIME_STATS_INTERVAL_MS = 5_000;
+export const RUNTIME_CATALOG_SYNC_INTERVAL_MS = 1_000;
+export const DEFAULT_TICK_SIZE_DAYS = 1 / 24;
+export const DEFAULT_TICK_SPEED_SECONDS = 1;
+export const DEFAULT_SHIP_SPEED = STARBASE_SHIP_DEFINITIONS.corvette.speed;
+export const STARBASE_ARMOR_REPAIR_FRACTION_PER_DAY = 0.025;
+export const STARBASE_HULL_REPAIR_FRACTION_PER_DAY = 0.012;
+export const STARBASE_ARMOR_REPAIR_ALLOY_COST_PER_POINT = 0.035;
+export const STARBASE_HULL_REPAIR_ALLOY_COST_PER_POINT = 0.06;
+export const STARBASE_REPAIR_ENERGY_COST_PER_POINT = 0.015;
+export const EMERGENCY_RETREAT_SHIELD_LOSS_FRACTION = 1;
+export const EMERGENCY_RETREAT_ARMOR_DAMAGE_FRACTION = 0.18;
+export const EMERGENCY_RETREAT_HULL_DAMAGE_FRACTION = 0.12;
+export const EMERGENCY_RETREAT_SHIP_LOSS_CHANCE = 0.06;
+export const EMERGENCY_RETREAT_MIN_MIA_DAYS = 8;
+export const EMERGENCY_RETREAT_DISTANCE_MIA_DIVISOR = 14;
+export const SYSTEM_FLEET_SPEED_UNITS_PER_DAY = 10.4;
+export const SYSTEM_PLANET_ORBIT_DISTANCE = 3.4;
+export const STARBASE_TACTICAL_RADIUS = 7;
+export const RECENT_COMBAT_CONTACT_HISTORY = 160;
+export const FLEET_GUARD_RADIUS = 72;
+export const FLEET_EVADE_DISTANCE = 34;
+export const FLEET_SOFT_SEPARATION_FACTOR = 0.35;
+export const FLEET_RETREAT_THRESHOLDS: Record<FleetRetreatPolicy, number> = {
+  none: 0,
+  low: 0.25,
+  medium: 0.5,
+  high: 0.75,
+};
+export const MIGRATION_BASE_WEEKLY_RATE = 0.00018;
+export const MIGRATION_PRESSURE_WEEKLY_RATE = 0.0034;
+// Cross-faction migration tiers. Foreign migration is gated on first contact ("met")
+// and scales up with diplomatic intimacy. Each tier is multiplied by the source/target
+// migration-policy factors before use.
+export const MIGRATION_FOREIGN_MET_MULTIPLIER = 0.02;
+export const MIGRATION_FOREIGN_OPEN_BORDER_MULTIPLIER = 0.08;
+export const MIGRATION_PACT_MULTIPLIER = 0.35;
+export const MIGRATION_MIN_SOURCE_POPULATION = 50_000_000;
+export const MIGRATION_MIN_FLOW_POPULATION = 10_000;
+export const MIGRATION_DESTINATION_CAPACITY_BUFFER = 1.02;
+// Distance falloff between the source and destination star (in hyperlane jumps).
+// Neighbouring systems exchange the most migrants; distant systems still trickle.
+export const MIGRATION_DISTANCE_DECAY = 0.78;
+export const MIGRATION_DISTANCE_FLOOR = 0.12;
+export const MIGRATION_DISTANCE_MAX_JUMPS = 16;
