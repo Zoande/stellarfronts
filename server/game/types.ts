@@ -84,3 +84,15 @@ export interface GameRuntime {
   dispose: (message?: string, deleteState?: boolean) => Promise<void>;
   getStats: () => DevGameRuntimeRow;
 }
+
+export interface RuntimeContext {
+  game: StoredGame;
+  statePath: string;
+  state: GameState;
+  clients: Set<ClientSession>;
+  pendingPlanetDetailRefreshes: Set<string>;
+  hasDirtyState: boolean;
+  lastSaveAt: number;
+  runtimeIdCounter: number;
+  eventInstanceSeq: number;
+}
