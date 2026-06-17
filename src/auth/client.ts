@@ -99,6 +99,62 @@ export async function deleteDevGame(gameId: string): Promise<void> {
   await requestJson(`/api/dev/games/${encodeURIComponent(gameId)}`, undefined, 'DELETE');
 }
 
+// ---- Orchestrator (versions & game lifecycle), proxied through the auth server ----
+export interface OrchestratorVersion {
+  id: string;
+  gitRef: string;
+  port: number;
+  protocolVersion: number;
+  schemaVersion: number;
+  migratesFromSchema: number[];
+  createdAt: number;
+}
+
+export interface OrchestratorGame {
+  id: string;
+  name: string;
+  versionId: string;
+  status: string;
+  schemaVersion: number | null;
+  protocolVersion: number | null;
+  createdAt: number;
+}
+
+export interface RemoteRef { ref: string; sha: string; type: 'tag' | 'branch'; }
+export interface CompatRow { id: string; name: string; versionId: string; schemaVersion: number | null; canUpdate: boolean; }
+
+export async function listOrchestratorVersions(): Promise<OrchestratorVersion[]> {
+  const result = await requestJson<{ versions: OrchestratorVersion[] }>('/api/dev/orchestrator/versions', undefined, 'GET');
+  return result.versions;
+}
+
+export async function listRemoteVersions(): Promise<RemoteRef[]> {
+  const result = await requestJson<{ refs: RemoteRef[] }>('/api/dev/orchestrator/remote-versions', undefined, 'GET');
+  return result.refs;
+}
+
+export async function registerOrchestratorVersion(gitRef: string, id?: string): Promise<void> {
+  await requestJson('/api/dev/orchestrator/versions', { gitRef, id });
+}
+
+export async function listOrchestratorGames(): Promise<OrchestratorGame[]> {
+  const result = await requestJson<{ games: OrchestratorGame[] }>('/api/dev/orchestrator/games', undefined, 'GET');
+  return result.games;
+}
+
+export async function createOrchestratorGame(name: string, versionId: string): Promise<void> {
+  await requestJson('/api/dev/orchestrator/games', { name, versionId });
+}
+
+export async function runGameLifecycle(gameId: string, action: string, body?: Record<string, unknown>): Promise<void> {
+  await requestJson(`/api/dev/orchestrator/games/${encodeURIComponent(gameId)}/${action}`, body ?? {}, 'POST');
+}
+
+export async function getCompatReport(toVersion: string): Promise<CompatRow[]> {
+  const result = await requestJson<{ games: CompatRow[] }>(`/api/dev/orchestrator/compat?to=${encodeURIComponent(toVersion)}`, undefined, 'GET');
+  return result.games;
+}
+
 export async function getNewsPosts(): Promise<NewsPostListItem[]> {
   const result = await requestJson<NewsPostsResponse>('/api/news/posts', undefined, 'GET');
   return result.posts;

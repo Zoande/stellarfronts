@@ -44,6 +44,9 @@ import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, DiplomacyMovementPayload, ServerFleet, ServerShip, ServerStarbase, ServerStarbaseSummary } from "../game/GameProtocol";
 import type { FactionTechnologyView } from "../data/Technology";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
+import { ContextActionMenu } from "./shared/ContextActionMenu";
+import type { ContextMenuItem } from "./shared/ContextActionMenu";
+import { getCanvasPoint } from "./shared/pointerMath";
 import { createProceduralSpaceSkybox, getGalaxySkyboxSettings } from "../utils/proceduralSpaceSkybox";
 
 type EnterSystemHandler = (star: StarData) => void | Promise<void>;
@@ -954,7 +957,7 @@ export class GalaxyScene implements IGameScene {
   private selectedFleetIds = new Set<string>();
   private activeShipAction: ShipAction | null = null;
   private targetableStarIds = new Set<number>();
-  private actionMenuElement: HTMLDivElement | null = null;
+  private readonly contextMenu = new ContextActionMenu();
   private buildPickerElement: HTMLDivElement | null = null;
   private galacticCoreMeshes: Mesh[] = [];
   private galacticCoreSpinSpeeds: number[] = [];
@@ -1177,10 +1180,8 @@ export class GalaxyScene implements IGameScene {
       }
       
       // Check for icon click first
-      const rect = this.canvas.getBoundingClientRect();
-      const canvasX = (ev.clientX - rect.left) * (this.canvas.width / rect.width);
-      const canvasY = (ev.clientY - rect.top) * (this.canvas.height / rect.height);
-      if (this.starField.checkIconClick(canvasX, canvasY, {width: this.canvas.width, height: this.canvas.height}, ev.shiftKey)) {
+      const point = getCanvasPoint(this.canvas, ev);
+      if (point && this.starField.checkIconClick(point.canvasX, point.canvasY, {width: this.canvas.width, height: this.canvas.height}, ev.shiftKey)) {
         return;
       }
 
@@ -1947,49 +1948,34 @@ export class GalaxyScene implements IGameScene {
       return;
     }
 
-    ensureActionMenuStyles();
-    this.closeActionMenu();
-
-    const menu = document.createElement("div");
-    menu.className = "spaceActionMenu";
-    menu.style.left = `${Math.min(ev.clientX, window.innerWidth - 170)}px`;
-    menu.style.top = `${Math.min(ev.clientY, window.innerHeight - 150)}px`;
-
-    const title = document.createElement("div");
-    title.className = "spaceActionMenuTitle";
-    title.textContent = star.name;
-    menu.appendChild(title);
-
     const commandFleet = this.getSelectedCommandFleet();
-    const secondaryAction: ShipAction = this.fleetCanBuildStarbase(commandFleet) ? "build" : "attack";
-    const actions: Array<{ action: ShipAction; label: string }> = [
-      { action: "move", label: "Move" },
-      { action: secondaryAction, label: secondaryAction === "build" ? "Build" : "Attack" },
+    const fleetId = this.selectedCommandShipId ?? undefined;
+    const issue = (action: ShipAction): ContextMenuItem["onSelect"] => () => {
+      this.options.onShipCommand?.(action, star.id, fleetId);
+    };
+    const reachable = (action: ShipAction): boolean => this.getReachableStarIds(action).has(star.id);
+
+    const items: ContextMenuItem[] = [
+      { label: "Move", disabled: !reachable("move"), onSelect: issue("move") },
     ];
-
-    for (const item of actions) {
-      const canIssue = this.getReachableStarIds(item.action).has(star.id);
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "spaceActionMenuBtn";
-      button.textContent = item.label;
-      button.disabled = !canIssue;
-      button.addEventListener("click", (clickEv) => {
-        clickEv.stopPropagation();
-        if (!canIssue) return;
-        this.closeActionMenu();
-        this.options.onShipCommand?.(item.action, star.id, this.selectedCommandShipId ?? undefined);
-      });
-      menu.appendChild(button);
+    if (this.hasHostilePresenceAtStar(star.id)) {
+      items.push({ label: "Attack", disabled: !reachable("attack"), onSelect: issue("attack") });
     }
+    if (this.fleetCanBuildStarbase(commandFleet)) {
+      items.push({ label: "Build Starbase", disabled: !reachable("build"), onSelect: issue("build") });
+    }
+    if (this.fleetCanColonize(commandFleet) && commandFleet?.currentStarId === star.id) {
+      // Colonize enters the system and arms the colonize action there.
+      items.push({ label: "Colonize", onSelect: () => this.beginShipAction("colonize") });
+    }
+    items.push({ label: "Retreat To", disabled: !reachable("retreatTo"), onSelect: issue("retreatTo") });
+    items.push({ label: "Emergency Retreat", disabled: !reachable("emergencyRetreatTo"), onSelect: issue("emergencyRetreatTo") });
 
-    document.body.appendChild(menu);
-    this.actionMenuElement = menu;
+    this.contextMenu.open({ x: ev.clientX, y: ev.clientY, title: star.name, items });
   }
 
   private closeActionMenu(): void {
-    this.actionMenuElement?.remove();
-    this.actionMenuElement = null;
+    this.contextMenu.close();
   }
 
   private findNearestStarAtPointer(): StarData | null {

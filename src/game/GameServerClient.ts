@@ -42,6 +42,18 @@ function withClientClockSync<T extends { clock?: GameSnapshot["clock"] }>(event:
   };
 }
 
+/**
+ * Server protocol versions THIS client build supports. Client builds are not
+ * versioned by the orchestrator — instead each build declares which server
+ * protocols it can talk to. Extend this list when you make a new client
+ * backwards-compatible with older servers (your call, per build). If a game's
+ * server reports a protocol not listed here, the client refuses to connect with
+ * a clear message rather than misbehaving.
+ */
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [2];
+
+export class ClientServerVersionError extends Error {}
+
 function getWebSocketUrl(gameId?: string): string {
   // Support VITE_WS_URL env var for production (set at build time by Vite)
   if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_WS_URL) {
@@ -73,13 +85,18 @@ export class GameServerClient {
   private detailCache = new Map<string, CachedDetail>();
   private adminCommandRequests = new Map<string, PendingRequest<AdminCommandResult>>();
 
-  constructor(gameId?: string, private readonly url = getWebSocketUrl(gameId)) {}
+  constructor(private readonly gameId?: string, private readonly urlOverride?: string) {}
 
   async connect(): Promise<GameSnapshot> {
     if (this.latestSnapshot) return this.latestSnapshot;
 
+    // Clients always connect to the single public game endpoint; the orchestrator
+    // gateway (or the bare dev server) routes to the correct version process by
+    // gameId. Compatibility with that game's server version is enforced when the
+    // first snapshot arrives (see SUPPORTED_SERVER_PROTOCOL_VERSIONS below).
+    const url = this.urlOverride ?? getWebSocketUrl(this.gameId);
     return new Promise((resolve, reject) => {
-      const socket = new WebSocket(this.url);
+      const socket = new WebSocket(url);
       this.socket = socket;
       let resolved = false;
 
@@ -90,6 +107,15 @@ export class GameServerClient {
       socket.addEventListener("message", (event) => {
         const parsed = JSON.parse(String(event.data)) as ServerEvent;
         if (parsed.type === "snapshot") {
+          const serverProtocol = parsed.protocolVersion;
+          if (typeof serverProtocol === "number" && !SUPPORTED_SERVER_PROTOCOL_VERSIONS.includes(serverProtocol)) {
+            const error = new ClientServerVersionError(
+              `This client doesn't support this game's server (protocol v${serverProtocol}). Supported: ${SUPPORTED_SERVER_PROTOCOL_VERSIONS.join(", ")}.`,
+            );
+            socket.close(1011, "Unsupported server protocol");
+            if (!resolved) { resolved = true; reject(error); }
+            return;
+          }
           this.latestSnapshot = withClientClockSync(parsed);
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot);
           if (!resolved) {
@@ -132,6 +158,8 @@ export class GameServerClient {
             species: parsed.species ?? this.latestSnapshot.species,
             recentCombatContacts: parsed.recentCombatContacts ?? this.latestSnapshot.recentCombatContacts,
             diplomacy: parsed.diplomacy ?? this.latestSnapshot.diplomacy,
+            situations: parsed.situations ?? this.latestSnapshot.situations,
+            events: parsed.events ?? this.latestSnapshot.events,
           };
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);
           return;
@@ -184,7 +212,7 @@ export class GameServerClient {
       });
 
       socket.addEventListener("error", () => {
-        if (!resolved) reject(new Error("Could not connect to game server at ws://localhost:8787"));
+        if (!resolved) reject(new Error(`Could not connect to game server at ${url}`));
       });
 
       socket.addEventListener("close", () => {

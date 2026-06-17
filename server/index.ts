@@ -47,6 +47,7 @@ import {
   getPlanetBuildingKind,
   getPlanetBuildingLevel,
   getQueuedDistrictCount,
+  getAmenityNeed,
   hasQueuedBuildingTarget,
   isBuildingCompatible,
   NEW_COLONY_POPULATION,
@@ -246,6 +247,7 @@ import {
 import {
   calculateLeaderLevel,
   createInitialLeaders,
+  createLeaderCandidate,
   formatLeaderClass,
   getLeaderAssignmentClass,
   getLeaderTraitDefinition,
@@ -254,6 +256,19 @@ import {
   refreshLeaderPool,
 } from "../src/data/Leaders";
 import type { LeaderAssignment, LeaderClass, LeaderFleetEffects, LeaderState } from "../src/data/Leaders";
+import type { GameEffect, FactionModifierState } from "../src/data/GameEffects";
+import {
+  getEventDefinition,
+  LEADER_OFFER_EVENT_ID,
+  LOST_IN_TRANSIT_EVENT_ID,
+} from "../src/data/Events";
+import type { ActiveEvent } from "../src/data/Events";
+import {
+  SHORTAGE_SITUATION_ID,
+  getSituationDefinition,
+  situationInstanceId,
+} from "../src/data/Situations";
+import type { ActiveSituation } from "../src/data/Situations";
 import {
   buildSystemDetailPayload,
   createSystemDetailRevision,
@@ -313,9 +328,18 @@ import type { AuthAccount, DevGameRuntimeRow, DevGameRuntimeStats } from "../src
 import { authStore, parseSessionTokenFromCookie } from "./auth-store";
 import type { StoredGame } from "./auth-store";
 import { getGameStateDirectory, getGameStatePath } from "./game-state-path";
+import { VERSION_MANIFEST, canMigrateFromSchema } from "./versionManifest";
+
+// Probe mode: the orchestrator runs each worktree with `--print-version` to read
+// its committed identity (protocol/schema/migratesFrom) without booting a server.
+if (process.argv.includes("--print-version")) {
+  process.stdout.write(`${JSON.stringify(VERSION_MANIFEST)}\n`);
+  process.exit(0);
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.GAME_SERVER_PORT ?? 8787);
+const SF_VERSION_ID = VERSION_MANIFEST.versionId;
 const DISCOVERY_JUMPS = 2;
 const DEPART_DURATION_MS = 20_000;
 const JUMP_DURATION_MS = 10_000;
@@ -355,11 +379,20 @@ const FLEET_RETREAT_THRESHOLDS: Record<FleetRetreatPolicy, number> = {
 };
 const MIGRATION_BASE_WEEKLY_RATE = 0.00018;
 const MIGRATION_PRESSURE_WEEKLY_RATE = 0.0034;
-const MIGRATION_FOREIGN_BASE_MULTIPLIER = 0.045;
-const MIGRATION_PACT_MULTIPLIER = 0.58;
+// Cross-faction migration tiers. Foreign migration is gated on first contact ("met")
+// and scales up with diplomatic intimacy. Each tier is multiplied by the source/target
+// migration-policy factors before use.
+const MIGRATION_FOREIGN_MET_MULTIPLIER = 0.02; // discovered each other, closed/default borders
+const MIGRATION_FOREIGN_OPEN_BORDER_MULTIPLIER = 0.08; // met + mutually open borders
+const MIGRATION_PACT_MULTIPLIER = 0.35; // active migration-pact treaty
 const MIGRATION_MIN_SOURCE_POPULATION = 50_000_000;
 const MIGRATION_MIN_FLOW_POPULATION = 10_000;
 const MIGRATION_DESTINATION_CAPACITY_BUFFER = 1.02;
+// Distance falloff between the source and destination star (in hyperlane jumps).
+// Neighbouring systems exchange the most migrants; distant systems still trickle.
+const MIGRATION_DISTANCE_DECAY = 0.78; // multiplier applied per jump beyond the first
+const MIGRATION_DISTANCE_FLOOR = 0.12; // minimum share for very distant / unreachable systems
+const MIGRATION_DISTANCE_MAX_JUMPS = 16; // BFS cap; beyond this the floor is used
 
 interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
@@ -379,6 +412,9 @@ interface GameState {
   diplomacy: DiplomacyState;
   market: MarketState;
   leaders: LeaderState[];
+  situations: ActiveSituation[];
+  events: ActiveEvent[];
+  factionModifiers: FactionModifierState[];
   hyperlanes: Array<[number, number]>;
   adjacency: number[][];
   factions: FactionInfo[];
@@ -389,6 +425,9 @@ interface GameState {
   fleets: GameFleet[];
   recentCombatContacts: ServerCombatContact[];
   discoveredByFaction: Record<string, number[]>;
+  // Symmetric first-contact record: metByFaction[a] lists every faction id that
+  // faction a has discovered (and that has therefore discovered a). Monotonic.
+  metByFaction: Record<string, number[]>;
   lastKnownOwnershipByFaction: Record<string, number[]>;
   clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number; lastProcessedLeaderDay: number };
 }
@@ -775,13 +814,34 @@ function calculateFactionMarketMonthlyDelta(nextState: GameState, factionId: num
   return delta;
 }
 
-function getFactionResourceShortageSeverity(nextState: GameState, factionId: number, resource: ResourceKind): number {
-  const economy = nextState.factionEconomies.find((candidate) => candidate.factionId === factionId);
-  if (!economy) return 0;
-  const shortage = Math.max(0, -economy.stockpiles[resource]);
-  if (shortage <= 0) return 0;
-  const monthlyPressure = Math.max(250, Math.abs(economy.monthlyDelta[resource]) * 0.5);
-  return clamp(Math.sqrt(shortage / monthlyPressure), 0, 1);
+// Months of running deficit a full stockpile cushions before shortage penalties ramp in.
+// Gives a fresh empire (or a brief dip) breathing room instead of an instant death spiral.
+const SHORTAGE_GRACE_MONTHS = 3;
+
+// Stockpiles are clamped at 0, so a shortage is detected from the live trajectory: a
+// resource is in shortage when net income is negative and the stockpile buffer is running
+// out. Severity scales with how large the deficit is relative to total consumption and how
+// depleted the buffer is, both in [0, 1].
+function computeShortageSeverity(stockpile: number, monthlyDelta: number, consumption: number): number {
+  const deficit = Math.max(0, -monthlyDelta);
+  if (deficit <= 0) return 0;
+  const deficitFraction = clamp(deficit / Math.max(consumption, deficit, 1), 0, 1);
+  const bufferFactor = clamp(1 - Math.max(0, stockpile) / (deficit * SHORTAGE_GRACE_MONTHS), 0, 1);
+  return clamp(deficitFraction * bufferFactor, 0, 1);
+}
+
+// Single source of truth for shortage severity: the Resource Shortage *situation*.
+// Its per-resource progress (0-100, advanced/receded each tick by processSituations
+// using computeShortageSeverity) drives all shortage penalties below. This replaces the
+// former instantaneous penalty so effects escalate and recede smoothly with the meter.
+function getFactionShortageSeverities(nextState: GameState, factionId: number): ResourceCounts {
+  const severities = createEmptyResourceCounts();
+  for (const resource of RESOURCE_KINDS) {
+    const instanceId = situationInstanceId(SHORTAGE_SITUATION_ID, factionId, resource);
+    const situation = nextState.situations.find((candidate) => candidate.id === instanceId);
+    severities[resource] = situation ? clamp(situation.progress / 100, 0, 1) : 0;
+  }
+  return severities;
 }
 
 function shortageModifier(
@@ -803,11 +863,7 @@ function shortageModifier(
 }
 
 function getFactionShortagePlanetModifiers(nextState: GameState, factionId: number): PlanetModifier[] {
-  const food = getFactionResourceShortageSeverity(nextState, factionId, "food");
-  const goods = getFactionResourceShortageSeverity(nextState, factionId, "goods");
-  const energy = getFactionResourceShortageSeverity(nextState, factionId, "energy");
-  const minerals = getFactionResourceShortageSeverity(nextState, factionId, "minerals");
-  const alloys = getFactionResourceShortageSeverity(nextState, factionId, "alloys");
+  const { food, goods, energy, minerals, alloys } = getFactionShortageSeverities(nextState, factionId);
   const modifiers: PlanetModifier[] = [];
 
   if (food > 0) {
@@ -854,10 +910,7 @@ function getFactionFleetShortageEffects(nextState: GameState, factionId: number)
   speedMultiplier: number;
   shieldMultiplier: number;
 } {
-  const food = getFactionResourceShortageSeverity(nextState, factionId, "food");
-  const goods = getFactionResourceShortageSeverity(nextState, factionId, "goods");
-  const energy = getFactionResourceShortageSeverity(nextState, factionId, "energy");
-  const alloys = getFactionResourceShortageSeverity(nextState, factionId, "alloys");
+  const { food, goods, energy, alloys } = getFactionShortageSeverities(nextState, factionId);
   return {
     attackMultiplier: clamp(1 - energy * 0.35 - alloys * 0.3 - goods * 0.15 - food * 0.1, 0.35, 1),
     speedMultiplier: clamp(1 - energy * 0.3 - alloys * 0.2 - food * 0.1, 0.4, 1),
@@ -1225,6 +1278,7 @@ function getPlanetTechnologyModifiers(nextState: GameState, planetState: PlanetS
       ...getTechnologyPlanetModifiers(nextState, ownerId),
       ...getGovernmentPlanetModifiers(nextState, ownerId),
       ...getFactionShortagePlanetModifiers(nextState, ownerId),
+      ...getActiveFactionPlanetModifiers(nextState, ownerId),
       ...getPlanetLeaderModifiers(nextState, planetState, ownerId),
     ]
     : [];
@@ -2288,6 +2342,9 @@ function createInitialState(): GameState {
     diplomacy: createInitialDiplomacyState(factions.map((faction) => faction.id)),
     market: createInitialMarketState(factions.map((faction) => faction.id), startHour, GAME_START_YEAR),
     leaders: createInitialLeaders(factions.map((faction) => faction.id), startLeaderDay, GAME_START_YEAR),
+    situations: [],
+    events: [],
+    factionModifiers: [],
     hyperlanes,
     adjacency,
     factions,
@@ -2298,6 +2355,7 @@ function createInitialState(): GameState {
     fleets,
     recentCombatContacts: [],
     discoveredByFaction: {},
+    metByFaction: {},
     lastKnownOwnershipByFaction: {},
     clock: {
       year: GAME_START_YEAR,
@@ -2324,10 +2382,23 @@ async function loadState(): Promise<GameState> {
   try {
     const raw = await readFile(statePath, "utf8");
     const parsed = JSON.parse(raw) as GameState;
+    // Refuse to load a state this build cannot migrate (e.g. a newer schema
+    // opened by an older version). The orchestrator gates updates so this is a
+    // last-line guard against save corruption.
+    const onDiskSchema = Number(parsed.schemaVersion);
+    if (Number.isFinite(onDiskSchema) && !canMigrateFromSchema(VERSION_MANIFEST, onDiskSchema)) {
+      throw new Error(
+        `Game ${game.id} state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
+      );
+    }
     parsed.schemaVersion = 20;
     delete (parsed as GameState & { battles?: unknown }).battles;
     parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
+    parsed.metByFaction = parsed.metByFaction ?? {};
+    parsed.situations = Array.isArray(parsed.situations) ? parsed.situations : [];
+    parsed.events = Array.isArray(parsed.events) ? parsed.events : [];
+    parsed.factionModifiers = Array.isArray(parsed.factionModifiers) ? parsed.factionModifiers : [];
     parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.recentCombatContacts = [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
@@ -2435,9 +2506,54 @@ async function loadState(): Promise<GameState> {
 
 async function saveState(nextState = state): Promise<void> {
   await mkdir(path.dirname(statePath), { recursive: true });
-  await writeFile(statePath, `${JSON.stringify(nextState, null, 2)}\n`, "utf8");
+  // Stamp the writing build's identity so the orchestrator/catalog know which
+  // code last wrote this save and which schema it is on.
+  const stamped = {
+    ...nextState,
+    codeVersion: SF_VERSION_ID,
+    protocolVersion: VERSION_MANIFEST.protocolVersion,
+  };
+  await writeFile(statePath, `${JSON.stringify(stamped, null, 2)}\n`, "utf8");
+  authStore.recordGameStateVersions(game.id, nextState.schemaVersion, VERSION_MANIFEST.protocolVersion);
   lastSaveAt = Date.now();
   hasDirtyState = false;
+}
+
+const ownerLockPath = path.join(getGameStateDirectory(game.id), ".owner");
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Exclusive ownership: refuse to open a game already held by a live process of a
+// different version (belt-and-suspenders on top of the version filter, covering
+// the brief window during an update before the old process releases it).
+async function acquireOwnership(): Promise<void> {
+  await mkdir(path.dirname(ownerLockPath), { recursive: true });
+  try {
+    const existing = JSON.parse(await readFile(ownerLockPath, "utf8")) as { versionId: string; pid: number };
+    if (existing.pid !== process.pid && existing.versionId !== SF_VERSION_ID && isPidAlive(existing.pid)) {
+      throw new Error(`Game ${game.id} is owned by version ${existing.versionId} (pid ${existing.pid}).`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("is owned by version")) throw error;
+    // No readable lock → free to take ownership.
+  }
+  await writeFile(ownerLockPath, JSON.stringify({ versionId: SF_VERSION_ID, pid: process.pid, startedAt: Date.now() }));
+}
+
+async function releaseOwnership(): Promise<void> {
+  try {
+    const existing = JSON.parse(await readFile(ownerLockPath, "utf8")) as { pid: number };
+    if (existing.pid === process.pid) await rm(ownerLockPath, { force: true });
+  } catch {
+    // Lock already gone.
+  }
 }
 
 function phaseDuration(phase: ShipTransitPhase, fleet?: Pick<ServerFleet, "id" | "ownerId" | "speed">): number {
@@ -2509,6 +2625,22 @@ function computeCurrentVisibleSet(nextState: GameState, factionId: number): Set<
   return visible;
 }
 
+function markFactionsMet(nextState: GameState, a: number, b: number): void {
+  if (a === b || a < 0 || b < 0) return;
+  for (const [self, other] of [[a, b], [b, a]] as const) {
+    const key = String(self);
+    const met = new Set<number>(nextState.metByFaction[key] ?? []);
+    if (met.has(other)) continue;
+    met.add(other);
+    nextState.metByFaction[key] = Array.from(met).sort((x, y) => x - y);
+  }
+}
+
+function haveFactionsMet(nextState: GameState, a: number, b: number): boolean {
+  if (a === b) return true;
+  return (nextState.metByFaction[String(a)] ?? []).includes(b);
+}
+
 function refreshDiscovery(nextState = state): void {
   for (const faction of nextState.factions) {
     const visible = computeCurrentVisibleSet(nextState, faction.id);
@@ -2522,6 +2654,16 @@ function refreshDiscovery(nextState = state): void {
       lastKnown[starId] = nextState.starOwnership[starId] ?? -1;
     }
     nextState.lastKnownOwnershipByFaction[String(faction.id)] = lastKnown.slice(0, nextState.stars.length);
+  }
+
+  // First contact: a faction has "met" every other faction whose territory it has
+  // ever discovered. Derived from the (monotonic) discovered sets, recorded symmetrically.
+  for (const faction of nextState.factions) {
+    const discovered = nextState.discoveredByFaction[String(faction.id)] ?? [];
+    for (const starId of discovered) {
+      const owner = nextState.starOwnership[starId] ?? -1;
+      if (owner >= 0 && owner !== faction.id) markFactionsMet(nextState, faction.id, owner);
+    }
   }
 }
 
@@ -2708,6 +2850,12 @@ function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField
   if (changed.includes("combatContacts") || changed.includes("visibility")) {
     update.recentCombatContacts = visibleState.recentCombatContacts;
   }
+  if (changed.includes("situations")) {
+    update.situations = visibleState.situations;
+  }
+  if (changed.includes("events")) {
+    update.events = visibleState.events;
+  }
   return update;
 }
 
@@ -2753,6 +2901,13 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     ? state.leaders.filter((leader) => leader.factionId === perspective.factionId && leader.status !== "dead")
     : state.leaders.filter((leader) => leader.status !== "dead");
   const species = state.species;
+  // Events and situations are private to the owning faction.
+  const situations = perspective.mode === "faction"
+    ? state.situations.filter((situation) => situation.factionId === perspective.factionId)
+    : [];
+  const events = perspective.mode === "faction"
+    ? state.events.filter((event) => event.factionId === perspective.factionId)
+    : [];
   const recentCombatContacts = visibleSet
     ? state.recentCombatContacts.filter((contact) => {
       const sourceStarId = contact.sourceKind === "fleet"
@@ -2792,6 +2947,8 @@ function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, 
     planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
     factionEconomies,
     habitedPlanetSystemIds: createHabitedPlanetSystemIds(knownSet),
+    situations,
+    events,
   };
 }
 
@@ -5691,7 +5848,7 @@ function advanceFleet(fleet: GameFleet, scaledMs: number): boolean {
 function processMissingInActionFleets(): boolean {
   let changed = false;
   for (const fleet of state.fleets) {
-    if (fleet.phase !== "missingInAction" || fleet.retreatState?.mode !== "emergencyFtl") continue;
+    if (fleet.phase !== "missingInAction" || fleet.retreatState?.status !== "mia") continue;
     const miaUntilYear = fleet.retreatState.miaUntilYear ?? state.clock.year;
     if (state.clock.year < miaUntilYear) continue;
     const targetStarId = fleet.retreatState.targetStarId;
@@ -5712,6 +5869,306 @@ function processMissingInActionFleets(): boolean {
   if (changed) {
     refreshDiscovery();
     hasDirtyState = true;
+  }
+  return changed;
+}
+
+// ===========================================================================
+// Events & Situations engine
+// ===========================================================================
+// Generic, data-driven framework: event choices and situation thresholds both
+// emit GameEffect[] which `applyGameEffects` is the single place to apply. New
+// content is data (Events.ts / Situations.ts) plus, occasionally, a new effect.
+
+const SHORTAGE_SITUATION_RESOURCES: ResourceKind[] = ["food", "minerals", "energy", "goods", "alloys"];
+const SHORTAGE_PROGRESS_RISE_PER_DAY = 9; // climb rate (per day) at full deficit severity
+const SHORTAGE_PROGRESS_FALL_PER_DAY = 6; // recovery rate (per day) once the deficit clears
+const LEADER_OFFER_CHANCE_PER_DAY = 0.0006; // very rare, per faction
+const LOST_IN_TRANSIT_CHANCE_PER_DAY = 0.0018; // very rare, per jumping fleet
+const LOST_IN_TRANSIT_MIN_DAYS = 25;
+const LOST_IN_TRANSIT_MAX_DAYS = 210;
+
+let eventInstanceSeq = 0;
+
+function nextEventInstanceId(): string {
+  eventInstanceSeq += 1;
+  return `evt-${Date.now().toString(36)}-${eventInstanceSeq.toString(36)}`;
+}
+
+function probabilityOverDays(chancePerDay: number, elapsedDays: number): number {
+  if (chancePerDay <= 0 || elapsedDays <= 0) return 0;
+  return 1 - Math.pow(1 - Math.min(1, chancePerDay), elapsedDays);
+}
+
+function resolveEventTokens(template: string, context?: Record<string, unknown>): string {
+  return template.replace(/\{(\w+)\}/g, (_match, key: string) => {
+    const value = context?.[key];
+    return value === undefined || value === null ? "" : String(value);
+  });
+}
+
+function fleetDisplayName(fleet: GameFleet): string {
+  return `Fleet ${fleet.id.slice(-4).toUpperCase()}`;
+}
+
+function queueFactionEvent(factionId: number, defId: string, context?: Record<string, unknown>): ActiveEvent | null {
+  const definition = getEventDefinition(defId);
+  if (!definition) return null;
+  const event: ActiveEvent = {
+    id: nextEventInstanceId(),
+    defId,
+    factionId,
+    createdAtYear: state.clock.year,
+    expiresAtYear: state.clock.year + gameDaysToYears(definition.timeoutDays),
+    title: resolveEventTokens(definition.title, context),
+    body: resolveEventTokens(definition.body, context),
+    category: definition.category,
+    imageUrl: definition.imageUrl,
+    choices: definition.choices,
+    defaultChoiceId: definition.defaultChoiceId,
+    context,
+  };
+  state.events.push(event);
+  hasDirtyState = true;
+  return event;
+}
+
+function addFactionModifierState(
+  factionId: number,
+  id: string,
+  label: string,
+  modifiers: PlanetModifier[],
+  durationDays: number | null,
+): void {
+  state.factionModifiers = state.factionModifiers.filter((entry) => !(entry.factionId === factionId && entry.id === id));
+  state.factionModifiers.push({
+    id,
+    factionId,
+    label,
+    source: `effect:${id}`,
+    modifiers,
+    expiresAtYear: durationDays !== null ? state.clock.year + gameDaysToYears(durationDays) : null,
+  });
+  hasDirtyState = true;
+}
+
+function getActiveFactionPlanetModifiers(nextState: GameState, factionId: number): PlanetModifier[] {
+  const modifiers: PlanetModifier[] = [];
+  for (const entry of nextState.factionModifiers) {
+    if (entry.factionId === factionId) modifiers.push(...entry.modifiers);
+  }
+  return modifiers;
+}
+
+function expireFactionModifiers(): boolean {
+  const before = state.factionModifiers.length;
+  state.factionModifiers = state.factionModifiers.filter(
+    (entry) => entry.expiresAtYear === null || state.clock.year < entry.expiresAtYear,
+  );
+  return state.factionModifiers.length !== before;
+}
+
+function generatePowerfulLeaderCandidate(factionId: number): LeaderState {
+  const leaderClass: LeaderClass = Math.random() < 0.5 ? "military" : "civilian";
+  const base = createLeaderCandidate(
+    factionId,
+    leaderClass,
+    getLeaderDayIndex(state.clock.year),
+    Math.floor(Math.random() * 100000),
+    state.clock.year,
+    "pool",
+  );
+  const xp = 1200 + Math.floor(Math.random() * 900);
+  return { ...base, xp, level: calculateLeaderLevel(xp) };
+}
+
+function buildLeaderOfferContext(factionId: number): Record<string, unknown> {
+  const leader = generatePowerfulLeaderCandidate(factionId);
+  return { leaderName: leader.name, leaderClass: formatLeaderClass(leader.class), leader };
+}
+
+function spawnLeaderFromEffect(factionId: number, effect: Extract<GameEffect, { type: "spawnLeader" }>, context?: Record<string, unknown>): void {
+  const offered = context?.leader as LeaderState | undefined;
+  const leader: LeaderState = offered
+    ? { ...offered, factionId, status: "recruited", recruitedAtYear: state.clock.year }
+    : { ...generatePowerfulLeaderCandidate(factionId), status: "recruited", recruitedAtYear: state.clock.year };
+  if (effect.bonusLevel && effect.bonusLevel > 0) {
+    leader.level = Math.max(leader.level, leader.level + effect.bonusLevel);
+  }
+  state.leaders.push(leader);
+  hasDirtyState = true;
+}
+
+function sendFleetMissing(fleetId: string, days: number): boolean {
+  const fleet = state.fleets.find((candidate) => candidate.id === fleetId);
+  if (!fleet || fleet.phase === "missingInAction") return false;
+  const returnStarId = fleet.targetStarId ?? fleet.route[fleet.route.length - 1] ?? fleet.currentStarId;
+  fleet.retreatState = {
+    mode: "lostInTransit",
+    status: "mia",
+    targetStarId: returnStarId,
+    startedAtYear: state.clock.year,
+    miaUntilYear: state.clock.year + gameDaysToYears(days),
+  };
+  fleet.hyperlanePosition = null;
+  setFleetPhase(fleet, "missingInAction");
+  hasDirtyState = true;
+  return true;
+}
+
+// The single place GameEffects mutate the world. Callers that need immediate
+// economy feedback (player decisions) recalc afterwards; the tick path lets the
+// next economy pass pick changes up.
+function applyGameEffects(factionId: number, effects: GameEffect[], context?: Record<string, unknown>): void {
+  for (const effect of effects) {
+    switch (effect.type) {
+      case "addResource": {
+        const economy = getFactionEconomy(factionId);
+        if (economy) {
+          economy.stockpiles[effect.resource] = Math.max(0, (economy.stockpiles[effect.resource] ?? 0) + effect.amount);
+          hasDirtyState = true;
+        }
+        break;
+      }
+      case "factionModifier":
+        addFactionModifierState(factionId, effect.id, effect.label, effect.modifiers, effect.durationDays ?? null);
+        break;
+      case "clearFactionModifier":
+        state.factionModifiers = state.factionModifiers.filter((entry) => !(entry.factionId === factionId && entry.id === effect.id));
+        hasDirtyState = true;
+        break;
+      case "triggerEvent":
+        queueFactionEvent(factionId, effect.eventId, context);
+        break;
+      case "spawnLeader":
+        spawnLeaderFromEffect(factionId, effect, context);
+        break;
+      case "fleetMissing":
+        sendFleetMissing(effect.fleetId, effect.days);
+        break;
+      case "adjustSituation": {
+        const situation = state.situations.find((candidate) => candidate.id === effect.situationId && candidate.factionId === factionId);
+        if (situation) {
+          const max = getSituationDefinition(situation.defId)?.max ?? 100;
+          situation.progress = clamp(situation.progress + effect.delta, 0, max);
+          hasDirtyState = true;
+        }
+        break;
+      }
+      case "notify":
+        // Notifications are derived client-side from situations/events; nothing to persist.
+        break;
+    }
+  }
+}
+
+function fireSituationThresholds(situation: ActiveSituation, previousProgress: number): boolean {
+  const definition = getSituationDefinition(situation.defId);
+  if (!definition) return false;
+  let changed = false;
+  for (const threshold of definition.thresholds) {
+    if (previousProgress < threshold.at && situation.progress >= threshold.at) {
+      applyGameEffects(situation.factionId, threshold.effects, { resource: situation.subject, situationId: situation.id });
+      changed = true;
+    }
+  }
+  if (situation.progress > situation.lastThreshold) situation.lastThreshold = situation.progress;
+  return changed;
+}
+
+function processSituations(elapsedGameDays: number): boolean {
+  if (elapsedGameDays <= 0) return false;
+  let changed = expireFactionModifiers();
+  for (const faction of state.factions) {
+    const economy = getFactionEconomy(faction.id);
+    if (!economy) continue;
+    const flow = calculateFactionResourceFlow(state, faction.id);
+    for (const resource of SHORTAGE_SITUATION_RESOURCES) {
+      const targetSeverity = computeShortageSeverity(
+        economy.stockpiles[resource],
+        economy.monthlyDelta[resource],
+        flow.consumption[resource],
+      );
+      const targetProgress = targetSeverity * 100;
+      const instanceId = situationInstanceId(SHORTAGE_SITUATION_ID, faction.id, resource);
+      let situation = state.situations.find((candidate) => candidate.id === instanceId);
+      if (targetProgress <= 0 && !situation) continue;
+      if (!situation) {
+        situation = {
+          id: instanceId,
+          defId: SHORTAGE_SITUATION_ID,
+          factionId: faction.id,
+          subject: resource,
+          progress: 0,
+          startedAtYear: state.clock.year,
+          lastThreshold: 0,
+        };
+        state.situations.push(situation);
+        changed = true;
+      }
+      const previous = situation.progress;
+      if (targetProgress > situation.progress) {
+        situation.progress = Math.min(
+          targetProgress,
+          situation.progress + SHORTAGE_PROGRESS_RISE_PER_DAY * Math.max(0.25, targetSeverity) * elapsedGameDays,
+        );
+      } else {
+        situation.progress = Math.max(targetProgress, situation.progress - SHORTAGE_PROGRESS_FALL_PER_DAY * elapsedGameDays);
+      }
+      if (situation.progress !== previous) changed = true;
+      if (fireSituationThresholds(situation, previous)) changed = true;
+      if (situation.progress <= 0.01 && targetProgress <= 0) {
+        state.situations = state.situations.filter((candidate) => candidate !== situation);
+        changed = true;
+      }
+    }
+  }
+  if (changed) hasDirtyState = true;
+  return changed;
+}
+
+function processRandomEvents(elapsedGameDays: number): boolean {
+  if (elapsedGameDays <= 0) return false;
+  let changed = false;
+
+  const lostChance = probabilityOverDays(LOST_IN_TRANSIT_CHANCE_PER_DAY, elapsedGameDays);
+  for (const fleet of state.fleets) {
+    if (fleet.phase !== "jumpingHyperlane") continue;
+    if (Math.random() >= lostChance) continue;
+    const days = LOST_IN_TRANSIT_MIN_DAYS + Math.random() * (LOST_IN_TRANSIT_MAX_DAYS - LOST_IN_TRANSIT_MIN_DAYS);
+    if (sendFleetMissing(fleet.id, days)) {
+      queueFactionEvent(fleet.ownerId, LOST_IN_TRANSIT_EVENT_ID, { fleetName: fleetDisplayName(fleet) });
+      changed = true;
+    }
+  }
+
+  const offerChance = probabilityOverDays(LEADER_OFFER_CHANCE_PER_DAY, elapsedGameDays);
+  for (const faction of state.factions) {
+    if (Math.random() >= offerChance) continue;
+    if (state.events.some((event) => event.factionId === faction.id && event.defId === LEADER_OFFER_EVENT_ID)) continue;
+    queueFactionEvent(faction.id, LEADER_OFFER_EVENT_ID, buildLeaderOfferContext(faction.id));
+    changed = true;
+  }
+
+  if (changed) hasDirtyState = true;
+  return changed;
+}
+
+function resolveActiveEvent(event: ActiveEvent, choiceId: string): void {
+  const choice = event.choices.find((candidate) => candidate.id === choiceId)
+    ?? event.choices.find((candidate) => candidate.id === event.defaultChoiceId);
+  state.events = state.events.filter((candidate) => candidate.id !== event.id);
+  if (choice) applyGameEffects(event.factionId, choice.effects, event.context);
+  hasDirtyState = true;
+}
+
+function processEventTimeouts(): boolean {
+  let changed = false;
+  for (const event of [...state.events]) {
+    if (state.clock.year >= event.expiresAtYear) {
+      resolveActiveEvent(event, event.defaultChoiceId);
+      changed = true;
+    }
   }
   return changed;
 }
@@ -6518,6 +6975,11 @@ function processEconomyHours(targetHour: number): { economyChanged: boolean; tec
       economy.stockpiles,
       resourceGain,
     );
+    // Stockpiles never go negative; a sustained deficit instead drives shortage penalties
+    // (see computeShortageSeverity) once the buffer is exhausted.
+    for (const resource of RESOURCE_KINDS) {
+      economy.stockpiles[resource] = Math.max(0, economy.stockpiles[resource]);
+    }
     economy.stockpiles.research = 0;
     economy.lastProcessedHour = targetHour;
     economy.lastProcessedMonth = gameYearToMonthIndex(elapsedHoursToGameYear(targetHour));
@@ -6866,7 +7328,7 @@ function getProductiveJobCapacity(planetState: PlanetState): number {
 
 function getMigrationAmenityRatio(planetState: PlanetState): number {
   if (planetState.population <= 0) return 1;
-  const amenityNeed = planetState.population / PEOPLE_PER_MONTHLY_UNIT;
+  const amenityNeed = getAmenityNeed(planetState.population);
   return amenityNeed > 0 ? planetState.economy.amenities / amenityNeed : 1;
 }
 
@@ -6943,13 +7405,50 @@ function createMigrationProfile(planetState: PlanetState, index: number): Migrat
 function getMigrationRelationMultiplier(sourceOwnerId: number, targetOwnerId: number): number {
   if (sourceOwnerId === targetOwnerId) return getMigrationPolicyFactors(sourceOwnerId).internal;
   if (areFactionsAtWar(state.diplomacy, sourceOwnerId, targetOwnerId)) return 0;
+  // Empires that have never made contact do not exchange any population.
+  if (!haveFactionsMet(state, sourceOwnerId, targetOwnerId)) return 0;
   const sourcePolicy = getMigrationPolicyFactors(sourceOwnerId);
   const targetPolicy = getMigrationPolicyFactors(targetOwnerId);
   if (sourcePolicy.foreignOut <= 0 || targetPolicy.foreignIn <= 0) return 0;
   const hasPact = getActiveTreatyPartnersForArticle(state.diplomacy, sourceOwnerId, MIGRATION_PACT_ARTICLE_ID)
     .includes(targetOwnerId);
-  const treatyMultiplier = hasPact ? MIGRATION_PACT_MULTIPLIER : MIGRATION_FOREIGN_BASE_MULTIPLIER;
-  return treatyMultiplier * sourcePolicy.foreignOut * targetPolicy.foreignIn;
+  const bordersMutuallyOpen = getBorderPolicy(state.diplomacy, sourceOwnerId, targetOwnerId) === "open"
+    && getBorderPolicy(state.diplomacy, targetOwnerId, sourceOwnerId) === "open";
+  const tierMultiplier = hasPact
+    ? MIGRATION_PACT_MULTIPLIER
+    : bordersMutuallyOpen
+      ? MIGRATION_FOREIGN_OPEN_BORDER_MULTIPLIER
+      : MIGRATION_FOREIGN_MET_MULTIPLIER;
+  return tierMultiplier * sourcePolicy.foreignOut * targetPolicy.foreignIn;
+}
+
+// Hyperlane jump distance from a source star to every reachable star, capped at maxJumps.
+function computeJumpDistances(adjacency: number[][], sourceStarId: number, maxJumps: number): Map<number, number> {
+  const distances = new Map<number, number>();
+  if (sourceStarId < 0 || sourceStarId >= adjacency.length) return distances;
+  distances.set(sourceStarId, 0);
+  const queue: number[] = [sourceStarId];
+  let head = 0;
+  while (head < queue.length) {
+    const starId = queue[head++];
+    const distance = distances.get(starId) ?? 0;
+    if (distance >= maxJumps) continue;
+    for (const neighborId of adjacency[starId] ?? []) {
+      if (neighborId < 0 || neighborId >= adjacency.length || distances.has(neighborId)) continue;
+      distances.set(neighborId, distance + 1);
+      queue.push(neighborId);
+    }
+  }
+  return distances;
+}
+
+// Falloff applied to a migration flow based on hyperlane distance between the two systems.
+// Neighbouring systems exchange the most; distant/unreachable systems still trickle (floor).
+function getMigrationDistanceMultiplier(distances: Map<number, number>, targetStarId: number): number {
+  const distance = distances.get(targetStarId);
+  if (distance === undefined) return MIGRATION_DISTANCE_FLOOR;
+  if (distance <= 1) return 1;
+  return clamp(Math.pow(MIGRATION_DISTANCE_DECAY, distance - 1), MIGRATION_DISTANCE_FLOOR, 1);
 }
 
 function applySpeciesPopulationDelta(
@@ -6988,6 +7487,7 @@ function processPopulationMigrationWeeks(weeks: number): boolean {
     const sourcePolicy = getMigrationPolicyFactors(source.ownerId);
     const weeklyRate = (MIGRATION_BASE_WEEKLY_RATE + MIGRATION_PRESSURE_WEEKLY_RATE * source.sourcePressure) * sourcePolicy.pressure;
     if (weeklyRate <= 0) continue;
+    const sourceDistances = computeJumpDistances(state.adjacency, source.planet.starId, MIGRATION_DISTANCE_MAX_JUMPS);
 
     for (const species of source.planet.speciesPopulations) {
       const sourceRightsMultiplier = getSpeciesMigrationRightsMultiplier(source.ownerId, species.speciesId);
@@ -7009,9 +7509,11 @@ function processPopulationMigrationWeeks(weeks: number): boolean {
           );
           if (habitability < 20) return null;
           const habitabilityMultiplier = clamp((habitability - 10) / 80, 0.1, 1.2);
+          const distanceMultiplier = getMigrationDistanceMultiplier(sourceDistances, target.planet.starId);
           const attractionGap = Math.max(0, target.attraction - source.attraction + source.sourcePressure * 0.35);
           if (attractionGap <= 0.02) return null;
-          const weight = relationMultiplier * targetRightsMultiplier * target.attraction * attractionGap * habitabilityMultiplier;
+          const weight = relationMultiplier * targetRightsMultiplier * target.attraction * attractionGap
+            * habitabilityMultiplier * distanceMultiplier;
           return weight > 0 ? { target, weight, availableRoom } : null;
         })
         .filter((candidate): candidate is { target: MigrationPlanetProfile; weight: number; availableRoom: number } => candidate !== null);
@@ -7295,6 +7797,23 @@ function advanceState(now: number): Set<ServerUpdateField> {
   if (processPopulationWeeks(nextPopulationWeek)) {
     changed.add("factionEconomies");
     changed.add("habitedPlanetSystems");
+  }
+
+  // Situations advance from the freshly-computed economy deltas; their progress
+  // feeds shortage penalties on the next economy pass (one-tick lag is fine).
+  if (processSituations(elapsedGameDays)) {
+    changed.add("situations");
+    changed.add("factionEconomies");
+  }
+  if (processRandomEvents(elapsedGameDays)) {
+    changed.add("events");
+    changed.add("fleets");
+    changed.add("visibility");
+  }
+  if (processEventTimeouts()) {
+    changed.add("events");
+    changed.add("factionEconomies");
+    changed.add("leaders");
   }
 
   return changed;
@@ -7993,6 +8512,46 @@ async function executeAdminCommand(
       }
       refreshFactionEconomyDeltas();
       return changedResult("Resources updated.", ["factionEconomies"]);
+    }
+    case "trigger_event": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      const eventId = parsed.args[1];
+      if (!eventId || !getEventDefinition(eventId)) throw new Error("Unknown event id.");
+      const eventContext = eventId === LEADER_OFFER_EVENT_ID ? buildLeaderOfferContext(owner) : undefined;
+      if (!queueFactionEvent(owner, eventId, eventContext)) throw new Error("Failed to queue event.");
+      return changedResult(`Queued event ${eventId}.`, ["events"]);
+    }
+    case "set_situation": {
+      const owner = resolveOwnerToken(parsed.args[0], context, perspective);
+      const resource = parsed.args[1] as ResourceKind;
+      if (!RESOURCE_KINDS.includes(resource)) throw new Error("Invalid resource.");
+      const progress = numberArg(parsed.args[2], "progress", 0, 100);
+      const instanceId = situationInstanceId(SHORTAGE_SITUATION_ID, owner, resource);
+      const existing = state.situations.find((candidate) => candidate.id === instanceId);
+      if (existing) {
+        existing.progress = progress;
+        existing.lastThreshold = Math.max(existing.lastThreshold, progress);
+      } else {
+        state.situations.push({
+          id: instanceId,
+          defId: SHORTAGE_SITUATION_ID,
+          factionId: owner,
+          subject: resource,
+          progress,
+          startedAtYear: state.clock.year,
+          lastThreshold: progress,
+        });
+      }
+      recalculatePlanetEconomies();
+      refreshFactionEconomyDeltas();
+      return changedResult(`Shortage(${resource}) progress set to ${progress}.`, ["situations", "factionEconomies"]);
+    }
+    case "lose_fleet": {
+      const fleet = resolveFleetToken(parsed.args[0] ?? "selected", context);
+      const days = parsed.args[1] ? numberArg(parsed.args[1], "days", 0) : 60;
+      if (!sendFleetMissing(fleet.id, days)) throw new Error("Fleet cannot be sent missing.");
+      refreshDiscovery();
+      return changedResult("Fleet sent missing in transit.", ["fleets", "visibility"]);
     }
     case "complete_planet_queue": {
       const token = parsed.args[0] ?? "selected";
@@ -8720,6 +9279,23 @@ function isGovernmentLawOptionUnlocked(factionId: number, option: GovernmentLawO
   return Boolean(techState && isTechnologyCompleted(techState, option.requiresTechId));
 }
 
+function handleResolveEvent(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  eventId: string,
+  choiceId: string,
+): void {
+  const factionId = validateCommandPerspective(perspective);
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  const event = state.events.find((candidate) => candidate.id === eventId && candidate.factionId === factionId);
+  if (!event) return reject(socket, "Event is no longer available.");
+  if (!event.choices.some((choice) => choice.id === choiceId)) return reject(socket, "Unknown event choice.");
+  resolveActiveEvent(event, choiceId);
+  recalculatePlanetEconomies();
+  refreshFactionEconomyDeltas();
+  accept(socket, "Decision recorded.");
+}
+
 function handleSetGovernmentLaw(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -9367,6 +9943,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     handleSetGovernmentLaw(session.socket, session.perspective, command.lawId, command.optionId);
     return;
   }
+  if (command.type === "resolveEvent") {
+    handleResolveEvent(session.socket, session.perspective, command.eventId, command.choiceId);
+    return;
+  }
   if (command.type === "setSpeciesRights") {
     handleSetSpeciesRights(session.socket, session.perspective, command.speciesId, command.rights);
     return;
@@ -9643,6 +10223,7 @@ function touchMembershipNames(): void {
   broadcastUpdates(speciesChanged || speciesPopulationChanged ? ["visibility", "species", "planetStates", "factionEconomies"] : ["visibility"]);
 }
 
+await acquireOwnership();
 state = await loadState();
 touchMembershipNames();
 advanceState(Date.now());
@@ -9730,6 +10311,7 @@ async function dispose(message = "Game runtime stopped.", deleteState = false): 
     return;
   }
   await saveState(state);
+  await releaseOwnership();
 }
 
 return {
@@ -9801,13 +10383,25 @@ async function syncGameRuntimes(): Promise<void> {
   if (runtimeSyncing) return;
   runtimeSyncing = true;
   try {
-    const games = authStore.listGames();
+    // This process only hosts games assigned to its own code version and still
+    // active — the isolation that lets old games stay on old code. A game whose
+    // version/status changed away from us is dropped (another process owns it now).
+    const games = authStore.listGames().filter(
+      (game) => game.versionId === SF_VERSION_ID && game.status === "active",
+    );
     const gameById = new Map(games.map((game) => [game.id, game]));
     await Promise.all(games.map((game) => ensureRuntime(game)));
     await Promise.all(Array.from(runtimes.entries()).map(async ([gameId, runtime]) => {
       if (gameById.has(gameId)) return;
       runtimes.delete(gameId);
-      await runtime.dispose("This game was deleted.", true);
+      // Only truly-deleted games (gone from the catalog) lose their saved state.
+      // Games that merely left this process (stopped/archived/reassigned to
+      // another version) must keep their state and release ownership cleanly.
+      const stillExists = authStore.getGameById(gameId) !== null;
+      await runtime.dispose(
+        stillExists ? "This game is no longer hosted here." : "This game was deleted.",
+        !stillExists,
+      );
     }));
   } finally {
     lastRuntimeSyncAt = Date.now();
@@ -9877,6 +10471,13 @@ async function handleConnection(socket: WebSocket, request: Parameters<NonNullab
   const perspective = game ? authStore.getGamePerspective(account, game.id) : null;
   if (!game) {
     sendServerEvent(socket, { type: "serverInfo", message: "Game not found." });
+    socket.close();
+    return;
+  }
+  if (game.versionId !== SF_VERSION_ID || game.status !== "active") {
+    // Another version's process owns this game (or it is stopped/archived).
+    // The client should re-resolve its endpoint via the auth API.
+    sendServerEvent(socket, { type: "serverInfo", message: "Game is hosted on a different version. Reconnect to refresh." });
     socket.close();
     return;
   }

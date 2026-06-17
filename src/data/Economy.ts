@@ -275,6 +275,12 @@ export interface PlanetEconomySeed {
 }
 
 export const PEOPLE_PER_MONTHLY_UNIT = 1_000_000;
+// Amenity demand per monthly population unit. Below 1 so amenity need scales more gently
+// with population (a developed planet should not need ~20% of its pop in amenity jobs).
+export const AMENITY_NEED_PER_UNIT = 0.5;
+export function getAmenityNeed(population: number): number {
+  return (Math.max(0, population) / PEOPLE_PER_MONTHLY_UNIT) * AMENITY_NEED_PER_UNIT;
+}
 export const STARTING_HABITED_POPULATION = 10_000_000_000;
 export const NEW_COLONY_POPULATION = 500_000_000;
 export const BUILDING_MAX_LEVEL = 5;
@@ -392,7 +398,7 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     class: "middle",
     description: "Provides culture, recreation, and morale services.",
     upkeep: { goods: 0.6 },
-    amenities: 5,
+    amenities: 7,
   },
   enforcer: {
     kind: "enforcer",
@@ -1537,7 +1543,7 @@ export function calculatePlanetEconomy(
   };
 
   let { amenities, crimeReduction } = calculateAssignmentEffects(assignments);
-  const amenityNeed = totalPopulation / PEOPLE_PER_MONTHLY_UNIT;
+  const amenityNeed = getAmenityNeed(totalPopulation);
   const amenityRatio = amenityNeed > 0 ? amenities / amenityNeed : 1;
   const sharedAmenitiesHappiness = getAmenitiesHappinessModifier(amenityRatio);
   let unemploymentRatio = totalPopulation > 0 ? unemployedPopulation / totalPopulation : 0;
@@ -1781,7 +1787,7 @@ export function calculatePopulationGrowth(
   const speciesPopulations = normalizeSpeciesPopulations(state.speciesPopulations, state.population, state.isHabited);
   const housingNeedPopulation = getSpeciesHousingNeedPopulation(speciesPopulations, speciesContext);
   const housingRatio = housingNeedPopulation > 0 ? economy.housing / housingNeedPopulation : 1;
-  const amenityNeed = state.population / PEOPLE_PER_MONTHLY_UNIT;
+  const amenityNeed = getAmenityNeed(state.population);
   const amenityRatio = amenityNeed > 0 ? economy.amenities / amenityNeed : 1;
   const unemploymentRatio = state.population > 0 ? economy.unemployedPopulation / state.population : 0;
 

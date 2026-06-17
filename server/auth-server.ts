@@ -539,6 +539,31 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  const endpointMatch = url.pathname.match(/^\/api\/games\/([a-z0-9]+)\/endpoint$/i);
+  if (request.method === 'GET' && endpointMatch) {
+    const account = getAuthenticatedAccount(request);
+    if (!account) {
+      writeJson(response, 401, { error: 'Authentication required' });
+      return;
+    }
+    const game = authStore.getGameById(endpointMatch[1]);
+    if (!game) {
+      writeJson(response, 404, { error: 'Game not found' });
+      return;
+    }
+    // Clients always connect to the single public game endpoint (the orchestrator
+    // gateway, or the bare dev server locally) — the gateway routes to the right
+    // version process internally. This returns the version/protocol so the client
+    // can check it supports this game's server before connecting.
+    const version = game.versionId === 'dev' ? null : authStore.getGameVersion(game.versionId);
+    writeJson(response, 200, {
+      versionId: game.versionId,
+      status: game.status,
+      protocolVersion: version?.protocolVersion ?? game.protocolVersion ?? null,
+    });
+    return;
+  }
+
   const joinGameMatch = url.pathname.match(/^\/api\/games\/([a-z0-9]+)\/join$/i);
   if (request.method === 'POST' && joinGameMatch) {
     const account = getAuthenticatedAccount(request);
@@ -617,6 +642,34 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
 
     writeJson(response, 200, authStore.getDevStats());
+    return;
+  }
+
+  // Admin-gated passthrough to the orchestrator control API. The browser never
+  // sees the control token; the dev panel drives versions/lifecycle through here.
+  const orchestratorMatch = url.pathname.match(/^\/api\/dev\/orchestrator(\/.*)?$/);
+  if (orchestratorMatch) {
+    if (!isDevRequestAuthorized(request)) {
+      writeJson(response, 401, { error: 'Developer session required' });
+      return;
+    }
+    const controlPort = Number(process.env.CONTROL_PORT ?? 8790);
+    const controlToken = process.env.CONTROL_TOKEN ?? 'dev-control-token';
+    const subPath = `${orchestratorMatch[1] ?? '/'}${url.search}`;
+    const method = request.method ?? 'GET';
+    const body = method === 'POST' ? await readJsonBody(request) : undefined;
+    try {
+      const upstream = await fetch(`http://127.0.0.1:${controlPort}${subPath}`, {
+        method,
+        headers: { 'content-type': 'application/json', 'x-control-token': controlToken },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      const text = await upstream.text();
+      response.writeHead(upstream.status, { 'content-type': 'application/json' });
+      response.end(text);
+    } catch {
+      writeJson(response, 502, { error: 'Orchestrator unreachable. Is it running?' });
+    }
     return;
   }
 

@@ -23,6 +23,8 @@ import {
   getHabitabilityUpkeepMultiplier,
   getPlanetBuildingKind,
   getPlanetBuildingLevel,
+  AMENITY_NEED_PER_UNIT,
+  getAmenityNeed,
   JOB_FILL_ORDER,
   JOB_DEFINITIONS,
   JOB_LABELS,
@@ -1596,7 +1598,7 @@ export class CelestialObjectPanel {
   } {
     const economy = planetState.economy;
     const housingNeed = planetState.population;
-    const amenityNeed = planetState.population / PEOPLE_PER_MONTHLY_UNIT;
+    const amenityNeed = getAmenityNeed(planetState.population);
 
     return {
       housingBalance: economy.housing - housingNeed,
@@ -2099,15 +2101,15 @@ export class CelestialObjectPanel {
     const usageTooltip = this.renderPopulationUsageTooltip(
       "Amenities Usage",
       planetState,
-      (group) => group.population / PEOPLE_PER_MONTHLY_UNIT,
+      (group) => (group.population / PEOPLE_PER_MONTHLY_UNIT) * AMENITY_NEED_PER_UNIT,
       (value) => this.formatCompact(value),
     );
     return `
       <div class="coTooltipTitle">Amenities</div>
-      <p>Amenities production is compared against one amenity required per 1M population.</p>
+      <p>Amenities production is compared against ${AMENITY_NEED_PER_UNIT} amenity required per 1M population.</p>
       <div class="coTooltipGrid">
         ${this.renderTooltipGridItem("Production", this.formatCompact(planetState.economy.amenities), productionTooltip)}
-        ${this.renderTooltipGridItem("Usage", this.formatCompact(planetState.population / PEOPLE_PER_MONTHLY_UNIT), usageTooltip)}
+        ${this.renderTooltipGridItem("Usage", this.formatCompact(getAmenityNeed(planetState.population)), usageTooltip)}
         ${this.renderTooltipGridItem("Balance", this.formatSignedCompact(support.amenityBalance))}
         ${this.renderTooltipGridItem("Ratio", `${(support.amenityRatio * 100).toFixed(0)}%`)}
       </div>
@@ -3423,6 +3425,7 @@ export class CelestialObjectPanel {
     style.textContent = `
 .celestialObjectPanel {
   --object-accent: rgba(102, 236, 199, 0.95);
+  --panel-accent: var(--object-accent);
   --co-panel-scale: 0.8;
   position: fixed;
   display: flex;
@@ -3434,11 +3437,11 @@ export class CelestialObjectPanel {
   transform-origin: top left;
   pointer-events: auto;
   color: var(--hud-ink, #d6dde7);
-  border: 1px solid rgba(73, 156, 129, 0.82);
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 76%, transparent);
   background:
-    linear-gradient(180deg, rgba(12, 34, 28, 0.92), rgba(5, 10, 14, 0.96)),
-    radial-gradient(circle at 20% 0%, rgba(96, 234, 190, 0.14), transparent 32rem);
-  box-shadow: 0 24px 90px rgba(0, 0, 0, 0.58), inset 0 0 0 1px rgba(149, 255, 220, 0.08);
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--panel-accent) 12%, transparent), transparent 20rem),
+    linear-gradient(180deg, rgba(7, 20, 24, 0.985), rgba(2, 9, 12, 0.99));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
   z-index: 88;
 }
@@ -3451,10 +3454,10 @@ export class CelestialObjectPanel {
   gap: 12px;
   padding: 0 12px;
   cursor: move;
-  background:
-    linear-gradient(90deg, rgba(26, 63, 51, 0.92), rgba(17, 35, 33, 0.72)),
-    linear-gradient(135deg, rgba(255, 255, 255, 0.07), transparent 48%);
-  border-bottom: 1px solid rgba(110, 212, 181, 0.38);
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--panel-accent) 22%, rgba(6, 20, 23, 0.92)),
+    rgba(3, 11, 14, 0.94));
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 28%, transparent);
   user-select: none;
 }
 

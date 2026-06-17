@@ -10,6 +10,10 @@ import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
 import type { FlagDesign } from "../flags/flagTypes";
 import { FloatingTooltipManager } from "./FloatingTooltipManager";
+import type { ActiveEvent } from "../data/Events";
+import type { ActiveSituation } from "../data/Situations";
+import { deriveIndicators } from "../data/Notifications";
+import type { NotificationIndicator } from "../data/Notifications";
 
 export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
 export type HudSidebarItemKey =
@@ -39,6 +43,8 @@ export interface HudState {
   economy?: FactionEconomyState | null;
   resourcePlanets?: HudResourcePlanetSummary[];
   flagDesign?: FlagDesign | null;
+  situations?: ActiveSituation[];
+  events?: ActiveEvent[];
 }
 
 export interface HudResourcePlanetSummary {
@@ -57,6 +63,8 @@ export interface HudCallbacks {
   onNavigateConnectedSystem: (systemId: number) => void;
   onToggleVisual: (key: HudToggleKey, enabled: boolean) => void;
   onSidebarItem?: (key: HudSidebarItemKey) => void;
+  onOpenEvent?: (eventId: string) => void;
+  onOpenSituation?: (situationId: string) => void;
 }
 
 const STYLE_ID = "space-rts-hud-style";
@@ -538,6 +546,60 @@ const HUD_STYLE = `
   color: rgba(255, 129, 111, 0.95);
 }
 
+#spaceHudNotifications {
+  position: absolute;
+  top: 64px;
+  left: 12px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: min(60vw, 720px);
+  pointer-events: auto;
+  z-index: 6;
+}
+
+.spaceHudIndicator {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(150, 200, 230, 0.5);
+  background: linear-gradient(180deg, rgba(16, 24, 32, 0.95), rgba(8, 12, 18, 0.95));
+  color: #dbe8f2;
+  font-size: 14px;
+  font-weight: 900;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
+.spaceHudIndicator.clickable { cursor: pointer; }
+.spaceHudIndicator.clickable:hover { border-color: rgba(120, 220, 255, 0.95); }
+
+.spaceHudIndicator.sev-info { border-color: rgba(120, 200, 255, 0.55); color: #bfe0ff; }
+.spaceHudIndicator.sev-warn { border-color: rgba(247, 203, 110, 0.8); color: #ffdf9a; }
+.spaceHudIndicator.sev-crisis {
+  border-color: rgba(255, 110, 110, 0.9);
+  color: #ffd0d0;
+  animation: sfIndicatorPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes sfIndicatorPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 90, 90, 0); }
+  50% { box-shadow: 0 0 10px 2px rgba(255, 90, 90, 0.55); }
+}
+
+.spaceHudIndicatorGlyph { position: relative; z-index: 1; }
+
+.spaceHudIndicatorRing {
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(
+    color-mix(in srgb, currentColor 70%, transparent) calc(var(--ind-progress, 0) * 1%),
+    rgba(255, 255, 255, 0.06) 0
+  );
+  opacity: 0.5;
+}
+
 .spaceHudTooltip {
   position: fixed;
   z-index: 9999;
@@ -874,6 +936,8 @@ export class HudOverlay {
   private readonly connectedContainer: HTMLDivElement;
   private readonly clockEl: HTMLDivElement;
   private readonly resourceEl: HTMLDivElement;
+  private readonly notificationEl: HTMLDivElement;
+  private notificationSignature = "";
   private readonly sidebarEl: HTMLDivElement;
   private readonly titleEl: HTMLDivElement;
   private readonly exitButton: HTMLButtonElement;
@@ -910,6 +974,18 @@ export class HudOverlay {
 
     this.resourceEl = document.createElement("div");
     this.resourceEl.id = "spaceHudResources";
+
+    this.notificationEl = document.createElement("div");
+    this.notificationEl.id = "spaceHudNotifications";
+    this.notificationEl.addEventListener("click", (ev) => {
+      const target = (ev.target as HTMLElement).closest<HTMLElement>("[data-indicator-kind]");
+      if (!target) return;
+      const kind = target.dataset.indicatorKind;
+      const refId = target.dataset.indicatorRef;
+      if (!refId) return;
+      if (kind === "event") this.callbacks.onOpenEvent?.(refId);
+      else if (kind === "situation") this.callbacks.onOpenSituation?.(refId);
+    });
 
     this.sidebarEl = document.createElement("div");
     this.sidebarEl.id = "spaceHudSidebar";
@@ -974,6 +1050,7 @@ export class HudOverlay {
     this.root.appendChild(bottom);
     this.root.appendChild(this.clockEl);
     this.root.appendChild(this.resourceEl);
+    this.root.appendChild(this.notificationEl);
     this.root.appendChild(this.sidebarEl);
     this.root.appendChild(toggles);
     document.body.appendChild(this.root);
@@ -1050,6 +1127,7 @@ export class HudOverlay {
         this.resourceSignature = "";
       }
     }
+    this.renderNotifications(state);
     this.exitButton.disabled = !state.canExitSystem;
 
     const nextConnectedSignature = state.connectedSystems
@@ -1093,6 +1171,45 @@ export class HudOverlay {
     this.stopClockAnimation();
     this.tooltips.dispose();
     this.root.remove();
+  }
+
+  private renderNotifications(state: HudState): void {
+    const indicators = deriveIndicators({
+      events: state.events ?? [],
+      situations: state.situations ?? [],
+      economy: state.economy ?? null,
+    });
+    const signature = indicators
+      .map((indicator) => `${indicator.id}:${indicator.severity}:${Math.round(indicator.progress ?? -1)}`)
+      .join("|");
+    if (signature === this.notificationSignature) return;
+    this.notificationSignature = signature;
+
+    if (indicators.length === 0) {
+      this.notificationEl.innerHTML = "";
+      this.tooltips.bind(this.notificationEl);
+      return;
+    }
+    this.notificationEl.innerHTML = indicators.map((indicator) => this.renderIndicator(indicator)).join("");
+    this.tooltips.bind(this.notificationEl);
+  }
+
+  private renderIndicator(indicator: NotificationIndicator): string {
+    const clickable = indicator.kind === "event" || indicator.kind === "situation";
+    const ring = indicator.progress !== undefined
+      ? `<span class="spaceHudIndicatorRing" style="--ind-progress:${Math.max(0, Math.min(100, indicator.progress))}"></span>`
+      : "";
+    const attrs = clickable
+      ? `data-indicator-kind="${indicator.kind}" data-indicator-ref="${escapeHtml(indicator.refId ?? "")}" role="button" tabindex="0"`
+      : "";
+    return `
+      <div class="spaceHudIndicator ${indicator.kind} sev-${indicator.severity}${clickable ? " clickable" : ""}"
+        ${attrs}
+        data-hud-tooltip="${escapeHtml(indicator.tooltip)}">
+        ${ring}
+        <span class="spaceHudIndicatorGlyph">${escapeHtml(indicator.icon)}</span>
+      </div>
+    `;
   }
 
   private renderResourceTooltip(

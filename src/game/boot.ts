@@ -21,6 +21,8 @@ import type { GalaxySceneOptions, GalaxyViewState } from "@/scenes/GalaxyScene";
 import { buildHyperlaneAdjacency } from "@/data/Hyperlanes";
 import { HudOverlay } from "@/ui/HudOverlay";
 import type { HudConnectedSystem, HudResourcePlanetSummary, HudSidebarItemKey, HudVisualToggles } from "@/ui/HudOverlay";
+import { EventModal } from "@/ui/EventModal";
+import { SituationModal } from "@/ui/SituationModal";
 import { FleetManagerPanel } from "@/ui/FleetManagerPanel";
 import { PlanetOperationsPanel } from "@/ui/PlanetOperationsPanel";
 import { MarketPanel } from "@/ui/MarketPanel";
@@ -90,6 +92,40 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let cachedHyperlaneAdjacency: number[][] = buildHyperlaneAdjacency(snapshot.hyperlanes, snapshot.stars.length);
   let currentSystemStar: StarData | null = null;
   let hud: HudOverlay | null = null;
+  const seenEventIds = new Set<string>();
+  const eventModal = new EventModal({
+    onResolve: (eventId, choiceId) => {
+      server.send({ type: "resolveEvent", eventId, choiceId });
+    },
+  });
+  const situationModal = new SituationModal();
+  const syncEventAndSituationModals = (): void => {
+    const events = snapshot.events ?? [];
+    const situations = snapshot.situations ?? [];
+    // Auto-popup the newest event the player hasn't seen yet (one at a time).
+    if (!eventModal.isOpen) {
+      const fresh = events.find((event) => !seenEventIds.has(event.id));
+      if (fresh) {
+        seenEventIds.add(fresh.id);
+        eventModal.show(fresh, snapshot.clock.year);
+      }
+    }
+    for (const event of events) seenEventIds.add(event.id);
+    // Keep an open event modal in sync / close it if the event is gone.
+    const openEventId = eventModal.currentEventId;
+    if (openEventId) {
+      const current = events.find((event) => event.id === openEventId);
+      if (current) eventModal.sync(current, snapshot.clock.year);
+      else eventModal.close();
+    }
+    // Keep an open situation modal in sync / close it if the situation ended.
+    const openSituationId = situationModal.currentSituationId;
+    if (openSituationId) {
+      const current = situations.find((situation) => situation.id === openSituationId);
+      if (current) situationModal.sync(current);
+      else situationModal.close();
+    }
+  };
   let fleetManagerPanel: FleetManagerPanel | null = null;
   let planetOperationsPanel: PlanetOperationsPanel | null = null;
   let marketPanel: MarketPanel | null = null;
@@ -993,7 +1029,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       economy: getCurrentFactionEconomy(),
       resourcePlanets: getCurrentFactionResourcePlanets(),
       flagDesign: currentFaction?.flagDesign ?? null,
+      situations: snapshot.situations,
+      events: snapshot.events,
     });
+    syncEventAndSituationModals();
   }
 
   function sendPlanetCommand(command: ClientCommand): void {
@@ -1401,6 +1440,14 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       updateHud();
     },
     onSidebarItem: handleSidebarItem,
+    onOpenEvent: (eventId) => {
+      const event = snapshot.events?.find((candidate) => candidate.id === eventId);
+      if (event) eventModal.show(event, snapshot.clock.year);
+    },
+    onOpenSituation: (situationId) => {
+      const situation = snapshot.situations?.find((candidate) => candidate.id === situationId);
+      if (situation) situationModal.show(situation);
+    },
   });
 
   const pressedCodes = new Set<string>();
@@ -1455,6 +1502,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     window.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener(OPEN_LEADERS_PANEL_EVENT, handleOpenLeadersPanel);
     hud?.dispose();
+    eventModal.dispose();
+    situationModal.dispose();
     fleetManagerPanel?.dispose();
     planetOperationsPanel?.dispose();
     marketPanel?.dispose();

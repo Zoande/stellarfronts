@@ -98,6 +98,21 @@ interface GameRow {
   seed: number;
   country_capacity: number;
   created_at: number;
+  version_id?: string | null;
+  status?: string | null;
+  schema_version?: number | null;
+  protocol_version?: number | null;
+}
+
+interface GameVersionRow {
+  id: string;
+  git_ref: string;
+  worktree_path: string;
+  port: number;
+  protocol_version: number;
+  schema_version: number;
+  migrates_from_schema: string;
+  created_at: number;
 }
 
 interface GameSummaryRow extends GameRow {
@@ -148,13 +163,34 @@ interface NewsCommentRow {
   user_vote: NewsCommentVote | null;
 }
 
+export type GameLifecycleStatus = "active" | "stopped" | "archived";
+
 export interface StoredGame {
   id: string;
   name: string;
   seed: number;
   countryCapacity: number;
   createdAt: number;
+  /** Code version (orchestrator-managed git worktree) hosting this game. */
+  versionId: string;
+  status: GameLifecycleStatus;
+  /** Last-seen state schema / wire protocol the game reported. */
+  schemaVersion: number | null;
+  protocolVersion: number | null;
 }
+
+export interface StoredGameVersion {
+  id: string;
+  gitRef: string;
+  worktreePath: string;
+  port: number;
+  protocolVersion: number;
+  schemaVersion: number;
+  migratesFromSchema: number[];
+  createdAt: number;
+}
+
+export const DEFAULT_VERSION_ID = "dev";
 
 class AuthError extends Error {
   constructor(message: string, public readonly statusCode = 400) {
@@ -477,6 +513,9 @@ export class AuthStore {
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('foreign_keys = ON');
+    // Several processes share this catalog (auth + orchestrator + each version's
+    // game server). Wait out brief write contention instead of throwing SQLITE_BUSY.
+    this.db.pragma('busy_timeout = 5000');
     this.initialize();
   }
 
@@ -530,6 +569,17 @@ export class AuthStore {
         name TEXT NOT NULL UNIQUE COLLATE NOCASE,
         seed INTEGER NOT NULL,
         country_capacity INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS game_versions (
+        id TEXT PRIMARY KEY,
+        git_ref TEXT NOT NULL,
+        worktree_path TEXT NOT NULL,
+        port INTEGER NOT NULL,
+        protocol_version INTEGER NOT NULL,
+        schema_version INTEGER NOT NULL,
+        migrates_from_schema TEXT NOT NULL,
         created_at INTEGER NOT NULL
       );
 
@@ -611,6 +661,20 @@ export class AuthStore {
       this.db.exec(`ALTER TABLE game_memberships ADD COLUMN species_setup TEXT`);
     }
 
+    const gameColumns = this.db.prepare(`PRAGMA table_info(games)`).all() as Array<{ name: string }>;
+    if (!gameColumns.some((column) => column.name === 'version_id')) {
+      this.db.exec(`ALTER TABLE games ADD COLUMN version_id TEXT NOT NULL DEFAULT 'dev'`);
+    }
+    if (!gameColumns.some((column) => column.name === 'status')) {
+      this.db.exec(`ALTER TABLE games ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`);
+    }
+    if (!gameColumns.some((column) => column.name === 'schema_version')) {
+      this.db.exec(`ALTER TABLE games ADD COLUMN schema_version INTEGER`);
+    }
+    if (!gameColumns.some((column) => column.name === 'protocol_version')) {
+      this.db.exec(`ALTER TABLE games ADD COLUMN protocol_version INTEGER`);
+    }
+
     this.db.prepare(`
       UPDATE accounts
       SET account_type = 'user', faction_id = NULL, updated_at = ?
@@ -658,7 +722,7 @@ export class AuthStore {
     return account.accountType === 'observer' || this.isAdminAccount(account);
   }
 
-  createGame(nameInput: string): StoredGame {
+  createGame(nameInput: string, versionId: string = DEFAULT_VERSION_ID): StoredGame {
     const name = nameInput.trim();
     if (!name) {
       throw new AuthError('Game name is required', 400);
@@ -669,6 +733,9 @@ export class AuthStore {
     if (this.db.prepare(`SELECT id FROM games WHERE name = ? COLLATE NOCASE`).get(name)) {
       throw new AuthError('Game name is already in use', 409);
     }
+    if (versionId !== DEFAULT_VERSION_ID && !this.getGameVersion(versionId)) {
+      throw new AuthError('Unknown game version', 400);
+    }
 
     const createdAt = Date.now();
     const game: StoredGame = {
@@ -677,12 +744,79 @@ export class AuthStore {
       seed: createGameSeed(),
       countryCapacity: FACTION_COUNT,
       createdAt,
+      versionId,
+      status: 'active',
+      schemaVersion: null,
+      protocolVersion: null,
     };
     this.db.prepare(`
-      INSERT INTO games (id, name, seed, country_capacity, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(game.id, game.name, game.seed, game.countryCapacity, game.createdAt);
+      INSERT INTO games (id, name, seed, country_capacity, created_at, version_id, status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(game.id, game.name, game.seed, game.countryCapacity, game.createdAt, game.versionId, game.status);
     return game;
+  }
+
+  setGameVersion(gameId: string, versionId: string): StoredGame | null {
+    const game = this.getGameById(gameId);
+    if (!game) return null;
+    this.db.prepare(`UPDATE games SET version_id = ? WHERE id = ?`).run(versionId, gameId);
+    return this.getGameById(gameId);
+  }
+
+  setGameStatus(gameId: string, status: GameLifecycleStatus): StoredGame | null {
+    const game = this.getGameById(gameId);
+    if (!game) return null;
+    this.db.prepare(`UPDATE games SET status = ? WHERE id = ?`).run(status, gameId);
+    return this.getGameById(gameId);
+  }
+
+  recordGameStateVersions(gameId: string, schemaVersion: number, protocolVersion: number): void {
+    this.db.prepare(`UPDATE games SET schema_version = ?, protocol_version = ? WHERE id = ?`)
+      .run(schemaVersion, protocolVersion, gameId);
+  }
+
+  listGamesByVersion(versionId: string): StoredGame[] {
+    const rows = this.db.prepare(`SELECT * FROM games WHERE version_id = ? ORDER BY created_at DESC, id ASC`).all(versionId) as GameRow[];
+    return rows.map((row) => this.toGame(row));
+  }
+
+  registerGameVersion(version: StoredGameVersion): StoredGameVersion {
+    this.db.prepare(`
+      INSERT INTO game_versions (id, git_ref, worktree_path, port, protocol_version, schema_version, migrates_from_schema, created_at)
+      VALUES (@id, @gitRef, @worktreePath, @port, @protocolVersion, @schemaVersion, @migratesFromSchema, @createdAt)
+      ON CONFLICT(id) DO UPDATE SET
+        git_ref = excluded.git_ref,
+        worktree_path = excluded.worktree_path,
+        port = excluded.port,
+        protocol_version = excluded.protocol_version,
+        schema_version = excluded.schema_version,
+        migrates_from_schema = excluded.migrates_from_schema
+    `).run({
+      id: version.id,
+      gitRef: version.gitRef,
+      worktreePath: version.worktreePath,
+      port: version.port,
+      protocolVersion: version.protocolVersion,
+      schemaVersion: version.schemaVersion,
+      migratesFromSchema: JSON.stringify(version.migratesFromSchema),
+      createdAt: version.createdAt,
+    });
+    return version;
+  }
+
+  getGameVersion(versionId: string): StoredGameVersion | null {
+    const row = this.db.prepare(`SELECT * FROM game_versions WHERE id = ?`).get(versionId) as GameVersionRow | undefined;
+    return row ? this.toGameVersion(row) : null;
+  }
+
+  listGameVersions(): StoredGameVersion[] {
+    const rows = this.db.prepare(`SELECT * FROM game_versions ORDER BY created_at ASC, id ASC`).all() as GameVersionRow[];
+    return rows.map((row) => this.toGameVersion(row));
+  }
+
+  removeGameVersion(versionId: string): boolean {
+    const result = this.db.prepare(`DELETE FROM game_versions WHERE id = ?`).run(versionId);
+    return result.changes > 0;
   }
 
   deleteGame(gameId: string): StoredGame | null {
@@ -1400,6 +1534,30 @@ export class AuthStore {
       name: row.name,
       seed: row.seed,
       countryCapacity: row.country_capacity,
+      createdAt: row.created_at,
+      versionId: row.version_id ?? DEFAULT_VERSION_ID,
+      status: (row.status as GameLifecycleStatus | undefined) ?? "active",
+      schemaVersion: row.schema_version ?? null,
+      protocolVersion: row.protocol_version ?? null,
+    };
+  }
+
+  private toGameVersion(row: GameVersionRow): StoredGameVersion {
+    let migratesFromSchema: number[] = [];
+    try {
+      const parsed = JSON.parse(row.migrates_from_schema);
+      if (Array.isArray(parsed)) migratesFromSchema = parsed.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+    } catch {
+      migratesFromSchema = [];
+    }
+    return {
+      id: row.id,
+      gitRef: row.git_ref,
+      worktreePath: row.worktree_path,
+      port: row.port,
+      protocolVersion: row.protocol_version,
+      schemaVersion: row.schema_version,
+      migratesFromSchema,
       createdAt: row.created_at,
     };
   }

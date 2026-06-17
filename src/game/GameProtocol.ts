@@ -1,4 +1,6 @@
 import type { FactionInfo, GalaxyPerspective } from "../data/Factions";
+import type { ActiveEvent } from "../data/Events";
+import type { ActiveSituation } from "../data/Situations";
 import type {
   BuildingKind,
   BuildingSlotArea,
@@ -109,7 +111,9 @@ export type ServerUpdateField =
   | "species"
   | "diplomacy"
   | "market"
-  | "combatContacts";
+  | "combatContacts"
+  | "situations"
+  | "events";
 
 export interface ServerStar extends StarData {}
 
@@ -414,7 +418,7 @@ export interface FleetMovementPlan {
   segments: FleetMovementSegment[];
 }
 
-export type FleetRetreatMode = "system" | "emergencyFtl";
+export type FleetRetreatMode = "system" | "emergencyFtl" | "lostInTransit";
 export type FleetRetreatStatus = "ordered" | "escaping" | "mia" | "completed";
 
 export interface FleetRetreatState {
@@ -661,6 +665,12 @@ export interface RecruitLeaderCommand {
   leaderId: string;
 }
 
+export interface ResolveEventCommand {
+  type: "resolveEvent";
+  eventId: string;
+  choiceId: string;
+}
+
 export interface AssignLeaderCommand {
   type: "assignLeader";
   leaderId: string;
@@ -847,6 +857,7 @@ export type ClientCommand =
   | DecommissionShipDesignCommand
   | SetActiveTechnologyCommand
   | RecruitLeaderCommand
+  | ResolveEventCommand
   | AssignLeaderCommand
   | DismissLeaderCommand
   | SetGovernmentLawCommand
@@ -898,6 +909,8 @@ export interface GameSnapshot {
   species: SpeciesState[];
   recentCombatContacts: ServerCombatContact[];
   diplomacy: DiplomacyMovementPayload;
+  situations: ActiveSituation[];
+  events: ActiveEvent[];
 }
 
 export interface GameUpdate {
@@ -925,6 +938,8 @@ export interface GameUpdate {
   species?: SpeciesState[];
   recentCombatContacts?: ServerCombatContact[];
   diplomacy?: DiplomacyMovementPayload;
+  situations?: ActiveSituation[];
+  events?: ActiveEvent[];
 }
 
 export interface CommandResultEvent {

@@ -14,6 +14,7 @@ import {
   PanelInteractionGate,
   restoreScrollStateSoon,
 } from "./panelDomState";
+import { ensurePanelThemeStyles } from "./panelTheme";
 
 export interface MarketPanelData extends MarketDetailPayload {
   playerFactionId: number | null;
@@ -73,6 +74,7 @@ export class MarketPanel {
       this.root.id = "spaceHudRoot";
       document.body.appendChild(this.root);
     }
+    ensurePanelThemeStyles();
     this.injectStyles();
   }
 
@@ -321,25 +323,35 @@ export class MarketPanel {
     const prices = points.map((point) => point.price);
     const min = Math.min(...prices);
     const max = Math.max(...prices);
-    const span = Math.max(0.000001, max - min);
     const width = 500;
     const height = 172;
-    const path = points.map((point, index) => {
-      const x = points.length === 1 ? width : index / (points.length - 1) * width;
-      const y = height - ((point.price - min) / span * (height - 18)) - 9;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(" ");
-    const fillPath = `0,${height} ${path} ${width},${height}`;
+    const padTop = 14;
+    const padBottom = 14;
+    // Pad the value axis so a (near-)flat series renders centered instead of
+    // collapsing to the bottom edge.
+    let lo = min;
+    let hi = max;
+    const minSpan = Math.max(0.01, Math.abs(max) * 0.04);
+    if (hi - lo < minSpan) {
+      const mid = (hi + lo) / 2;
+      lo = mid - minSpan / 2;
+      hi = mid + minSpan / 2;
+    }
+    const span = Math.max(0.000001, hi - lo);
+    // Position points along the time axis so range filters reflect real spacing.
+    const tMin = points[0]?.timestamp ?? 0;
+    const tMax = points[points.length - 1]?.timestamp ?? tMin;
+    const tSpan = Math.max(0.000001, tMax - tMin);
+    const plotX = (point: { timestamp: number }, index: number): number =>
+      points.length <= 1 ? width : ((point.timestamp - tMin) / tSpan) * width;
+    const plotY = (price: number): number =>
+      height - padBottom - ((price - lo) / span) * (height - padTop - padBottom);
+    const path = points.map((point, index) => `${plotX(point, index).toFixed(1)},${plotY(point.price).toFixed(1)}`).join(" ");
+    const fillPath = points.length > 0 ? `0,${height} ${path} ${width},${height}` : "";
     const last = points[points.length - 1]?.price ?? resource.finalQuotePrice;
     return `
       <div class="marketGraph">
-        <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${this.escapeAttribute(RESOURCE_LABELS[resource.resourceId])} price history">
-          <defs>
-            <linearGradient id="marketGraphFill-${this.escapeAttribute(resource.resourceId)}" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0" stop-color="#28f1ee" stop-opacity="0.34"></stop>
-              <stop offset="1" stop-color="#28f1ee" stop-opacity="0.02"></stop>
-            </linearGradient>
-          </defs>
+        <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${this.escapeAttribute(RESOURCE_LABELS[resource.resourceId])} price history">
           <g class="marketGraphGrid">
             <line x1="0" y1="43" x2="${width}" y2="43"></line>
             <line x1="0" y1="86" x2="${width}" y2="86"></line>
@@ -348,8 +360,8 @@ export class MarketPanel {
             <line x1="250" y1="0" x2="250" y2="${height}"></line>
             <line x1="400" y1="0" x2="400" y2="${height}"></line>
           </g>
-          <polygon points="${this.escapeAttribute(fillPath)}" fill="url(#marketGraphFill-${this.escapeAttribute(resource.resourceId)})"></polygon>
-          <polyline points="${this.escapeAttribute(path)}" fill="none" stroke="#27f5ef" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>
+          <polygon class="marketGraphFill" points="${this.escapeAttribute(fillPath)}"></polygon>
+          <polyline class="marketGraphLine" points="${this.escapeAttribute(path)}" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline>
         </svg>
         <span class="marketGraphValue">${this.escapeHtml(this.formatPrice(last))}</span>
         <div class="marketGraphScale">
@@ -676,6 +688,7 @@ export class MarketPanel {
     style.textContent = `
 .marketPanel {
   --market-accent: rgba(40, 240, 232, 0.96);
+  --panel-accent: var(--market-accent);
   --market-warning: #ffcf4a;
   --market-panel-scale: 0.82;
   position: fixed;
@@ -691,11 +704,10 @@ export class MarketPanel {
   color: #eafffa;
   font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
   background:
-    radial-gradient(circle at 27% 0%, rgba(36, 228, 236, 0.15), transparent 19rem),
-    radial-gradient(circle at 72% 17%, rgba(30, 139, 170, 0.12), transparent 18rem),
-    linear-gradient(180deg, rgba(3, 25, 30, 0.98), rgba(1, 10, 14, 0.99));
-  border: 1px solid rgba(55, 238, 228, 0.68);
-  box-shadow: 0 30px 88px rgba(0, 0, 0, 0.62), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--panel-accent) 12%, transparent), transparent 20rem),
+    linear-gradient(180deg, rgba(7, 20, 24, 0.985), rgba(2, 9, 12, 0.99));
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 76%, transparent);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   user-select: none;
 }
 
@@ -728,10 +740,10 @@ export class MarketPanel {
   gap: 14px;
   padding: 12px 16px 10px;
   cursor: grab;
-  background:
-    radial-gradient(circle at 14% 0%, rgba(42, 245, 235, 0.2), transparent 15rem),
-    linear-gradient(90deg, rgba(6, 51, 56, 0.92), rgba(3, 18, 24, 0.96));
-  border-bottom: 1px solid rgba(87, 250, 223, 0.27);
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--panel-accent) 22%, rgba(6, 20, 23, 0.92)),
+    rgba(3, 11, 14, 0.94));
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 28%, transparent);
 }
 
 .marketHeaderIcon {
@@ -1391,8 +1403,17 @@ export class MarketPanel {
 }
 
 .marketGraphGrid line {
-  stroke: rgba(65, 226, 218, 0.12);
+  stroke: color-mix(in srgb, var(--panel-accent, #41e2da) 16%, transparent);
   stroke-width: 1;
+}
+
+.marketGraphLine {
+  stroke: var(--panel-accent, #27f5ef);
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--panel-accent, #27f5ef) 55%, transparent));
+}
+
+.marketGraphFill {
+  fill: color-mix(in srgb, var(--panel-accent, #27f5ef) 18%, transparent);
 }
 
 .marketGraphValue {

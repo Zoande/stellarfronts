@@ -921,6 +921,7 @@ export class DiplomacyPanel {
     style.id = STYLE_ID;
     style.textContent = `
 .diplomacyPanel {
+  --panel-accent: rgba(110, 236, 199, 0.95);
   position: fixed;
   z-index: 99;
   width: min(1040px, calc(100vw - 28px));
@@ -928,10 +929,10 @@ export class DiplomacyPanel {
   pointer-events: auto;
   color: #e7fffb;
   background:
-    radial-gradient(circle at 84% 9%, rgba(72, 255, 209, 0.12), transparent 18rem),
-    linear-gradient(180deg, rgba(5, 29, 28, 0.99), rgba(2, 10, 13, 0.99));
-  border: 1px solid rgba(73, 214, 164, 0.44);
-  box-shadow: 0 24px 58px rgba(0, 0, 0, 0.62), inset 0 0 34px rgba(50, 187, 143, 0.08);
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--panel-accent) 12%, transparent), transparent 20rem),
+    linear-gradient(180deg, rgba(7, 20, 24, 0.985), rgba(2, 9, 12, 0.99));
+  border: 1px solid color-mix(in srgb, var(--panel-accent) 76%, transparent);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.58), inset 0 0 0 1px rgba(255, 255, 255, 0.04);
   border-radius: 0;
   overflow: hidden;
   font-family: "Orbitron", "Rajdhani", "Trebuchet MS", sans-serif;
@@ -943,8 +944,10 @@ export class DiplomacyPanel {
   gap: 12px;
   padding: 0 14px;
   cursor: grab;
-  background: linear-gradient(90deg, rgba(9, 58, 47, 0.92), rgba(3, 18, 22, 0.94));
-  border-bottom: 1px solid rgba(65, 202, 153, 0.28);
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--panel-accent) 22%, rgba(6, 20, 23, 0.92)),
+    rgba(3, 11, 14, 0.94));
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 28%, transparent);
 }
 .diplomacyHeaderIcon,
 .diplomacyFlag,

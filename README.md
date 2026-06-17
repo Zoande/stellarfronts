@@ -29,6 +29,8 @@ The local stack is:
 - `npm run server:dev` starts the WebSocket game server.
 - `npm run auth:dev` starts the HTTP auth server.
 - `npm run dev:all` starts client, auth, and game servers together.
+- `npm run orchestrator:dev` starts the orchestrator that hosts games across code versions.
+- `npm run control` is the command-line client for the orchestrator (versions and game lifecycle).
 - `npm run server:test` runs the server test suite.
 - `npm run server:typecheck` type-checks the server and shared TypeScript files.
 - `npm run build` runs the production TypeScript and Vite builds.
@@ -68,6 +70,13 @@ Observer and admin accounts can enter games without claiming a country. Normal a
 - Game state is stored under `server/state/games/<gameId>/game-state.json`.
 - Auth state and dev stats live in the SQLite database under `server/state/auth.sqlite`.
 - The game server saves dirty state on a timer, and deleted dev games also remove their saved state directory.
+
+## Game Versions And Lifecycle
+
+- An orchestrator (`server/orchestrator.ts`) can host games on different code versions at the same time, so a new game can run updated code while an older game stays on its original code.
+- A version is a git ref the orchestrator checks out as an isolated worktree and runs as its own game-server process; clients reach the right one through a single gateway, so the public endpoint and tunnel config stay unchanged.
+- Versions and per-game lifecycle (create on a chosen version, reset, update, stop, start, archive, and rollback) are controlled from the developer panel or the `npm run control` CLI, with compatibility checks before an update.
+- Each save is stamped with its schema and protocol version, and state is backed up before resets and updates.
 
 ## Gameplay Systems
 
