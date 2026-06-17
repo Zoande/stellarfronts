@@ -14,7 +14,7 @@ import {
   Texture,
   PointerEventTypes,
 } from "@babylonjs/core";
-import type { AbstractEngine, Mesh, Observer, PointerInfo } from "@babylonjs/core";
+import type { AbstractEngine, LinesMesh, Mesh, Observer, PointerInfo } from "@babylonjs/core";
 import type { IGameScene } from "../SceneManager";
 import { GALAXY_MAP } from "../data/GalaxyMap";
 import {
@@ -31,7 +31,7 @@ import type { LeaderState } from "../data/Leaders";
 import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
-import type { GalaxyIconClickType, ShipIconStyle } from "../systems/StarFieldRenderer";
+import type { GalaxyIconClickType, GalaxyShipIcon, ShipIconStyle } from "../systems/StarFieldRenderer";
 import { SelectionPanel } from "../ui/SelectionPanel";
 import type { FleetPolicyControl, FleetPolicyValue, SelectionData, SelectionShipData } from "../ui/SelectionPanel";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
@@ -128,6 +128,14 @@ const STAR_PICK_RADIUS_MAX = 10;
 const STAR_PICK_RADIUS_CAMERA_FACTOR = 0.012;
 const SHIP_TARGET_SCALE_BOOST = 1.36;
 const ACTION_MENU_STYLE_ID = "space-action-menu-style";
+// Stationary ship icons sit just off their star so they neither cover the star
+// nor each other; a moving ship is pushed at least this far along its lane so it
+// always clears the system it just left (and the one it is approaching).
+const SHIP_ICON_OFFSET_X = 7;
+const SHIP_ICON_OFFSET_Z = -7;
+const SHIP_ICON_TRANSIT_MIN_CLEARANCE = 13;
+const FLEET_ROUTE_LINE_Y = 1.2;
+const FLEET_ROUTE_LINE_COLOR = new Color3(1, 0.55, 0.08);
 
 const OWNERSHIP_COLOR_BANK: Array<[number, number, number]> = [
   [224, 83, 83],
@@ -955,6 +963,10 @@ export class GalaxyScene implements IGameScene {
   private selectedCommandShipStarId = -1;
   private selectedCommandShipId: string | null = null;
   private selectedFleetIds = new Set<string>();
+  private shipIconCycleKey: string | null = null;
+  private shipIconCycleIndex = 0;
+  private fleetRouteLines: LinesMesh[] = [];
+  private fleetRouteSignature = "";
   private activeShipAction: ShipAction | null = null;
   private targetableStarIds = new Set<number>();
   private readonly contextMenu = new ContextActionMenu();
@@ -1155,6 +1167,9 @@ export class GalaxyScene implements IGameScene {
     this.starField.setIconClickCallback((type, shiftKey, starId) => {
       this.handleIconClick(type, shiftKey, starId);
     });
+    this.starField.setShipIconClickCallback((fleetIds, shiftKey) => {
+      this.handleShipIconClick(fleetIds, shiftKey);
+    });
 
     this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
       if (pointerInfo.type === PointerEventTypes.POINTERMOVE) {
@@ -1217,6 +1232,8 @@ export class GalaxyScene implements IGameScene {
     this.starField.setZoomOutBlend(zoomOutBlend);
     this.starField.setStarsVisible(this.starsVisible);
     this.starField.setBloomEnabled(this.bloomEnabled);
+    this.starField.setGalaxyShipIcons(this.buildGalaxyShipIcons());
+    this.updateFleetRouteLines();
     this.starField.applyVisuals();
 
     if (this.hyperlaneMesh) {
@@ -2037,6 +2054,8 @@ export class GalaxyScene implements IGameScene {
 
   private clearFleetSelection(clearPanel = true): void {
     this.selectedFleetIds.clear();
+    this.shipIconCycleKey = null;
+    this.shipIconCycleIndex = 0;
     this.selectedShip = false;
     this.selectedCommandShipStarId = -1;
     this.selectedCommandShipId = null;
@@ -2217,71 +2236,7 @@ export class GalaxyScene implements IGameScene {
   private handleIconClick(type: GalaxyIconClickType, shiftKey: boolean, starId?: number): void {
     if (type === "ship") {
       const shipStarId = starId ?? this.playerShipStarId;
-      const serverFleet = this.getFleetForStarId(shipStarId);
-      const owner = serverFleet
-        ? this.factions.find((faction) => faction.id === serverFleet.ownerId) ?? null
-        : this.getShipOwnerForStarId(shipStarId);
-      const ownerId = owner?.id ?? null;
-      const canCommand = this.isOwnShipOwner(ownerId);
-      const fleetShips = this.getShipsForFleet(serverFleet?.id ?? null);
-      const fleetSize = serverFleet?.shipIds.length ?? (fleetShips.length || 1);
-      const defense = this.getFleetDefense(serverFleet?.id ?? null);
-      const engaged = serverFleet?.combatStatus === "engaging"
-        || serverFleet?.combatStatus === "firing"
-        || serverFleet?.combatStatus === "retreating";
-      const actions = this.getFleetActions(serverFleet);
-
-      if (canCommand) {
-        this.selectedShip = true;
-        this.selectedCommandShipStarId = shipStarId;
-        this.selectedCommandShipId = serverFleet?.id ?? null;
-        this.updateSelectedFleetIds(serverFleet?.id ?? null, shiftKey);
-      } else if (!shiftKey) {
-        this.selectedShip = false;
-        this.selectedCommandShipStarId = -1;
-        this.selectedCommandShipId = null;
-        this.clearShipAction();
-        this.updateSelectedFleetIds(null, false);
-      }
-
-      this.selectionPanel.select(
-        {
-          type: "fleet",
-          id: serverFleet?.id ?? String(shipStarId),
-          readoutId: serverFleet ? this.formatFleetReadoutId(serverFleet) : `SYS-${String(shipStarId).padStart(3, "0")}`,
-          name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
-          hp: defense.hull,
-          maxHp: defense.maxHull,
-          shield: defense.shield,
-          maxShield: defense.maxShield,
-          armor: defense.armor,
-          maxArmor: defense.maxArmor,
-          hull: defense.hull,
-          maxHull: defense.maxHull,
-          shipCount: fleetSize,
-          ships: serverFleet ? this.createSelectionShipRows(serverFleet, owner) : [],
-          class: fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
-          status: engaged
-            ? serverFleet?.combatStatus ?? "engaged"
-            : serverFleet
-              ? this.formatSelectionFleetStatus(serverFleet)
-              : this.playerShipTransit && shipStarId === this.playerShipStarId ? "Moving" : "Operational",
-          detail: canCommand
-            ? this.formatFleetNavigationDetail(serverFleet)
-            : "Foreign fleet. Command controls unavailable.",
-          movement: this.createFleetMovementSelectionData(serverFleet),
-          ownerName: owner?.name ?? "Unknown",
-          ownerColor: owner?.color,
-          canCommand,
-          actions: canCommand ? actions : undefined,
-          combatStance: serverFleet?.combatStance,
-          combatBehavior: serverFleet?.combatSettings.behavior,
-          chasePolicy: serverFleet?.combatSettings.chasePolicy,
-          retreatPolicy: serverFleet?.combatSettings.retreatPolicy,
-          leader: serverFleet ? this.getAssignedLeader("fleet", serverFleet.id) : null,
-        },
-        shiftKey,
-      );
+      this.selectFleetFromIcon(this.getFleetForStarId(shipStarId), shipStarId, shiftKey);
       return;
     }
 
@@ -2304,6 +2259,272 @@ export class GalaxyScene implements IGameScene {
       }
       this.showFirstHabitedPlanet(starId);
     }
+  }
+
+  /**
+   * Resolve a ship-icon click to a concrete fleet, cycling through every fleet
+   * sharing a system on repeated clicks of the same icon.
+   */
+  private handleShipIconClick(fleetIds: string[], shiftKey: boolean): void {
+    const available = fleetIds.filter((id) => this.serverFleets.some((fleet) => fleet.id === id));
+    if (available.length === 0) {
+      // Fallback for the synthetic player ship (observer / no server fleets).
+      this.handleIconClick("ship", shiftKey, this.playerShipStarId);
+      return;
+    }
+
+    const key = available.join(",");
+    if (key === this.shipIconCycleKey && !shiftKey) {
+      this.shipIconCycleIndex = (this.shipIconCycleIndex + 1) % available.length;
+    } else {
+      this.shipIconCycleKey = key;
+      this.shipIconCycleIndex = 0;
+    }
+
+    const fleet = this.serverFleets.find((candidate) => candidate.id === available[this.shipIconCycleIndex]) ?? null;
+    this.selectFleetFromIcon(fleet, fleet?.currentStarId ?? this.playerShipStarId, shiftKey);
+  }
+
+  private selectFleetFromIcon(serverFleet: ServerFleet | null, shipStarId: number, shiftKey: boolean): void {
+    const owner = serverFleet
+      ? this.factions.find((faction) => faction.id === serverFleet.ownerId) ?? null
+      : this.getShipOwnerForStarId(shipStarId);
+    const ownerId = owner?.id ?? null;
+    const canCommand = this.isOwnShipOwner(ownerId);
+    const fleetShips = this.getShipsForFleet(serverFleet?.id ?? null);
+    const fleetSize = serverFleet?.shipIds.length ?? (fleetShips.length || 1);
+    const defense = this.getFleetDefense(serverFleet?.id ?? null);
+    const engaged = serverFleet?.combatStatus === "engaging"
+      || serverFleet?.combatStatus === "firing"
+      || serverFleet?.combatStatus === "retreating";
+    const actions = this.getFleetActions(serverFleet);
+
+    if (canCommand) {
+      this.selectedShip = true;
+      this.selectedCommandShipStarId = shipStarId;
+      this.selectedCommandShipId = serverFleet?.id ?? null;
+      this.updateSelectedFleetIds(serverFleet?.id ?? null, shiftKey);
+    } else if (!shiftKey) {
+      this.selectedShip = false;
+      this.selectedCommandShipStarId = -1;
+      this.selectedCommandShipId = null;
+      this.clearShipAction();
+      this.updateSelectedFleetIds(null, false);
+    }
+
+    this.selectionPanel.select(
+      {
+        type: "fleet",
+        id: serverFleet?.id ?? String(shipStarId),
+        readoutId: serverFleet ? this.formatFleetReadoutId(serverFleet) : `SYS-${String(shipStarId).padStart(3, "0")}`,
+        name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+        hp: defense.hull,
+        maxHp: defense.maxHull,
+        shield: defense.shield,
+        maxShield: defense.maxShield,
+        armor: defense.armor,
+        maxArmor: defense.maxArmor,
+        hull: defense.hull,
+        maxHull: defense.maxHull,
+        shipCount: fleetSize,
+        ships: serverFleet ? this.createSelectionShipRows(serverFleet, owner) : [],
+        class: fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
+        status: engaged
+          ? serverFleet?.combatStatus ?? "engaged"
+          : serverFleet
+            ? this.formatSelectionFleetStatus(serverFleet)
+            : this.playerShipTransit && shipStarId === this.playerShipStarId ? "Moving" : "Operational",
+        detail: canCommand
+          ? this.formatFleetNavigationDetail(serverFleet)
+          : "Foreign fleet. Command controls unavailable.",
+        movement: this.createFleetMovementSelectionData(serverFleet),
+        ownerName: owner?.name ?? "Unknown",
+        ownerColor: owner?.color,
+        canCommand,
+        actions: canCommand ? actions : undefined,
+        combatStance: serverFleet?.combatStance,
+        combatBehavior: serverFleet?.combatSettings.behavior,
+        chasePolicy: serverFleet?.combatSettings.chasePolicy,
+        retreatPolicy: serverFleet?.combatSettings.retreatPolicy,
+        leader: serverFleet ? this.getAssignedLeader("fleet", serverFleet.id) : null,
+      },
+      shiftKey,
+    );
+  }
+
+  /**
+   * Build the galaxy ship icons for this frame from the authoritative server
+   * fleets. Fleets sharing a system collapse into one (cyclable) icon; fleets in
+   * a hyperlane get their own icon nudged clear of both endpoints.
+   */
+  private buildGalaxyShipIcons(): GalaxyShipIcon[] {
+    const icons: GalaxyShipIcon[] = [];
+    const year = this.getClockYearEstimate();
+    const stationaryByStar = new Map<number, ServerFleet[]>();
+
+    for (const fleet of this.serverFleets) {
+      const transit = this.getFleetGalaxyTransit(fleet, year);
+      if (transit) {
+        const from = this.stars[transit.fromStarId];
+        const to = this.stars[transit.toStarId];
+        if (!from || !to) continue;
+        if (!this.isStarKnownToPerspective(transit.fromStarId)
+          && !this.isStarKnownToPerspective(transit.toStarId)) continue;
+
+        const dx = to.x - from.x;
+        const dz = to.z - from.z;
+        const length = Math.hypot(dx, dz) || 1;
+        // Keep the icon away from both systems so it never overlaps a parked ship.
+        const clearanceFraction = Math.min(0.45, SHIP_ICON_TRANSIT_MIN_CLEARANCE / length);
+        const t = Math.min(Math.max(transit.progress, clearanceFraction), 1 - clearanceFraction);
+        icons.push({
+          fleetIds: [fleet.id],
+          x: from.x + dx * t,
+          z: from.z + dz * t,
+          color: this.getFleetIconColor(fleet),
+          moving: true,
+          selected: this.selectedFleetIds.has(fleet.id),
+        });
+        continue;
+      }
+
+      const starId = fleet.currentStarId;
+      if (starId < 0 || !this.isStarKnownToPerspective(starId)) continue;
+      const list = stationaryByStar.get(starId);
+      if (list) list.push(fleet);
+      else stationaryByStar.set(starId, [fleet]);
+    }
+
+    for (const [starId, fleets] of stationaryByStar) {
+      const star = this.stars[starId];
+      if (!star) continue;
+      fleets.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      const colorFleet = fleets.find((fleet) => fleet.ownerId === this.playerFactionId) ?? fleets[0];
+      icons.push({
+        fleetIds: fleets.map((fleet) => fleet.id),
+        x: star.x + SHIP_ICON_OFFSET_X,
+        z: star.z + SHIP_ICON_OFFSET_Z,
+        color: this.getFleetIconColor(colorFleet),
+        moving: false,
+        selected: fleets.some((fleet) => this.selectedFleetIds.has(fleet.id)),
+      });
+    }
+
+    // Fallback: synthetic player ship when the snapshot has no server fleets.
+    if (this.serverFleets.length === 0
+      && this.playerShipStarId >= 0
+      && this.isStarKnownToPerspective(this.playerShipStarId)) {
+      const star = this.stars[this.playerShipStarId];
+      if (star) {
+        const owner = this.factions[this.playerFactionId] ?? this.factions[0] ?? null;
+        icons.push({
+          fleetIds: [],
+          x: star.x + SHIP_ICON_OFFSET_X,
+          z: star.z + SHIP_ICON_OFFSET_Z,
+          color: owner?.color ?? [1, 1, 1],
+          moving: false,
+        });
+      }
+    }
+
+    return icons;
+  }
+
+  private getFleetIconColor(fleet: ServerFleet): [number, number, number] {
+    const owner = this.factions.find((faction) => faction.id === fleet.ownerId);
+    return owner?.color ?? [1, 1, 1];
+  }
+
+  /** Active hyperlane transit for a fleet at `year`, or null if it is in-system. */
+  private getFleetGalaxyTransit(
+    fleet: ServerFleet,
+    year: number,
+  ): { fromStarId: number; toStarId: number; progress: number } | null {
+    if (fleet.movementPlan) {
+      const segment = fleet.movementPlan.segments.find((candidate) => (
+        candidate.kind === "hyperlane"
+        && year >= candidate.startYear
+        && year < candidate.endYear
+      ));
+      if (segment) {
+        return {
+          fromStarId: segment.fromStarId,
+          toStarId: segment.toStarId,
+          progress: clamp((year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear), 0, 1),
+        };
+      }
+    }
+    if (fleet.hyperlanePosition) return fleet.hyperlanePosition;
+    if (fleet.phase === "jumpingHyperlane") {
+      const fromStarId = fleet.route[fleet.routeIndex];
+      const toStarId = fleet.route[fleet.routeIndex + 1];
+      if (fromStarId !== undefined && toStarId !== undefined) {
+        const elapsedDays = (year - fleet.phaseStartedAtYear) * GAME_DAYS_PER_YEAR;
+        const progress = fleet.phaseDurationDays > 0 ? clamp(elapsedDays / fleet.phaseDurationDays, 0, 1) : 0;
+        return { fromStarId, toStarId, progress };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Redraw the orange route lines for selected player fleets. The route follows
+   * the fleet's remaining hyperlane hops from system to system. Rebuilt only when
+   * the waypoint set changes to avoid per-frame mesh churn.
+   */
+  private updateFleetRouteLines(): void {
+    const routes: Vector3[][] = [];
+    // Only the primary (command) fleet draws a route line, to avoid clutter when
+    // several fleets are selected at once.
+    const primaryFleetId = this.selectedCommandShipId;
+    if (primaryFleetId) {
+      const fleet = this.serverFleets.find((candidate) => candidate.id === primaryFleetId);
+      if (fleet && fleet.ownerId === this.playerFactionId) {
+        const points = this.getFleetRouteStarIds(fleet)
+          .map((starId) => this.stars[starId])
+          .filter((star): star is StarData => !!star)
+          .map((star) => new Vector3(star.x, FLEET_ROUTE_LINE_Y, star.z));
+        if (points.length >= 2) routes.push(points);
+      }
+    }
+
+    const signature = routes
+      .map((points) => points.map((point) => `${point.x.toFixed(1)},${point.z.toFixed(1)}`).join("|"))
+      .join(";");
+    if (signature === this.fleetRouteSignature) return;
+    this.fleetRouteSignature = signature;
+
+    this.disposeFleetRouteLines();
+    for (let i = 0; i < routes.length; i++) {
+      const line = MeshBuilder.CreateLines(`galaxyFleetRoute_${i}`, { points: routes[i] }, this.scene);
+      line.color = FLEET_ROUTE_LINE_COLOR;
+      line.alpha = 0.92;
+      line.isPickable = false;
+      line.renderingGroupId = 1;
+      this.fleetRouteLines.push(line);
+    }
+  }
+
+  private getFleetRouteStarIds(fleet: ServerFleet): number[] {
+    const year = this.getClockYearEstimate();
+    if (fleet.movementPlan) {
+      const hops = fleet.movementPlan.segments.filter((segment) => (
+        segment.kind === "hyperlane" && segment.endYear > year
+      ));
+      if (hops.length === 0) return [];
+      const ids: number[] = [hops[0].fromStarId];
+      for (const hop of hops) ids.push(hop.toStarId);
+      return ids;
+    }
+    if (fleet.route.length > 1 && fleet.routeIndex < fleet.route.length - 1) {
+      return fleet.route.slice(fleet.routeIndex);
+    }
+    return [];
+  }
+
+  private disposeFleetRouteLines(): void {
+    for (const line of this.fleetRouteLines) line.dispose();
+    this.fleetRouteLines = [];
   }
 
   private showFirstHabitedPlanet(starId: number): void {
@@ -2798,6 +3019,8 @@ export class GalaxyScene implements IGameScene {
     this.hoveredStarId = -1;
     this.galacticCoreMeshes = [];
     this.galacticCoreSpinSpeeds = [];
+    this.disposeFleetRouteLines();
+    this.fleetRouteSignature = "";
     this.clickPlane?.dispose();
     this.starField?.dispose();
     this.cam?.dispose();
