@@ -388,17 +388,17 @@ gateway.on("connection", (client: WebSocket, request: IncomingMessage) => {
   const upstream = new WebSocket(`ws://127.0.0.1:${port}${request.url ?? "/"}`, {
     headers: { cookie: request.headers.cookie ?? "", origin: request.headers.origin ?? "" },
   });
-  const pending: RawData[] = [];
-  client.on("message", (data: RawData) => {
-    if (upstream.readyState === WebSocket.OPEN) upstream.send(data);
-    else pending.push(data);
+  const pending: { data: RawData; isBinary: boolean }[] = [];
+  client.on("message", (data: RawData, isBinary: boolean) => {
+    if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
+    else pending.push({ data, isBinary });
   });
   upstream.on("open", () => {
-    for (const data of pending) upstream.send(data);
+    for (const msg of pending) upstream.send(msg.data, { binary: msg.isBinary });
     pending.length = 0;
   });
-  upstream.on("message", (data: RawData) => {
-    if (client.readyState === WebSocket.OPEN) client.send(data);
+  upstream.on("message", (data: RawData, isBinary: boolean) => {
+    if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
   });
   client.on("close", () => upstream.close());
   upstream.on("close", () => client.close());
