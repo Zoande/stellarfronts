@@ -20,6 +20,7 @@ import type {
   ServerFleet,
   ServerShip,
   ServerStarbase,
+  ShipTransitPhase,
 } from "../../src/game/GameProtocol";
 import type { StoredGame } from "../auth-store";
 
@@ -95,4 +96,15 @@ export interface RuntimeContext {
   lastSaveAt: number;
   runtimeIdCounter: number;
   eventInstanceSeq: number;
+  // Method fields wired up inside createGameRuntime (hoisted declarations, so safe to reference at ctx init).
+  setFleetPhase: (fleet: GameFleet, phase: ShipTransitPhase) => void;
+  // Infrastructure callbacks — defined late in createGameRuntime but safe to reference here because
+  // these are hoisted function declarations.
+  recalculatePlanetEconomies: () => void;
+  refreshFactionEconomyDeltas: () => void;
+  queuePlanetDetailRefresh: (planetId: string) => void;
+  refreshDiscovery: () => void;
+  syncSystemOwnershipFromStarbases: () => boolean;
+  syncFleetMembership: () => boolean;
+  createRuntimeId: (prefix: string, parts?: Array<string | number | undefined>) => string;
 }

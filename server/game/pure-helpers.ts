@@ -2,6 +2,7 @@ import { getSystemFleetStagingPosition, SYSTEM_FLEET_Y } from "../../src/data/Sy
 import { getWeaponMaxSystemRange, getWeaponMinSystemRange } from "../combat";
 import type { WeaponMountDefinition } from "../../src/data/Starbase";
 import { MIGRATION_DISTANCE_DECAY, MIGRATION_DISTANCE_FLOOR } from "./constants";
+import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
 
 // --- Math utilities ---
 
@@ -77,4 +78,8 @@ export function getMountRangeSummary(mounts: WeaponMountDefinition[]): { min: nu
   const min = mounts.reduce((lowest, mount) => Math.min(lowest, getWeaponMinSystemRange(mount)), Number.POSITIVE_INFINITY);
   const max = mounts.reduce((highest, mount) => Math.max(highest, getWeaponMaxSystemRange(mount)), 0);
   return { min: Number.isFinite(min) ? min : 0, max };
+}
+
+export function gameDaysToYears(days: number): number {
+  return days / GAME_DAYS_PER_YEAR;
 }

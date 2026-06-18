@@ -1,5 +1,6 @@
 import { STARBASE_SHIP_DEFINITIONS } from "../../src/data/Starbase";
 import type { FleetRetreatPolicy } from "../../src/game/CombatTypes";
+import type { FleetFormation } from "../../src/game/GameProtocol";
 
 export const DISCOVERY_JUMPS = 2;
 export const DEPART_DURATION_MS = 20_000;
@@ -37,6 +38,12 @@ export const FLEET_RETREAT_THRESHOLDS: Record<FleetRetreatPolicy, number> = {
   medium: 0.5,
   high: 0.75,
 };
+export const FORMATION_EVASION_BONUS: Record<FleetFormation, number> = {
+  line: 0,
+  vanguard: -0.02,
+  echelon: 0.04,
+  defensive: 0.02,
+};
 export const MIGRATION_BASE_WEEKLY_RATE = 0.00018;
 export const MIGRATION_PRESSURE_WEEKLY_RATE = 0.0034;
 // Cross-faction migration tiers. Foreign migration is gated on first contact ("met")
@@ -53,3 +60,10 @@ export const MIGRATION_DESTINATION_CAPACITY_BUFFER = 1.02;
 export const MIGRATION_DISTANCE_DECAY = 0.78;
 export const MIGRATION_DISTANCE_FLOOR = 0.12;
 export const MIGRATION_DISTANCE_MAX_JUMPS = 16;
+export const SHORTAGE_GRACE_MONTHS = 3;
+export const SHORTAGE_PROGRESS_RISE_PER_DAY = 9;
+export const SHORTAGE_PROGRESS_FALL_PER_DAY = 6;
+export const LOST_IN_TRANSIT_CHANCE_PER_DAY = 0.0018;
+export const LOST_IN_TRANSIT_MIN_DAYS = 25;
+export const LOST_IN_TRANSIT_MAX_DAYS = 210;
+export const LEADER_OFFER_CHANCE_PER_DAY = 5.3e-6;
