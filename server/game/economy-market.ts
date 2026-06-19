@@ -15,8 +15,10 @@ import {
   RESOURCE_KINDS,
   createEmptyResourceCounts,
   addResourceCounts,
+  recalculatePlanetStateEconomy,
 } from "../../src/data/Economy";
 import type { ResourceCounts, ResourceKind } from "../../src/data/Economy";
+import { applyPlanetStatesToStars } from "../../src/data/StarMap";
 import {
   MARKET_FEE_RATE,
   MARKET_TRANSACTION_LIMIT,
@@ -43,7 +45,13 @@ import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
 import { GAME_HOURS_PER_MONTH } from "../../src/game/GameTime";
 import type { MarketResourceQuote } from "../../src/game/GameProtocol";
 import { clamp, scaleResourceCounts } from "./pure-helpers";
-import { getFleetLeaderEffects, getGovernmentFleetEffects } from "./state-queries";
+import {
+  getFleetLeaderEffects,
+  getGovernmentFleetEffects,
+  getPlanetDistrictLimitsFromState,
+  getPlanetTechnologyModifiers,
+  getPlanetSpeciesContext,
+} from "./state-queries";
 import { resolveShipDesign } from "./ship-designs";
 import type { GameState, RuntimeContext } from "./types";
 
@@ -158,6 +166,18 @@ export function refreshFactionEconomyDeltas(nextState: GameState): void {
     economy.marketMonthlyDelta = marketMonthlyDelta;
     economy.monthlyDelta = addResourceCounts(baseMonthlyDelta, marketMonthlyDelta);
   }
+}
+
+export function recalculatePlanetEconomies(nextState: GameState): void {
+  nextState.planetStates = nextState.planetStates.map((planetState) => (
+    recalculatePlanetStateEconomy(
+      planetState,
+      getPlanetDistrictLimitsFromState(nextState, planetState),
+      getPlanetTechnologyModifiers(nextState, planetState),
+      getPlanetSpeciesContext(nextState, planetState),
+    )
+  ));
+  applyPlanetStatesToStars(nextState.stars, nextState.planetStates);
 }
 
 // ---------------------------------------------------------------------------

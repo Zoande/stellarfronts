@@ -1,4 +1,5 @@
 import type { FleetFormation } from "../../src/game/GameProtocol";
+import type { DistrictKind } from "../../src/data/Economy";
 import type {
   CombatStance,
   FleetBehavior,
@@ -6,6 +7,14 @@ import type {
   FleetRetreatPolicy,
   FleetTacticalOrderType,
 } from "../../src/game/CombatTypes";
+
+export function isDistrictKind(value: string): value is DistrictKind {
+  return value === "city" || value === "generator" || value === "mining" || value === "agriculture";
+}
+
+export function isValidSlotIndex(value: number, length: number): boolean {
+  return Number.isInteger(value) && value >= 0 && value < length;
+}
 
 export const FLEET_FORMATIONS: FleetFormation[] = ["line", "vanguard", "echelon", "defensive"];
 export const COMBAT_STANCES: CombatStance[] = ["passive", "evade", "holdPosition", "guardArea", "defendSystem", "aggressive", "hunt"];

@@ -20,6 +20,7 @@ import type {
   ServerFleet,
   ServerShip,
   ServerStarbase,
+  ServerUpdateField,
   ShipTransitPhase,
 } from "../../src/game/GameProtocol";
 import type { StoredGame } from "../auth-store";
@@ -107,4 +108,10 @@ export interface RuntimeContext {
   syncSystemOwnershipFromStarbases: () => boolean;
   syncFleetMembership: () => boolean;
   createRuntimeId: (prefix: string, parts?: Array<string | number | undefined>) => string;
+  // Orchestration callbacks used by extracted admin commands (hoisted declarations in createGameRuntime).
+  syncClockSpeedFields: () => void;
+  advanceState: (now: number) => Set<ServerUpdateField>;
+  broadcastSnapshots: () => void;
+  broadcastUpdates: (changed: ServerUpdateField[]) => void;
+  createInitialState: () => GameState;
 }

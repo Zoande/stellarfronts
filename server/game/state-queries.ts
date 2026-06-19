@@ -521,3 +521,11 @@ export function canAccessPlanet(ctx: RuntimeContext, perspective: GalaxyPerspect
 export function canAccessStarbase(ctx: RuntimeContext, perspective: GalaxyPerspective, starbase: ServerStarbase): boolean {
   return canAccessStar(ctx, perspective, starbase.starId);
 }
+
+export function validateCommandPerspective(perspective: GalaxyPerspective): number | null {
+  return perspective.mode === "faction" ? perspective.factionId : null;
+}
+
+export function getStarbaseInSystem(ctx: RuntimeContext, starId: number): ServerStarbase | null {
+  return ctx.state.starbases.find((starbase) => starbase.starId === starId) ?? null;
+}
