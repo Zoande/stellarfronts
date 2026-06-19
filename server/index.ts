@@ -438,6 +438,12 @@ import {
   getPlanetTechnologyModifiers,
   getFactionStarbaseShipBuildSpeedMultiplier,
   getSpeciesLawSelections,
+  getEmpireSpeciesIds,
+  getPlanetState,
+  getPlanetConfig,
+  canAccessStar,
+  canAccessPlanet,
+  canAccessStarbase,
 } from "./game/state-queries";
 import type { GovernmentEffectInstance } from "./game/state-queries";
 import {
@@ -463,6 +469,43 @@ import {
   applyMarketTradePressure,
 } from "./game/economy-market";
 import type { FactionResourceFlow, PlayerMarketQuote } from "./game/economy-market";
+import {
+  refreshDiscovery as applyRefreshDiscovery,
+  getVisibleSet,
+  getKnownSet,
+  isFleetVisible,
+} from "./game/visibility";
+import {
+  createVisibleStars,
+  toOwnershipEntries,
+  createRevision,
+  createVisibleState,
+  createSnapshot,
+  createUpdate,
+} from "./game/snapshot";
+import { createDetailPayload } from "./game/detail-payloads";
+import {
+  calculateShipUpgradePlan,
+  applyShipDesignToShip,
+  createShipFromDesign,
+  createShip,
+  createFleet,
+  syncStarbaseCombatHealth,
+  normalizeFleetRetreatState,
+  normalizeSystemPositionValue,
+  normalizeFleetRetreatDestination,
+  createDefaultFleetCombatSettings,
+  normalizeFleetTacticalOrder,
+} from "./game/fleet-factory";
+import {
+  processEconomyHours,
+  processMarketTicks,
+  processShipShortageEffects,
+  processPlanetConstruction,
+  processStarbaseConstruction,
+  processStarbaseRepairs,
+  processStarbaseShipQueues,
+} from "./game/economy-tick";
 import { initServer } from "./game/server-bootstrap";
 import {
   clamp,
@@ -702,19 +745,6 @@ function normalizeSpeciesRightsForFactions(nextState: GameState, rawRights: unkn
   });
 }
 
-function getEmpireSpeciesIds(nextState: GameState, factionId: number): SpeciesId[] {
-  const ids = new Set<SpeciesId>();
-  for (const planetState of nextState.planetStates) {
-    if (!planetState.isHabited || (nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
-    for (const population of planetState.speciesPopulations ?? []) {
-      if (population.population > 0) ids.add(population.speciesId);
-    }
-  }
-  const foundingSpeciesId = nextState.factions.find((faction) => faction.id === factionId)?.foundingSpeciesId;
-  if (foundingSpeciesId && ids.size === 0) ids.add(foundingSpeciesId);
-  return Array.from(ids).sort((a, b) => a.localeCompare(b));
-}
-
 function assignFoundingSpeciesToOwnedPops(nextState: GameState): boolean {
   let changed = false;
   const factionById = new Map(nextState.factions.map((faction) => [faction.id, faction]));
@@ -760,20 +790,6 @@ function recalculatePlanetEconomies(nextState = ctx.state): void {
     )
   ));
   applyPlanetStatesToStars(nextState.stars, nextState.planetStates);
-}
-
-function getPlanetDetailSignature(planetState: PlanetState): string {
-  return JSON.stringify(planetState);
-}
-
-function queueChangedPlanetDetailRefreshes(previousSignatures: Map<string, string>): boolean {
-  let changed = false;
-  for (const planetState of ctx.state.planetStates) {
-    if (previousSignatures.get(planetState.id) === getPlanetDetailSignature(planetState)) continue;
-    queuePlanetDetailRefresh(planetState.id);
-    changed = true;
-  }
-  return changed;
 }
 
 function refreshFactionEconomyDeltas(nextState = ctx.state): void {
@@ -944,230 +960,6 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
   };
 }
 
-function calculateShipUpgradePlan(fromDesign: ShipDesign, targetDesign: ShipDesign): {
-  cost: ResourceCounts;
-  totalDays: number;
-  alloyUpkeepPerDay: number;
-} {
-  const fromStats = calculateShipDesignStats(fromDesign);
-  const targetStats = calculateShipDesignStats(targetDesign);
-  const cost = createEmptyResourceCounts();
-  let positiveCost = 0;
-  let targetCost = 0;
-  for (const resource of RESOURCE_KINDS) {
-    const delta = Math.max(0, targetStats.cost[resource] - fromStats.cost[resource]);
-    cost[resource] = delta;
-    positiveCost += delta;
-    targetCost += Math.max(0, targetStats.cost[resource]);
-  }
-  const refitAlloyCost = Math.max(5, targetStats.cost.alloys * 0.15);
-  cost.alloys = Math.max(cost.alloys, refitAlloyCost);
-  const costRatio = targetCost > 0 ? Math.max(0.2, Math.min(1, positiveCost / targetCost)) : 0.35;
-  const totalDays = Math.max(1, Math.ceil(targetStats.buildDays * Math.max(0.25, costRatio)));
-  return {
-    cost,
-    totalDays,
-    alloyUpkeepPerDay: cost.alloys / totalDays,
-  };
-}
-
-function applyShipDesignToShip(ship: GameShip, design: ShipDesign): void {
-  const stats = calculateShipDesignStats(design);
-  const combat = stats.combat;
-  const shieldRatio = ship.maxShield > 0 ? ship.shield / ship.maxShield : 1;
-  const armorRatio = ship.maxArmor > 0 ? ship.armor / ship.maxArmor : 1;
-  const hullRatio = ship.maxHull > 0 ? ship.hull / ship.maxHull : 1;
-  ship.shipKind = design.shipKind;
-  ship.designId = design.id;
-  ship.targetDesignId = null;
-  ship.speed = stats.speed;
-  ship.maxShield = combat.maxShield;
-  ship.maxArmor = combat.maxArmor;
-  ship.maxHull = combat.maxHull;
-  ship.maxHp = combat.maxHull;
-  ship.shield = clamp(combat.maxShield * shieldRatio, 0, combat.maxShield);
-  ship.armor = clamp(combat.maxArmor * armorRatio, 0, combat.maxArmor);
-  ship.hull = clamp(combat.maxHull * hullRatio, 1, combat.maxHull);
-  ship.hp = ship.hull;
-  ship.weaponCooldowns = {};
-}
-
-function createShipFromDesign(
-  ownerId: number,
-  fleetId: string,
-  design: ShipDesign,
-  id = createRuntimeId("ship", [ownerId, design.shipKind]),
-): GameShip {
-  const stats = calculateShipDesignStats(design);
-  const combat = stats.combat;
-  return {
-    id,
-    ownerId,
-    fleetId,
-    shipKind: design.shipKind,
-    designId: design.id,
-    targetDesignId: null,
-    speed: stats.speed,
-    hp: combat.maxHull,
-    maxHp: combat.maxHull,
-    shield: combat.maxShield,
-    maxShield: combat.maxShield,
-    armor: combat.maxArmor,
-    maxArmor: combat.maxArmor,
-    hull: combat.maxHull,
-    maxHull: combat.maxHull,
-    weaponCooldowns: {},
-  };
-}
-
-function createShip(
-  ownerId: number,
-  fleetId: string,
-  shipKind: StarbaseShipKind = "corvette",
-  id = createRuntimeId("ship", [ownerId, shipKind]),
-  designId?: string | null,
-): GameShip {
-  const design = resolveShipDesign(ctx.state.shipDesigns, ownerId, shipKind, designId, ctx.state.clock.year);
-  return createShipFromDesign(ownerId, fleetId, design, id);
-}
-
-function createFleet(
-  ownerId: number,
-  currentStarId: number,
-  shipIds: string[],
-  id = createRuntimeId("fleet", [ownerId, currentStarId]),
-): GameFleet {
-  return {
-    id,
-    ownerId,
-    shipIds,
-    formation: "line",
-    currentStarId,
-    targetStarId: null,
-    phase: "idle",
-    phaseStartedAtYear: GAME_START_YEAR,
-    phaseDurationDays: 0,
-    route: [currentStarId],
-    routeIndex: 0,
-    phaseProgress: 0,
-    phaseElapsedMs: 0,
-    orderType: null,
-    speed: DEFAULT_SHIP_SPEED,
-    combatStance: "aggressive",
-    retreatState: null,
-    systemPosition: systemCenterPosition(),
-    hyperlanePosition: null,
-    movementPlan: null,
-    orbitTargetPlanetId: null,
-    orbitOffset: null,
-    orbitTarget: null,
-    mergeTargetFleetId: null,
-    combatSettings: createDefaultFleetCombatSettings(),
-    currentTacticalOrder: null,
-    tacticalRadius: getFleetTacticalRadius(shipIds.length),
-    maxWeaponRange: 0,
-    minWeaponRange: 0,
-    currentTargetId: null,
-    currentTargetKind: null,
-    combatStatus: "idle",
-    lastCombatAtYear: null,
-  };
-}
-
-function syncStarbaseCombatHealth(starbase: ServerStarbase): ServerStarbase {
-  const combat = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.combat ?? STARBASE_LEVEL_DEFINITIONS.outpost.combat;
-  const maxShield = Math.max(0, combat.maxShield);
-  const maxArmor = Math.max(0, combat.maxArmor);
-  const maxHull = Math.max(1, combat.maxHull);
-  const shieldRatio = starbase.maxShield > 0 ? starbase.shield / starbase.maxShield : 1;
-  const armorRatio = starbase.maxArmor > 0 ? starbase.armor / starbase.maxArmor : 1;
-  const hullRatio = starbase.maxHull > 0 ? starbase.hull / starbase.maxHull : 1;
-  return {
-    ...starbase,
-    maxShield,
-    maxArmor,
-    maxHull,
-    shield: clamp(maxShield * shieldRatio, 0, maxShield),
-    armor: clamp(maxArmor * armorRatio, 0, maxArmor),
-    hull: clamp(maxHull * hullRatio, 1, maxHull),
-  };
-}
-
-function normalizeFleetRetreatState(retreatState: Partial<FleetRetreatState> | null | undefined): FleetRetreatState | null {
-  if (!retreatState || !Number.isInteger(retreatState.targetStarId)) return null;
-  const targetStarId = retreatState.targetStarId as number;
-  const mode = retreatState.mode === "emergencyFtl" ? "emergencyFtl" : "system";
-  const status = retreatState.status === "escaping" || retreatState.status === "mia" || retreatState.status === "completed"
-    ? retreatState.status
-    : "ordered";
-  return {
-    mode,
-    status,
-    targetStarId,
-    targetSystemPosition: retreatState.targetSystemPosition ?? null,
-    startedAtYear: Number(retreatState.startedAtYear) || GAME_START_YEAR,
-    miaUntilYear: Number.isFinite(retreatState.miaUntilYear) ? retreatState.miaUntilYear ?? null : null,
-    riskApplied: retreatState.riskApplied === true,
-  };
-}
-
-function normalizeSystemPositionValue(
-  position: Partial<ReturnType<typeof systemCenterPosition>> | null | undefined,
-  fallback: ReturnType<typeof systemCenterPosition> | null = null,
-): ReturnType<typeof systemCenterPosition> | null {
-  if (!position) return fallback ? cloneSystemPosition(fallback) : null;
-  const x = Number(position.x);
-  const y = Number(position.y);
-  const z = Number(position.z);
-  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
-    return fallback ? cloneSystemPosition(fallback) : null;
-  }
-  return { x, y, z };
-}
-
-function normalizeFleetRetreatDestination(
-  value: Partial<FleetRetreatDestination> | null | undefined,
-): FleetRetreatDestination | null {
-  if (!value) return null;
-  if (value.kind === "selectedSystem") {
-    const targetStarId = Number(value.targetStarId);
-    if (!Number.isInteger(targetStarId) || targetStarId < 0) return null;
-    return {
-      kind: "selectedSystem",
-      targetStarId,
-      targetSystemPosition: normalizeSystemPositionValue(value.targetSystemPosition),
-    };
-  }
-  if (value.kind === "nearestFriendlyStarbase") {
-    return { kind: "nearestFriendlyStarbase" };
-  }
-  return null;
-}
-
-function createDefaultFleetCombatSettings(
-  overrides: Partial<FleetCombatSettings> | null | undefined = null,
-): FleetCombatSettings {
-  return {
-    behavior: isFleetBehavior(overrides?.behavior) ? overrides!.behavior! : "line",
-    chasePolicy: isFleetChasePolicy(overrides?.chasePolicy) ? overrides!.chasePolicy! : "system",
-    retreatPolicy: isFleetRetreatPolicy(overrides?.retreatPolicy) ? overrides!.retreatPolicy! : "medium",
-    retreatDestination: normalizeFleetRetreatDestination(overrides?.retreatDestination),
-  };
-}
-
-function normalizeFleetTacticalOrder(order: Partial<FleetTacticalOrder> | null | undefined): FleetTacticalOrder | null {
-  if (!order || !isFleetTacticalOrderType(order.type)) return null;
-  const targetKind = order.targetKind === "fleet" || order.targetKind === "starbase" ? order.targetKind : null;
-  return {
-    type: order.type,
-    targetId: typeof order.targetId === "string" ? order.targetId : null,
-    targetKind,
-    targetPosition: normalizeSystemPositionValue(order.targetPosition),
-    guardPosition: normalizeSystemPositionValue(order.guardPosition),
-    issuedAtYear: Number.isFinite(order.issuedAtYear) ? Number(order.issuedAtYear) : null,
-  };
-}
-
 function normalizeShip(
   ship: Partial<ServerShip> & { id: string; ownerId: number },
   fallbackFleetId: string,
@@ -1323,7 +1115,7 @@ function syncFleetMembership(nextState: GameState): boolean {
     let fleet = fleetsById.get(ship.fleetId);
     if (!fleet) {
       const ownerHomeStarId = nextState.factions.find((faction) => faction.id === ship.ownerId)?.homeStarId ?? 0;
-      fleet = createFleet(ship.ownerId, ownerHomeStarId, [], ship.fleetId);
+      fleet = createFleet(ctx, ship.ownerId, ownerHomeStarId, [], ship.fleetId);
       nextState.fleets.push(fleet);
       fleetsById.set(fleet.id, fleet);
       changed = true;
@@ -1512,22 +1304,22 @@ function createInitialState(): GameState {
   const fleets = factions.flatMap<GameFleet>((faction) => {
     const combatFleetId = `fleet-${faction.id}-1`;
     const corvetteDesign = resolveShipDesign(shipDesigns, faction.id, "corvette");
-    const corvette = createShipFromDesign(faction.id, combatFleetId, corvetteDesign, `ship-${faction.id}-1`);
+    const corvette = createShipFromDesign(ctx, faction.id, combatFleetId, corvetteDesign, `ship-${faction.id}-1`);
     ships.push(corvette);
-    const combatFleet = createFleet(faction.id, faction.homeStarId, [corvette.id], combatFleetId);
+    const combatFleet = createFleet(ctx, faction.id, faction.homeStarId, [corvette.id], combatFleetId);
     combatFleet.phaseStartedAtYear = GAME_START_YEAR;
     combatFleet.speed = corvette.speed;
 
     const constructionFleetId = `fleet-${faction.id}-construction-1`;
     const constructionDesign = resolveShipDesign(shipDesigns, faction.id, "constructionShip");
-    const constructionShip = createShipFromDesign(
+    const constructionShip = createShipFromDesign(ctx, 
       faction.id,
       constructionFleetId,
       constructionDesign,
       `ship-${faction.id}-construction-1`,
     );
     ships.push(constructionShip);
-    const constructionFleet = createFleet(faction.id, faction.homeStarId, [constructionShip.id], constructionFleetId);
+    const constructionFleet = createFleet(ctx, faction.id, faction.homeStarId, [constructionShip.id], constructionFleetId);
     constructionFleet.phaseStartedAtYear = GAME_START_YEAR;
     constructionFleet.speed = constructionShip.speed;
 
@@ -1725,356 +1517,8 @@ function setFleetPhase(fleet: GameFleet, phase: ShipTransitPhase): void {
   fleet.phaseDurationDays = phaseDurationDays(ctx, phase, fleet);
 }
 
-function addDiscoveryFrom(nextState: GameState, sourceStarId: number, visible: Set<number>): void {
-  if (sourceStarId < 0 || sourceStarId >= nextState.adjacency.length) return;
-  for (const starId of computeVisibleStarIds(nextState.adjacency, sourceStarId, DISCOVERY_JUMPS)) {
-    visible.add(starId);
-  }
-}
-
-function computeCurrentVisibleSet(nextState: GameState, factionId: number): Set<number> {
-  const visible = new Set<number>();
-  const faction = nextState.factions.find((candidate) => candidate.id === factionId);
-  if (faction) addDiscoveryFrom(nextState, faction.homeStarId, visible);
-
-  for (const starbase of nextState.starbases) {
-    if (starbase.ownerId === factionId && starbase.status === "online") {
-      addDiscoveryFrom(nextState, starbase.starId, visible);
-    }
-  }
-
-  for (const fleet of nextState.fleets) {
-    if (fleet.ownerId !== factionId) continue;
-    addDiscoveryFrom(nextState, fleet.currentStarId, visible);
-    if (fleet.hyperlanePosition) {
-      addDiscoveryFrom(nextState, fleet.hyperlanePosition.fromStarId, visible);
-      addDiscoveryFrom(nextState, fleet.hyperlanePosition.toStarId, visible);
-    }
-  }
-
-  return visible;
-}
-
-function markFactionsMet(nextState: GameState, a: number, b: number): void {
-  if (a === b || a < 0 || b < 0) return;
-  for (const [self, other] of [[a, b], [b, a]] as const) {
-    const key = String(self);
-    const met = new Set<number>(nextState.metByFaction[key] ?? []);
-    if (met.has(other)) continue;
-    met.add(other);
-    nextState.metByFaction[key] = Array.from(met).sort((x, y) => x - y);
-  }
-}
-
 function refreshDiscovery(nextState = ctx.state): void {
-  for (const faction of nextState.factions) {
-    const visible = computeCurrentVisibleSet(nextState, faction.id);
-    const discovered = new Set<number>(nextState.discoveredByFaction[String(faction.id)] ?? []);
-    for (const starId of visible) discovered.add(starId);
-    nextState.discoveredByFaction[String(faction.id)] = Array.from(discovered).sort((a, b) => a - b);
-
-    const lastKnown = nextState.lastKnownOwnershipByFaction[String(faction.id)] ?? [];
-    while (lastKnown.length < nextState.stars.length) lastKnown.push(-1);
-    for (const starId of visible) {
-      lastKnown[starId] = nextState.starOwnership[starId] ?? -1;
-    }
-    nextState.lastKnownOwnershipByFaction[String(faction.id)] = lastKnown.slice(0, nextState.stars.length);
-  }
-
-  // First contact: a faction has "met" every other faction whose territory it has
-  // ever discovered. Derived from the (monotonic) discovered sets, recorded symmetrically.
-  for (const faction of nextState.factions) {
-    const discovered = nextState.discoveredByFaction[String(faction.id)] ?? [];
-    for (const starId of discovered) {
-      const owner = nextState.starOwnership[starId] ?? -1;
-      if (owner >= 0 && owner !== faction.id) markFactionsMet(nextState, faction.id, owner);
-    }
-  }
-}
-
-function getVisibleSet(perspective: GalaxyPerspective): Set<number> | null {
-  if (perspective.mode === "observer") return null;
-  return computeCurrentVisibleSet(ctx.state, perspective.factionId);
-}
-
-function getKnownSet(perspective: GalaxyPerspective): Set<number> | null {
-  if (perspective.mode === "observer") return null;
-  return new Set(ctx.state.discoveredByFaction[String(perspective.factionId)] ?? []);
-}
-
-function getKnownOwnership(ownerId: number, starId: number): number {
-  const knownOwnership = ctx.state.lastKnownOwnershipByFaction[String(ownerId)] ?? [];
-  return knownOwnership[starId] ?? -1;
-}
-
-function isFleetVisible(fleet: ServerFleet, visible: Set<number> | null, perspective: GalaxyPerspective): boolean {
-  if (visible === null) return true;
-  if (perspective.mode === "faction" && fleet.ownerId === perspective.factionId) return true;
-  if (visible.has(fleet.currentStarId)) return true;
-  return !!fleet.hyperlanePosition
-    && (visible.has(fleet.hyperlanePosition.fromStarId) || visible.has(fleet.hyperlanePosition.toStarId));
-}
-
-function createRedactedStar(star: StarData): StarData {
-  return {
-    id: star.id,
-    name: "Unknown Signal",
-    type: StarType.G,
-    x: star.x,
-    z: star.z,
-    luminosity: 0.6,
-    color: [0.42, 0.62, 0.58],
-    galaxyPulseAmplitude: 0.01,
-    galaxyPulseFrequency: 0.4,
-    objectDetails: undefined as unknown as StarData["objectDetails"],
-    system: { planets: [] },
-  };
-}
-
-function createMapStar(star: StarData): StarData {
-  return {
-    ...star,
-    objectDetails: undefined as unknown as StarData["objectDetails"],
-    system: { planets: [] },
-  };
-}
-
-function createVisibleStars(perspective: GalaxyPerspective, knownSet: Set<number> | null): StarData[] {
-  if (perspective.mode === "observer" || knownSet === null) {
-    return ctx.state.stars.map((star) => createMapStar(star));
-  }
-  return ctx.state.stars.map((star) => (knownSet.has(star.id) ? createMapStar(star) : createRedactedStar(star)));
-}
-
-function createVisiblePlanetStates(knownSet: Set<number> | null, includeDetails: boolean): PlanetState[] {
-  if (!includeDetails) return [];
-  if (knownSet === null) return ctx.state.planetStates;
-  return ctx.state.planetStates.filter((planetState) => knownSet.has(planetState.starId));
-}
-
-function createHabitedPlanetSystemIds(knownSet: Set<number> | null): number[] {
-  const systemIds = new Set<number>();
-  for (const planetState of ctx.state.planetStates) {
-    if (!planetState.isHabited) continue;
-    if (knownSet !== null && !knownSet.has(planetState.starId)) continue;
-    systemIds.add(planetState.starId);
-  }
-  return Array.from(systemIds).sort((a, b) => a - b);
-}
-
-function toOwnershipEntries(ownership: number[]): Array<[number, number]> {
-  const entries: Array<[number, number]> = [];
-  ownership.forEach((ownerId, starId) => {
-    if (ownerId >= 0) entries.push([starId, ownerId]);
-  });
-  return entries;
-}
-
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record)
-    .sort((a, b) => a.localeCompare(b))
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`)
-    .join(",")}}`;
-}
-
-function createRevision(payload: unknown): string {
-  const input = stableStringify(payload);
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
-
-function summarizeStarbase(starbase: ServerStarbase): ServerStarbaseSummary {
-  const {
-    economy: _economy,
-    buildingSlots: _buildingSlots,
-    constructionQueue: _constructionQueue,
-    shipQueue: _shipQueue,
-    ...summary
-  } = starbase;
-  return summary;
-}
-
-function createSnapshot(perspective: GalaxyPerspective): GameSnapshot {
-  const visibleState = createVisibleState(perspective);
-  const knownSet = getKnownSet(perspective);
-
-  return {
-    type: "snapshot",
-    protocolVersion: 2,
-    perspective,
-    ...visibleState,
-    stars: createVisibleStars(perspective, knownSet),
-  };
-}
-
-function createUpdate(perspective: GalaxyPerspective, changed: ServerUpdateField[]): GameUpdate {
-  const visibleState = createVisibleState(perspective);
-  const knownSet = getKnownSet(perspective);
-  const update: GameUpdate = {
-    type: "update",
-    protocolVersion: 2,
-    perspective,
-    changed,
-  };
-
-  if (changed.includes("clock")) {
-    update.clock = visibleState.clock;
-  }
-  if (changed.includes("visibility")) {
-    update.stars = createVisibleStars(perspective, knownSet);
-    update.hyperlanes = visibleState.hyperlanes;
-    update.factions = visibleState.factions;
-    update.starOwnership = visibleState.starOwnership;
-    update.visibleStarIds = visibleState.visibleStarIds;
-    update.knownStarIds = visibleState.knownStarIds;
-    update.habitedPlanetSystemIds = visibleState.habitedPlanetSystemIds;
-  }
-  if (changed.includes("planetStates")) {
-    update.planetStates = visibleState.planetStates;
-  }
-  if (changed.includes("habitedPlanetSystems")) {
-    update.habitedPlanetSystemIds = visibleState.habitedPlanetSystemIds;
-  }
-  if (changed.includes("factionEconomies")) {
-    update.factionEconomies = visibleState.factionEconomies;
-  }
-  if (changed.includes("ships")) {
-    update.ships = visibleState.ships;
-  }
-  if (changed.includes("shipDesigns")) {
-    update.shipDesigns = visibleState.shipDesigns;
-  }
-  if (changed.includes("fleets")) {
-    update.fleets = visibleState.fleets;
-  }
-  if (changed.includes("starbases")) {
-    update.starbases = visibleState.starbases;
-  }
-  if (changed.includes("technologies")) {
-    update.technologies = visibleState.technologies;
-  }
-  if (changed.includes("leaders")) {
-    update.leaders = visibleState.leaders;
-  }
-  if (changed.includes("governments")) {
-    update.governments = visibleState.governments;
-  }
-  if (changed.includes("species")) {
-    update.species = visibleState.species;
-  }
-  if (changed.includes("diplomacy")) {
-    update.diplomacy = visibleState.diplomacy;
-  }
-  if (changed.includes("combatContacts") || changed.includes("visibility")) {
-    update.recentCombatContacts = visibleState.recentCombatContacts;
-  }
-  if (changed.includes("situations")) {
-    update.situations = visibleState.situations;
-  }
-  if (changed.includes("events")) {
-    update.events = visibleState.events;
-  }
-  return update;
-}
-
-function createVisibleState(perspective: GalaxyPerspective): Omit<GameSnapshot, "type" | "perspective" | "stars"> {
-  const visibleSet = getVisibleSet(perspective);
-  const knownSet = getKnownSet(perspective);
-  const visibleStarIds = visibleSet ? Array.from(visibleSet).sort((a, b) => a - b) : null;
-  const knownStarIds = knownSet ? Array.from(knownSet).sort((a, b) => a - b) : null;
-  const factions: FactionState[] = ctx.state.factions.map((faction) => {
-    const isOwnFaction = perspective.mode === "faction" && perspective.factionId === faction.id;
-    return {
-      ...faction,
-      homeStarId: visibleSet === null || isOwnFaction ? faction.homeStarId : -1,
-      discoveredStarIds: visibleSet === null || isOwnFaction
-        ? ctx.state.discoveredByFaction[String(faction.id)] ?? []
-        : [],
-    };
-  });
-  const visibleStarbases = visibleSet
-    ? ctx.state.starbases.filter((starbase) => visibleSet.has(starbase.starId))
-    : ctx.state.starbases;
-  const fleets = ctx.state.fleets.filter((fleet) => isFleetVisible(fleet, visibleSet, perspective));
-  const visibleFleetIds = new Set(fleets.map((fleet) => fleet.id));
-  const ships = ctx.state.ships.filter((ship) => visibleFleetIds.has(ship.fleetId));
-  const shipDesigns = perspective.mode === "faction"
-    ? ctx.state.shipDesigns.filter((design) => design.ownerId === perspective.factionId)
-    : ctx.state.shipDesigns;
-  const hyperlanes = visibleSet
-    ? ctx.state.hyperlanes.filter(([a, b]) => knownSet?.has(a) || knownSet?.has(b))
-    : ctx.state.hyperlanes;
-  const starOwnership = perspective.mode === "faction"
-    ? (ctx.state.lastKnownOwnershipByFaction[String(perspective.factionId)] ?? [])
-      .slice(0, ctx.state.stars.length)
-    : ctx.state.starOwnership;
-  while (starOwnership.length < ctx.state.stars.length) starOwnership.push(-1);
-  const factionEconomies = perspective.mode === "faction"
-    ? ctx.state.factionEconomies.filter((economy) => economy.factionId === perspective.factionId)
-    : [];
-  const governments = perspective.mode === "faction"
-    ? ctx.state.governments.filter((government) => government.factionId === perspective.factionId)
-    : ctx.state.governments;
-  const leaders = perspective.mode === "faction"
-    ? ctx.state.leaders.filter((leader) => leader.factionId === perspective.factionId && leader.status !== "dead")
-    : ctx.state.leaders.filter((leader) => leader.status !== "dead");
-  const species = ctx.state.species;
-  // Events and situations are private to the owning faction.
-  const situations = perspective.mode === "faction"
-    ? ctx.state.situations.filter((situation) => situation.factionId === perspective.factionId)
-    : [];
-  const events = perspective.mode === "faction"
-    ? ctx.state.events.filter((event) => event.factionId === perspective.factionId)
-    : [];
-  const recentCombatContacts = visibleSet
-    ? ctx.state.recentCombatContacts.filter((contact) => {
-      const sourceStarId = contact.sourceKind === "fleet"
-        ? ctx.state.fleets.find((fleet) => fleet.id === contact.sourceId)?.currentStarId
-        : ctx.state.starbases.find((starbase) => starbase.id === contact.sourceId)?.starId;
-      const targetStarId = contact.targetKind === "fleet"
-        ? ctx.state.fleets.find((fleet) => fleet.id === contact.targetId)?.currentStarId
-        : ctx.state.starbases.find((starbase) => starbase.id === contact.targetId)?.starId;
-      return (sourceStarId !== undefined && visibleSet.has(sourceStarId)) || (targetStarId !== undefined && visibleSet.has(targetStarId));
-    })
-    : ctx.state.recentCombatContacts;
-
-  return {
-    clock: {
-      year: ctx.state.clock.year,
-      speedMultiplier: ctx.state.clock.speedMultiplier,
-      tickSizeDays: ctx.state.clock.tickSizeDays,
-      tickSpeedSeconds: ctx.state.clock.tickSpeedSeconds,
-      paused: ctx.state.clock.paused,
-      syncedAtMs: ctx.state.clock.syncedAtMs,
-    },
-    hyperlanes,
-    factions,
-    starOwnership: toOwnershipEntries(starOwnership),
-    visibleStarIds,
-    knownStarIds,
-    ships,
-    shipDesigns,
-    fleets,
-    starbases: visibleStarbases.map(summarizeStarbase),
-    technologies: getVisibleTechnologyViews(ctx, perspective),
-    leaders,
-    governments,
-    species,
-    recentCombatContacts,
-    diplomacy: createDiplomacyMovementPayload(perspective),
-    planetStates: createVisiblePlanetStates(knownSet, perspective.mode === "observer"),
-    factionEconomies,
-    habitedPlanetSystemIds: createHabitedPlanetSystemIds(knownSet),
-    situations,
-    events,
-  };
+  applyRefreshDiscovery(nextState);
 }
 
 function sendEvent(socket: WebSocket, event: ServerEvent): void {
@@ -2084,7 +1528,7 @@ function sendEvent(socket: WebSocket, event: ServerEvent): void {
 
 function broadcastSnapshots(): void {
   for (const client of ctx.clients) {
-    sendEvent(client.socket, createSnapshot(client.perspective));
+    sendEvent(client.socket, createSnapshot(ctx, client.perspective));
   }
 }
 
@@ -2092,7 +1536,7 @@ function broadcastUpdates(changed: ServerUpdateField[]): void {
   const deduped = Array.from(new Set(changed));
   if (deduped.length === 0) return;
   for (const client of ctx.clients) {
-    sendEvent(client.socket, createUpdate(client.perspective, deduped));
+    sendEvent(client.socket, createUpdate(ctx, client.perspective, deduped));
   }
   broadcastSubscribedDetails();
 }
@@ -2270,9 +1714,9 @@ function handleColonizePlanet(socket: WebSocket, perspective: GalaxyPerspective,
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
 
-  const planetState = getPlanetState(planetId);
+  const planetState = getPlanetState(ctx, planetId);
   if (!planetState) return reject(socket, "Planet not found.");
-  const planet = getPlanetConfig(planetState);
+  const planet = getPlanetConfig(ctx, planetState);
   if (!planet) return reject(socket, "Planet details are unavailable.");
   if ((ctx.state.starOwnership[planetState.starId] ?? -1) !== factionId) {
     return reject(socket, "Planet must be in an owned system.");
@@ -2663,32 +2107,13 @@ function handleIssueFleetTacticalOrder(
   broadcastUpdates(["fleets"]);
 }
 
-function getPlanetState(planetId: string): PlanetState | null {
-  return ctx.state.planetStates.find((planetState) => planetState.id === planetId) ?? null;
-}
-
-function getPlanetConfig(planetState: PlanetState): PlanetConfig | null {
-  return ctx.state.stars[planetState.starId]?.system.planets[planetState.planetIndex] ?? null;
-}
-
-function canAccessStar(perspective: GalaxyPerspective, starId: number): boolean {
-  if (starId < 0 || starId >= ctx.state.stars.length) return false;
-  if (perspective.mode === "observer") return true;
-  const known = ctx.state.discoveredByFaction[String(perspective.factionId)] ?? [];
-  return known.includes(starId);
-}
-
-function canAccessPlanet(perspective: GalaxyPerspective, planetState: PlanetState): boolean {
-  return canAccessStar(perspective, planetState.starId);
-}
-
 function sendPlanetDetails(socket: WebSocket, perspective: GalaxyPerspective, planetId: string): void {
-  const planetState = getPlanetState(planetId);
-  if (!planetState || !canAccessPlanet(perspective, planetState)) {
+  const planetState = getPlanetState(ctx, planetId);
+  if (!planetState || !canAccessPlanet(ctx, perspective, planetState)) {
     reject(socket, "Planet is not available.");
     return;
   }
-  const planet = getPlanetConfig(planetState);
+  const planet = getPlanetConfig(ctx, planetState);
   if (!planet) {
     reject(socket, "Planet details are unavailable.");
     return;
@@ -2702,472 +2127,6 @@ function sendPlanetDetails(socket: WebSocket, perspective: GalaxyPerspective, pl
   });
 }
 
-function canAccessStarbase(perspective: GalaxyPerspective, starbase: ServerStarbase): boolean {
-  return canAccessStar(perspective, starbase.starId);
-}
-
-function getVisibleFullStarbases(perspective: GalaxyPerspective): ServerStarbase[] {
-  const visibleSet = getVisibleSet(perspective);
-  return visibleSet
-    ? ctx.state.starbases.filter((starbase) => visibleSet.has(starbase.starId))
-    : ctx.state.starbases;
-}
-
-function getVisibleFullFleets(perspective: GalaxyPerspective): ServerFleet[] {
-  const visibleSet = getVisibleSet(perspective);
-  return ctx.state.fleets.filter((fleet) => isFleetVisible(fleet, visibleSet, perspective));
-}
-
-function getVisibleFullShips(perspective: GalaxyPerspective, fleets = getVisibleFullFleets(perspective)): ServerShip[] {
-  const visibleFleetIds = new Set(fleets.map((fleet) => fleet.id));
-  return ctx.state.ships.filter((ship) => visibleFleetIds.has(ship.fleetId));
-}
-
-function createVisibleDetailState(perspective: GalaxyPerspective) {
-  const visibleState = createVisibleState(perspective);
-  const fleets = getVisibleFullFleets(perspective);
-  return {
-    ...visibleState,
-    fleets,
-    ships: getVisibleFullShips(perspective, fleets),
-    starbases: getVisibleFullStarbases(perspective),
-  };
-}
-
-function createDiplomacyMovementPayload(perspective: GalaxyPerspective): DiplomacyMovementPayload {
-  if (perspective.mode !== "faction") {
-    return {
-      playerFactionId: null,
-      openBorderFactionIds: [],
-      warFactionIds: [],
-    };
-  }
-  const playerFactionId = perspective.factionId;
-  const openBorderFactionIds: number[] = [];
-  const warFactionIds: number[] = [];
-  for (const faction of ctx.state.factions) {
-    if (faction.id === playerFactionId) continue;
-    if (getBorderPolicy(ctx.state.diplomacy, faction.id, playerFactionId) === "open") {
-      openBorderFactionIds.push(faction.id);
-    }
-    if (areFactionsAtWar(ctx.state.diplomacy, playerFactionId, faction.id)) {
-      warFactionIds.push(faction.id);
-    }
-  }
-  return {
-    playerFactionId,
-    openBorderFactionIds: openBorderFactionIds.sort((a, b) => a - b),
-    warFactionIds: warFactionIds.sort((a, b) => a - b),
-  };
-}
-
-function createSystemDetailPayload(
-  perspective: GalaxyPerspective,
-  starId: number,
-): { payload: SystemDetailPayload; revision: string; normalizedId: number } | { error: string } {
-  const knownSet = getKnownSet(perspective);
-  const visibleState = createVisibleState(perspective);
-  const ownerByStar = new Array<number>(ctx.state.stars.length).fill(-1);
-  for (const [ownedStarId, ownerId] of visibleState.starOwnership) {
-    if (ownedStarId >= 0 && ownedStarId < ownerByStar.length) ownerByStar[ownedStarId] = ownerId;
-  }
-  const visibleFleets = getVisibleFullFleets(perspective);
-  const result = buildSystemDetailPayload({
-    perspective,
-    starId,
-    stars: ctx.state.stars,
-    visibleStars: createVisibleStars(perspective, knownSet),
-    knownStarIds: knownSet,
-    hyperlanes: visibleState.hyperlanes,
-    planetStates: ctx.state.planetStates,
-    fleets: visibleFleets,
-    ships: getVisibleFullShips(perspective, visibleFleets),
-    starbases: getVisibleFullStarbases(perspective),
-    recentCombatContacts: visibleState.recentCombatContacts,
-    factions: visibleState.factions,
-    shipDesigns: visibleState.shipDesigns,
-    technologies: visibleState.technologies,
-    starOwnership: ownerByStar,
-  });
-  if (!result.ok) return { error: result.error };
-  return {
-    payload: result.payload,
-    revision: createSystemDetailRevision(result.payload),
-    normalizedId: starId,
-  };
-}
-
-function createMarketDetailPayload(perspective: GalaxyPerspective): MarketDetailPayload {
-  const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-  const flows = factionId === null ? undefined : calculateFactionResourceFlow(ctx.state, factionId);
-  const playerStats = getReadonlyMarketPlayerStats(ctx, factionId);
-  const resources = ctx.state.market.resources.map<MarketResourceQuote>((resource) => {
-    const quote = calculatePlayerMarketQuote(resource, factionId, flows, ctx.state);
-    return {
-      resourceId: resource.resourceId,
-      basePrice: resource.basePrice,
-      currentPrice: resource.currentPrice,
-      liquidity: resource.liquidity,
-      temporaryPressure: resource.temporaryPressure,
-      persistentPressure: resource.persistentPressure,
-      marketEnabled: resource.marketEnabled,
-      lastUpdatedAt: resource.lastUpdatedAt,
-      finalQuotePrice: quote.finalQuotePrice,
-      buyPrice: quote.buyPrice,
-      sellPrice: quote.sellPrice,
-      marketFee: MARKET_FEE_RATE,
-      ownedAmount: quote.ownedAmount,
-      productionPerHour: quote.productionPerHour,
-      consumptionPerHour: quote.consumptionPerHour,
-      internalSupply: quote.internalSupply,
-      internalDemand: quote.internalDemand,
-      playerInternalModifier: quote.playerInternalModifier,
-      totalExportsEnergy: playerStats?.totalExportsEnergy ?? 0,
-      totalImportsEnergy: playerStats?.totalImportsEnergy ?? 0,
-      priceHistory: getMarketPriceHistory(ctx, resource.resourceId),
-      trend: getMarketTrend(ctx, resource.resourceId, resource.currentPrice),
-    };
-  });
-
-  return {
-    resources,
-    playerStats,
-    autoTrades: factionId === null
-      ? []
-      : ctx.state.market.autoTrades.filter((order) => order.playerId === factionId),
-    transactions: factionId === null
-      ? ctx.state.market.transactions.slice(-24)
-      : ctx.state.market.transactions.filter((transaction) => transaction.playerId === factionId).slice(-24),
-    marketFee: MARKET_FEE_RATE,
-  };
-}
-
-function createDiplomacyDetailPayload(perspective: GalaxyPerspective): DiplomacyDetailPayload {
-  const playerFactionId = perspective.mode === "faction" ? perspective.factionId : null;
-  const factions: FactionState[] = ctx.state.factions.map((faction) => ({
-    ...faction,
-    discoveredStarIds: ctx.state.discoveredByFaction[String(faction.id)] ?? [],
-  }));
-  const activeWars = ctx.state.diplomacy.wars.filter((war) => !Number.isFinite(war.endedAtYear ?? Number.NaN));
-  const activeTreaties = ctx.state.diplomacy.treaties.filter((treaty) => !Number.isFinite(treaty.cancelledAtYear ?? Number.NaN));
-  const pendingProposals = ctx.state.diplomacy.proposals.filter((proposal) => proposal.status === "pending");
-  const pairRelevant = (factionA: number, factionB: number): boolean => (
-    playerFactionId === null || factionA === playerFactionId || factionB === playerFactionId
-  );
-  const countries = factions.map((faction) => {
-    const activeBetween = playerFactionId === null
-      ? []
-      : getActiveTreatiesBetween(ctx.state.diplomacy, playerFactionId, faction.id);
-    const tradePrivilegeTreaty = activeBetween.some((treaty) => treaty.articleIds.includes(TRADE_PRIVILEGE_ARTICLE_ID));
-    const migrationPactTreaty = activeBetween.some((treaty) => treaty.articleIds.includes(MIGRATION_PACT_ARTICLE_ID));
-    return {
-      faction,
-      isSelf: playerFactionId === faction.id,
-      atWar: playerFactionId !== null && areFactionsAtWar(ctx.state.diplomacy, playerFactionId, faction.id),
-      ourBorderPolicy: playerFactionId === null ? "closed" as BorderPolicy : getBorderPolicy(ctx.state.diplomacy, playerFactionId, faction.id),
-      theirBorderPolicy: playerFactionId === null ? "closed" as BorderPolicy : getBorderPolicy(ctx.state.diplomacy, faction.id, playerFactionId),
-      activeTreatyCount: activeBetween.length,
-      pendingProposalCount: playerFactionId === null
-        ? 0
-        : pendingProposals.filter((proposal) => (
-          (proposal.fromFactionId === playerFactionId && proposal.toFactionId === faction.id)
-          || (proposal.fromFactionId === faction.id && proposal.toFactionId === playerFactionId)
-        )).length,
-      tradePrivilegeActive: playerFactionId !== null
-        && tradePrivilegeTreaty
-        && !isTreatyArticleSuspended(ctx.state.diplomacy, TRADE_PRIVILEGE_ARTICLE_ID, playerFactionId, faction.id),
-      tradePrivilegeSuspended: playerFactionId !== null
-        && tradePrivilegeTreaty
-        && isTreatyArticleSuspended(ctx.state.diplomacy, TRADE_PRIVILEGE_ARTICLE_ID, playerFactionId, faction.id),
-      migrationPactActive: playerFactionId !== null
-        && migrationPactTreaty
-        && !isTreatyArticleSuspended(ctx.state.diplomacy, MIGRATION_PACT_ARTICLE_ID, playerFactionId, faction.id),
-      migrationPactSuspended: playerFactionId !== null
-        && migrationPactTreaty
-        && isTreatyArticleSuspended(ctx.state.diplomacy, MIGRATION_PACT_ARTICLE_ID, playerFactionId, faction.id),
-    };
-  });
-  const wars = playerFactionId === null
-    ? activeWars
-    : activeWars.filter((war) => pairRelevant(war.attackerFactionId, war.defenderFactionId));
-  const treaties = playerFactionId === null
-    ? activeTreaties
-    : activeTreaties.filter((treaty) => pairRelevant(treaty.factionIds[0], treaty.factionIds[1]));
-  const proposals = playerFactionId === null
-    ? pendingProposals
-    : pendingProposals.filter((proposal) => pairRelevant(proposal.fromFactionId, proposal.toFactionId));
-  const chatMessages = playerFactionId === null
-    ? ctx.state.diplomacy.chatMessages
-    : ctx.state.diplomacy.chatMessages.filter((message) => (
-      message.fromFactionId === playerFactionId || message.toFactionId === playerFactionId
-    ));
-  const eligiblePeaceTransferSystems = createEligiblePeaceTransferSystems(playerFactionId, wars);
-
-  return {
-    countries,
-    wars,
-    treaties,
-    proposals,
-    chatMessages,
-    eligiblePeaceTransferSystems,
-    treatyArticles: TREATY_ARTICLE_DEFINITIONS,
-    playerFactionId,
-  };
-}
-
-function createEligiblePeaceTransferSystems(
-  playerFactionId: number | null,
-  wars: DiplomacyWar[],
-): DiplomacyEligiblePeaceTransferSystem[] {
-  const rows: DiplomacyEligiblePeaceTransferSystem[] = [];
-  for (const war of wars) {
-    if (
-      playerFactionId !== null
-      && war.attackerFactionId !== playerFactionId
-      && war.defenderFactionId !== playerFactionId
-    ) {
-      continue;
-    }
-    for (const starbase of ctx.state.starbases) {
-      if (starbase.ownerId !== war.attackerFactionId && starbase.ownerId !== war.defenderFactionId) continue;
-      const toFactionId = starbase.ownerId === war.attackerFactionId ? war.defenderFactionId : war.attackerFactionId;
-      const star = ctx.state.stars[starbase.starId];
-      rows.push({
-        starbaseId: starbase.id,
-        starId: starbase.starId,
-        starName: star?.name ?? `System ${starbase.starId}`,
-        ownerId: starbase.ownerId,
-        ownerName: ctx.state.factions.find((faction) => faction.id === starbase.ownerId)?.name ?? `Faction ${starbase.ownerId}`,
-        fromFactionId: starbase.ownerId,
-        toFactionId,
-      });
-    }
-  }
-  return rows.sort((a, b) => a.starName.localeCompare(b.starName));
-}
-
-function createSocietyDetailPayload(perspective: GalaxyPerspective): SocietyDetailPayload {
-  const playerFactionId = perspective.mode === "faction" ? perspective.factionId : null;
-  const laws = playerFactionId === null
-    ? { civilRights: "civicRegistry", speciesPolicy: "managedResidency" }
-    : {
-      civilRights: getSpeciesLawSelections(ctx.state, playerFactionId).civilRights ?? "civicRegistry",
-      speciesPolicy: getSpeciesLawSelections(ctx.state, playerFactionId).speciesPolicy ?? "managedResidency",
-    };
-  const speciesIds = playerFactionId === null
-    ? ctx.state.species.map((species) => species.id)
-    : getEmpireSpeciesIds(ctx.state, playerFactionId);
-  const speciesIdSet = new Set(speciesIds);
-  const species = ctx.state.species.filter((entry) => speciesIdSet.has(entry.id));
-  const rights = playerFactionId === null
-    ? null
-    : {
-      factionId: playerFactionId,
-      rightsBySpeciesId: Object.fromEntries(species.map((entry) => [
-        entry.id,
-        getSpeciesRightsForFaction(ctx.state, playerFactionId, entry.id),
-      ])),
-    };
-  const faction = playerFactionId === null
-    ? null
-    : {
-      ...ctx.state.factions.find((candidate) => candidate.id === playerFactionId)!,
-      discoveredStarIds: ctx.state.discoveredByFaction[String(playerFactionId)] ?? [],
-    };
-  const planets = ctx.state.planetStates
-    .filter((planetState) => planetState.isHabited)
-    .filter((planetState) => playerFactionId === null || (ctx.state.starOwnership[planetState.starId] ?? -1) === playerFactionId)
-    .map((planetState) => {
-      const star = ctx.state.stars[planetState.starId];
-      const planet = getPlanetConfig(planetState);
-      const groups = planetState.economy.popGroups;
-      const groupPopulation = groups.reduce((sum, group) => sum + group.population, 0);
-      const averageHappiness = groupPopulation > 0
-        ? groups.reduce((sum, group) => sum + group.happiness * group.population, 0) / groupPopulation
-        : planetState.economy.happiness;
-      const averageHabitability = groupPopulation > 0
-        ? groups.reduce((sum, group) => sum + Number(group.habitability ?? planetState.habitability ?? 0) * group.population, 0) / groupPopulation
-        : Number(planetState.habitability ?? 0);
-      return {
-        planetId: planetState.id,
-        planetName: planet?.name ?? planetState.id,
-        starId: planetState.starId,
-        starName: star?.name ?? `System ${planetState.starId}`,
-        population: planetState.population,
-        speciesPopulations: (planetState.speciesPopulations ?? []).filter((population) => speciesIdSet.has(population.speciesId)),
-        averageHappiness,
-        averageHabitability,
-      };
-    });
-
-  return {
-    playerFactionId,
-    faction,
-    species,
-    rights,
-    legalOptions: getLegalSpeciesRightsOptions(laws),
-    government: playerFactionId === null ? null : getFactionGovernment(ctx.state, playerFactionId),
-    factionEconomy: playerFactionId === null ? null : ctx.state.factionEconomies.find((economy) => economy.factionId === playerFactionId) ?? null,
-    planets,
-    laws,
-  };
-}
-
-function createDetailPayload(
-  perspective: GalaxyPerspective,
-  scope: GameDetailScope,
-  id: string | number | null | undefined,
-): { payload: GameDetailPayload; revision: string; normalizedId: string | number | null } | { error: string } {
-  if (scope === "system") {
-    const starId = Number(id);
-    if (!Number.isInteger(starId)) return { error: "System is not available." };
-    return createSystemDetailPayload(perspective, starId);
-  }
-
-  if (scope === "planet") {
-    const planetId = String(id ?? "");
-    const planetState = getPlanetState(planetId);
-    if (!planetState || !canAccessPlanet(perspective, planetState)) return { error: "Planet is not available." };
-    const planet = getPlanetConfig(planetState);
-    if (!planet) return { error: "Planet details are unavailable." };
-    const payload = { starId: planetState.starId, planet, planetState };
-    return { payload, revision: createRevision(payload), normalizedId: planetId };
-  }
-
-  if (scope === "starbase") {
-    const starbaseId = String(id ?? "");
-    const starbase = ctx.state.starbases.find((candidate) => candidate.id === starbaseId);
-    if (!starbase || !canAccessStarbase(perspective, starbase)) return { error: "Starbase is not available." };
-    const payload = { starbase };
-    return { payload, revision: createRevision(payload), normalizedId: starbaseId };
-  }
-
-  if (scope === "fleet") {
-    const fleetId = String(id ?? "");
-    const fleets = getVisibleFullFleets(perspective);
-    const fleet = fleets.find((candidate) => candidate.id === fleetId);
-    if (!fleet) return { error: "Fleet is not available." };
-    const payload = {
-      fleet,
-      ships: getVisibleFullShips(perspective, fleets).filter((ship) => ship.fleetId === fleet.id),
-    };
-    return { payload, revision: createRevision(payload), normalizedId: fleetId };
-  }
-
-  if (scope === "fleetManager") {
-    const detailState = createVisibleDetailState(perspective);
-    const payload = {
-      fleets: detailState.fleets,
-      ships: detailState.ships,
-      shipDesigns: detailState.shipDesigns,
-      starbases: detailState.starbases,
-      technologies: detailState.technologies,
-      leaders: detailState.leaders,
-      factionEconomies: detailState.factionEconomies,
-    };
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  if (scope === "planetManager") {
-    const detailState = createVisibleDetailState(perspective);
-    const ownerId = perspective.mode === "faction" ? perspective.factionId : null;
-    const planets = ctx.state.planetStates
-      .filter((planetState) => ownerId === null || (ctx.state.starOwnership[planetState.starId] ?? -1) === ownerId)
-      .filter((planetState) => canAccessPlanet(perspective, planetState))
-      .map((planetState) => {
-        const star = ctx.state.stars[planetState.starId];
-        const planet = getPlanetConfig(planetState);
-        if (!star || !planet) return null;
-        return {
-          starId: planetState.starId,
-          starName: star.name,
-          ownerId: ctx.state.starOwnership[planetState.starId] ?? -1,
-          planet,
-          planetState,
-        };
-      })
-      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
-    const payload = {
-      planets,
-      leaders: detailState.leaders,
-      factionEconomies: detailState.factionEconomies,
-    };
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  if (scope === "market") {
-    const payload = createMarketDetailPayload(perspective);
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  if (scope === "technology") {
-    const detailState = createVisibleDetailState(perspective);
-    const payload = {
-      technologies: detailState.technologies,
-      factionEconomies: detailState.factionEconomies,
-    };
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  if (scope === "leaders") {
-    const detailState = createVisibleDetailState(perspective);
-    const payload = {
-      leaders: detailState.leaders,
-      fleets: detailState.fleets,
-      planetStates: detailState.planetStates,
-    };
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  if (scope === "government") {
-    const detailState = createVisibleDetailState(perspective);
-    const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-    const payload = {
-      government: factionId === null
-        ? null
-        : detailState.governments.find((government) => government.factionId === factionId) ?? null,
-      leaders: detailState.leaders,
-      technologies: detailState.technologies,
-      factionEconomies: detailState.factionEconomies,
-    };
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  if (scope === "society") {
-    const payload = createSocietyDetailPayload(perspective);
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  if (scope === "diplomacy") {
-    const payload = createDiplomacyDetailPayload(perspective);
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  if (scope === "selection") {
-    const detailState = createVisibleDetailState(perspective);
-    const payload = {
-      fleets: detailState.fleets,
-      ships: detailState.ships,
-      starbases: detailState.starbases,
-      leaders: detailState.leaders,
-    };
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  if (scope === "hud") {
-    const detailState = createVisibleState(perspective);
-    const payload = {
-      clock: detailState.clock,
-      factionEconomies: detailState.factionEconomies,
-      habitedPlanetSystemIds: detailState.habitedPlanetSystemIds,
-      starOwnership: detailState.starOwnership,
-    };
-    return { payload, revision: createRevision(payload), normalizedId: null };
-  }
-
-  return { error: "Details are not available." };
-}
-
 function sendDetailEvent(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -3175,7 +2134,7 @@ function sendDetailEvent(
   id: string | number | null | undefined,
   knownRevision?: string | null,
 ): string | null {
-  const detail = createDetailPayload(perspective, scope, id);
+  const detail = createDetailPayload(ctx, perspective, scope, id);
   if ("error" in detail) {
     reject(socket, detail.error);
     return null;
@@ -3208,7 +2167,7 @@ function handleSubscribeDetails(
   id: string | number | null | undefined,
   knownRevision?: string | null,
 ): void {
-  const detail = createDetailPayload(session.perspective, scope, id);
+  const detail = createDetailPayload(ctx, session.perspective, scope, id);
   if ("error" in detail) {
     reject(session.socket, detail.error);
     return;
@@ -3241,7 +2200,7 @@ function handleUnsubscribeDetails(
 function broadcastSubscribedDetails(): void {
   for (const client of ctx.clients) {
     for (const [key, subscription] of Array.from(client.detailSubscriptions.entries())) {
-      const detail = createDetailPayload(client.perspective, subscription.scope, subscription.id);
+      const detail = createDetailPayload(ctx, client.perspective, subscription.scope, subscription.id);
       if ("error" in detail) {
         client.detailSubscriptions.delete(key);
         continue;
@@ -3271,7 +2230,7 @@ function validatePlanetCommand(socket: WebSocket, perspective: GalaxyPerspective
     return null;
   }
 
-  const planetState = getPlanetState(planetId);
+  const planetState = getPlanetState(ctx, planetId);
   if (!planetState) {
     reject(socket, "Planet not found.");
     return null;
@@ -3534,7 +2493,7 @@ function validateStarbaseCommand(socket: WebSocket, perspective: GalaxyPerspecti
     reject(socket, "You do not own that starbase.");
     return null;
   }
-  if (!canAccessStar(perspective, starbase.starId)) {
+  if (!canAccessStar(ctx, perspective, starbase.starId)) {
     reject(socket, "Starbase is not available.");
     return null;
   }
@@ -4179,330 +3138,6 @@ function fleetUpdateSignature(): string {
   })));
 }
 
-function processEconomyHours(targetHour: number): { economyChanged: boolean; technologiesChanged: boolean } {
-  const previousPlanetSignatures = new Map(
-    ctx.state.planetStates.map((planetState) => [planetState.id, getPlanetDetailSignature(planetState)]),
-  );
-  recalculatePlanetEconomies();
-  refreshFactionEconomyDeltas();
-  let economyChanged = false;
-  let technologiesChanged = false;
-  for (const economy of ctx.state.factionEconomies) {
-    const processedHour = economy.lastProcessedHour ?? targetHour;
-    const elapsedHours = Math.max(0, targetHour - processedHour);
-    if (elapsedHours <= 0) continue;
-    const researchPerHour = getFactionResearchPerHour(ctx, economy.factionId);
-    technologiesChanged = applyTechnologyResearchForFaction(ctx, economy.factionId, elapsedHours, researchPerHour) || technologiesChanged;
-    const resourceGain = scaleResourceCounts(
-      calculateFactionMonthlyDelta(ctx.state, economy.factionId),
-      elapsedHours / GAME_HOURS_PER_MONTH,
-    );
-    resourceGain.research = 0;
-    economy.stockpiles = addResourceCounts(
-      economy.stockpiles,
-      resourceGain,
-    );
-    // Stockpiles never go negative; a sustained deficit instead drives shortage penalties
-    // (see computeShortageSeverity) once the buffer is exhausted.
-    for (const resource of RESOURCE_KINDS) {
-      economy.stockpiles[resource] = Math.max(0, economy.stockpiles[resource]);
-    }
-    economy.stockpiles.research = 0;
-    economy.lastProcessedHour = targetHour;
-    economy.lastProcessedMonth = gameYearToMonthIndex(elapsedHoursToGameYear(targetHour));
-    economyChanged = true;
-  }
-  if (technologiesChanged) {
-    recalculatePlanetEconomies();
-    refreshFactionEconomyDeltas();
-  }
-  const planetDetailsChanged = queueChangedPlanetDetailRefreshes(previousPlanetSignatures);
-  if (economyChanged || technologiesChanged) {
-    ctx.hasDirtyState = true;
-  }
-  if (planetDetailsChanged) ctx.hasDirtyState = true;
-  return { economyChanged, technologiesChanged };
-}
-
-function processMarketTicks(targetHour: number): { marketChanged: boolean; economyChanged: boolean } {
-  const processedHour = Number.isFinite(ctx.state.market.lastProcessedHour)
-    ? ctx.state.market.lastProcessedHour
-    : targetHour;
-  const elapsedHours = Math.max(0, targetHour - processedHour);
-  let marketChanged = false;
-  let economyChanged = false;
-
-  if (elapsedHours > 0) {
-    const temporaryDecay = Math.pow(MARKET_TEMPORARY_DECAY_PER_HOUR, elapsedHours);
-    const persistentDecay = Math.pow(MARKET_PERSISTENT_DECAY_PER_HOUR, elapsedHours);
-    ctx.state.market.resources = ctx.state.market.resources.map((resource) => {
-      const temporaryPressure = roundTinyPressure(resource.temporaryPressure * temporaryDecay);
-      const persistentPressure = roundTinyPressure(resource.persistentPressure * persistentDecay);
-      const next = recomputeMarketResourcePrice({
-        ...resource,
-        temporaryPressure,
-        persistentPressure,
-      }, ctx.state.clock.year);
-      const resourceChanged = (
-        next.temporaryPressure !== resource.temporaryPressure
-        || next.persistentPressure !== resource.persistentPressure
-        || Math.abs(next.currentPrice - resource.currentPrice) > 0.000001
-      );
-      if (!resourceChanged) return resource;
-      marketChanged = true;
-      return next;
-    });
-    for (const order of ctx.state.market.autoTrades) {
-      const executed = executeMarketAutoTrade(order, elapsedHours);
-      marketChanged = executed || marketChanged;
-      economyChanged = executed || economyChanged;
-    }
-    ctx.state.market.lastProcessedHour = targetHour;
-  }
-
-  const snapshotHour = Number.isFinite(ctx.state.market.lastSnapshotHour)
-    ? ctx.state.market.lastSnapshotHour
-    : targetHour;
-  if (targetHour - snapshotHour >= MARKET_PRICE_SNAPSHOT_INTERVAL_HOURS) {
-    for (const resource of ctx.state.market.resources) {
-      appendMarketPriceSnapshot(ctx, resource, ctx.state.clock.year);
-    }
-    ctx.state.market.lastSnapshotHour = targetHour;
-    marketChanged = true;
-  }
-
-  if (marketChanged || economyChanged) ctx.hasDirtyState = true;
-  return { marketChanged, economyChanged };
-}
-
-function executeMarketAutoTrade(order: MarketAutoTradeOrder, elapsedHours: number): boolean {
-  if (!order.enabled || order.amountPerHour <= 0 || elapsedHours <= 0) return false;
-  const resource = getMarketResourceState(ctx, order.resourceId);
-  if (!resource?.marketEnabled) return false;
-  const economy = getFactionEconomy(order.playerId);
-  if (!economy) return false;
-
-  const requestedAmount = order.amountPerHour * elapsedHours;
-  if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) return false;
-
-  const flows = calculateFactionResourceFlow(ctx.state, order.playerId);
-  const quote = calculatePlayerMarketQuote(resource, order.playerId, flows, ctx.state);
-  const stats = getMarketPlayerStats(ctx, order.playerId);
-  let amount = requestedAmount;
-
-  if (order.type === "auto_buy") {
-    const unitCost = quote.finalQuotePrice * (1 + MARKET_FEE_RATE);
-    amount = Math.min(amount, unitCost > 0 ? economy.stockpiles.energy / unitCost : 0);
-    if (amount <= 0.000001) return false;
-    const grossEnergy = amount * quote.finalQuotePrice;
-    const feePaid = grossEnergy * MARKET_FEE_RATE;
-    const buyCost = grossEnergy + feePaid;
-    economy.stockpiles = {
-      ...economy.stockpiles,
-      energy: economy.stockpiles.energy - buyCost,
-      [order.resourceId]: economy.stockpiles[order.resourceId] + amount,
-    };
-    stats.totalImportsEnergy += grossEnergy;
-    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_buy", amount, quote.finalQuotePrice, feePaid, -buyCost);
-    applyMarketTradePressure(ctx, resource, "auto_buy", amount);
-  } else {
-    amount = Math.min(amount, economy.stockpiles[order.resourceId]);
-    if (amount <= 0.000001) return false;
-    const grossEnergy = amount * quote.finalQuotePrice;
-    const feePaid = grossEnergy * MARKET_FEE_RATE;
-    const sellPayout = grossEnergy - feePaid;
-    economy.stockpiles = {
-      ...economy.stockpiles,
-      [order.resourceId]: economy.stockpiles[order.resourceId] - amount,
-      energy: economy.stockpiles.energy + sellPayout,
-    };
-    stats.totalExportsEnergy += grossEnergy;
-    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_sell", amount, quote.finalQuotePrice, feePaid, sellPayout);
-    applyMarketTradePressure(ctx, resource, "auto_sell", amount);
-  }
-
-  order.updatedAt = ctx.state.clock.year;
-  return true;
-}
-
-function processShipShortageEffects(): { shipsChanged: boolean; starbasesChanged: boolean } {
-  let shipsChanged = false;
-  let starbasesChanged = false;
-  for (const ship of ctx.state.ships) {
-    if (ship.maxShield <= 0 || ship.shield <= 0) continue;
-    const fleet = ctx.state.fleets.find((candidate) => candidate.id === ship.fleetId) ?? null;
-    const shieldCap = ship.maxShield * (fleet ? getFleetShieldMultiplier(ctx.state, fleet) : getFactionFleetShortageEffects(ctx.state, ship.ownerId).shieldMultiplier);
-    if (ship.shield <= shieldCap) continue;
-    ship.shield = Math.max(0, shieldCap);
-    shipsChanged = true;
-  }
-  for (const starbase of ctx.state.starbases) {
-    if (starbase.status !== "online" || starbase.maxShield <= 0 || starbase.shield <= 0) continue;
-    const shieldCap = starbase.maxShield * getFactionFleetShortageEffects(ctx.state, starbase.ownerId).shieldMultiplier;
-    if (starbase.shield <= shieldCap) continue;
-    starbase.shield = Math.max(0, shieldCap);
-    starbasesChanged = true;
-  }
-  if (shipsChanged || starbasesChanged) ctx.hasDirtyState = true;
-  return { shipsChanged, starbasesChanged };
-}
-
-function processPlanetConstruction(elapsedDays: number): boolean {
-  if (elapsedDays <= 0) return false;
-  let changed = false;
-  ctx.state.planetStates = ctx.state.planetStates.map((planetState) => {
-    if (!planetState.isHabited || planetState.constructionQueue.length === 0) return planetState;
-    const result = progressPlanetConstructionQueue(
-      planetState,
-      elapsedDays,
-      getPlanetDistrictLimitsFromState(ctx.state, planetState),
-      getPlanetTechnologyModifiers(ctx.state, planetState),
-      getPlanetSpeciesContext(ctx.state, planetState),
-    );
-    if (!result.changed) return planetState;
-    changed = true;
-    queuePlanetDetailRefresh(planetState.id);
-    return result.state;
-  });
-
-  if (!changed) return false;
-  applyPlanetStatesToStars(ctx.state.stars, ctx.state.planetStates);
-  refreshFactionEconomyDeltas();
-  ctx.hasDirtyState = true;
-  return true;
-}
-
-function processStarbaseConstruction(elapsedDays: number): boolean {
-  if (elapsedDays <= 0) return false;
-  let changed = false;
-  ctx.state.starbases = ctx.state.starbases.map((starbase) => {
-    if (starbase.constructionQueue.length === 0) return starbase;
-    const result = progressStarbaseConstructionQueue(starbase, elapsedDays);
-    if (!result.changed) return starbase;
-    changed = true;
-    return syncStarbaseCombatHealth(result.starbase);
-  });
-
-  if (!changed) return false;
-  refreshFactionEconomyDeltas();
-  ctx.hasDirtyState = true;
-  return true;
-}
-
-function trySpendStarbaseRepairResources(ownerId: number, repairPoints: number, alloyCostPerPoint: number): boolean {
-  const economy = getFactionEconomy(ownerId);
-  if (!economy || repairPoints <= 0) return false;
-  const alloys = repairPoints * alloyCostPerPoint;
-  const energy = repairPoints * STARBASE_REPAIR_ENERGY_COST_PER_POINT;
-  if (economy.stockpiles.alloys < alloys || economy.stockpiles.energy < energy) return false;
-  economy.stockpiles = addResourceCounts(economy.stockpiles, {
-    ...createEmptyResourceCounts(),
-    alloys: -alloys,
-    energy: -energy,
-  });
-  return true;
-}
-
-function processStarbaseRepairs(elapsedDays: number): boolean {
-  if (elapsedDays <= 0) return false;
-  let changed = false;
-  ctx.state.starbases = ctx.state.starbases.map((starbase) => {
-    if (starbase.status !== "online") return starbase;
-    let next = starbase;
-    if (next.armor < next.maxArmor) {
-      const repair = Math.min(next.maxArmor - next.armor, next.maxArmor * STARBASE_ARMOR_REPAIR_FRACTION_PER_DAY * elapsedDays);
-      if (trySpendStarbaseRepairResources(next.ownerId, repair, STARBASE_ARMOR_REPAIR_ALLOY_COST_PER_POINT)) {
-        next = { ...next, armor: next.armor + repair };
-        changed = true;
-      }
-    }
-    if (next.hull < next.maxHull) {
-      const repair = Math.min(next.maxHull - next.hull, next.maxHull * STARBASE_HULL_REPAIR_FRACTION_PER_DAY * elapsedDays);
-      if (trySpendStarbaseRepairResources(next.ownerId, repair, STARBASE_HULL_REPAIR_ALLOY_COST_PER_POINT)) {
-        next = { ...next, hull: next.hull + repair };
-        changed = true;
-      }
-    }
-    return next;
-  });
-  if (changed) {
-    refreshFactionEconomyDeltas();
-    ctx.hasDirtyState = true;
-  }
-  return changed;
-}
-
-function spawnCompletedShip(starbase: ServerStarbase, item: { shipKind: StarbaseShipKind; designId?: string | null }): void {
-  const fleetId = createRuntimeId("fleet", [starbase.ownerId, starbase.starId]);
-  const ship = createShip(
-    starbase.ownerId,
-    fleetId,
-    item.shipKind,
-    createRuntimeId("ship", [starbase.ownerId, item.shipKind]),
-    item.designId,
-  );
-  const fleet = createFleet(starbase.ownerId, starbase.starId, [ship.id], fleetId);
-  fleet.phaseStartedAtYear = ctx.state.clock.year;
-  fleet.speed = ship.speed;
-  fleet.systemPosition = getSystemStarbaseOrbitPosition(starbase.systemPosition);
-  applyFleetOrbitTarget(fleet, createStarbaseOrbitTarget(starbase, fleet.systemPosition));
-  setFleetPhase(fleet, "orbiting");
-  ctx.state.ships.push(ship);
-  ctx.state.fleets.push(fleet);
-}
-
-function completeQueuedShipUpgrade(item: StarbaseShipQueueItem): boolean {
-  if (item.kind !== "upgrade" || !item.shipId) return false;
-  const ship = ctx.state.ships.find((candidate) => candidate.id === item.shipId);
-  if (!ship) return false;
-  const targetDesign = findShipDesignById(
-    ctx.state.shipDesigns,
-    ship.ownerId,
-    ship.shipKind,
-    item.targetDesignId ?? item.designId,
-    true,
-  );
-  if (!targetDesign) return false;
-  applyShipDesignToShip(ship, targetDesign);
-  syncFleetMembership(ctx.state);
-  return true;
-}
-
-function processStarbaseShipQueues(elapsedDays: number): { starbasesChanged: boolean; fleetsChanged: boolean } {
-  if (elapsedDays <= 0) return { starbasesChanged: false, fleetsChanged: false };
-  let starbasesChanged = false;
-  let fleetsChanged = false;
-  ctx.state.starbases = ctx.state.starbases.map((starbase) => {
-    if (starbase.shipQueue.length === 0) return starbase;
-    const speed = getFactionStarbaseShipBuildSpeedMultiplier(ctx.state, starbase.ownerId);
-    const economy = getFactionEconomy(starbase.ownerId);
-    const result = progressStarbaseShipQueue(starbase, elapsedDays * speed, economy?.stockpiles);
-    if (!result.changed) return starbase;
-
-    if (economy) {
-      economy.stockpiles = addResourceCounts(economy.stockpiles, scaleResourceCounts(result.resourcesConsumed, -1));
-    }
-    for (const completed of result.completed) {
-      if (completed.kind === "upgrade") {
-        fleetsChanged = completeQueuedShipUpgrade(completed) || fleetsChanged;
-      } else {
-        spawnCompletedShip(starbase, completed);
-        fleetsChanged = true;
-      }
-    }
-    starbasesChanged = true;
-    return result.starbase;
-  });
-
-  if (!starbasesChanged && !fleetsChanged) return { starbasesChanged: false, fleetsChanged: false };
-  if (fleetsChanged) {
-    refreshDiscovery();
-  }
-  refreshFactionEconomyDeltas();
-  ctx.hasDirtyState = true;
-  return { starbasesChanged, fleetsChanged };
-}
-
 function advanceState(now: number): Set<ServerUpdateField> {
   const changed = new Set<ServerUpdateField>();
   syncClockSpeedFields();
@@ -4578,21 +3213,21 @@ function advanceState(now: number): Set<ServerUpdateField> {
     changed.add("technologies");
   }
 
-  if (processPlanetConstruction(elapsedGameDays)) {
+  if (processPlanetConstruction(ctx, elapsedGameDays)) {
     changed.add("factionEconomies");
   }
 
-  if (processStarbaseConstruction(elapsedGameDays)) {
+  if (processStarbaseConstruction(ctx, elapsedGameDays)) {
     changed.add("starbases");
     changed.add("factionEconomies");
   }
 
-  if (processStarbaseRepairs(elapsedGameDays)) {
+  if (processStarbaseRepairs(ctx, elapsedGameDays)) {
     changed.add("starbases");
     changed.add("factionEconomies");
   }
 
-  const shipQueueResult = processStarbaseShipQueues(elapsedGameDays);
+  const shipQueueResult = processStarbaseShipQueues(ctx, elapsedGameDays);
   if (shipQueueResult.starbasesChanged || shipQueueResult.fleetsChanged) {
     changed.add("starbases");
     changed.add("factionEconomies");
@@ -4604,7 +3239,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
   }
 
   const nextEconomyHour = gameYearToHourIndex(ctx.state.clock.year);
-  const economyResult = processEconomyHours(nextEconomyHour);
+  const economyResult = processEconomyHours(ctx, nextEconomyHour);
   if (economyResult.economyChanged) {
     changed.add("factionEconomies");
   }
@@ -4612,7 +3247,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
     changed.add("technologies");
     changed.add("factionEconomies");
   }
-  const marketResult = processMarketTicks(nextEconomyHour);
+  const marketResult = processMarketTicks(ctx, nextEconomyHour);
   if (marketResult.marketChanged || marketResult.economyChanged) {
     refreshFactionEconomyDeltas();
   }
@@ -4622,7 +3257,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
   if (marketResult.economyChanged || (marketResult.marketChanged && ctx.state.market.autoTrades.length > 0)) {
     changed.add("factionEconomies");
   }
-  const shortageShipEffects = processShipShortageEffects();
+  const shortageShipEffects = processShipShortageEffects(ctx);
   if (shortageShipEffects.shipsChanged) {
     changed.add("ships");
     changed.add("fleets");
@@ -4874,10 +3509,10 @@ function createAdminFleetWithShips(
   position: ReturnType<typeof systemCenterPosition>,
 ): GameFleet {
   const design = resolveShipDesign(ctx.state.shipDesigns, ownerId, "corvette", designId === "default" ? undefined : designId, ctx.state.clock.year);
-  const fleet = createFleet(ownerId, starId, [], createRuntimeId("fleet", [ownerId, starId]));
+  const fleet = createFleet(ctx, ownerId, starId, [], createRuntimeId("fleet", [ownerId, starId]));
   fleet.systemPosition = cloneSystemPosition(position);
   clearFleetMovementNow(ctx, fleet);
-  const ships = Array.from({ length: Math.max(1, count) }, () => createShipFromDesign(ownerId, fleet.id, design));
+  const ships = Array.from({ length: Math.max(1, count) }, () => createShipFromDesign(ctx, ownerId, fleet.id, design));
   fleet.shipIds = ships.map((ship) => ship.id);
   fleet.tacticalRadius = getFleetTacticalRadius(fleet.shipIds.length);
   fleet.speed = Math.min(...ships.map((ship) => ship.speed));
@@ -5574,7 +4209,7 @@ async function executeAdminCommand(
       const starId = resolveSystemToken(parsed.args[0], context);
       const owner = resolveOwnerToken(parsed.args[1], context, perspective);
       const { position } = parseSystemPosition(parsed.args, 2, systemCenterPosition());
-      const fleet = createFleet(owner, starId, [], createRuntimeId("fleet", [owner, starId]));
+      const fleet = createFleet(ctx, owner, starId, [], createRuntimeId("fleet", [owner, starId]));
       fleet.systemPosition = position;
       ctx.state.fleets.push(fleet);
       return changedResult("Empty fleet created. Add ships to keep it after membership sync.", ["fleets", "visibility"], adminRowsForFleets([fleet]));
@@ -5588,12 +4223,12 @@ async function executeAdminCommand(
       let starId = fleet?.currentStarId ?? resolveSystemToken(target, context);
       const { position } = parseSystemPosition(parsed.args, 3, fleet?.systemPosition ?? systemCenterPosition());
       if (!fleet || fleet.ownerId !== owner) {
-        fleet = createFleet(owner, starId, [], createRuntimeId("fleet", [owner, starId]));
+        fleet = createFleet(ctx, owner, starId, [], createRuntimeId("fleet", [owner, starId]));
         fleet.systemPosition = position;
         ctx.state.fleets.push(fleet);
       }
       const design = resolveShipDesign(ctx.state.shipDesigns, owner, "corvette", designToken === "default" ? undefined : designToken, ctx.state.clock.year);
-      const ships = Array.from({ length: count }, () => createShipFromDesign(owner, fleet!.id, design));
+      const ships = Array.from({ length: count }, () => createShipFromDesign(ctx, owner, fleet!.id, design));
       ctx.state.ships.push(...ships);
       syncFleetMembership(ctx.state);
       return changedResult(`Created ${count} ship(s).`, ["ships", "fleets", "visibility"], adminRowsForFleets([fleet]));
@@ -5713,7 +4348,7 @@ async function executeAdminCommand(
       const movingIds = spec?.includes(",")
         ? new Set(splitList(spec))
         : new Set(sourceShips.slice(0, integerArg(spec, "split count", 1, sourceShips.length - 1)).map((ship) => ship.id));
-      const newFleet = createFleet(fleet.ownerId, fleet.currentStarId, [], createRuntimeId("fleet", [fleet.ownerId, fleet.currentStarId]));
+      const newFleet = createFleet(ctx, fleet.ownerId, fleet.currentStarId, [], createRuntimeId("fleet", [fleet.ownerId, fleet.currentStarId]));
       newFleet.systemPosition = { ...fleet.systemPosition, x: fleet.systemPosition.x + 2 };
       ctx.state.fleets.push(newFleet);
       for (const ship of sourceShips) if (movingIds.has(ship.id)) ship.fleetId = newFleet.id;
@@ -6746,7 +5381,7 @@ function handleProposePeace(
 function handleCommand(session: ClientSession, command: ClientCommand): void {
   if (command.type === "join") {
     if (!session.sentInitialSnapshot) {
-      sendEvent(session.socket, createSnapshot(session.perspective));
+      sendEvent(session.socket, createSnapshot(ctx, session.perspective));
       session.sentInitialSnapshot = true;
     }
     return;
@@ -7066,7 +5701,7 @@ function attachClient(socket: WebSocket, account: AuthAccount, perspective: Gala
   }
   sendEvent(socket, { type: "serverInfo", message: `Connected to StellarFronts ctx.game ${ctx.game.name}.` });
   // Runtime creation can outlive the client's first WebSocket message.
-  sendEvent(socket, createSnapshot(perspective));
+  sendEvent(socket, createSnapshot(ctx, perspective));
   session.sentInitialSnapshot = true;
 
   socket.on("message", (data) => {

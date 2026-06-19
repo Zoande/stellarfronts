@@ -8,12 +8,14 @@ import { SHORTAGE_SITUATION_ID, situationInstanceId } from "../../src/data/Situa
 import { ACTIVE_RESEARCH_FRACTION, PASSIVE_RESEARCH_FRACTION, getCompletedTechnologyEffects, TECHNOLOGY_BY_ID } from "../../src/data/Technology";
 import type { FactionTechState } from "../../src/data/Technology";
 import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
-import type { ServerFleet } from "../../src/game/GameProtocol";
+import type { ServerFleet, ServerStarbase } from "../../src/game/GameProtocol";
 import { createDefaultSpeciesRightsState, normalizeSpeciesRightsForLaws } from "../../src/data/Species";
 import type { FactionSpeciesRightsState, SpeciesId, SpeciesRights, SpeciesLawSelections } from "../../src/data/Species";
+import type { GalaxyPerspective } from "../../src/data/Factions";
+import type { PlanetConfig } from "../../src/data/StarMap";
 import { SHORTAGE_GRACE_MONTHS } from "./constants";
 import { clamp } from "./pure-helpers";
-import type { GameState } from "./types";
+import type { GameState, RuntimeContext } from "./types";
 
 // --- Shortage severity ---
 
@@ -478,4 +480,44 @@ export function getFactionStarbaseShipBuildSpeedMultiplier(nextState: GameState,
     if (effect.type === "starbase_ship_build_speed_mult") multiplier *= 1 + effect.value;
   }
   return Math.max(0.1, multiplier);
+}
+
+// ---------------------------------------------------------------------------
+// Planet / starbase lookups + perspective access control
+// ---------------------------------------------------------------------------
+
+export function getEmpireSpeciesIds(nextState: GameState, factionId: number): SpeciesId[] {
+  const ids = new Set<SpeciesId>();
+  for (const planetState of nextState.planetStates) {
+    if (!planetState.isHabited || (nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    for (const population of planetState.speciesPopulations ?? []) {
+      if (population.population > 0) ids.add(population.speciesId);
+    }
+  }
+  const foundingSpeciesId = nextState.factions.find((faction) => faction.id === factionId)?.foundingSpeciesId;
+  if (foundingSpeciesId && ids.size === 0) ids.add(foundingSpeciesId);
+  return Array.from(ids).sort((a, b) => a.localeCompare(b));
+}
+
+export function getPlanetState(ctx: RuntimeContext, planetId: string): PlanetState | null {
+  return ctx.state.planetStates.find((planetState) => planetState.id === planetId) ?? null;
+}
+
+export function getPlanetConfig(ctx: RuntimeContext, planetState: PlanetState): PlanetConfig | null {
+  return ctx.state.stars[planetState.starId]?.system.planets[planetState.planetIndex] ?? null;
+}
+
+export function canAccessStar(ctx: RuntimeContext, perspective: GalaxyPerspective, starId: number): boolean {
+  if (starId < 0 || starId >= ctx.state.stars.length) return false;
+  if (perspective.mode === "observer") return true;
+  const known = ctx.state.discoveredByFaction[String(perspective.factionId)] ?? [];
+  return known.includes(starId);
+}
+
+export function canAccessPlanet(ctx: RuntimeContext, perspective: GalaxyPerspective, planetState: PlanetState): boolean {
+  return canAccessStar(ctx, perspective, planetState.starId);
+}
+
+export function canAccessStarbase(ctx: RuntimeContext, perspective: GalaxyPerspective, starbase: ServerStarbase): boolean {
+  return canAccessStar(ctx, perspective, starbase.starId);
 }

@@ -67,6 +67,7 @@ import {
 } from "./state-queries";
 import { clamp, gameDaysToYears, getMountRangeSummary, getMaxWeaponSystemRange } from "./pure-helpers";
 import { getShipDesignForShip } from "./ship-designs";
+import { getKnownOwnership } from "./visibility";
 import {
   DEPART_DURATION_MS,
   JUMP_DURATION_MS,
@@ -1358,11 +1359,6 @@ function normalizeSystemPositionValue(
 ): { x: number; y: number; z: number } | null {
   if (!pos) return null;
   return { x: Number(pos.x) || 0, y: Number(pos.y) || SYSTEM_FLEET_Y, z: Number(pos.z) || 0 };
-}
-
-function getKnownOwnership(ctx: RuntimeContext, ownerId: number, starId: number): number {
-  const known = ctx.state.lastKnownOwnershipByFaction[String(ownerId)];
-  return known?.[starId] ?? -1;
 }
 
 export function computeRetreatRoute(ctx: RuntimeContext, fleet: GameFleet): number[] | null {
