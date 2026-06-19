@@ -3,6 +3,7 @@ import { getWeaponMaxSystemRange, getWeaponMinSystemRange } from "../combat";
 import type { WeaponMountDefinition } from "../../src/data/Starbase";
 import { MIGRATION_DISTANCE_DECAY, MIGRATION_DISTANCE_FLOOR } from "./constants";
 import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
+import type { ResourceCounts } from "../../src/data/Economy";
 
 // --- Math utilities ---
 
@@ -82,4 +83,15 @@ export function getMountRangeSummary(mounts: WeaponMountDefinition[]): { min: nu
 
 export function gameDaysToYears(days: number): number {
   return days / GAME_DAYS_PER_YEAR;
+}
+
+export function scaleResourceCounts(counts: ResourceCounts, scale: number): ResourceCounts {
+  return {
+    food: counts.food * scale,
+    minerals: counts.minerals * scale,
+    energy: counts.energy * scale,
+    goods: counts.goods * scale,
+    alloys: counts.alloys * scale,
+    research: counts.research * scale,
+  };
 }

@@ -440,6 +440,29 @@ import {
   getSpeciesLawSelections,
 } from "./game/state-queries";
 import type { GovernmentEffectInstance } from "./game/state-queries";
+import {
+  getShipDefinition,
+  findShipDesign,
+  findShipDesignById,
+  getNewestActiveShipDesign,
+  resolveShipDesign,
+  getShipDesignForShip,
+} from "./game/ship-designs";
+import {
+  calculateFactionResourceFlow,
+  calculateFactionMonthlyDelta,
+  calculatePlayerMarketQuote,
+  refreshFactionEconomyDeltas as applyFactionEconomyDeltas,
+  getMarketPlayerStats,
+  getReadonlyMarketPlayerStats,
+  getMarketResourceState,
+  getMarketPriceHistory,
+  getMarketTrend,
+  appendMarketPriceSnapshot,
+  recordMarketTransaction,
+  applyMarketTradePressure,
+} from "./game/economy-market";
+import type { FactionResourceFlow, PlayerMarketQuote } from "./game/economy-market";
 import { initServer } from "./game/server-bootstrap";
 import {
   clamp,
@@ -452,6 +475,7 @@ import {
   getMaxWeaponSystemRange,
   getMountRangeSummary,
   gameDaysToYears,
+  scaleResourceCounts,
 } from "./game/pure-helpers";
 import {
   nextEventInstanceId,
@@ -752,59 +776,8 @@ function queueChangedPlanetDetailRefreshes(previousSignatures: Map<string, strin
   return changed;
 }
 
-function calculateFactionMonthlyDelta(nextState: GameState, factionId: number) {
-  let delta = createEmptyResourceCounts();
-  for (const planetState of nextState.planetStates) {
-    if (!planetState.isHabited) continue;
-    if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
-    delta = addResourceCounts(delta, planetState.economy.net);
-  }
-  for (const starbase of nextState.starbases) {
-    if (starbase.ownerId !== factionId || starbase.status !== "online") continue;
-    delta = addResourceCounts(delta, starbase.economy.net);
-  }
-  for (const ship of nextState.ships) {
-    if (ship.ownerId !== factionId || ship.hull <= 0) continue;
-    const design = resolveShipDesign(nextState.shipDesigns, ship.ownerId, ship.shipKind, ship.designId);
-    const fleet = nextState.fleets.find((candidate) => candidate.id === ship.fleetId) ?? null;
-    const upkeepMultiplier = fleet
-      ? getFleetLeaderEffects(nextState, fleet.id).upkeepMultiplier
-        * getGovernmentFleetEffects(nextState, fleet.ownerId).upkeepMultiplier
-      : getGovernmentFleetEffects(nextState, ship.ownerId).upkeepMultiplier;
-    delta = addResourceCounts(delta, scaleResourceCounts(calculateShipDesignStats(design).upkeep, -upkeepMultiplier));
-  }
-  return delta;
-}
-
-function calculateFactionMarketMonthlyDelta(nextState: GameState, factionId: number): ResourceCounts {
-  const delta = createEmptyResourceCounts();
-  const flows = calculateFactionResourceFlow(nextState, factionId);
-  const orders = nextState.market?.autoTrades ?? [];
-  for (const order of orders) {
-    if (!order.enabled || order.playerId !== factionId || order.amountPerHour <= 0) continue;
-    const resource = nextState.market.resources.find((candidate) => candidate.resourceId === order.resourceId);
-    if (!resource?.marketEnabled) continue;
-    const quote = calculatePlayerMarketQuote(resource, factionId, flows, nextState);
-    const amountPerMonth = order.amountPerHour * GAME_HOURS_PER_MONTH;
-    if (order.type === "auto_buy") {
-      delta[order.resourceId] += amountPerMonth;
-      delta.energy -= amountPerMonth * quote.buyPrice;
-    } else {
-      delta[order.resourceId] -= amountPerMonth;
-      delta.energy += amountPerMonth * quote.sellPrice;
-    }
-  }
-  return delta;
-}
-
-
 function refreshFactionEconomyDeltas(nextState = ctx.state): void {
-  for (const economy of nextState.factionEconomies) {
-    const baseMonthlyDelta = calculateFactionMonthlyDelta(nextState, economy.factionId);
-    const marketMonthlyDelta = calculateFactionMarketMonthlyDelta(nextState, economy.factionId);
-    economy.marketMonthlyDelta = marketMonthlyDelta;
-    economy.monthlyDelta = addResourceCounts(baseMonthlyDelta, marketMonthlyDelta);
-  }
+  applyFactionEconomyDeltas(nextState);
 }
 
 function addInferredTechIdsFromBuilding(techIds: Set<TechId>, buildingKind: BuildingKind, level = 1): void {
@@ -971,77 +944,6 @@ function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<ServerStarba
   };
 }
 
-function getShipDefinition(shipKind?: string) {
-  const kind = shipKind && isStarbaseShipKind(shipKind) ? shipKind : "corvette";
-  return STARBASE_SHIP_DEFINITIONS[kind];
-}
-
-function findShipDesign(
-  shipDesigns: ShipDesign[],
-  ownerId: number,
-  shipKind: StarbaseShipKind,
-  designId?: string | null,
-  includeDecommissioned = true,
-): ShipDesign | null {
-  if (designId) {
-    const explicit = findShipDesignById(shipDesigns, ownerId, shipKind, designId, includeDecommissioned);
-    if (explicit) return explicit;
-  }
-  return shipDesigns.find((design) => (
-    design.ownerId === ownerId
-    && design.shipKind === shipKind
-    && design.status === "active"
-  )) ?? shipDesigns.find((design) => (
-    design.ownerId === ownerId
-    && design.shipKind === shipKind
-    && includeDecommissioned
-  )) ?? null;
-}
-
-function findShipDesignById(
-  shipDesigns: ShipDesign[],
-  ownerId: number,
-  shipKind: StarbaseShipKind,
-  designId: string | null | undefined,
-  includeDecommissioned = true,
-): ShipDesign | null {
-  if (!designId) return null;
-  return shipDesigns.find((design) => (
-    design.id === designId
-    && design.ownerId === ownerId
-    && design.shipKind === shipKind
-    && (includeDecommissioned || design.status === "active")
-  )) ?? null;
-}
-
-function getNewestActiveShipDesign(
-  shipDesigns: ShipDesign[],
-  ownerId: number,
-  shipKind: StarbaseShipKind,
-): ShipDesign | null {
-  return shipDesigns
-    .filter((design) => design.ownerId === ownerId && design.shipKind === shipKind && design.status === "active")
-    .sort((a, b) => {
-      const yearDelta = (b.updatedAtYear ?? b.createdAtYear) - (a.updatedAtYear ?? a.createdAtYear);
-      if (yearDelta !== 0) return yearDelta;
-      return b.createdAtYear - a.createdAtYear;
-    })[0] ?? null;
-}
-
-function resolveShipDesign(
-  shipDesigns: ShipDesign[],
-  ownerId: number,
-  shipKind: StarbaseShipKind,
-  designId?: string | null,
-): ShipDesign {
-  return findShipDesign(shipDesigns, ownerId, shipKind, designId, true)
-    ?? createDefaultShipDesign(ownerId, shipKind, ctx.state?.clock?.year ?? GAME_START_YEAR);
-}
-
-function getShipDesignForShip(ship: Pick<ServerShip, "ownerId" | "shipKind" | "designId">): ShipDesign {
-  return resolveShipDesign(ctx.state.shipDesigns, ship.ownerId, ship.shipKind, ship.designId);
-}
-
 function calculateShipUpgradePlan(fromDesign: ShipDesign, targetDesign: ShipDesign): {
   cost: ResourceCounts;
   totalDays: number;
@@ -1125,7 +1027,7 @@ function createShip(
   id = createRuntimeId("ship", [ownerId, shipKind]),
   designId?: string | null,
 ): GameShip {
-  const design = resolveShipDesign(ctx.state.shipDesigns, ownerId, shipKind, designId);
+  const design = resolveShipDesign(ctx.state.shipDesigns, ownerId, shipKind, designId, ctx.state.clock.year);
   return createShipFromDesign(ownerId, fleetId, design, id);
 }
 
@@ -2895,186 +2797,12 @@ function createSystemDetailPayload(
   };
 }
 
-interface FactionResourceFlow {
-  production: ResourceCounts;
-  consumption: ResourceCounts;
-}
-
-interface PlayerMarketQuote {
-  finalQuotePrice: number;
-  buyPrice: number;
-  sellPrice: number;
-  productionPerHour: number;
-  consumptionPerHour: number;
-  internalSupply: number;
-  internalDemand: number;
-  playerInternalModifier: number;
-  ownedAmount: number;
-}
-
-function calculateFactionResourceFlow(nextState: GameState, factionId: number): FactionResourceFlow {
-  const production = createEmptyResourceCounts();
-  const consumption = createEmptyResourceCounts();
-
-  for (const planetState of nextState.planetStates) {
-    if (!planetState.isHabited) continue;
-    if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
-    for (const resource of RESOURCE_KINDS) {
-      production[resource] += Math.max(0, planetState.economy.production[resource]);
-      consumption[resource] += Math.max(0, planetState.economy.upkeep[resource]);
-    }
-  }
-
-  for (const starbase of nextState.starbases) {
-    if (starbase.ownerId !== factionId || starbase.status !== "online") continue;
-    for (const resource of RESOURCE_KINDS) {
-      production[resource] += Math.max(0, starbase.economy.production[resource]);
-      consumption[resource] += Math.max(0, starbase.economy.upkeep[resource]);
-    }
-  }
-
-  for (const ship of nextState.ships) {
-    if (ship.ownerId !== factionId || ship.hull <= 0) continue;
-    const design = resolveShipDesign(nextState.shipDesigns, ship.ownerId, ship.shipKind, ship.designId);
-    const fleet = nextState.fleets.find((candidate) => candidate.id === ship.fleetId) ?? null;
-    const upkeepMultiplier = fleet
-      ? getFleetLeaderEffects(nextState, fleet.id).upkeepMultiplier
-        * getGovernmentFleetEffects(nextState, fleet.ownerId).upkeepMultiplier
-      : getGovernmentFleetEffects(nextState, ship.ownerId).upkeepMultiplier;
-    const upkeep = scaleResourceCounts(calculateShipDesignStats(design).upkeep, upkeepMultiplier);
-    for (const resource of RESOURCE_KINDS) {
-      consumption[resource] += Math.max(0, upkeep[resource]);
-    }
-  }
-
-  return { production, consumption };
-}
-
-function getMarketPlayerStats(factionId: number): MarketPlayerStats {
-  let stats = ctx.state.market.playerStats.find((candidate) => candidate.playerId === factionId);
-  if (!stats) {
-    stats = {
-      playerId: factionId,
-      totalImportsEnergy: 0,
-      totalExportsEnergy: 0,
-    };
-    ctx.state.market.playerStats.push(stats);
-    ctx.hasDirtyState = true;
-  }
-  return stats;
-}
-
-function getReadonlyMarketPlayerStats(factionId: number | null): MarketPlayerStats | null {
-  if (factionId === null) return null;
-  return ctx.state.market.playerStats.find((candidate) => candidate.playerId === factionId) ?? {
-    playerId: factionId,
-    totalImportsEnergy: 0,
-    totalExportsEnergy: 0,
-  };
-}
-
-function getMarketResourceState(resourceId: ResourceKind): MarketResourceState | null {
-  return ctx.state.market.resources.find((resource) => resource.resourceId === resourceId) ?? null;
-}
-
-function getMarketPriceHistory(resourceId: ResourceKind): MarketPriceSnapshot[] {
-  return ctx.state.market.priceSnapshots
-    .filter((snapshot) => snapshot.resourceId === resourceId)
-    .sort((a, b) => a.timestamp - b.timestamp);
-}
-
-function getMarketTrend(resourceId: ResourceKind, currentPrice: number): MarketResourceQuote["trend"] {
-  const history = getMarketPriceHistory(resourceId);
-  const previous = history.length >= 2 ? history[history.length - 2]?.price : history[0]?.price;
-  if (!Number.isFinite(previous) || !previous) return "flat";
-  const change = (currentPrice - previous) / Math.max(0.000001, previous);
-  if (change > 0.005) return "up";
-  if (change < -0.005) return "down";
-  return "flat";
-}
-
-function appendMarketPriceSnapshot(resource: MarketResourceState, timestamp = ctx.state.clock.year): void {
-  ctx.state.market.priceSnapshots.push({
-    resourceId: resource.resourceId,
-    price: resource.currentPrice,
-    temporaryPressure: resource.temporaryPressure,
-    persistentPressure: resource.persistentPressure,
-    timestamp,
-  });
-  ctx.state.market.priceSnapshots = trimMarketPriceSnapshots(ctx.state.market.priceSnapshots);
-}
-
-function calculatePlayerMarketQuote(
-  resource: MarketResourceState,
-  factionId: number | null,
-  flows?: FactionResourceFlow,
-  nextState = ctx.state,
-): PlayerMarketQuote {
-  const economy = factionId === null
-    ? null
-    : nextState.factionEconomies.find((candidate) => candidate.factionId === factionId) ?? null;
-  const productionPerHour = factionId === null || !flows
-    ? 0
-    : Math.max(0, flows.production[resource.resourceId]) / GAME_HOURS_PER_MONTH;
-  const consumptionPerHour = factionId === null || !flows
-    ? 0
-    : Math.max(0, flows.consumption[resource.resourceId]) / GAME_HOURS_PER_MONTH;
-  let effectiveProductionPerHour = productionPerHour;
-  let effectiveConsumptionPerHour = consumptionPerHour;
-
-  if (factionId !== null) {
-    const tradePrivilege = TREATY_ARTICLE_DEFINITIONS.find((article) => article.id === TRADE_PRIVILEGE_ARTICLE_ID);
-    const shareFraction = tradePrivilege?.effects.find((effect) => effect.type === "marketSharedSupply")?.shareFraction ?? 0;
-    if (shareFraction > 0) {
-      for (const partnerId of getActiveTreatyPartnersForArticle(nextState.diplomacy, factionId, TRADE_PRIVILEGE_ARTICLE_ID)) {
-        const partnerFlows = calculateFactionResourceFlow(nextState, partnerId);
-        effectiveProductionPerHour += (Math.max(0, partnerFlows.production[resource.resourceId]) / GAME_HOURS_PER_MONTH) * shareFraction;
-        effectiveConsumptionPerHour += (Math.max(0, partnerFlows.consumption[resource.resourceId]) / GAME_HOURS_PER_MONTH) * shareFraction;
-      }
-    }
-  }
-
-  const internalSupply = effectiveProductionPerHour;
-  let internalDemand = effectiveConsumptionPerHour * 0.85;
-
-  if (effectiveConsumptionPerHour > effectiveProductionPerHour) {
-    const deficitRatio = clamp(
-      (effectiveConsumptionPerHour - effectiveProductionPerHour) / Math.max(effectiveConsumptionPerHour, 1),
-      0,
-      1,
-    );
-    internalDemand *= 1 - (0.12 * deficitRatio);
-  }
-
-  const ratio = (internalDemand + 10) / (internalSupply + 10);
-  const playerInternalModifier = factionId === null
-    ? 1
-    : clamp(
-      Math.pow(ratio, 0.18),
-      PLAYER_INTERNAL_MODIFIER_MIN,
-      PLAYER_INTERNAL_MODIFIER_MAX,
-    );
-  const finalQuotePrice = resource.currentPrice * playerInternalModifier;
-
-  return {
-    finalQuotePrice,
-    buyPrice: finalQuotePrice * (1 + MARKET_FEE_RATE),
-    sellPrice: finalQuotePrice * (1 - MARKET_FEE_RATE),
-    productionPerHour,
-    consumptionPerHour,
-    internalSupply,
-    internalDemand,
-    playerInternalModifier,
-    ownedAmount: economy?.stockpiles[resource.resourceId] ?? 0,
-  };
-}
-
 function createMarketDetailPayload(perspective: GalaxyPerspective): MarketDetailPayload {
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
   const flows = factionId === null ? undefined : calculateFactionResourceFlow(ctx.state, factionId);
-  const playerStats = getReadonlyMarketPlayerStats(factionId);
+  const playerStats = getReadonlyMarketPlayerStats(ctx, factionId);
   const resources = ctx.state.market.resources.map<MarketResourceQuote>((resource) => {
-    const quote = calculatePlayerMarketQuote(resource, factionId, flows);
+    const quote = calculatePlayerMarketQuote(resource, factionId, flows, ctx.state);
     return {
       resourceId: resource.resourceId,
       basePrice: resource.basePrice,
@@ -3096,8 +2824,8 @@ function createMarketDetailPayload(perspective: GalaxyPerspective): MarketDetail
       playerInternalModifier: quote.playerInternalModifier,
       totalExportsEnergy: playerStats?.totalExportsEnergy ?? 0,
       totalImportsEnergy: playerStats?.totalImportsEnergy ?? 0,
-      priceHistory: getMarketPriceHistory(resource.resourceId),
-      trend: getMarketTrend(resource.resourceId, resource.currentPrice),
+      priceHistory: getMarketPriceHistory(ctx, resource.resourceId),
+      trend: getMarketTrend(ctx, resource.resourceId, resource.currentPrice),
     };
   });
 
@@ -3615,7 +3343,7 @@ function handleMarketTrade(
     reject(socket, "Resource is not available on the market.");
     return;
   }
-  const resource = getMarketResourceState(resourceId);
+  const resource = getMarketResourceState(ctx, resourceId);
   if (!resource || !resource.marketEnabled) {
     reject(socket, "That resource is not market-enabled yet.");
     return;
@@ -3638,10 +3366,10 @@ function handleMarketTrade(
   }
 
   const flows = calculateFactionResourceFlow(ctx.state, factionId);
-  const quote = calculatePlayerMarketQuote(resource, factionId, flows);
+  const quote = calculatePlayerMarketQuote(resource, factionId, flows, ctx.state);
   const grossEnergy = amount * quote.finalQuotePrice;
   const feePaid = grossEnergy * MARKET_FEE_RATE;
-  const stats = getMarketPlayerStats(factionId);
+  const stats = getMarketPlayerStats(ctx, factionId);
 
   if (tradeType === "buy") {
     const buyCost = grossEnergy + feePaid;
@@ -3655,8 +3383,8 @@ function handleMarketTrade(
       [resourceId]: economy.stockpiles[resourceId] + amount,
     };
     stats.totalImportsEnergy += grossEnergy;
-    recordMarketTransaction(factionId, resourceId, "buy", amount, quote.finalQuotePrice, feePaid, -buyCost);
-    applyMarketTradePressure(resource, "buy", amount);
+    recordMarketTransaction(ctx, factionId, resourceId, "buy", amount, quote.finalQuotePrice, feePaid, -buyCost);
+    applyMarketTradePressure(ctx, resource, "buy", amount);
     accept(socket, `Bought ${amount} ${resourceId} for ${formatEnergyAmount(buyCost)} Energy.`);
   } else {
     if (economy.stockpiles[resourceId] < amount) {
@@ -3670,8 +3398,8 @@ function handleMarketTrade(
       energy: economy.stockpiles.energy + sellPayout,
     };
     stats.totalExportsEnergy += grossEnergy;
-    recordMarketTransaction(factionId, resourceId, "sell", amount, quote.finalQuotePrice, feePaid, sellPayout);
-    applyMarketTradePressure(resource, "sell", amount);
+    recordMarketTransaction(ctx, factionId, resourceId, "sell", amount, quote.finalQuotePrice, feePaid, sellPayout);
+    applyMarketTradePressure(ctx, resource, "sell", amount);
     accept(socket, `Sold ${amount} ${resourceId} for ${formatEnergyAmount(sellPayout)} Energy.`);
   }
 
@@ -3696,7 +3424,7 @@ function handleAddMarketAutoTrade(
     reject(socket, "Resource is not available on the market.");
     return;
   }
-  const resource = getMarketResourceState(resourceId);
+  const resource = getMarketResourceState(ctx, resourceId);
   if (!resource?.marketEnabled) {
     reject(socket, "That resource is not market-enabled yet.");
     return;
@@ -3755,46 +3483,6 @@ function handleRemoveMarketAutoTrade(socket: WebSocket, perspective: GalaxyPersp
   ctx.hasDirtyState = true;
   accept(socket, `${removed?.type === "auto_buy" ? "Auto-buy" : "Auto-sell"} removed.`);
   broadcastUpdates(["factionEconomies", "market"]);
-}
-
-function recordMarketTransaction(
-  playerId: number,
-  resourceId: ResourceKind,
-  type: MarketTradeType,
-  amount: number,
-  unitPrice: number,
-  feePaid: number,
-  totalEnergyDelta: number,
-): void {
-  ctx.state.market.transactions.push({
-    playerId,
-    resourceId,
-    type,
-    amount,
-    unitPrice,
-    feeRate: MARKET_FEE_RATE,
-    feePaid,
-    totalEnergyDelta,
-    timestamp: ctx.state.clock.year,
-  });
-  ctx.state.market.transactions = ctx.state.market.transactions.slice(-MARKET_TRANSACTION_LIMIT);
-}
-
-function applyMarketTradePressure(resource: MarketResourceState, type: MarketTradeType, amount: number): void {
-  const direction = type === "buy" || type === "auto_buy" ? 1 : -1;
-  const factor = type === "buy" || type === "sell"
-    ? MARKET_MANUAL_PRESSURE_FACTOR
-    : MARKET_AUTO_PRESSURE_FACTOR;
-  const pressure = direction * calculateMarketPressureDelta(amount, resource.liquidity, factor);
-
-  if (type === "buy" || type === "sell") {
-    resource.temporaryPressure += pressure;
-  } else {
-    resource.persistentPressure += pressure;
-  }
-
-  Object.assign(resource, recomputeMarketResourcePrice(resource, ctx.state.clock.year));
-  appendMarketPriceSnapshot(resource, ctx.state.clock.year);
 }
 
 function formatEnergyAmount(value: number): string {
@@ -4491,17 +4179,6 @@ function fleetUpdateSignature(): string {
   })));
 }
 
-function scaleResourceCounts(counts: ResourceCounts, scale: number): ResourceCounts {
-  return {
-    food: counts.food * scale,
-    minerals: counts.minerals * scale,
-    energy: counts.energy * scale,
-    goods: counts.goods * scale,
-    alloys: counts.alloys * scale,
-    research: counts.research * scale,
-  };
-}
-
 function processEconomyHours(targetHour: number): { economyChanged: boolean; technologiesChanged: boolean } {
   const previousPlanetSignatures = new Map(
     ctx.state.planetStates.map((planetState) => [planetState.id, getPlanetDetailSignature(planetState)]),
@@ -4588,7 +4265,7 @@ function processMarketTicks(targetHour: number): { marketChanged: boolean; econo
     : targetHour;
   if (targetHour - snapshotHour >= MARKET_PRICE_SNAPSHOT_INTERVAL_HOURS) {
     for (const resource of ctx.state.market.resources) {
-      appendMarketPriceSnapshot(resource, ctx.state.clock.year);
+      appendMarketPriceSnapshot(ctx, resource, ctx.state.clock.year);
     }
     ctx.state.market.lastSnapshotHour = targetHour;
     marketChanged = true;
@@ -4600,7 +4277,7 @@ function processMarketTicks(targetHour: number): { marketChanged: boolean; econo
 
 function executeMarketAutoTrade(order: MarketAutoTradeOrder, elapsedHours: number): boolean {
   if (!order.enabled || order.amountPerHour <= 0 || elapsedHours <= 0) return false;
-  const resource = getMarketResourceState(order.resourceId);
+  const resource = getMarketResourceState(ctx, order.resourceId);
   if (!resource?.marketEnabled) return false;
   const economy = getFactionEconomy(order.playerId);
   if (!economy) return false;
@@ -4609,8 +4286,8 @@ function executeMarketAutoTrade(order: MarketAutoTradeOrder, elapsedHours: numbe
   if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) return false;
 
   const flows = calculateFactionResourceFlow(ctx.state, order.playerId);
-  const quote = calculatePlayerMarketQuote(resource, order.playerId, flows);
-  const stats = getMarketPlayerStats(order.playerId);
+  const quote = calculatePlayerMarketQuote(resource, order.playerId, flows, ctx.state);
+  const stats = getMarketPlayerStats(ctx, order.playerId);
   let amount = requestedAmount;
 
   if (order.type === "auto_buy") {
@@ -4626,8 +4303,8 @@ function executeMarketAutoTrade(order: MarketAutoTradeOrder, elapsedHours: numbe
       [order.resourceId]: economy.stockpiles[order.resourceId] + amount,
     };
     stats.totalImportsEnergy += grossEnergy;
-    recordMarketTransaction(order.playerId, order.resourceId, "auto_buy", amount, quote.finalQuotePrice, feePaid, -buyCost);
-    applyMarketTradePressure(resource, "auto_buy", amount);
+    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_buy", amount, quote.finalQuotePrice, feePaid, -buyCost);
+    applyMarketTradePressure(ctx, resource, "auto_buy", amount);
   } else {
     amount = Math.min(amount, economy.stockpiles[order.resourceId]);
     if (amount <= 0.000001) return false;
@@ -4640,8 +4317,8 @@ function executeMarketAutoTrade(order: MarketAutoTradeOrder, elapsedHours: numbe
       energy: economy.stockpiles.energy + sellPayout,
     };
     stats.totalExportsEnergy += grossEnergy;
-    recordMarketTransaction(order.playerId, order.resourceId, "auto_sell", amount, quote.finalQuotePrice, feePaid, sellPayout);
-    applyMarketTradePressure(resource, "auto_sell", amount);
+    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_sell", amount, quote.finalQuotePrice, feePaid, sellPayout);
+    applyMarketTradePressure(ctx, resource, "auto_sell", amount);
   }
 
   order.updatedAt = ctx.state.clock.year;
@@ -5196,7 +4873,7 @@ function createAdminFleetWithShips(
   count: number,
   position: ReturnType<typeof systemCenterPosition>,
 ): GameFleet {
-  const design = resolveShipDesign(ctx.state.shipDesigns, ownerId, "corvette", designId === "default" ? undefined : designId);
+  const design = resolveShipDesign(ctx.state.shipDesigns, ownerId, "corvette", designId === "default" ? undefined : designId, ctx.state.clock.year);
   const fleet = createFleet(ownerId, starId, [], createRuntimeId("fleet", [ownerId, starId]));
   fleet.systemPosition = cloneSystemPosition(position);
   clearFleetMovementNow(ctx, fleet);
@@ -5915,7 +5592,7 @@ async function executeAdminCommand(
         fleet.systemPosition = position;
         ctx.state.fleets.push(fleet);
       }
-      const design = resolveShipDesign(ctx.state.shipDesigns, owner, "corvette", designToken === "default" ? undefined : designToken);
+      const design = resolveShipDesign(ctx.state.shipDesigns, owner, "corvette", designToken === "default" ? undefined : designToken, ctx.state.clock.year);
       const ships = Array.from({ length: count }, () => createShipFromDesign(owner, fleet!.id, design));
       ctx.state.ships.push(...ships);
       syncFleetMembership(ctx.state);
@@ -6192,7 +5869,7 @@ async function executeAdminCommand(
       const ship = ctx.state.ships.find((candidate) => candidate.id === id);
       const starbase = ctx.state.starbases.find((candidate) => candidate.id === id);
       if (ship) {
-        const mounts = calculateShipDesignStats(getShipDesignForShip(ship)).combat.weaponMounts;
+        const mounts = calculateShipDesignStats(getShipDesignForShip(ctx, ship)).combat.weaponMounts;
         const keys = mount === "all"
           ? mounts.map((m, index) => `${index}:${getWeaponId(m)}`)
           : (() => {

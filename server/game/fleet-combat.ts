@@ -15,11 +15,7 @@ import {
 } from "../../src/data/SystemCoordinates";
 import { getSystemOrbitLayout } from "../../src/data/SystemCoordinates";
 import type { PlanetConfig, StarData } from "../../src/data/StarMap";
-import {
-  calculateShipDesignStats,
-  createDefaultShipDesign,
-} from "../../src/data/ShipDesigns";
-import type { ShipDesign } from "../../src/data/ShipDesigns";
+import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
 import {
   calculateStarbaseEconomy,
   createEmptyStarbaseSlots,
@@ -70,6 +66,7 @@ import {
   getGovernmentFleetEffects,
 } from "./state-queries";
 import { clamp, gameDaysToYears, getMountRangeSummary, getMaxWeaponSystemRange } from "./pure-helpers";
+import { getShipDesignForShip } from "./ship-designs";
 import {
   DEPART_DURATION_MS,
   JUMP_DURATION_MS,
@@ -1142,7 +1139,7 @@ export function getFleetWeaponMounts(
     .map((shipId) => shipsById.get(shipId))
     .filter((ship): ship is GameShip => !!ship)
     .flatMap((ship) => {
-      const design = resolveShipDesignForShip(ctx, ship);
+      const design = getShipDesignForShip(ctx, ship);
       return calculateShipDesignStats(design).combat.weaponMounts;
     });
 }
@@ -1162,27 +1159,13 @@ export function getFleetHealthRatio(fleet: GameFleet, shipsById: Map<string, Gam
   return current / maxTotal;
 }
 
-/** Resolve ship design — mirrors the index.ts helper; ctx provides state. */
-function resolveShipDesignForShip(ctx: RuntimeContext, ship: Pick<GameShip, "ownerId" | "shipKind" | "designId">): ShipDesign {
-  // Attempt to find the specific design; fall back to finding by kind for the owner
-  const designs = ctx.state.shipDesigns;
-  if (ship.designId) {
-    const found = designs.find((d) => d.id === ship.designId && d.ownerId === ship.ownerId);
-    if (found) return found;
-  }
-  const byKind = designs.find((d) => d.ownerId === ship.ownerId && d.shipKind === ship.shipKind);
-  if (byKind) return byKind;
-  // Minimal fallback — create a default design inline
-  return createDefaultShipDesign(ship.ownerId, ship.shipKind as never);
-}
-
 export function updateFleetTacticalProfile(
   ctx: RuntimeContext,
   fleet: GameFleet,
   shipsById: Map<string, GameShip>,
 ): boolean {
   const ships = getFleetLivingShips(fleet, shipsById);
-  const mounts = ships.flatMap((ship) => calculateShipDesignStats(resolveShipDesignForShip(ctx, ship)).combat.weaponMounts);
+  const mounts = ships.flatMap((ship) => calculateShipDesignStats(getShipDesignForShip(ctx, ship)).combat.weaponMounts);
   const range = getMountRangeSummary(mounts);
   const nextRadius = getFleetTacticalRadius(Math.max(1, ships.length));
   const nextStatus = ships.length === 0 ? "destroyed" : fleet.combatStatus;
@@ -1479,7 +1462,7 @@ export function getShipEvasionForFleetCombat(
   ship: GameShip,
   fleet: GameFleet,
 ): number {
-  const design = resolveShipDesignForShip(ctx, ship);
+  const design = getShipDesignForShip(ctx, ship);
   const stats = calculateShipDesignStats(design);
   const bonus = FORMATION_EVASION_BONUS[fleet.formation] ?? 0;
   // Leader and government effects come from state-queries helpers (pass ctx.state)
@@ -1640,7 +1623,7 @@ export function fireFleetWeaponsAtTarget(
   const distance = effectiveActorDistance(actor, target);
   const attackMultiplier = getFleetAttackMultiplier(ctx.state, actor.fleet);
   for (const ship of getFleetLivingShips(actor.fleet, shipsById)) {
-    const mounts = calculateShipDesignStats(resolveShipDesignForShip(ctx, ship)).combat.weaponMounts;
+    const mounts = calculateShipDesignStats(getShipDesignForShip(ctx, ship)).combat.weaponMounts;
     ship.weaponCooldowns ??= {};
     for (let index = 0; index < mounts.length; index += 1) {
       const mount = applyFleetAttackShortagePenalty(mounts[index], attackMultiplier);
