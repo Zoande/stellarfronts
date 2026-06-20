@@ -1231,3 +1231,888 @@
     width: 100%;
   }
 }
+
+/* ─── Messages ───────────────────────────────────────────────────────────── */
+
+.home-messages-main {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.home-messages-view {
+  display: grid;
+  grid-template-columns: 264px 1fr;
+  flex: 1;
+  min-height: 560px;
+  border: 1px solid rgba(105, 191, 246, 0.38);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 20px 46px rgba(0, 0, 0, 0.52);
+}
+
+/* Sidebar */
+.home-messages-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: rgba(5, 12, 25, 0.97);
+  border-right: 1px solid rgba(102, 200, 255, 0.14);
+}
+
+.home-messages-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(102, 200, 255, 0.14);
+  flex-shrink: 0;
+}
+
+.home-messages-sidebar-title {
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(205, 232, 255, 0.6);
+}
+
+.home-messages-new-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(102, 200, 255, 0.38);
+  border-radius: 6px;
+  background: rgba(12, 28, 52, 0.8);
+  color: #9ecfff;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, color 0.15s, transform 0.15s;
+}
+
+.home-messages-new-btn:hover {
+  background: rgba(30, 70, 120, 0.9);
+  color: #fff;
+  transform: scale(1.08);
+}
+
+/* New chat form */
+.home-messages-new-form {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(102, 200, 255, 0.12);
+  display: grid;
+  gap: 7px;
+  background: rgba(10, 22, 40, 0.98);
+  animation: msgSlideDown 0.15s ease;
+}
+
+@keyframes msgSlideDown {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.home-messages-new-input {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid rgba(102, 200, 255, 0.35);
+  border-radius: 5px;
+  background: rgba(2, 6, 14, 0.9);
+  color: #e6f8ff;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 0.84rem;
+  box-sizing: border-box;
+}
+
+.home-messages-new-input:focus {
+  outline: none;
+  border-color: rgba(102, 200, 255, 0.65);
+}
+
+.home-messages-new-error {
+  font-size: 0.72rem;
+  color: #ff8896;
+}
+
+.home-messages-new-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.home-messages-new-confirm,
+.home-messages-new-cancel {
+  flex: 1;
+  min-height: 30px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+
+.home-messages-new-confirm {
+  border: 1px solid rgba(119, 235, 255, 0.45);
+  background: linear-gradient(180deg, #3abde8, #1e4db8);
+  color: #f4fbff;
+}
+
+.home-messages-new-cancel {
+  border: 1px solid rgba(102, 200, 255, 0.22);
+  background: rgba(10, 22, 40, 0.8);
+  color: rgba(205, 232, 255, 0.65);
+}
+
+.home-messages-new-confirm:hover,
+.home-messages-new-cancel:hover {
+  filter: brightness(1.12);
+}
+
+/* Conversation list */
+.home-messages-conv-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.home-messages-conv-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.home-messages-conv-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.home-messages-conv-list::-webkit-scrollbar-thumb {
+  background: rgba(102, 200, 255, 0.2);
+  border-radius: 2px;
+}
+
+.home-messages-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: rgba(205, 232, 255, 0.38);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.home-messages-conv-item {
+  width: 100%;
+  padding: 11px 14px;
+  border: none;
+  border-bottom: 1px solid rgba(102, 200, 255, 0.08);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  transition: background 0.14s;
+}
+
+.home-messages-conv-item:hover {
+  background: rgba(55, 120, 190, 0.12);
+}
+
+.home-messages-conv-item.is-active {
+  background: rgba(55, 120, 190, 0.22);
+}
+
+.home-messages-conv-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.home-messages-conv-name {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #e6f8ff;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-messages-conv-time {
+  font-size: 0.66rem;
+  color: rgba(205, 232, 255, 0.4);
+  flex-shrink: 0;
+}
+
+.home-messages-unread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: #2d6ff5;
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 900;
+  flex-shrink: 0;
+}
+
+.home-messages-conv-preview {
+  font-size: 0.72rem;
+  color: rgba(205, 232, 255, 0.44);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Thread */
+.home-messages-thread {
+  display: flex;
+  flex-direction: column;
+  background: rgba(8, 16, 32, 0.96);
+  min-width: 0;
+}
+
+.home-messages-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  opacity: 0.36;
+}
+
+.home-messages-placeholder-icon {
+  font-size: 2.8rem;
+  line-height: 1;
+}
+
+.home-messages-placeholder-text {
+  font-size: 0.84rem;
+  color: rgba(205, 232, 255, 0.8);
+  text-align: center;
+  max-width: 220px;
+  line-height: 1.5;
+}
+
+.home-messages-thread-header {
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(102, 200, 255, 0.14);
+  background: rgba(5, 12, 25, 0.7);
+  flex-shrink: 0;
+}
+
+.home-messages-thread-name {
+  font-size: 0.9rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #e6f8ff;
+}
+
+.home-messages-bubbles {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.home-messages-bubbles::-webkit-scrollbar {
+  width: 4px;
+}
+
+.home-messages-bubbles::-webkit-scrollbar-thumb {
+  background: rgba(102, 200, 255, 0.18);
+  border-radius: 2px;
+}
+
+.home-messages-loading,
+.home-messages-no-msgs {
+  text-align: center;
+  color: rgba(205, 232, 255, 0.36);
+  font-size: 0.8rem;
+  padding: 20px 0;
+}
+
+.home-messages-bubble-wrap {
+  display: flex;
+}
+
+.home-messages-bubble-wrap.is-mine {
+  justify-content: flex-end;
+}
+
+.home-messages-bubble-wrap.is-theirs {
+  justify-content: flex-start;
+}
+
+.home-messages-bubble {
+  max-width: 68%;
+  padding: 9px 14px 7px;
+  border-radius: 14px;
+  word-break: break-word;
+  animation: msgFadeIn 0.18s ease;
+}
+
+@keyframes msgFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.home-messages-bubble.is-mine {
+  background: linear-gradient(135deg, #2d6ff5, #1a3db0);
+  color: #eaf4ff;
+  border-bottom-right-radius: 4px;
+  box-shadow: 0 2px 12px rgba(30, 70, 200, 0.35);
+}
+
+.home-messages-bubble.is-theirs {
+  background: rgba(255, 255, 255, 0.07);
+  color: #d6eaff;
+  border: 1px solid rgba(102, 200, 255, 0.18);
+  border-bottom-left-radius: 4px;
+}
+
+.home-messages-bubble-body {
+  font-size: 0.88rem;
+  line-height: 1.48;
+  white-space: pre-wrap;
+}
+
+.home-messages-bubble-time {
+  font-size: 0.62rem;
+  opacity: 0.52;
+  margin-top: 4px;
+  text-align: right;
+}
+
+/* Input bar */
+.home-messages-input-bar {
+  padding: 12px 16px;
+  border-top: 1px solid rgba(102, 200, 255, 0.14);
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  background: rgba(5, 12, 25, 0.7);
+  flex-shrink: 0;
+}
+
+.home-messages-input {
+  flex: 1;
+  min-height: 40px;
+  max-height: 120px;
+  border: 1px solid rgba(102, 200, 255, 0.3);
+  border-radius: 8px;
+  background: rgba(2, 6, 14, 0.88);
+  color: #e6f8ff;
+  padding: 9px 13px;
+  font: inherit;
+  font-size: 0.88rem;
+  resize: none;
+  transition: border-color 0.15s;
+  line-height: 1.46;
+  overflow-y: auto;
+}
+
+.home-messages-input:focus {
+  outline: none;
+  border-color: rgba(102, 200, 255, 0.6);
+}
+
+.home-messages-input::placeholder {
+  color: rgba(205, 232, 255, 0.32);
+}
+
+.home-messages-send-btn {
+  min-height: 40px;
+  padding: 0 18px;
+  border: 1px solid rgba(119, 235, 255, 0.42);
+  border-radius: 8px;
+  background: linear-gradient(180deg, #48d9ff, #2558d9);
+  color: #f4fbff;
+  font-family: 'Orbitron', 'Rajdhani', 'Trebuchet MS', sans-serif;
+  font-weight: 800;
+  font-size: 0.76rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: filter 0.15s, transform 0.15s;
+}
+
+.home-messages-send-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.home-messages-send-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.home-messages-send-error {
+  padding: 6px 16px 10px;
+  font-size: 0.74rem;
+  color: #ff8896;
+  background: rgba(5, 12, 25, 0.7);
+}
+
+/* ─── Progression System ─────────────────────────────────────────────────── */
+
+/* Shared slot interaction */
+.home-achievements-slot,
+.home-quests-slot {
+  cursor: pointer;
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+  border-radius: 6px;
+  outline: none;
+}
+
+.home-achievements-slot:hover,
+.home-quests-slot:hover {
+  box-shadow: 0 0 0 2px rgba(73, 175, 230, 0.45), inset 0 0 24px rgba(73, 175, 230, 0.06);
+  transform: translateY(-1px);
+}
+
+.home-achievements-slot:focus-visible,
+.home-quests-slot:focus-visible {
+  box-shadow: 0 0 0 2px rgba(73, 175, 230, 0.7);
+}
+
+.home-slot-hint {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(6, 17, 31, 0.38);
+  font-weight: 700;
+}
+
+.home-achievements-slot:hover .home-slot-hint,
+.home-quests-slot:hover .home-slot-hint {
+  color: rgba(6, 17, 31, 0.6);
+}
+
+/* ─── Level Track (middle slot) ──────────────────────────────────────────── */
+
+.home-level-track {
+  gap: 8px;
+  padding-top: 14px;
+}
+
+.home-level-name {
+  font-size: 1.1rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.home-level-loading {
+  color: rgba(6, 17, 31, 0.44);
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.home-level-badge-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+  width: 100%;
+  padding: 4px 0;
+}
+
+.home-level-badge {
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  border: 1px solid rgba(6, 17, 31, 0.2);
+  background: rgba(6, 17, 31, 0.1);
+  position: relative;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.home-level-badge.is-reached {
+  background: linear-gradient(145deg, var(--badge-color, #607d8b), color-mix(in srgb, var(--badge-color, #607d8b) 60%, #000));
+  border-color: rgba(255, 255, 255, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+.home-level-badge.is-current {
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.6),
+    0 0 14px color-mix(in srgb, var(--badge-color, #607d8b) 80%, transparent),
+    0 2px 8px rgba(0, 0, 0, 0.3);
+  transform: scale(1.12);
+  z-index: 1;
+}
+
+.home-level-badge-num {
+  font-size: 0.6rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  color: rgba(6, 17, 31, 0.44);
+  line-height: 1;
+}
+
+.home-level-badge.is-reached .home-level-badge-num {
+  color: rgba(255, 255, 255, 0.9);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+.home-level-next {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(6, 17, 31, 0.5);
+}
+
+/* ─── Quests Slot ────────────────────────────────────────────────────────── */
+
+.home-quests-slot {
+  /* override grid from .home-stat so the preview list can fill remaining height */
+  display: flex !important;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+  justify-items: unset;
+  gap: 6px;
+  padding: 14px 12px 10px;
+  overflow: hidden;
+}
+
+/* label sits at fixed height */
+.home-quests-label {
+  flex-shrink: 0;
+  margin-top: 0;
+}
+
+.home-quest-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #e8a000;
+  color: #06111f;
+  font-size: 0.65rem;
+  font-weight: 900;
+  margin-left: 7px;
+  vertical-align: 1px;
+  box-shadow: 0 0 8px rgba(232, 160, 0, 0.55);
+}
+
+.home-quest-preview {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.home-quest-preview-item {
+  display: grid;
+  gap: 3px;
+}
+
+.home-quest-preview-title {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(6, 17, 31, 0.78);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-quest-preview-item.is-done .home-quest-preview-title {
+  color: #06111f;
+}
+
+.home-quest-dot {
+  width: 6px;
+  height: 6px;
+  min-width: 6px;
+  border-radius: 50%;
+  background: #e8a000;
+  box-shadow: 0 0 6px rgba(232, 160, 0, 0.7);
+}
+
+.home-quest-preview-bar {
+  height: 5px;
+}
+
+
+/* ─── Achievements Panel ─────────────────────────────────────────────────── */
+
+.home-achievements-panel,
+.home-quest-panel {
+  width: min(860px, 100%);
+  max-height: min(640px, calc(100vh - 60px));
+  overflow-y: auto;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.home-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 22px;
+  border-bottom: 1px solid rgba(102, 200, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.home-panel-title {
+  margin: 0;
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #e6f8ff;
+}
+
+.home-panel-count {
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(205, 232, 255, 0.62);
+  margin-right: auto;
+}
+
+.home-panel-close {
+  margin-left: auto;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(102, 200, 255, 0.32);
+  border-radius: 4px;
+  background: rgba(12, 25, 45, 0.72);
+  color: rgba(205, 232, 255, 0.72);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, color 0.15s;
+}
+
+.home-panel-close:hover {
+  background: rgba(30, 60, 100, 0.9);
+  color: #fff;
+}
+
+.home-achievements-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  padding: 18px 22px;
+}
+
+.home-ach-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(102, 200, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.home-ach-card.is-unlocked {
+  border-color: rgba(102, 200, 255, 0.42);
+  background: rgba(55, 130, 200, 0.12);
+}
+
+.home-ach-card.is-locked {
+  opacity: 0.56;
+}
+
+.home-ach-icon {
+  font-size: 1.4rem;
+  line-height: 1;
+  flex-shrink: 0;
+  color: rgba(205, 232, 255, 0.55);
+}
+
+.home-ach-card.is-unlocked .home-ach-icon {
+  color: #e8c000;
+  text-shadow: 0 0 10px rgba(232, 192, 0, 0.6);
+}
+
+.home-ach-body {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.home-ach-title {
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #e6f8ff;
+  line-height: 1.2;
+}
+
+.home-ach-desc {
+  font-size: 0.74rem;
+  color: rgba(205, 232, 255, 0.62);
+  line-height: 1.4;
+}
+
+.home-ach-reward {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #70ddff;
+}
+
+/* ─── Quest Panel ────────────────────────────────────────────────────────── */
+
+.home-quest-section {
+  padding: 16px 22px;
+  border-bottom: 1px solid rgba(102, 200, 255, 0.12);
+  display: grid;
+  gap: 10px;
+}
+
+.home-quest-section:last-child {
+  border-bottom: none;
+}
+
+.home-quest-section-label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(205, 232, 255, 0.5);
+}
+
+.home-quest-item {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(102, 200, 255, 0.2);
+  background: rgba(255, 255, 255, 0.04);
+  transition: border-color 0.15s;
+}
+
+.home-quest-item.is-done {
+  border-color: rgba(102, 200, 255, 0.42);
+  background: rgba(55, 130, 200, 0.1);
+}
+
+.home-quest-item.is-claimed {
+  opacity: 0.52;
+}
+
+.home-quest-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.home-quest-title {
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #e6f8ff;
+}
+
+.home-quest-timer {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: rgba(205, 232, 255, 0.48);
+  white-space: nowrap;
+}
+
+.home-quest-desc {
+  font-size: 0.76rem;
+  color: rgba(205, 232, 255, 0.62);
+}
+
+.home-quest-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.home-quest-bar {
+  flex: 1;
+  height: 8px;
+}
+
+.home-quest-pct {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: rgba(205, 232, 255, 0.62);
+  white-space: nowrap;
+}
+
+.home-quest-claim-btn {
+  align-self: start;
+  min-height: 32px;
+  border: 1px solid rgba(232, 160, 0, 0.6);
+  border-radius: 4px;
+  background: linear-gradient(180deg, rgba(232, 160, 0, 0.28), rgba(155, 100, 0, 0.22));
+  color: #ffd86e;
+  font-family: 'Orbitron', 'Rajdhani', 'Trebuchet MS', sans-serif;
+  font-weight: 800;
+  font-size: 0.74rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0 14px;
+  transition: filter 0.15s, transform 0.15s;
+}
+
+.home-quest-claim-btn:hover {
+  filter: brightness(1.12);
+  transform: translateY(-1px);
+}
+
+.home-quest-claim-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  transform: none;
+}
+
+.home-quest-claimed-badge {
+  align-self: start;
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(60, 200, 60, 0.38);
+  background: rgba(60, 200, 60, 0.1);
+  color: #6be08a;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}

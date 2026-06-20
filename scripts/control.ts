@@ -4,8 +4,9 @@
  *   npm run control -- <command> [args]
  *
  * Commands:
- *   versions                              List registered versions
- *   register-version <gitRef> [--id x] [--port n]
+ *   versions                              List versions (dev + registered, with commits)
+ *   register-version <gitRef> [--id x] [--port n]   Pin a branch/tag/commit to a version
+ *   unregister-version <id>               Remove a version + its worktree (no games may use it)
  *   games                                 List games (+version, status, endpoint)
  *   create-game <name> [--version v]
  *   reset-game <id>
@@ -32,7 +33,7 @@ function parseFlags(args: string[]): { positional: string[]; flags: Record<strin
   return { positional, flags };
 }
 
-async function call(method: "GET" | "POST", pathname: string, body?: unknown): Promise<unknown> {
+async function call(method: "GET" | "POST" | "DELETE", pathname: string, body?: unknown): Promise<unknown> {
   const response = await fetch(`${CONTROL_URL}${pathname}`, {
     method,
     headers: { "content-type": "application/json", "x-control-token": CONTROL_TOKEN },
@@ -57,6 +58,9 @@ async function main(): Promise<void> {
       break;
     case "register-version":
       print(await call("POST", "/versions", { gitRef: positional[0], id: flags.id, port: flags.port ? Number(flags.port) : undefined }));
+      break;
+    case "unregister-version":
+      print(await call("DELETE", `/versions/${positional[0]}`));
       break;
     case "games":
       print(await call("GET", "/games"));

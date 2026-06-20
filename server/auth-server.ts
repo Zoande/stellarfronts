@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   authStore,
@@ -13,6 +13,7 @@ import {
   serializeSessionCookie,
 } from './auth-store';
 import { getGameStateDirectory } from './game-state-path';
+import { TRIDAY_QUESTS, WEEKLY_QUESTS, getLevelForXp as getProgressionLevel } from './game/progression';
 import type { AuthAccount, Credentials, LoginCredentials, NewsContentBlock, NewsPost } from '../src/auth/types';
 
 const PORT = Number(process.env.AUTH_SERVER_PORT ?? 8788);
@@ -109,6 +110,10 @@ function decodePathSegment(value: string): string {
   }
 }
 
+function getMediaBaseUrl(request: IncomingMessage): string {
+  return (process.env.AUTH_SERVER_PUBLIC_URL ?? '').replace(/\/+$/, '') || getRequestBaseUrl(request);
+}
+
 function getRequestBaseUrl(request: IncomingMessage): string {
   const forwardedProto = request.headers['x-forwarded-proto'];
   const forwardedHost = request.headers['x-forwarded-host'];
@@ -189,6 +194,11 @@ function isDevRequestAuthorized(request: IncomingMessage): boolean {
   return token ? authStore.isDevSessionTokenValid(token) : false;
 }
 
+function isControlTokenAuthorized(request: IncomingMessage): boolean {
+  const expected = process.env.CONTROL_TOKEN ?? 'dev-control-token';
+  return request.headers['x-control-token'] === expected;
+}
+
 function getAuthenticatedAccount(request: IncomingMessage): AuthAccount | null {
   const token = parseSessionTokenFromCookie(request.headers.cookie);
   return token ? authStore.getAccountFromSessionToken(token) : null;
@@ -249,14 +259,17 @@ function renderNewsShell(title: string, description: string, canonicalUrl: strin
 <body>
   <main>
     <nav>
+      <a href="/">Home</a>
       <a href="/news">News</a>
       <span>Forums</span>
       <span>Support</span>
-      <span>Privacy Policy</span>
-      <span>Terms and Conditions</span>
+      <span>Contact</span>
     </nav>
     ${body}
   </main>
+  <footer style="text-align:center;padding:10px 0 18px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:rgba(143,156,174,.5)">
+    <span>Privacy Policy</span> &middot; <span>Terms and Conditions</span>
+  </footer>
 </body>
 </html>`;
 }
@@ -425,9 +438,9 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
 
     const body = await readJsonBody<{ body?: unknown }>(request);
-    writeJson(response, 201, {
-      comment: authStore.createNewsComment(account, decodePathSegment(createNewsCommentMatch[1]), body.body),
-    });
+    const comment = authStore.createNewsComment(account, decodePathSegment(createNewsCommentMatch[1]), body.body);
+    authStore.onPlayerComment(account.id);
+    writeJson(response, 201, { comment });
     return;
   }
 
@@ -440,9 +453,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
 
     const body = await readJsonBody<{ vote?: unknown }>(request);
-    writeJson(response, 200, {
-      comment: authStore.voteNewsComment(account, Number(voteNewsCommentMatch[1]), body.vote),
-    });
+    const voteValue = typeof body.vote === 'number' ? body.vote : 0;
+    const votedComment = authStore.voteNewsComment(account, Number(voteNewsCommentMatch[1]), body.vote);
+    if (voteValue !== 0) authStore.onPlayerVote(account.id, voteValue);
+    writeJson(response, 200, { comment: votedComment });
     return;
   }
 
@@ -510,6 +524,25 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (request.method === 'GET' && url.pathname === '/api/admin/news/media') {
+    const account = getAuthenticatedAccount(request);
+    if (!account || !authStore.isAdminAccount(account)) {
+      writeJson(response, account ? 403 : 401, { error: account ? 'Administrator account required' : 'Authentication required' });
+      return;
+    }
+    try {
+      await mkdir(NEWS_MEDIA_DIR, { recursive: true });
+      const files = (await readdir(NEWS_MEDIA_DIR))
+        .filter((f) => /\.(jpg|jpeg|png|webp|gif)$/i.test(f))
+        .sort()
+        .map((name) => ({ name, url: `${getMediaBaseUrl(request)}${NEWS_MEDIA_ROUTE}${encodeURIComponent(name)}` }));
+      writeJson(response, 200, { files });
+    } catch {
+      writeJson(response, 200, { files: [] });
+    }
+    return;
+  }
+
   if (request.method === 'POST' && url.pathname === '/api/admin/news/media') {
     const account = getAuthenticatedAccount(request);
     if (!account || !authStore.isAdminAccount(account)) {
@@ -521,7 +554,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       const media = normalizeUploadedMedia(body);
       await mkdir(NEWS_MEDIA_DIR, { recursive: true });
       await writeFile(path.join(NEWS_MEDIA_DIR, media.filename), media.buffer);
-      writeJson(response, 201, { url: `${getRequestBaseUrl(request)}${NEWS_MEDIA_ROUTE}${encodeURIComponent(media.filename)}` });
+      writeJson(response, 201, { url: `${getMediaBaseUrl(request)}${NEWS_MEDIA_ROUTE}${encodeURIComponent(media.filename)}` });
     } catch (error) {
       writeJson(response, 400, { error: error instanceof Error ? error.message : 'Could not upload image' });
     }
@@ -580,6 +613,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       writeJson(response, 404, { error: 'Game not found' });
       return;
     }
+    authStore.checkAndUnlockAchievements(account.id);
     writeJson(response, membership ? 201 : 200, { game, membership });
     return;
   }
@@ -704,6 +738,98 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
 
   if (request.method === 'POST' && (url.pathname === '/api/oauth/google' || url.pathname === '/api/oauth/microsoft')) {
     writeJson(response, 501, { error: 'OAuth is not enabled yet' });
+    return;
+  }
+
+  if (request.method === 'GET' && url.pathname === '/api/player/profile') {
+    const account = getAuthenticatedAccount(request);
+    if (!account) {
+      writeJson(response, 401, { error: 'Authentication required' });
+      return;
+    }
+    writeJson(response, 200, { profile: authStore.buildPlayerProfile(account) });
+    return;
+  }
+
+  const claimQuestMatch = url.pathname.match(/^\/api\/player\/quests\/([^/]+)\/claim$/);
+  if (request.method === 'POST' && claimQuestMatch) {
+    const account = getAuthenticatedAccount(request);
+    if (!account) {
+      writeJson(response, 401, { error: 'Authentication required' });
+      return;
+    }
+    const body = await readJsonBody<{ windowKey?: unknown }>(request);
+    const windowKey = typeof body.windowKey === 'string' ? body.windowKey : '';
+    const questId = decodeURIComponent(claimQuestMatch[1]);
+    const claimed = authStore.claimQuestReward(account.id, questId, windowKey);
+    if (!claimed) {
+      writeJson(response, 400, { error: 'Quest not completed or already claimed' });
+      return;
+    }
+    const xpReward = [...WEEKLY_QUESTS, ...TRIDAY_QUESTS].find((q) => q.id === questId)?.xpReward ?? 0;
+    const newTotalXp = authStore.addPlayerXp(account.id, xpReward);
+    authStore.checkAndUnlockAchievements(account.id);
+    writeJson(response, 200, { xpGained: xpReward, newTotalXp, newLevel: getProgressionLevel(newTotalXp) });
+    return;
+  }
+
+  // ─── Direct Messages ────────────────────────────────────────────────────────
+
+  if (request.method === 'GET' && url.pathname === '/api/messages') {
+    const account = getAuthenticatedAccount(request);
+    if (!account) { writeJson(response, 401, { error: 'Authentication required' }); return; }
+    writeJson(response, 200, { conversations: authStore.getConversations(account.id) });
+    return;
+  }
+
+  const messagesWithMatch = url.pathname.match(/^\/api\/messages\/with\/(\d+)$/);
+  if (request.method === 'GET' && messagesWithMatch) {
+    const account = getAuthenticatedAccount(request);
+    if (!account) { writeJson(response, 401, { error: 'Authentication required' }); return; }
+    const partnerId = Number(messagesWithMatch[1]);
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? '100')));
+    writeJson(response, 200, { messages: authStore.getMessagesWith(account.id, partnerId, limit) });
+    return;
+  }
+
+  const messagesReadMatch = url.pathname.match(/^\/api\/messages\/with\/(\d+)\/read$/);
+  if (request.method === 'POST' && messagesReadMatch) {
+    const account = getAuthenticatedAccount(request);
+    if (!account) { writeJson(response, 401, { error: 'Authentication required' }); return; }
+    authStore.markConversationRead(account.id, Number(messagesReadMatch[1]));
+    writeJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/messages/send') {
+    const account = getAuthenticatedAccount(request);
+    if (!account) { writeJson(response, 401, { error: 'Authentication required' }); return; }
+    const body = await readJsonBody<{ recipientUsername?: unknown; body?: unknown }>(request);
+    const message = authStore.sendMessage(account, body.recipientUsername, body.body);
+    writeJson(response, 201, { message });
+    return;
+  }
+
+  // Called by the game engine (orchestrator) to award XP for in-game activity.
+  // Requires the shared control token in x-control-token header.
+  if (request.method === 'POST' && url.pathname === '/api/internal/game-xp') {
+    if (!isControlTokenAuthorized(request)) {
+      writeJson(response, 401, { error: 'Internal access only' });
+      return;
+    }
+    const body = await readJsonBody<{ accountId?: unknown; type?: unknown; value?: unknown }>(request);
+    const accountId = typeof body.accountId === 'number' ? body.accountId : null;
+    const xpType = typeof body.type === 'string' && ['damage', 'stability', 'profit'].includes(body.type)
+      ? (body.type as 'damage' | 'stability' | 'profit')
+      : null;
+    const rawValue = typeof body.value === 'number' && body.value > 0 ? body.value : null;
+    if (!accountId || !xpType || !rawValue) {
+      writeJson(response, 400, { error: 'accountId (number), type (damage|stability|profit), and value (number > 0) are required' });
+      return;
+    }
+    const xpGained = authStore.awardGameXp(accountId, xpType, rawValue);
+    if (xpGained > 0) authStore.checkAndUnlockAchievements(accountId);
+    writeJson(response, 200, { xpGained });
     return;
   }
 

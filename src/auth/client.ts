@@ -2,20 +2,30 @@ import type {
   AuthAccount,
   AuthMeResponse,
   AuthSessionResponse,
+  ClaimQuestResponse,
+  ConversationsResponse,
   Credentials,
+  DirectConversation,
+  DirectMessage,
   LoginCredentials,
   DevStatsResponse,
   GamesResponse,
   GameSummary,
   JoinGameResponse,
+  MessagesWithResponse,
   NewsComment,
   NewsCommentVote,
+  NewsMediaFile,
+  NewsMediaListResponse,
   NewsMediaResponse,
   NewsPost,
   NewsPostListItem,
   NewsPostMutationPayload,
   NewsPostResponse,
   NewsPostsResponse,
+  PlayerProfile,
+  PlayerProfileResponse,
+  SendMessageResponse,
 } from './types';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
@@ -103,6 +113,10 @@ export async function deleteDevGame(gameId: string): Promise<void> {
 export interface OrchestratorVersion {
   id: string;
   gitRef: string;
+  /** Exact commit this version is pinned to (resolved at registration). */
+  commit: string;
+  /** How gitRef was interpreted when registered. */
+  refType: 'tag' | 'branch' | 'commit';
   port: number;
   protocolVersion: number;
   schemaVersion: number;
@@ -135,6 +149,10 @@ export async function listRemoteVersions(): Promise<RemoteRef[]> {
 
 export async function registerOrchestratorVersion(gitRef: string, id?: string): Promise<void> {
   await requestJson('/api/dev/orchestrator/versions', { gitRef, id });
+}
+
+export async function unregisterOrchestratorVersion(versionId: string): Promise<void> {
+  await requestJson(`/api/dev/orchestrator/versions/${encodeURIComponent(versionId)}`, undefined, 'DELETE');
 }
 
 export async function listOrchestratorGames(): Promise<OrchestratorGame[]> {
@@ -194,6 +212,11 @@ export async function uploadNewsImage(filename: string, mimeType: string, dataUr
   return result.url;
 }
 
+export async function listNewsMedia(): Promise<NewsMediaFile[]> {
+  const result = await requestJson<NewsMediaListResponse>('/api/admin/news/media', undefined, 'GET');
+  return result.files;
+}
+
 export async function createNewsComment(slug: string, body: string): Promise<NewsComment> {
   const result = await requestJson<{ comment: NewsComment }>(
     `/api/news/posts/${encodeURIComponent(slug)}/comments`,
@@ -213,4 +236,39 @@ export async function voteNewsComment(commentId: number, vote: NewsCommentVote):
 export async function requestOAuthPlaceholder(provider: 'google' | 'microsoft'): Promise<never> {
   await requestJson(`/api/oauth/${provider}`, undefined, 'POST');
   throw new Error('Unexpected OAuth placeholder response');
+}
+
+export async function getPlayerProfile(): Promise<PlayerProfile> {
+  const result = await requestJson<PlayerProfileResponse>(`/api/player/profile`, undefined, 'GET');
+  return result.profile;
+}
+
+export async function claimQuestReward(questId: string, windowKey: string): Promise<ClaimQuestResponse> {
+  return requestJson<ClaimQuestResponse>(
+    `/api/player/quests/${encodeURIComponent(questId)}/claim`,
+    { windowKey },
+  );
+}
+
+export async function getConversations(): Promise<DirectConversation[]> {
+  const result = await requestJson<ConversationsResponse>(`/api/messages`, undefined, 'GET');
+  return result.conversations;
+}
+
+export async function getMessagesWith(partnerId: number, limit = 100): Promise<DirectMessage[]> {
+  const result = await requestJson<MessagesWithResponse>(
+    `/api/messages/with/${encodeURIComponent(String(partnerId))}?limit=${limit}`,
+    undefined,
+    'GET',
+  );
+  return result.messages;
+}
+
+export async function sendMessage(recipientUsername: string, body: string): Promise<DirectMessage> {
+  const result = await requestJson<SendMessageResponse>(`/api/messages/send`, { recipientUsername, body });
+  return result.message;
+}
+
+export async function markConversationRead(partnerId: number): Promise<void> {
+  await requestJson(`/api/messages/with/${encodeURIComponent(String(partnerId))}/read`, undefined, 'POST');
 }

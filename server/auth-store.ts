@@ -24,6 +24,7 @@ import type { SpeciesSetup } from '../src/data/Species';
 import type {
   AuthAccount,
   AccountType,
+  AchievementInfo,
   Credentials,
   DevGameRuntimeRow,
   DevGameRuntimeStats,
@@ -37,7 +38,29 @@ import type {
   NewsPostListItem,
   NewsPostMutationPayload,
   NewsPostStatus,
+  DirectMessage,
+  DirectConversation,
+  PlayerProfile,
+  QuestInfo,
 } from '../src/auth/types';
+import {
+  ACHIEVEMENTS,
+  GAME_XP_CAPS,
+  GAME_XP_RATES,
+  LEVELS,
+  TRIDAY_QUESTS,
+  WEEKLY_QUESTS,
+  getActiveQuestIds,
+  getLevelDef,
+  getLevelForXp,
+  getTridayWindowIndex,
+  getTridayWindowKey,
+  getWeeklyWindowIndex,
+  getWeeklyWindowKey,
+  getWindowResetTime,
+  getXpProgress,
+  type ProgressionStats,
+} from './game/progression';
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEV_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -107,6 +130,8 @@ interface GameRow {
 interface GameVersionRow {
   id: string;
   git_ref: string;
+  commit_sha: string | null;
+  ref_type: string | null;
   worktree_path: string;
   port: number;
   protocol_version: number;
@@ -179,9 +204,17 @@ export interface StoredGame {
   protocolVersion: number | null;
 }
 
+/** What kind of git ref a version was resolved from when it was registered. */
+export type GameVersionRefType = "tag" | "branch" | "commit";
+
 export interface StoredGameVersion {
   id: string;
+  /** The ref the operator selected (branch name, tag, or raw SHA). */
   gitRef: string;
+  /** The exact commit SHA this version is pinned to (resolved at registration). */
+  commit: string;
+  /** How `gitRef` was interpreted when the version was registered. */
+  refType: GameVersionRefType;
   worktreePath: string;
   port: number;
   protocolVersion: number;
@@ -575,6 +608,8 @@ export class AuthStore {
       CREATE TABLE IF NOT EXISTS game_versions (
         id TEXT PRIMARY KEY,
         git_ref TEXT NOT NULL,
+        commit_sha TEXT,
+        ref_type TEXT,
         worktree_path TEXT NOT NULL,
         port INTEGER NOT NULL,
         protocol_version INTEGER NOT NULL,
@@ -643,6 +678,45 @@ export class AuthStore {
         FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS player_progression (
+        account_id INTEGER PRIMARY KEY,
+        total_xp INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS player_stats (
+        account_id INTEGER PRIMARY KEY,
+        comment_count INTEGER NOT NULL DEFAULT 0,
+        vote_count INTEGER NOT NULL DEFAULT 0,
+        upvote_count INTEGER NOT NULL DEFAULT 0,
+        downvote_count INTEGER NOT NULL DEFAULT 0,
+        quests_claimed INTEGER NOT NULL DEFAULT 0,
+        game_damage_dealt REAL NOT NULL DEFAULT 0,
+        game_profit_earned REAL NOT NULL DEFAULT 0,
+        game_stability_ticks INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS player_achievements (
+        account_id INTEGER NOT NULL,
+        achievement_id TEXT NOT NULL,
+        unlocked_at INTEGER NOT NULL,
+        PRIMARY KEY(account_id, achievement_id),
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS player_quests (
+        account_id INTEGER NOT NULL,
+        quest_id TEXT NOT NULL,
+        window_key TEXT NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        completed_at INTEGER,
+        claimed_at INTEGER,
+        PRIMARY KEY(account_id, quest_id, window_key),
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
       CREATE INDEX IF NOT EXISTS idx_dev_sessions_expires_at ON dev_sessions(expires_at);
       CREATE INDEX IF NOT EXISTS idx_dev_events_type_time ON dev_events(event_type, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_dev_events_account_id ON dev_events(account_id);
@@ -651,6 +725,21 @@ export class AuthStore {
       CREATE INDEX IF NOT EXISTS idx_news_posts_status_time ON news_posts(status, published_at, updated_at);
       CREATE INDEX IF NOT EXISTS idx_news_comments_post_time ON news_comments(post_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_news_votes_comment ON news_comment_votes(comment_id);
+      CREATE INDEX IF NOT EXISTS idx_player_achievements_account ON player_achievements(account_id);
+      CREATE INDEX IF NOT EXISTS idx_player_quests_account ON player_quests(account_id, window_key);
+
+      CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id INTEGER NOT NULL,
+        recipient_id INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        sent_at INTEGER NOT NULL,
+        read_at INTEGER,
+        FOREIGN KEY(sender_id) REFERENCES accounts(id) ON DELETE CASCADE,
+        FOREIGN KEY(recipient_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_pair ON messages(sender_id, recipient_id, sent_at);
+      CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id, read_at);
     `);
 
     const membershipColumns = this.db.prepare(`PRAGMA table_info(game_memberships)`).all() as Array<{ name: string }>;
@@ -673,6 +762,14 @@ export class AuthStore {
     }
     if (!gameColumns.some((column) => column.name === 'protocol_version')) {
       this.db.exec(`ALTER TABLE games ADD COLUMN protocol_version INTEGER`);
+    }
+
+    const versionColumns = this.db.prepare(`PRAGMA table_info(game_versions)`).all() as Array<{ name: string }>;
+    if (!versionColumns.some((column) => column.name === 'commit_sha')) {
+      this.db.exec(`ALTER TABLE game_versions ADD COLUMN commit_sha TEXT`);
+    }
+    if (!versionColumns.some((column) => column.name === 'ref_type')) {
+      this.db.exec(`ALTER TABLE game_versions ADD COLUMN ref_type TEXT`);
     }
 
     this.db.prepare(`
@@ -782,10 +879,12 @@ export class AuthStore {
 
   registerGameVersion(version: StoredGameVersion): StoredGameVersion {
     this.db.prepare(`
-      INSERT INTO game_versions (id, git_ref, worktree_path, port, protocol_version, schema_version, migrates_from_schema, created_at)
-      VALUES (@id, @gitRef, @worktreePath, @port, @protocolVersion, @schemaVersion, @migratesFromSchema, @createdAt)
+      INSERT INTO game_versions (id, git_ref, commit_sha, ref_type, worktree_path, port, protocol_version, schema_version, migrates_from_schema, created_at)
+      VALUES (@id, @gitRef, @commit, @refType, @worktreePath, @port, @protocolVersion, @schemaVersion, @migratesFromSchema, @createdAt)
       ON CONFLICT(id) DO UPDATE SET
         git_ref = excluded.git_ref,
+        commit_sha = excluded.commit_sha,
+        ref_type = excluded.ref_type,
         worktree_path = excluded.worktree_path,
         port = excluded.port,
         protocol_version = excluded.protocol_version,
@@ -794,6 +893,8 @@ export class AuthStore {
     `).run({
       id: version.id,
       gitRef: version.gitRef,
+      commit: version.commit,
+      refType: version.refType,
       worktreePath: version.worktreePath,
       port: version.port,
       protocolVersion: version.protocolVersion,
@@ -851,6 +952,7 @@ export class AuthStore {
       LEFT JOIN game_memberships all_members ON all_members.game_id = g.id
       LEFT JOIN game_memberships own_members ON own_members.game_id = g.id AND own_members.account_id = ?
       LEFT JOIN game_visits visits ON visits.game_id = g.id AND visits.account_id = ?
+      WHERE g.status != 'archived'
       GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.flag_design, own_members.species_setup, own_members.joined_at, visits.last_entered_at
       ORDER BY COALESCE(visits.last_entered_at, 0) DESC, g.created_at DESC, g.id ASC
     `).all(account.id, account.id) as GameSummaryRow[];
@@ -888,7 +990,8 @@ export class AuthStore {
     speciesSetupInput?: unknown,
   ): GameMembership | null {
     if (this.isPrivilegedGameAccount(account)) {
-      if (!this.getGameById(gameId)) throw new AuthError('Game not found', 404);
+      const game = this.getGameById(gameId);
+      if (!game || game.status === 'archived') throw new AuthError('Game not found', 404);
       return null;
     }
 
@@ -902,7 +1005,7 @@ export class AuthStore {
 
     const membership = this.db.transaction(() => {
       const game = this.getGameById(gameId);
-      if (!game) throw new AuthError('Game not found', 404);
+      if (!game || game.status === 'archived') throw new AuthError('Game not found', 404);
       const current = this.getGameMembership(game.id, account.id);
       if (current) return current;
 
@@ -1550,9 +1653,15 @@ export class AuthStore {
     } catch {
       migratesFromSchema = [];
     }
+    const refType: GameVersionRefType =
+      row.ref_type === "tag" || row.ref_type === "branch" || row.ref_type === "commit"
+        ? row.ref_type
+        : "commit";
     return {
       id: row.id,
       gitRef: row.git_ref,
+      commit: row.commit_sha ?? "",
+      refType,
       worktreePath: row.worktree_path,
       port: row.port,
       protocolVersion: row.protocol_version,
@@ -1800,6 +1909,360 @@ export class AuthStore {
         online: !!lastHeartbeatAt && now - lastHeartbeatAt <= GAME_RUNTIME_STALE_MS,
       };
     });
+  }
+
+  // ─── Player Progression ──────────────────────────────────────────────────────
+
+  private ensurePlayerRow(accountId: number): void {
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT OR IGNORE INTO player_progression (account_id, total_xp, updated_at) VALUES (?, 0, ?)`,
+    ).run(accountId, now);
+    this.db.prepare(
+      `INSERT OR IGNORE INTO player_stats (account_id, comment_count, vote_count, upvote_count, downvote_count, quests_claimed, game_damage_dealt, game_profit_earned, game_stability_ticks) VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0)`,
+    ).run(accountId);
+  }
+
+  private getProgressionStats(accountId: number): ProgressionStats {
+    this.ensurePlayerRow(accountId);
+    const stats = this.db.prepare(`SELECT * FROM player_stats WHERE account_id = ?`).get(accountId) as {
+      comment_count: number; vote_count: number; upvote_count: number;
+      downvote_count: number; quests_claimed: number;
+      game_damage_dealt: number; game_profit_earned: number; game_stability_ticks: number;
+    };
+    const totalXp = (this.db.prepare(`SELECT total_xp FROM player_progression WHERE account_id = ?`).get(accountId) as { total_xp: number } | undefined)?.total_xp ?? 0;
+    const gamesJoined = (this.db.prepare(`SELECT COUNT(*) AS c FROM game_memberships WHERE account_id = ?`).get(accountId) as { c: number }).c;
+    const achievementCount = (this.db.prepare(`SELECT COUNT(*) AS c FROM player_achievements WHERE account_id = ?`).get(accountId) as { c: number }).c;
+    return {
+      commentCount: stats.comment_count,
+      voteCount: stats.vote_count,
+      upvoteCount: stats.upvote_count,
+      downvoteCount: stats.downvote_count,
+      gamesJoined,
+      questsClaimed: stats.quests_claimed,
+      achievementCount,
+      level: getLevelForXp(totalXp),
+      gameDamageDealt: stats.game_damage_dealt,
+      gameProfitEarned: stats.game_profit_earned,
+      gameStabilityTicks: stats.game_stability_ticks,
+    };
+  }
+
+  addPlayerXp(accountId: number, amount: number): number {
+    this.ensurePlayerRow(accountId);
+    const now = Date.now();
+    this.db.prepare(`UPDATE player_progression SET total_xp = total_xp + ?, updated_at = ? WHERE account_id = ?`).run(amount, now, accountId);
+    return (this.db.prepare(`SELECT total_xp FROM player_progression WHERE account_id = ?`).get(accountId) as { total_xp: number }).total_xp;
+  }
+
+  getPlayerXp(accountId: number): number {
+    this.ensurePlayerRow(accountId);
+    return (this.db.prepare(`SELECT total_xp FROM player_progression WHERE account_id = ?`).get(accountId) as { total_xp: number }).total_xp;
+  }
+
+  awardGameXp(accountId: number, type: 'damage' | 'stability' | 'profit', rawValue: number): number {
+    this.ensurePlayerRow(accountId);
+    const rate = GAME_XP_RATES[type];
+    const cap = GAME_XP_CAPS[type];
+    const xp = Math.max(0, Math.min(Math.round(rawValue * rate), cap));
+    if (xp === 0) return 0;
+    const col = type === 'damage' ? 'game_damage_dealt' : type === 'profit' ? 'game_profit_earned' : 'game_stability_ticks';
+    this.db.prepare(`UPDATE player_stats SET ${col} = ${col} + ? WHERE account_id = ?`).run(rawValue, accountId);
+    this.addPlayerXp(accountId, xp);
+    return xp;
+  }
+
+  getUnlockedAchievementIds(accountId: number): string[] {
+    return (this.db.prepare(`SELECT achievement_id FROM player_achievements WHERE account_id = ?`).all(accountId) as Array<{ achievement_id: string }>).map((r) => r.achievement_id);
+  }
+
+  private unlockAchievement(accountId: number, achievementId: string, xpReward: number): boolean {
+    const now = Date.now();
+    const result = this.db.prepare(`INSERT OR IGNORE INTO player_achievements (account_id, achievement_id, unlocked_at) VALUES (?, ?, ?)`).run(accountId, achievementId, now);
+    if (result.changes > 0 && xpReward > 0) {
+      this.addPlayerXp(accountId, xpReward);
+    }
+    return result.changes > 0;
+  }
+
+  checkAndUnlockAchievements(accountId: number): string[] {
+    this.ensurePlayerRow(accountId);
+    const allUnlocked: string[] = [];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const stats = this.getProgressionStats(accountId);
+      const alreadyUnlocked = new Set(this.getUnlockedAchievementIds(accountId));
+      for (const ach of ACHIEVEMENTS) {
+        if (alreadyUnlocked.has(ach.id)) continue;
+        if (ach.check(stats)) {
+          if (this.unlockAchievement(accountId, ach.id, ach.xpReward)) {
+            allUnlocked.push(ach.id);
+            changed = true;
+          }
+        }
+      }
+    }
+    return allUnlocked;
+  }
+
+  upsertQuestProgress(accountId: number, questId: string, windowKey: string, amount: number, target: number): void {
+    const now = Date.now();
+    const initialProgress = Math.min(amount, target);
+    const initialCompletedAt = amount >= target ? now : null;
+    this.db.prepare(`
+      INSERT INTO player_quests (account_id, quest_id, window_key, progress, completed_at, claimed_at)
+      VALUES (@accountId, @questId, @windowKey, @initialProgress, @initialCompletedAt, NULL)
+      ON CONFLICT(account_id, quest_id, window_key) DO UPDATE SET
+        progress = CASE WHEN claimed_at IS NULL THEN MIN(progress + @amount, @target) ELSE progress END,
+        completed_at = CASE
+          WHEN claimed_at IS NULL AND completed_at IS NULL AND progress + @amount >= @target THEN @now
+          ELSE completed_at
+        END
+    `).run({ accountId, questId, windowKey, initialProgress, initialCompletedAt, amount, target, now });
+  }
+
+  claimQuestReward(accountId: number, questId: string, windowKey: string): boolean {
+    const now = Date.now();
+    const result = this.db.prepare(`
+      UPDATE player_quests SET claimed_at = ?
+      WHERE account_id = ? AND quest_id = ? AND window_key = ? AND completed_at IS NOT NULL AND claimed_at IS NULL
+    `).run(now, accountId, questId, windowKey);
+    if (result.changes === 0) return false;
+    this.db.prepare(`UPDATE player_stats SET quests_claimed = quests_claimed + 1 WHERE account_id = ?`).run(accountId);
+    return true;
+  }
+
+  onPlayerComment(accountId: number): void {
+    this.ensurePlayerRow(accountId);
+    this.db.prepare(`UPDATE player_stats SET comment_count = comment_count + 1 WHERE account_id = ?`).run(accountId);
+    const now = Date.now();
+    const weeklyKey = getWeeklyWindowKey(now);
+    const tridayKey = getTridayWindowKey(now);
+    const activeWeeklyIds = getActiveQuestIds(WEEKLY_QUESTS, getWeeklyWindowIndex(now));
+    const activeTridayIds = getActiveQuestIds(TRIDAY_QUESTS, getTridayWindowIndex(now));
+    for (const qid of activeWeeklyIds) {
+      const q = WEEKLY_QUESTS.find((def) => def.id === qid && def.action === 'comment');
+      if (q) this.upsertQuestProgress(accountId, qid, weeklyKey, 1, q.target);
+    }
+    for (const qid of activeTridayIds) {
+      const q = TRIDAY_QUESTS.find((def) => def.id === qid && def.action === 'comment');
+      if (q) this.upsertQuestProgress(accountId, qid, tridayKey, 1, q.target);
+    }
+    this.checkAndUnlockAchievements(accountId);
+  }
+
+  onPlayerVote(accountId: number, vote: number): void {
+    this.ensurePlayerRow(accountId);
+    this.db.prepare(`UPDATE player_stats SET vote_count = vote_count + 1 WHERE account_id = ?`).run(accountId);
+    if (vote > 0) this.db.prepare(`UPDATE player_stats SET upvote_count = upvote_count + 1 WHERE account_id = ?`).run(accountId);
+    if (vote < 0) this.db.prepare(`UPDATE player_stats SET downvote_count = downvote_count + 1 WHERE account_id = ?`).run(accountId);
+    const now = Date.now();
+    const weeklyKey = getWeeklyWindowKey(now);
+    const tridayKey = getTridayWindowKey(now);
+    const activeWeeklyIds = getActiveQuestIds(WEEKLY_QUESTS, getWeeklyWindowIndex(now));
+    const activeTridayIds = getActiveQuestIds(TRIDAY_QUESTS, getTridayWindowIndex(now));
+    const voteAction = vote > 0 ? 'upvote' : 'downvote';
+    for (const qid of activeWeeklyIds) {
+      const q = WEEKLY_QUESTS.find((def) => def.id === qid && (def.action === 'vote' || def.action === voteAction));
+      if (q) this.upsertQuestProgress(accountId, qid, weeklyKey, 1, q.target);
+    }
+    for (const qid of activeTridayIds) {
+      const q = TRIDAY_QUESTS.find((def) => def.id === qid && (def.action === 'vote' || def.action === voteAction));
+      if (q) this.upsertQuestProgress(accountId, qid, tridayKey, 1, q.target);
+    }
+    this.checkAndUnlockAchievements(accountId);
+  }
+
+  buildPlayerProfile(account: AuthAccount): PlayerProfile {
+    this.ensurePlayerRow(account.id);
+    const now = Date.now();
+    const totalXp = this.getPlayerXp(account.id);
+    const { level, xpIntoLevel, xpForNextLevel, levelProgress } = getXpProgress(totalXp);
+    const currentLevelDef = getLevelDef(level);
+    const nextLevelDef = level < LEVELS.length ? getLevelDef(level + 1) : null;
+
+    const unlockedMap = new Map(
+      (this.db.prepare(`SELECT achievement_id, unlocked_at FROM player_achievements WHERE account_id = ?`).all(account.id) as Array<{ achievement_id: string; unlocked_at: number }>).map((r) => [r.achievement_id, r.unlocked_at]),
+    );
+    const achievements: AchievementInfo[] = ACHIEVEMENTS.map((ach) => ({
+      id: ach.id,
+      title: ach.title,
+      description: ach.description,
+      xpReward: ach.xpReward,
+      unlockedAt: unlockedMap.get(ach.id) ?? null,
+    }));
+
+    const weeklyIdx = getWeeklyWindowIndex(now);
+    const tridayIdx = getTridayWindowIndex(now);
+    const weeklyKey = getWeeklyWindowKey(now);
+    const tridayKey = getTridayWindowKey(now);
+    const activeWeeklyIds = getActiveQuestIds(WEEKLY_QUESTS, weeklyIdx);
+    const activeTridayIds = getActiveQuestIds(TRIDAY_QUESTS, tridayIdx);
+    const activeWeekly = WEEKLY_QUESTS.filter((q) => activeWeeklyIds.includes(q.id));
+    const activeTriday = TRIDAY_QUESTS.filter((q) => activeTridayIds.includes(q.id));
+
+    type QuestRow = { quest_id: string; progress: number; completed_at: number | null; claimed_at: number | null };
+    const questProgressMap = new Map<string, QuestRow>();
+    const queryProgress = (ids: string[], key: string) => {
+      if (ids.length === 0) return;
+      const placeholders = ids.map(() => '?').join(',');
+      const rows = this.db.prepare(`SELECT quest_id, progress, completed_at, claimed_at FROM player_quests WHERE account_id = ? AND window_key = ? AND quest_id IN (${placeholders})`).all(account.id, key, ...ids) as QuestRow[];
+      for (const row of rows) questProgressMap.set(`${key}:${row.quest_id}`, row);
+    };
+    queryProgress(activeWeeklyIds, weeklyKey);
+    queryProgress(activeTridayIds, tridayKey);
+
+    const toQuestInfo = (q: typeof WEEKLY_QUESTS[0], key: string): QuestInfo => {
+      const p = questProgressMap.get(`${key}:${q.id}`);
+      return {
+        id: q.id, title: q.title, description: q.description,
+        type: q.type, target: q.target, xpReward: q.xpReward, action: q.action,
+        progress: p?.progress ?? 0,
+        completedAt: p?.completed_at ?? null,
+        claimedAt: p?.claimed_at ?? null,
+        windowKey: key,
+        resetsAt: getWindowResetTime(q.type, now),
+      };
+    };
+
+    return {
+      totalXp,
+      level,
+      levelName: currentLevelDef.name,
+      levelColor: currentLevelDef.color,
+      xpIntoLevel,
+      xpForNextLevel,
+      levelProgress,
+      nextLevelName: nextLevelDef?.name ?? null,
+      levels: LEVELS.map((l) => ({ level: l.level, name: l.name, xpRequired: l.xpRequired, color: l.color })),
+      achievements,
+      quests: [
+        ...activeWeekly.map((q) => toQuestInfo(q, weeklyKey)),
+        ...activeTriday.map((q) => toQuestInfo(q, tridayKey)),
+      ],
+    };
+  }
+
+  // ─── Direct Messages ──────────────────────────────────────────────────────────
+
+  sendMessage(sender: AuthAccount, recipientUsernameInput: unknown, bodyInput: unknown): DirectMessage {
+    const recipientUsername = sanitizePlainText(recipientUsernameInput, 'Recipient username', 80);
+    const body = sanitizePlainText(bodyInput, 'Message body', 2000);
+
+    if (recipientUsername.toLowerCase() === sender.username.toLowerCase()) {
+      throw new AuthError('Cannot message yourself', 400);
+    }
+    const recipient = this.db.prepare(
+      `SELECT id, username FROM accounts WHERE username = ? COLLATE NOCASE`,
+    ).get(recipientUsername) as { id: number; username: string } | undefined;
+    if (!recipient) throw new AuthError('User not found', 404);
+
+    const now = Date.now();
+    const result = this.db.prepare(
+      `INSERT INTO messages (sender_id, recipient_id, body, sent_at) VALUES (?, ?, ?, ?)`,
+    ).run(sender.id, recipient.id, body, now);
+    return {
+      id: Number(result.lastInsertRowid),
+      senderId: sender.id,
+      senderUsername: sender.username,
+      recipientId: recipient.id,
+      recipientUsername: recipient.username,
+      body,
+      sentAt: now,
+      readAt: null,
+    };
+  }
+
+  getConversations(accountId: number): DirectConversation[] {
+    type Row = {
+      partner_id: number; partner_username: string;
+      id: number; sender_id: number; sender_username: string;
+      recipient_id: number; recipient_username: string;
+      body: string; sent_at: number; read_at: number | null;
+      unread_count: number;
+    };
+    const rows = this.db.prepare(`
+      SELECT
+        partner.id          AS partner_id,
+        partner.username    AS partner_username,
+        m.id,
+        m.sender_id,
+        sa.username         AS sender_username,
+        m.recipient_id,
+        ra.username         AS recipient_username,
+        m.body,
+        m.sent_at,
+        m.read_at,
+        (SELECT COUNT(*) FROM messages u
+         WHERE u.recipient_id = @me AND u.sender_id = partner.id AND u.read_at IS NULL
+        ) AS unread_count
+      FROM (
+        SELECT
+          CASE WHEN sender_id = @me THEN recipient_id ELSE sender_id END AS partner_id,
+          MAX(id) AS last_id
+        FROM messages
+        WHERE sender_id = @me OR recipient_id = @me
+        GROUP BY CASE WHEN sender_id = @me THEN recipient_id ELSE sender_id END
+      ) conv
+      JOIN accounts partner ON partner.id = conv.partner_id
+      JOIN messages m ON m.id = conv.last_id
+      JOIN accounts sa ON sa.id = m.sender_id
+      JOIN accounts ra ON ra.id = m.recipient_id
+      ORDER BY m.sent_at DESC
+    `).all({ me: accountId }) as Row[];
+
+    return rows.map((r) => ({
+      partnerId: r.partner_id,
+      partnerUsername: r.partner_username,
+      unreadCount: r.unread_count,
+      lastMessage: {
+        id: r.id,
+        senderId: r.sender_id,
+        senderUsername: r.sender_username,
+        recipientId: r.recipient_id,
+        recipientUsername: r.recipient_username,
+        body: r.body,
+        sentAt: r.sent_at,
+        readAt: r.read_at,
+      },
+    }));
+  }
+
+  getMessagesWith(accountId: number, partnerId: number, limit = 100): DirectMessage[] {
+    type Row = {
+      id: number; sender_id: number; sender_username: string;
+      recipient_id: number; recipient_username: string;
+      body: string; sent_at: number; read_at: number | null;
+    };
+    const rows = this.db.prepare(`
+      SELECT m.id, m.sender_id, sa.username AS sender_username,
+             m.recipient_id, ra.username AS recipient_username,
+             m.body, m.sent_at, m.read_at
+      FROM messages m
+      JOIN accounts sa ON sa.id = m.sender_id
+      JOIN accounts ra ON ra.id = m.recipient_id
+      WHERE (m.sender_id = @me AND m.recipient_id = @partner)
+         OR (m.sender_id = @partner AND m.recipient_id = @me)
+      ORDER BY m.sent_at ASC
+      LIMIT @limit
+    `).all({ me: accountId, partner: partnerId, limit }) as Row[];
+    return rows.map((r) => ({
+      id: r.id,
+      senderId: r.sender_id,
+      senderUsername: r.sender_username,
+      recipientId: r.recipient_id,
+      recipientUsername: r.recipient_username,
+      body: r.body,
+      sentAt: r.sent_at,
+      readAt: r.read_at,
+    }));
+  }
+
+  markConversationRead(accountId: number, partnerId: number): void {
+    this.db.prepare(
+      `UPDATE messages SET read_at = ? WHERE recipient_id = ? AND sender_id = ? AND read_at IS NULL`,
+    ).run(Date.now(), accountId, partnerId);
   }
 }
 

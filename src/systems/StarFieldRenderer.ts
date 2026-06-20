@@ -37,6 +37,21 @@ export interface ShipIconStyle {
   color: [number, number, number];
 }
 
+/**
+ * A single galaxy ship icon to render. The owning scene computes the world
+ * position each frame (stationary at a system, or interpolated along a
+ * hyperlane) and which fleets the icon represents, so clicking can cycle
+ * between several fleets sharing one system.
+ */
+export interface GalaxyShipIcon {
+  fleetIds: string[];
+  x: number;
+  z: number;
+  color: [number, number, number];
+  moving: boolean;
+  selected?: boolean;
+}
+
 export type GalaxyIconClickType = "ship" | "starbase" | "habitedPlanet";
 
 const SPRITE_BLEND_ADD = 1; // ALPHA_ADD
@@ -118,13 +133,16 @@ const SELECTION_MARKER_GLOW_MAX = 0.68;
 const SELECTION_MARKER_COLOR = new Color3(0.18, 1.0, 0.9);
 
 const PLAYER_SHIP_ICON_TEXTURE_SIZE = 1024;
-const PLAYER_SHIP_ICON_MIN_SIZE = 11;
-const PLAYER_SHIP_ICON_MAX_SIZE = 19;
+// Icons are intentionally compact so a moving ship does not cover a second ship
+// parked in the same system (each remains independently clickable).
+const PLAYER_SHIP_ICON_MIN_SIZE = 6.5;
+const PLAYER_SHIP_ICON_MAX_SIZE = 9.5;
 const PLAYER_SHIP_ICON_Y = 2.4;
-const PLAYER_SHIP_ICON_OFFSET_X = 8;
-const PLAYER_SHIP_ICON_OFFSET_Z = -8;
 const PLAYER_SHIP_ICON_PULSE_SPEED = 2.3;
 const PLAYER_SHIP_ICON_PULSE_SCALE = 0.09;
+// World-unit radius used when ray-picking a galaxy ship icon. Kept a little larger
+// than the visual icon so small icons stay easy to click.
+const SHIP_ICON_PICK_RADIUS = 4.2;
 
 const STARBASE_ICON_TEXTURE_SIZE = 1024;
 const STARBASE_ICON_MIN_SIZE = 16;
@@ -306,6 +324,8 @@ export class StarFieldRenderer {
   private starsVisible = true;
   private bloomEnabled = true;
   private onIconClick?: (type: GalaxyIconClickType, shiftKey: boolean, starId?: number) => void;
+  private onShipIconClick?: (fleetIds: string[], shiftKey: boolean) => void;
+  private galaxyShipIcons: GalaxyShipIcon[] = [];
 
   constructor(
     scene: Scene,
@@ -395,7 +415,7 @@ export class StarFieldRenderer {
 
     this.starbaseIconManager = new SpriteManager(
       "starbaseIconSprites",
-      new URL("../../own_starbase_icon.webp", import.meta.url).toString(),
+      "/textures/own_starbase_icon.webp",
       Math.max(1, stars.length),
       {
         width: STARBASE_ICON_TEXTURE_SIZE,
@@ -1154,7 +1174,7 @@ export class StarFieldRenderer {
 
     this.applySelectionMarkerVisual();
     this.applyTargetMarkerVisuals();
-    this.applyPlayerShipIconVisual();
+    this.applyShipIconVisuals();
     this.hideStarbaseIconVisuals();
   }
 
@@ -1262,63 +1282,39 @@ export class StarFieldRenderer {
     }
   }
 
-  private applyPlayerShipIconVisual(): void {
+  private applyShipIconVisuals(): void {
     for (const sprite of this.playerShipIconSprites) {
       sprite.isVisible = false;
     }
     if (!this.starsVisible) return;
 
-    const transit = this.displayedPlayerShipTransit ?? this.playerShipTransit;
-    if (transit) {
-      const sprite = this.playerShipIconSprites[this.playerShipStarId] ?? this.playerShipIconSprites[0];
-      const shipPosition = this.getPlayerShipGalaxyPosition();
-      const hasTransitShip =
-        !!sprite
-        && !!shipPosition
-        && (this.isStarKnown(transit.fromStarId)
-          || this.isStarKnown(transit.toStarId));
+    const count = Math.min(this.galaxyShipIcons.length, this.playerShipIconSprites.length);
+    for (let i = 0; i < count; i++) {
+      const icon = this.galaxyShipIcons[i];
+      const sprite = this.playerShipIconSprites[i];
+      if (!sprite) continue;
 
-      if (hasTransitShip && shipPosition) {
-        sprite.color = this.playerShipIconColors.get(this.playerShipStarId) ?? new Color4(1, 1, 1, 1);
-        sprite.position.set(
-          shipPosition.x + PLAYER_SHIP_ICON_OFFSET_X,
-          PLAYER_SHIP_ICON_Y,
-          shipPosition.z + PLAYER_SHIP_ICON_OFFSET_Z,
+      let size: number;
+      if (icon.moving) {
+        // Faster bob + a touch of sway so a ship reads as "under way".
+        const pulse = 0.5 + 0.5 * Math.sin(this.elapsedTime * (PLAYER_SHIP_ICON_PULSE_SPEED * 1.3) + i * 0.5);
+        size = mix(PLAYER_SHIP_ICON_MIN_SIZE, PLAYER_SHIP_ICON_MAX_SIZE, 0.5 + pulse * 0.25);
+        sprite.angle = Math.sin(this.elapsedTime * 1.6 + i) * 0.12;
+      } else {
+        const pulse = 0.5 + 0.5 * Math.sin(this.elapsedTime * PLAYER_SHIP_ICON_PULSE_SPEED + i * 0.37);
+        size = mix(
+          PLAYER_SHIP_ICON_MIN_SIZE,
+          PLAYER_SHIP_ICON_MAX_SIZE,
+          1 - PLAYER_SHIP_ICON_PULSE_SCALE + pulse * PLAYER_SHIP_ICON_PULSE_SCALE,
         );
-        sprite.width = PLAYER_SHIP_ICON_MAX_SIZE;
-        sprite.height = PLAYER_SHIP_ICON_MAX_SIZE;
-        sprite.angle = Math.sin(this.elapsedTime * 0.9) * 0.06;
-        sprite.isVisible = true;
+        sprite.angle = Math.sin(this.elapsedTime * 0.9 + i * 0.37) * 0.06;
       }
-    }
+      if (icon.selected) size *= 1.18;
 
-    for (const starId of this.playerShipSystemIds) {
-      if (starId < 0 || starId >= this.starPositions.length) continue;
-      if (!this.isStarKnown(starId)) continue;
-
-      const sprite = this.playerShipIconSprites[starId];
-      const pos = this.starPositions[starId];
-      if (!sprite || !pos) continue;
-      if (transit && sprite.isVisible) continue;
-
-      const pulse = 0.5 + 0.5 * Math.sin(
-        this.elapsedTime * PLAYER_SHIP_ICON_PULSE_SPEED + starId * 0.37,
-      );
-      const size = mix(
-        PLAYER_SHIP_ICON_MIN_SIZE,
-        PLAYER_SHIP_ICON_MAX_SIZE,
-        1 - PLAYER_SHIP_ICON_PULSE_SCALE + pulse * PLAYER_SHIP_ICON_PULSE_SCALE,
-      );
-
-      sprite.position.set(
-        pos.x + PLAYER_SHIP_ICON_OFFSET_X,
-        PLAYER_SHIP_ICON_Y,
-        pos.z + PLAYER_SHIP_ICON_OFFSET_Z,
-      );
-      sprite.color = this.playerShipIconColors.get(starId) ?? new Color4(1, 1, 1, 1);
+      sprite.position.set(icon.x, PLAYER_SHIP_ICON_Y, icon.z);
+      sprite.color = new Color4(icon.color[0], icon.color[1], icon.color[2], 1);
       sprite.width = size;
       sprite.height = size;
-      sprite.angle = Math.sin(this.elapsedTime * 0.9 + starId * 0.37) * 0.06;
       sprite.isVisible = true;
     }
   }
@@ -1395,6 +1391,20 @@ export class StarFieldRenderer {
     this.onIconClick = callback;
   }
 
+  public setShipIconClickCallback(
+    callback: (fleetIds: string[], shiftKey: boolean) => void,
+  ): void {
+    this.onShipIconClick = callback;
+  }
+
+  /**
+   * Replace the set of galaxy ship icons to draw this frame. Positions and
+   * fleet membership are computed by the scene (see GalaxyScene.buildGalaxyShipIcons).
+   */
+  public setGalaxyShipIcons(icons: GalaxyShipIcon[]): void {
+    this.galaxyShipIcons = icons;
+  }
+
   private updateDisplayedPlayerShipTransit(deltaTime: number): void {
     if (!this.playerShipTransit) {
       this.displayedPlayerShipTransit = null;
@@ -1422,10 +1432,6 @@ export class StarFieldRenderer {
   }
 
   public checkIconClick(screenX: number, screenY: number, viewport: {width: number; height: number}, shiftKey: boolean): boolean {
-    if (!this.onIconClick) {
-      return false;
-    }
-
     const camera = this.scene.activeCamera;
     if (!camera) return false;
 
@@ -1439,14 +1445,33 @@ export class StarFieldRenderer {
 
     if (!ray) return false;
 
-    for (let starId = 0; starId < this.playerShipIconSprites.length; starId++) {
-      const shipSprite = this.playerShipIconSprites[starId];
-      const shipHitDist = this.distanceFromRayToPoint(ray, shipSprite.position);
-      if (shipHitDist < 5 && shipSprite.isVisible) {
-        this.onIconClick("ship", shiftKey, starId);
+    // Ship icons: pick the closest icon under the cursor so overlapping icons
+    // resolve deterministically to the nearest one.
+    let bestShipIcon = -1;
+    let bestShipDist = SHIP_ICON_PICK_RADIUS;
+    const iconCount = Math.min(this.galaxyShipIcons.length, this.playerShipIconSprites.length);
+    for (let i = 0; i < iconCount; i++) {
+      const sprite = this.playerShipIconSprites[i];
+      if (!sprite.isVisible) continue;
+      const dist = this.distanceFromRayToPoint(ray, sprite.position);
+      if (dist < bestShipDist) {
+        bestShipDist = dist;
+        bestShipIcon = i;
+      }
+    }
+    if (bestShipIcon >= 0) {
+      const icon = this.galaxyShipIcons[bestShipIcon];
+      if (this.onShipIconClick) {
+        this.onShipIconClick(icon.fleetIds, shiftKey);
+        return true;
+      }
+      if (this.onIconClick) {
+        this.onIconClick("ship", shiftKey);
         return true;
       }
     }
+
+    if (!this.onIconClick) return false;
 
     for (const starId of this.starbaseSystemIds) {
       const labelMesh = this.starLabelMeshes[starId];

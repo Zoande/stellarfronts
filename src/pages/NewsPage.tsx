@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createNewsComment,
   createNewsPost,
@@ -8,6 +8,7 @@ import {
   getCurrentSession,
   getNewsPost,
   getNewsPosts,
+  listNewsMedia,
   updateNewsPost,
   uploadNewsImage,
   voteNewsComment,
@@ -17,6 +18,7 @@ import type {
   NewsComment,
   NewsCommentVote,
   NewsContentBlock,
+  NewsMediaFile,
   NewsPost,
   NewsPostListItem,
   NewsPostMutationPayload,
@@ -24,7 +26,7 @@ import type {
 } from '@/auth/types';
 import '../styles/News.css';
 
-const inertNavItems = ['Forums', 'Support', 'Privacy Policy', 'Terms and Conditions'];
+const inertNavItems = ['Forums', 'Support'];
 
 function makeBlockId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
@@ -48,10 +50,14 @@ function getRouteSlug(): string | null {
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
+function defaultPostTitle(): string {
+  return `News Post — ${new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date())}`;
+}
+
 function emptyPostPayload(): NewsPostMutationPayload {
   return {
-    title: 'Untitled News Post',
-    summary: 'Write a short summary for the news list and search previews.',
+    title: defaultPostTitle(),
+    summary: '',
     coverImageUrl: null,
     blocks: [
       {
@@ -80,13 +86,42 @@ function replaceComment(comments: NewsComment[], replacement: NewsComment): News
 function NewsTopNav() {
   return (
     <nav className="news-top-nav" aria-label="Community navigation">
+      <a className="news-top-link" href="/">Home</a>
       <a className="news-top-link is-active" href="/news">News</a>
       {inertNavItems.map((item) => (
         <button className="news-top-link" type="button" key={item} aria-disabled="true">
           {item}
         </button>
       ))}
+      <a className="news-top-link" href="https://www.elitedevs.org/contact.html" target="_blank" rel="noopener noreferrer">Contact</a>
     </nav>
+  );
+}
+
+function MediaLibraryPicker({ files, onPick, onClose }: {
+  files: NewsMediaFile[];
+  onPick: (url: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="news-media-picker" role="dialog" aria-label="Media library">
+      <div className="news-media-picker__header">
+        <strong>Media Library</strong>
+        <button type="button" className="news-icon-button" onClick={onClose} aria-label="Close">×</button>
+      </div>
+      {files.length === 0 ? (
+        <p className="news-empty" style={{ margin: 12 }}>No images in library yet. Upload one above to add it.</p>
+      ) : (
+        <div className="news-media-picker__grid">
+          {files.map((file) => (
+            <button key={file.name} type="button" className="news-media-picker__item" onClick={() => onPick(file.url)}>
+              <img src={file.url} alt={file.name} loading="lazy" />
+              <span>{file.name.replace(/^seed-/, '')}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -129,13 +164,40 @@ function NewsEditor({ post, busy, error, onClose, onDelete, onSave }: NewsEditor
   const [blocks, setBlocks] = useState<NewsContentBlock[]>(post.blocks);
   const [uploadingBlockId, setUploadingBlockId] = useState<string | null>(null);
   const [coverUploading, setCoverUploading] = useState(false);
+  const [mediaLibrary, setMediaLibrary] = useState<NewsMediaFile[] | null>(null);
+  const [mediaPickTarget, setMediaPickTarget] = useState<'cover' | string | null>(null);
+  const [mediaLoading, setMediaLoading] = useState(false);
+  const titleRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setTitle(post.title);
     setSummary(post.summary);
     setCoverImageUrl(post.coverImageUrl ?? '');
     setBlocks(post.blocks.length ? post.blocks : emptyPostPayload().blocks);
-  }, [post]);
+    setTimeout(() => titleRef.current?.select(), 50);
+  }, [post.id]);
+
+  const openMediaPicker = async (target: 'cover' | string) => {
+    setMediaPickTarget(target);
+    if (mediaLibrary !== null) return;
+    setMediaLoading(true);
+    try {
+      setMediaLibrary(await listNewsMedia());
+    } catch {
+      setMediaLibrary([]);
+    } finally {
+      setMediaLoading(false);
+    }
+  };
+
+  const handleMediaPick = (url: string) => {
+    if (mediaPickTarget === 'cover') {
+      setCoverImageUrl(url);
+    } else if (mediaPickTarget) {
+      updateBlock(mediaPickTarget, { imageUrl: url } as Partial<NewsContentBlock>);
+    }
+    setMediaPickTarget(null);
+  };
 
   const payload = (status: NewsPostStatus): NewsPostMutationPayload => ({
     title,
@@ -213,26 +275,40 @@ function NewsEditor({ post, busy, error, onClose, onDelete, onSave }: NewsEditor
       <div className="news-editor-grid">
         <label>
           Title
-          <input value={title} onChange={(event) => setTitle(event.target.value)} />
+          <input ref={titleRef} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Post title" />
         </label>
         <label>
           Summary
-          <textarea rows={3} value={summary} onChange={(event) => setSummary(event.target.value)} />
+          <textarea rows={3} value={summary} onChange={(event) => setSummary(event.target.value)} placeholder="Short description shown on the index page" />
         </label>
         <label>
           Cover image URL
-          <input value={coverImageUrl} onChange={(event) => setCoverImageUrl(event.target.value)} />
+          <input value={coverImageUrl} onChange={(event) => setCoverImageUrl(event.target.value)} placeholder="https://…" />
         </label>
-        <label className="news-upload-label">
-          Upload cover image
-          <input
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            onChange={(event) => void uploadCover(event.target.files?.[0])}
-          />
-          <span>{coverUploading ? 'Uploading cover' : 'Choose image'}</span>
-        </label>
+        <div className="news-cover-image-tools">
+          <label className="news-upload-label">
+            Upload cover
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              onChange={(event) => void uploadCover(event.target.files?.[0])}
+            />
+            <span>{coverUploading ? 'Uploading…' : 'Choose file'}</span>
+          </label>
+          <button type="button" className="news-secondary-button news-library-btn" onClick={() => void openMediaPicker('cover')} disabled={mediaLoading}>
+            {mediaLoading && mediaPickTarget === 'cover' ? 'Loading…' : 'Browse Library'}
+          </button>
+        </div>
+        {coverImageUrl && <img className="news-editor-preview" src={coverImageUrl} alt="Cover preview" />}
       </div>
+
+      {mediaPickTarget !== null && mediaLibrary !== null && (
+        <MediaLibraryPicker
+          files={mediaLibrary}
+          onPick={handleMediaPick}
+          onClose={() => setMediaPickTarget(null)}
+        />
+      )}
 
       <div className="news-block-toolbar" aria-label="Add content blocks">
         <button type="button" onClick={() => addBlock('heading')}>Add Heading</button>
@@ -276,15 +352,20 @@ function NewsEditor({ post, busy, error, onClose, onDelete, onSave }: NewsEditor
                   onChange={(event) => updateBlock(block.id, { imageUrl: event.target.value } as Partial<NewsContentBlock>)}
                   placeholder="Image URL"
                 />
-                <label className="news-upload-label">
-                  Upload image
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp,image/gif"
-                    onChange={(event) => void uploadForBlock(block.id, event.target.files?.[0])}
-                  />
-                  <span>{uploadingBlockId === block.id ? 'Uploading image' : 'Choose image'}</span>
-                </label>
+                <div className="news-cover-image-tools">
+                  <label className="news-upload-label">
+                    Upload image
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      onChange={(event) => void uploadForBlock(block.id, event.target.files?.[0])}
+                    />
+                    <span>{uploadingBlockId === block.id ? 'Uploading…' : 'Choose file'}</span>
+                  </label>
+                  <button type="button" className="news-secondary-button news-library-btn" onClick={() => void openMediaPicker(block.id)} disabled={mediaLoading}>
+                    Browse Library
+                  </button>
+                </div>
                 <input
                   value={block.altText}
                   onChange={(event) => updateBlock(block.id, { altText: event.target.value } as Partial<NewsContentBlock>)}
@@ -536,12 +617,17 @@ export default function NewsPage() {
         <NewsTopNav />
 
         <header className="news-hero">
-          <div>
-            <span className="news-kicker">StellarFronts Public Archive</span>
-            <h1>News</h1>
-            <p>Development logs, announcements, and public updates for the game.</p>
+          <div className="news-hero__line" aria-hidden="true" />
+          <span className="news-kicker">StellarFronts · Public Archive</span>
+          <h1>News</h1>
+          <p>Development logs, announcements, and public updates for the game.</p>
+          <div className="news-hero-meta" aria-label="Archive stats">
+            <span><strong>{visiblePosts.length}</strong> {visiblePosts.length === 1 ? 'Entry' : 'Entries'}</span>
+            {visiblePosts[0]?.publishedAt && (
+              <span>Last entry <strong>{formatDate(visiblePosts[0].publishedAt)}</strong></span>
+            )}
+            {account && <span>Signed in as <strong>{account.username}</strong></span>}
           </div>
-          <a className="news-return-link" href="/">Return to Login</a>
         </header>
 
         <div className="news-layout">
@@ -594,12 +680,14 @@ export default function NewsPage() {
               <section className="news-index">
                 {visiblePosts.map((post) => (
                   <article className="news-index-card" key={post.id}>
-                    {post.coverImageUrl && <img src={post.coverImageUrl} alt="" loading="lazy" />}
-                    <div>
-                      <span className="news-kicker">{formatDate(post.publishedAt)}</span>
+                    <div className="news-index-card__banner">
+                      {post.coverImageUrl && <img src={post.coverImageUrl} alt="" loading="lazy" />}
+                      <span className="news-index-card__date">{formatDate(post.publishedAt)}</span>
+                    </div>
+                    <div className="news-index-card__body">
                       <h2>{post.title}</h2>
-                      <p>{post.summary}</p>
-                      <button type="button" onClick={() => openPost(post.slug)}>Read Post</button>
+                      {post.summary && <p>{post.summary}</p>}
+                      <button type="button" onClick={() => openPost(post.slug)}>Read Post →</button>
                     </div>
                   </article>
                 ))}
@@ -611,16 +699,31 @@ export default function NewsPage() {
 
             {selectedPost && (
               <article className="news-article">
-                <button type="button" className="news-back-button" onClick={backToIndex}>Back to News</button>
-                {selectedPost.coverImageUrl && (
-                  <img className="news-cover-image" src={selectedPost.coverImageUrl} alt="" loading="eager" />
+                <button type="button" className="news-back-button" onClick={backToIndex}>← Back to News</button>
+
+                {selectedPost.coverImageUrl ? (
+                  <div className="news-article-banner">
+                    <img src={selectedPost.coverImageUrl} alt="" loading="eager" />
+                    <div className="news-article-banner__overlay">
+                      <span className="news-kicker">
+                        {formatDate(selectedPost.publishedAt)} · {selectedPost.author.username}
+                        {selectedPost.status === 'draft' ? ' · Draft' : ''}
+                      </span>
+                      <h1>{selectedPost.title}</h1>
+                      {selectedPost.summary && <p className="news-summary">{selectedPost.summary}</p>}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="news-article-header">
+                    <span className="news-kicker">
+                      {formatDate(selectedPost.publishedAt)} · {selectedPost.author.username}
+                      {selectedPost.status === 'draft' ? ' · Draft' : ''}
+                    </span>
+                    <h1>{selectedPost.title}</h1>
+                    {selectedPost.summary && <p className="news-summary">{selectedPost.summary}</p>}
+                  </div>
                 )}
-                <span className="news-kicker">
-                  {formatDate(selectedPost.publishedAt)} / {selectedPost.author.username}
-                  {selectedPost.status === 'draft' ? ' / Draft preview' : ''}
-                </span>
-                <h1>{selectedPost.title}</h1>
-                <p className="news-summary">{selectedPost.summary}</p>
+
                 <div className="news-content-blocks">
                   {selectedPost.blocks.map((block) => <NewsBlockView block={block} key={block.id} />)}
                 </div>
@@ -707,6 +810,12 @@ export default function NewsPage() {
           </div>
         )}
       </div>
+
+      <footer className="auth-legal-footer" aria-label="Legal">
+        <button type="button" aria-disabled="true">Privacy Policy</button>
+        <span aria-hidden="true">·</span>
+        <button type="button" aria-disabled="true">Terms and Conditions</button>
+      </footer>
     </main>
   );
 }

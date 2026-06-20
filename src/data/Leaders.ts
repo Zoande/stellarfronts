@@ -19,13 +19,20 @@ export type LeaderTraitId =
   | "brilliantTheorist"
   | "systemsArchitect"
   | "coalitionBuilder"
+  | "masterEconomist"
+  | "visionary"
   | "aggressive"
   | "cautious"
   | "logistician"
   | "reckless"
   | "inspiring"
   | "defenseCoordinator"
-  | "logisticsCommander";
+  | "logisticsCommander"
+  | "warHero"
+  | "voidStrategist"
+  // Legendary traits — only granted to rare offered leaders (not in the normal pool).
+  | "legendaryStatesman"
+  | "legendaryAdmiral";
 
 export interface LeaderPlanetEffect {
   target: PlanetModifierTarget;
@@ -152,6 +159,23 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
       ],
     }],
   },
+  masterEconomist: {
+    id: "masterEconomist",
+    name: "Master Economist",
+    classes: ["civilian"],
+    description: "The governed planet gains +5% output from all jobs.",
+    planetEffects: [{ target: "jobOutput", operation: "multiply", value: 0.05 }],
+  },
+  visionary: {
+    id: "visionary",
+    name: "Visionary",
+    classes: ["civilian"],
+    description: "The governed planet gains +8% researcher output and +5% population growth.",
+    planetEffects: [
+      { target: "jobOutput:researcher:research", operation: "multiply", value: 0.08 },
+      { target: "populationGrowth", operation: "multiply", value: 0.05 },
+    ],
+  },
   aggressive: {
     id: "aggressive",
     name: "Aggressive",
@@ -215,6 +239,38 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
       ],
     }],
   },
+  warHero: {
+    id: "warHero",
+    name: "War Hero",
+    classes: ["military"],
+    description: "Commanded fleets gain +12% attack and +4% evasion.",
+    fleetEffects: { attackMultiplier: 0.12, evasionBonus: 0.04 },
+  },
+  voidStrategist: {
+    id: "voidStrategist",
+    name: "Void Strategist",
+    classes: ["military"],
+    description: "Commanded fleets gain +6% attack, +6% speed, and +6% shield endurance.",
+    fleetEffects: { attackMultiplier: 0.06, speedMultiplier: 0.06, shieldMultiplier: 0.06 },
+  },
+  legendaryStatesman: {
+    id: "legendaryStatesman",
+    name: "Legendary Statesman",
+    classes: ["civilian"],
+    description: "A once-in-an-era administrator: the governed planet gains +12% happiness, +8 stability, and +6% output from all jobs.",
+    planetEffects: [
+      { target: "happiness", operation: "multiply", value: 0.12 },
+      { target: "stability", operation: "add", value: 8 },
+      { target: "jobOutput", operation: "multiply", value: 0.06 },
+    ],
+  },
+  legendaryAdmiral: {
+    id: "legendaryAdmiral",
+    name: "Legendary Admiral",
+    classes: ["military"],
+    description: "A peerless fleet commander: commanded fleets gain +20% attack, +12% shield endurance, and +6% evasion.",
+    fleetEffects: { attackMultiplier: 0.2, shieldMultiplier: 0.12, evasionBonus: 0.06 },
+  },
 };
 
 const CIVILIAN_TRAITS: LeaderTraitId[] = [
@@ -226,6 +282,8 @@ const CIVILIAN_TRAITS: LeaderTraitId[] = [
   "brilliantTheorist",
   "systemsArchitect",
   "coalitionBuilder",
+  "masterEconomist",
+  "visionary",
 ];
 
 const MILITARY_TRAITS: LeaderTraitId[] = [
@@ -236,7 +294,18 @@ const MILITARY_TRAITS: LeaderTraitId[] = [
   "inspiring",
   "defenseCoordinator",
   "logisticsCommander",
+  "warHero",
+  "voidStrategist",
 ];
+
+// Legendary traits are reserved for rare offered leaders; they never enter the
+// normal hire pool or council rotation.
+const LEGENDARY_CIVILIAN_TRAITS: LeaderTraitId[] = ["legendaryStatesman"];
+const LEGENDARY_MILITARY_TRAITS: LeaderTraitId[] = ["legendaryAdmiral"];
+
+export function getLegendaryClassTraits(leaderClass: LeaderClass): LeaderTraitId[] {
+  return leaderClass === "military" ? LEGENDARY_MILITARY_TRAITS : LEGENDARY_CIVILIAN_TRAITS;
+}
 
 const FIRST_NAMES = [
   "Amina",
@@ -255,6 +324,27 @@ const FIRST_NAMES = [
   "Sana",
   "Tomas",
   "Vera",
+  "Anwen",
+  "Bastian",
+  "Cyra",
+  "Dmitri",
+  "Esme",
+  "Goran",
+  "Imara",
+  "Joaquin",
+  "Keziah",
+  "Lucia",
+  "Mateo",
+  "Nadia",
+  "Osei",
+  "Priya",
+  "Quinn",
+  "Reza",
+  "Soraya",
+  "Theo",
+  "Una",
+  "Yara",
+  "Zane",
 ];
 
 const LAST_NAMES = [
@@ -274,6 +364,55 @@ const LAST_NAMES = [
   "Tarek",
   "Voss",
   "Weber",
+  "Adeyemi",
+  "Berg",
+  "Castellan",
+  "Delacroix",
+  "Eskandari",
+  "Fontaine",
+  "Halvorsen",
+  "Ishikawa",
+  "Jovanovic",
+  "Khoury",
+  "Larsson",
+  "Mbeki",
+  "Novak",
+  "Oyelaran",
+  "Reyes",
+  "Solberg",
+  "Vasquez",
+  "Wu",
+  "Zhao",
+];
+
+// Distinctive given names + earned epithets, used only for rare legendary leaders
+// so a once-in-an-era figure reads as special.
+const LEGENDARY_FIRST_NAMES = [
+  "Cassius",
+  "Seraphina",
+  "Augustin",
+  "Valeria",
+  "Lorcan",
+  "Anastasia",
+  "Magnus",
+  "Isolde",
+  "Cyrus",
+  "Ravenna",
+  "Octavian",
+  "Lyra",
+];
+
+const LEGENDARY_EPITHETS = [
+  "the Unbroken",
+  "the Ascendant",
+  "the Farsighted",
+  "the Ironhand",
+  "the Tideturner",
+  "the Star-Forged",
+  "the Indomitable",
+  "the Peerless",
+  "the Lawgiver",
+  "the Voidwise",
 ];
 
 function hashString(value: string): number {
@@ -358,6 +497,57 @@ export function createLeaderCandidate(
     portraitUrl: null,
     createdAtYear: year,
     recruitedAtYear: status === "recruited" ? year : null,
+    diedAtYear: null,
+  };
+}
+
+/**
+ * A rare, "legendary" leader offered by the recruitment-offer event. Far stronger
+ * than a pool hire: high starting level (so it survives the xp→level normalization),
+ * a guaranteed exclusive legendary trait plus two strong regular traits, a unique
+ * epithet name, and a longer lifespan.
+ */
+export function createLegendaryLeaderCandidate(
+  factionId: number,
+  leaderClass: LeaderClass,
+  dayIndex: number,
+  slotIndex: number,
+  year: number,
+): LeaderState {
+  const seed = hashString(`legendary:${factionId}:${leaderClass}:${dayIndex}:${slotIndex}`);
+  const rng = mulberry32(seed);
+
+  // Level is always derived from xp (see normalizeLeaderState), so buff via xp to
+  // make the buff persist across save/load. Target a clearly elite starting level.
+  const targetLevel = 14 + Math.floor(rng() * 7); // 14..20
+  const xp = leaderXpForLevel(targetLevel) + Math.floor(rng() * LEADER_XP_LEVEL_FACTOR);
+
+  const legendaryTrait = pick(getLegendaryClassTraits(leaderClass), rng);
+  const regularPool = getLeaderClassTraits(leaderClass).slice();
+  const first = pick(regularPool, rng);
+  const second = pick(regularPool.filter((trait) => trait !== first), rng);
+  const traits = Array.from(new Set<LeaderTraitId>([legendaryTrait, first, second]));
+
+  const epithet = pick(LEGENDARY_EPITHETS, rng);
+  const name = `${pick(LEGENDARY_FIRST_NAMES, rng)} ${pick(LAST_NAMES, rng)} ${epithet}`;
+  const age = Math.round((leaderClass === "military" ? 34 : 36) + rng() * 18);
+  const lifespan = Math.round(88 + rng() * 24);
+
+  return {
+    id: `leader-${factionId}-legendary-${dayIndex}-${leaderClass}-${slotIndex}-${seed.toString(36)}`,
+    factionId,
+    class: leaderClass,
+    name,
+    level: calculateLeaderLevel(xp),
+    xp,
+    age,
+    lifespan,
+    status: "pool",
+    traits,
+    assignment: null,
+    portraitUrl: null,
+    createdAtYear: year,
+    recruitedAtYear: null,
     diedAtYear: null,
   };
 }

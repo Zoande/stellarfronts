@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { getGames, joinGame } from '@/auth/client';
-import type { AuthAccount, GameSummary } from '@/auth/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getGames, getPlayerProfile, joinGame, claimQuestReward } from '@/auth/client';
+import type { AuthAccount, GameSummary, PlayerProfile, QuestInfo, AchievementInfo } from '@/auth/types';
+import { MessagesPanel } from '@/components/MessagesPanel';
 import { FlagJoinForm } from '@/components/FlagJoinForm';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
@@ -11,34 +12,9 @@ interface HomePageProps {
   onContinuePlaying: (gameId: string) => void;
 }
 
-interface ProgressStat {
-  label: string;
-  value: string;
-  meta: string;
-  progress: number;
-  variant: 'rank' | 'contract';
-}
-
 const navigationItems = ['Home', 'Games', 'Ranking', 'Alliance', 'Shop'];
 const tabItems = ['Overview', 'News', 'Messages'];
 const CONTINUE_PAGE_SIZE = 3;
-
-const progressStats: ProgressStat[] = [
-  {
-    label: 'Navigator Rank',
-    value: 'Stellar Vanguard',
-    meta: '4,820 / 10,000 XP',
-    progress: 48,
-    variant: 'rank',
-  },
-  {
-    label: 'Survey Contracts',
-    value: '12 Complete',
-    meta: '66 / 100 sectors',
-    progress: 66,
-    variant: 'contract',
-  },
-];
 
 const eventCards = [
   {
@@ -55,21 +31,13 @@ const eventCards = [
   },
 ];
 
-function CommanderSigil({ initial }: { initial: string }) {
+function CommanderSigil({ initial, color }: { initial: string; color?: string }) {
   return (
-    <div className="home-sigil" aria-hidden="true">
+    <div className="home-sigil" aria-hidden="true" style={color ? { '--sigil-color': color } as React.CSSProperties : undefined}>
       <span className="home-sigil-ring" />
       <span className="home-sigil-core">{initial}</span>
       <span className="home-sigil-spark one" />
       <span className="home-sigil-spark two" />
-    </div>
-  );
-}
-
-function MedalIcon({ variant }: { variant: ProgressStat['variant'] }) {
-  return (
-    <div className={`home-medal is-${variant}`} aria-hidden="true">
-      <span className="home-medal-star" />
     </div>
   );
 }
@@ -91,8 +59,256 @@ function gameStatus(game: GameSummary): string {
   return 'Open country available';
 }
 
+function formatTimeLeft(resetsAt: number): string {
+  const ms = resetsAt - Date.now();
+  if (ms <= 0) return 'Resetting…';
+  const totalSeconds = Math.floor(ms / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const mins = Math.floor((totalSeconds % 3600) / 60);
+  if (days > 0) return `${days}d ${hours}h left`;
+  if (hours > 0) return `${hours}h ${mins}m left`;
+  return `${mins}m left`;
+}
+
+// ─── Achievement Panel ────────────────────────────────────────────────────────
+
+function AchievementPanel({ achievements, onClose }: { achievements: AchievementInfo[]; onClose: () => void }) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const unlocked = achievements.filter((a) => a.unlockedAt !== null).length;
+
+  return (
+    <div className="home-overlay-backdrop" ref={backdropRef} onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}>
+      <div className="home-overlay home-achievements-panel">
+        <div className="home-panel-header">
+          <h2 className="home-panel-title">Achievements</h2>
+          <span className="home-panel-count">{unlocked} / {achievements.length} Unlocked</span>
+          <button type="button" className="home-panel-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="home-achievements-grid">
+          {achievements.map((ach) => (
+            <div key={ach.id} className={`home-ach-card ${ach.unlockedAt ? 'is-unlocked' : 'is-locked'}`}>
+              <div className="home-ach-icon" aria-hidden="true">
+                {ach.unlockedAt ? '★' : '☆'}
+              </div>
+              <div className="home-ach-body">
+                <div className="home-ach-title">{ach.title}</div>
+                <div className="home-ach-desc">{ach.description}</div>
+                {ach.xpReward > 0 && (
+                  <div className="home-ach-reward">+{ach.xpReward} XP</div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Quest Panel ─────────────────────────────────────────────────────────────
+
+function QuestPanel({
+  quests,
+  onClose,
+  onClaim,
+}: {
+  quests: QuestInfo[];
+  onClose: () => void;
+  onClaim: (quest: QuestInfo) => Promise<void>;
+}) {
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const [claiming, setClaiming] = useState<string | null>(null);
+  const weekly = quests.filter((q) => q.type === 'weekly');
+  const triday = quests.filter((q) => q.type === 'triday');
+
+  const handleClaim = async (q: QuestInfo) => {
+    if (claiming) return;
+    setClaiming(q.id);
+    try {
+      await onClaim(q);
+    } finally {
+      setClaiming(null);
+    }
+  };
+
+  const renderQuest = (q: QuestInfo) => {
+    const pct = Math.min(100, Math.round((q.progress / q.target) * 100));
+    const done = q.completedAt !== null;
+    const claimed = q.claimedAt !== null;
+    return (
+      <div key={`${q.id}:${q.windowKey}`} className={`home-quest-item ${done ? 'is-done' : ''} ${claimed ? 'is-claimed' : ''}`}>
+        <div className="home-quest-head">
+          <span className="home-quest-title">{q.title}</span>
+          <span className="home-quest-timer">{formatTimeLeft(q.resetsAt)}</span>
+        </div>
+        <div className="home-quest-desc">{q.description}</div>
+        <div className="home-quest-progress">
+          <div className="home-progress home-quest-bar">
+            <span style={{ width: `${pct}%` }} />
+          </div>
+          <span className="home-quest-pct">{q.progress} / {q.target}</span>
+        </div>
+        {done && !claimed && (
+          <button
+            type="button"
+            className="home-quest-claim-btn"
+            disabled={claiming === q.id}
+            onClick={() => void handleClaim(q)}
+          >
+            {claiming === q.id ? 'Claiming…' : `Claim +${q.xpReward} XP`}
+          </button>
+        )}
+        {claimed && <span className="home-quest-claimed-badge">Claimed</span>}
+      </div>
+    );
+  };
+
+  return (
+    <div className="home-overlay-backdrop" ref={backdropRef} onClick={(e) => { if (e.target === backdropRef.current) onClose(); }}>
+      <div className="home-overlay home-quest-panel">
+        <div className="home-panel-header">
+          <h2 className="home-panel-title">Active Quests</h2>
+          <button type="button" className="home-panel-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="home-quest-section">
+          <h3 className="home-quest-section-label">Weekly — resets Sunday</h3>
+          {weekly.map(renderQuest)}
+        </div>
+        <div className="home-quest-section">
+          <h3 className="home-quest-section-label">3-Day Rotation</h3>
+          {triday.map(renderQuest)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Profile Row Slots ────────────────────────────────────────────────────────
+
+function AchievementsSlot({
+  profile,
+  commanderInitial,
+  commanderName,
+  commanderRole,
+  onClick,
+}: {
+  profile: PlayerProfile | null;
+  commanderInitial: string;
+  commanderName: string;
+  commanderRole: string;
+  onClick: () => void;
+}) {
+  const unlocked = profile ? profile.achievements.filter((a) => a.unlockedAt !== null).length : 0;
+  const total = profile ? profile.achievements.length : 20;
+  const pct = total > 0 ? Math.round((unlocked / total) * 100) : 0;
+
+  return (
+    <div className="home-avatar home-achievements-slot" role="button" tabIndex={0} onClick={onClick} onKeyDown={(e) => e.key === 'Enter' && onClick()}>
+      <CommanderSigil initial={commanderInitial} color={profile?.levelColor} />
+      <div>
+        <div className="home-avatar-name">{commanderName}</div>
+        <div className="home-avatar-role">{commanderRole}</div>
+      </div>
+      <div className="home-avatar-progress">
+        <span>Achievements</span>
+        <div className="home-progress"><span style={{ width: `${pct}%` }} /></div>
+        <span>{unlocked} / {total}</span>
+      </div>
+      <div className="home-slot-hint">Click to view</div>
+    </div>
+  );
+}
+
+function LevelTrackSlot({ profile }: { profile: PlayerProfile | null }) {
+  if (!profile) {
+    return (
+      <div className="home-stat home-level-track">
+        <div className="home-stat-label">Command Rank</div>
+        <div className="home-level-loading">Loading…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="home-stat home-level-track">
+      <div className="home-stat-label">Command Rank</div>
+      <div
+        className="home-level-name"
+        style={{ color: profile.levelColor }}
+      >
+        {profile.levelName}
+      </div>
+      <div className="home-level-badge-grid">
+        {profile.levels.map((lvl) => {
+          const isReached = profile.level >= lvl.level;
+          const isCurrent = profile.level === lvl.level;
+          return (
+            <div
+              key={lvl.level}
+              className={`home-level-badge ${isReached ? 'is-reached' : ''} ${isCurrent ? 'is-current' : ''}`}
+              style={isReached ? { '--badge-color': lvl.color } as React.CSSProperties : undefined}
+              title={`Lv. ${lvl.level} ${lvl.name}`}
+            >
+              <span className="home-level-badge-num">{lvl.level}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="home-avatar-progress">
+        <span>Lv. {profile.level}</span>
+        <div className="home-progress">
+          <span style={{ width: `${profile.levelProgress}%` }} />
+        </div>
+        <span>{profile.xpIntoLevel.toLocaleString()} / {profile.xpForNextLevel.toLocaleString()} XP</span>
+      </div>
+      {profile.nextLevelName && (
+        <div className="home-level-next">→ {profile.nextLevelName}</div>
+      )}
+    </div>
+  );
+}
+
+function QuestsSlot({ profile, onClick }: { profile: PlayerProfile | null; onClick: () => void }) {
+  const claimable = profile ? profile.quests.filter((q) => q.completedAt !== null && q.claimedAt === null).length : 0;
+
+  return (
+    <div className="home-stat home-quests-slot" role="button" tabIndex={0} onClick={onClick} onKeyDown={(e) => e.key === 'Enter' && onClick()}>
+      <div className="home-stat-label home-quests-label">
+        Quests
+        {claimable > 0 && <span className="home-quest-badge">{claimable}</span>}
+      </div>
+      {profile ? (
+        <div className="home-quest-preview">
+          {profile.quests.map((q) => {
+            const pct = Math.min(100, Math.round((q.progress / q.target) * 100));
+            const claimed = q.claimedAt !== null;
+            const done = q.completedAt !== null;
+            return (
+              <div key={`${q.id}:${q.windowKey}`} className={`home-quest-preview-item ${done ? 'is-done' : ''}`}>
+                <div className="home-quest-preview-title">
+                  {q.title}
+                  {done && !claimed && <span className="home-quest-dot" />}
+                </div>
+                <div className="home-progress home-quest-preview-bar">
+                  <span style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="home-level-loading">Loading…</div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
 export default function HomePage({ account, onContinuePlaying }: HomePageProps) {
   const [section, setSection] = useState<'Home' | 'Games'>('Home');
+  const [tab, setTab] = useState<'Overview' | 'Messages'>('Overview');
   const [games, setGames] = useState<GameSummary[]>([]);
   const [gamesLoading, setGamesLoading] = useState(true);
   const [gamesError, setGamesError] = useState('');
@@ -100,6 +316,9 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
   const [joinTarget, setJoinTarget] = useState<GameSummary | null>(null);
   const [joinError, setJoinError] = useState('');
   const [joinBusy, setJoinBusy] = useState(false);
+  const [profile, setProfile] = useState<PlayerProfile | null>(null);
+  const [showAchievements, setShowAchievements] = useState(false);
+  const [showQuests, setShowQuests] = useState(false);
 
   const loadGames = async () => {
     try {
@@ -113,9 +332,23 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
     }
   };
 
+  const loadProfile = useCallback(async () => {
+    try {
+      setProfile(await getPlayerProfile());
+    } catch {
+      // profile is optional — fail silently
+    }
+  }, []);
+
   useEffect(() => {
     void loadGames();
-  }, []);
+    void loadProfile();
+  }, [loadProfile]);
+
+  const handleClaimQuest = async (quest: QuestInfo) => {
+    await claimQuestReward(quest.id, quest.windowKey);
+    await loadProfile();
+  };
 
   const privileged = account.accountType === 'observer' || account.accountType === 'admin';
   const continueGames = useMemo(
@@ -164,6 +397,7 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
       const result = await joinGame(joinTarget.id, selectedCountryName, flagDesign, speciesSetup);
       setJoinTarget(null);
       setGames((current) => current.map((game) => (game.id === result.game.id ? result.game : game)));
+      void loadProfile();
       onContinuePlaying(result.game.id);
     } catch (error) {
       setJoinError(error instanceof Error ? error.message : 'Could not join game');
@@ -230,7 +464,12 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
             <button
               key={item}
               type="button"
-              className={`home-tab ${item === 'Overview' ? 'is-active' : ''}`}
+              className={`home-tab ${item === tab ? 'is-active' : ''}`}
+              onClick={() => {
+                if (item === 'News') { window.location.href = '/news'; return; }
+                if (item === 'Messages') { setTab('Messages'); setSection('Home'); return; }
+                if (item === 'Overview') { setTab('Overview'); setSection('Home'); return; }
+              }}
             >
               {item}
             </button>
@@ -254,6 +493,10 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
               </div>
             </section>
           </main>
+        ) : tab === 'Messages' ? (
+          <main className="home-messages-main">
+            <MessagesPanel account={account} />
+          </main>
         ) : (
           <main className="home-grid">
             <section className="home-card home-profile">
@@ -262,27 +505,15 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
                 <span className="home-card-kicker">Welcome back, {commanderName}</span>
               </div>
               <div className="home-profile-row">
-                <div className="home-avatar">
-                  <CommanderSigil initial={commanderInitial} />
-                  <div>
-                    <div className="home-avatar-name">{commanderName}</div>
-                    <div className="home-avatar-role">{commanderRole}</div>
-                  </div>
-                  <div className="home-avatar-progress">
-                    <span>Lvl. 35</span>
-                    <div className="home-progress"><span style={{ width: '37%' }} /></div>
-                    <span>10,746 / 11,500</span>
-                  </div>
-                </div>
-                {progressStats.map((stat) => (
-                  <div className="home-stat" key={stat.label}>
-                    <MedalIcon variant={stat.variant} />
-                    <div className="home-stat-label">{stat.label}</div>
-                    <div className="home-stat-value">{stat.value}</div>
-                    <div className="home-progress"><span style={{ width: `${stat.progress}%` }} /></div>
-                    <div className="home-progress-meta">{stat.meta}</div>
-                  </div>
-                ))}
+                <AchievementsSlot
+                  profile={profile}
+                  commanderInitial={commanderInitial}
+                  commanderName={commanderName}
+                  commanderRole={commanderRole}
+                  onClick={() => setShowAchievements(true)}
+                />
+                <LevelTrackSlot profile={profile} />
+                <QuestsSlot profile={profile} onClick={() => setShowQuests(true)} />
               </div>
             </section>
 
@@ -363,6 +594,21 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
             onSubmit={handleJoin}
           />
         </div>
+      )}
+
+      {showAchievements && profile && (
+        <AchievementPanel
+          achievements={profile.achievements}
+          onClose={() => setShowAchievements(false)}
+        />
+      )}
+
+      {showQuests && profile && (
+        <QuestPanel
+          quests={profile.quests}
+          onClose={() => setShowQuests(false)}
+          onClaim={handleClaimQuest}
+        />
       )}
     </div>
   );

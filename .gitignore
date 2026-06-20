@@ -7,4 +7,4 @@ server/state/auth.sqlite*
 server/state/games/
 /space-3d/
 versions/
-docs/versioning-and-deploy.md
+docs/*.md

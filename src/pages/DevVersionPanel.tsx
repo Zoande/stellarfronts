@@ -7,6 +7,7 @@ import {
   listRemoteVersions,
   registerOrchestratorVersion,
   runGameLifecycle,
+  unregisterOrchestratorVersion,
 } from '../auth/client';
 import type { CompatRow, OrchestratorGame, OrchestratorVersion, RemoteRef } from '../auth/client';
 
@@ -34,7 +35,9 @@ export default function DevVersionPanel() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
-  const versionOptions = ['dev', ...versions.map((version) => version.id)];
+  // The orchestrator now leads its version list with the built-in "dev" working
+  // tree, so derive options from it (deduped, with dev as a safe fallback).
+  const versionOptions = Array.from(new Set(['dev', ...versions.map((version) => version.id)]));
 
   const reload = useCallback(async () => {
     try {
@@ -75,6 +78,10 @@ export default function DevVersionPanel() {
 
   const register = () => run(`Registered ${selectedRef}`, () => registerOrchestratorVersion(selectedRef, versionId || undefined));
 
+  const unregister = (id: string) => run(`Unregistered ${id}`, () => unregisterOrchestratorVersion(id));
+
+  const shortCommit = (commit: string) => (commit ? commit.slice(0, 7) : '—');
+
   const createGame = () => run(`Created ${newGameName}`, async () => {
     await createOrchestratorGame(newGameName, newGameVersion);
     setNewGameName('');
@@ -107,11 +114,22 @@ export default function DevVersionPanel() {
           </div>
           <ul style={{ marginTop: 12 }}>
             {versions.map((version) => (
-              <li key={version.id}>
-                <strong>{version.id}</strong> — {version.gitRef} · protocol v{version.protocolVersion} · schema {version.schemaVersion} · port {version.port}
+              <li key={version.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>
+                  <strong>{version.id}</strong>
+                  {version.id === 'dev' && <span style={{ opacity: 0.6 }}> (working tree)</span>}
+                  {' — '}
+                  {version.refType} <code>{version.gitRef}</code> @ <code title={version.commit}>{shortCommit(version.commit)}</code>
+                  {' · '}protocol v{version.protocolVersion} · schema {version.schemaVersion} · port {version.port}
+                </span>
+                {version.id !== 'dev' && (
+                  <button type="button" className="dev-secondary-button" disabled={busy} onClick={() => unregister(version.id)}>
+                    Unregister
+                  </button>
+                )}
               </li>
             ))}
-            {versions.length === 0 && <li>No tagged versions registered (only the built-in <strong>dev</strong> working tree).</li>}
+            {versions.length === 0 && <li>Orchestrator unreachable — no versions to show.</li>}
           </ul>
         </div>
 

@@ -10,7 +10,7 @@ from PIL import Image
 from PIL import ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_DIR = ROOT / "source_materials"
+SOURCE_DIR = ROOT / "resources" / "source-materials"
 
 PLANET_QUALITY = 80
 BANNER_QUALITY = 30
@@ -94,8 +94,8 @@ TARGETS = [
         ],
         "files": [
             ROOT / "public" / "textures" / "own_ship_icon.png",
-            ROOT / "own_starbase_icon.png",
-            ROOT / "own_ship_icon.png",
+            SOURCE_DIR / "own_starbase_icon.png",
+            SOURCE_DIR / "own_ship_icon.png",
             ROOT / "side_bar_fleet icon.png",
             ROOT / "side_bar_tech_icon.png",
             SOURCE_DIR / "sidebar_government_icon.png",

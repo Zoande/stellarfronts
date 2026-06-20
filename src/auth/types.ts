@@ -236,3 +236,100 @@ export interface NewsCommentResponse {
 export interface NewsMediaResponse {
   url: string;
 }
+
+export interface NewsMediaFile {
+  name: string;
+  url: string;
+}
+
+export interface NewsMediaListResponse {
+  files: NewsMediaFile[];
+}
+
+// ─── Player Progression ───────────────────────────────────────────────────────
+
+export interface LevelInfo {
+  level: number;
+  name: string;
+  xpRequired: number;
+  color: string;
+}
+
+export interface AchievementInfo {
+  id: string;
+  title: string;
+  description: string;
+  xpReward: number;
+  unlockedAt: number | null;
+}
+
+export interface QuestInfo {
+  id: string;
+  title: string;
+  description: string;
+  type: 'weekly' | 'triday';
+  target: number;
+  xpReward: number;
+  action: string;
+  progress: number;
+  completedAt: number | null;
+  claimedAt: number | null;
+  windowKey: string;
+  resetsAt: number;
+}
+
+export interface PlayerProfile {
+  totalXp: number;
+  level: number;
+  levelName: string;
+  levelColor: string;
+  xpIntoLevel: number;
+  xpForNextLevel: number;
+  levelProgress: number;
+  nextLevelName: string | null;
+  levels: LevelInfo[];
+  achievements: AchievementInfo[];
+  quests: QuestInfo[];
+}
+
+export interface PlayerProfileResponse {
+  profile: PlayerProfile;
+}
+
+export interface ClaimQuestResponse {
+  xpGained: number;
+  newTotalXp: number;
+  newLevel: number;
+}
+
+// ─── Direct Messages ──────────────────────────────────────────────────────────
+
+export interface DirectMessage {
+  id: number;
+  senderId: number;
+  senderUsername: string;
+  recipientId: number;
+  recipientUsername: string;
+  body: string;
+  sentAt: number;
+  readAt: number | null;
+}
+
+export interface DirectConversation {
+  partnerId: number;
+  partnerUsername: string;
+  unreadCount: number;
+  lastMessage: DirectMessage;
+}
+
+export interface ConversationsResponse {
+  conversations: DirectConversation[];
+}
+
+export interface MessagesWithResponse {
+  messages: DirectMessage[];
+}
+
+export interface SendMessageResponse {
+  message: DirectMessage;
+}
