@@ -236,3 +236,12 @@ export interface NewsCommentResponse {
 export interface NewsMediaResponse {
   url: string;
 }
+
+export interface NewsMediaFile {
+  name: string;
+  url: string;
+}
+
+export interface NewsMediaListResponse {
+  files: NewsMediaFile[];
+}

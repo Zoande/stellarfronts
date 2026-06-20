@@ -10,6 +10,8 @@ import type {
   JoinGameResponse,
   NewsComment,
   NewsCommentVote,
+  NewsMediaFile,
+  NewsMediaListResponse,
   NewsMediaResponse,
   NewsPost,
   NewsPostListItem,
@@ -200,6 +202,11 @@ export async function deleteNewsPost(postId: string): Promise<void> {
 export async function uploadNewsImage(filename: string, mimeType: string, dataUrl: string): Promise<string> {
   const result = await requestJson<NewsMediaResponse>('/api/admin/news/media', { filename, mimeType, dataUrl });
   return result.url;
+}
+
+export async function listNewsMedia(): Promise<NewsMediaFile[]> {
+  const result = await requestJson<NewsMediaListResponse>('/api/admin/news/media', undefined, 'GET');
+  return result.files;
 }
 
 export async function createNewsComment(slug: string, body: string): Promise<NewsComment> {

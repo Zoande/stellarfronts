@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   authStore,
@@ -107,6 +107,10 @@ function decodePathSegment(value: string): string {
   } catch {
     return value;
   }
+}
+
+function getMediaBaseUrl(request: IncomingMessage): string {
+  return (process.env.AUTH_SERVER_PUBLIC_URL ?? '').replace(/\/+$/, '') || getRequestBaseUrl(request);
 }
 
 function getRequestBaseUrl(request: IncomingMessage): string {
@@ -249,14 +253,17 @@ function renderNewsShell(title: string, description: string, canonicalUrl: strin
 <body>
   <main>
     <nav>
+      <a href="/">Home</a>
       <a href="/news">News</a>
       <span>Forums</span>
       <span>Support</span>
-      <span>Privacy Policy</span>
-      <span>Terms and Conditions</span>
+      <span>Contact</span>
     </nav>
     ${body}
   </main>
+  <footer style="text-align:center;padding:10px 0 18px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:rgba(143,156,174,.5)">
+    <span>Privacy Policy</span> &middot; <span>Terms and Conditions</span>
+  </footer>
 </body>
 </html>`;
 }
@@ -510,6 +517,25 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  if (request.method === 'GET' && url.pathname === '/api/admin/news/media') {
+    const account = getAuthenticatedAccount(request);
+    if (!account || !authStore.isAdminAccount(account)) {
+      writeJson(response, account ? 403 : 401, { error: account ? 'Administrator account required' : 'Authentication required' });
+      return;
+    }
+    try {
+      await mkdir(NEWS_MEDIA_DIR, { recursive: true });
+      const files = (await readdir(NEWS_MEDIA_DIR))
+        .filter((f) => /\.(jpg|jpeg|png|webp|gif)$/i.test(f))
+        .sort()
+        .map((name) => ({ name, url: `${getMediaBaseUrl(request)}${NEWS_MEDIA_ROUTE}${encodeURIComponent(name)}` }));
+      writeJson(response, 200, { files });
+    } catch {
+      writeJson(response, 200, { files: [] });
+    }
+    return;
+  }
+
   if (request.method === 'POST' && url.pathname === '/api/admin/news/media') {
     const account = getAuthenticatedAccount(request);
     if (!account || !authStore.isAdminAccount(account)) {
@@ -521,7 +547,7 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       const media = normalizeUploadedMedia(body);
       await mkdir(NEWS_MEDIA_DIR, { recursive: true });
       await writeFile(path.join(NEWS_MEDIA_DIR, media.filename), media.buffer);
-      writeJson(response, 201, { url: `${getRequestBaseUrl(request)}${NEWS_MEDIA_ROUTE}${encodeURIComponent(media.filename)}` });
+      writeJson(response, 201, { url: `${getMediaBaseUrl(request)}${NEWS_MEDIA_ROUTE}${encodeURIComponent(media.filename)}` });
     } catch (error) {
       writeJson(response, 400, { error: error instanceof Error ? error.message : 'Could not upload image' });
     }

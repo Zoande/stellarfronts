@@ -1384,7 +1384,46 @@ body {
 }
 
 .auth-info-band--systems {
-  padding-bottom: 100px;
+  padding-bottom: 120px;
+}
+
+.auth-legal-footer {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 7px 24px;
+  background: rgba(3, 5, 10, 0.78);
+  backdrop-filter: blur(10px);
+  border-top: 1px solid rgba(136, 151, 171, 0.12);
+}
+
+.auth-legal-footer button {
+  border: 0;
+  background: transparent;
+  color: rgba(143, 156, 174, 0.52);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: default;
+  transition: color 160ms ease;
+}
+
+.auth-legal-footer button:hover {
+  color: rgba(143, 156, 174, 0.78);
+}
+
+.auth-legal-footer span {
+  color: rgba(143, 156, 174, 0.3);
+  font-size: 10px;
+  pointer-events: none;
 }
 
 .auth-section-heading {

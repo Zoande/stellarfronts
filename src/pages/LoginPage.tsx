@@ -30,7 +30,7 @@ const commandSignals = [
   ['New Player Slots', 'Available slots open in galaxies'],
 ];
 
-const communityNavItems = ['Forums', 'Support', 'Privacy Policy', 'Terms and Conditions'];
+const communityNavItems = ['Forums', 'Support'];
 
 const operations = [
   {
@@ -154,12 +154,14 @@ export default function LoginPage({ onLoginSubmit, onSignupSubmit }: LoginPagePr
       <div className="auth-route auth-route--two" aria-hidden="true" />
 
       <nav className="auth-community-nav" aria-label="Community navigation">
+        <a href="/">Home</a>
         <a href="/news">News</a>
         {communityNavItems.map((item) => (
           <button key={item} type="button" aria-disabled="true">
             {item}
           </button>
         ))}
+        <a href="https://www.elitedevs.org/contact.html" target="_blank" rel="noopener noreferrer">Contact</a>
       </nav>
 
       <section className="auth-hero" aria-label="StellarFronts command login">
@@ -540,6 +542,11 @@ export default function LoginPage({ onLoginSubmit, onSignupSubmit }: LoginPagePr
           </article>
         </div>
       </section>
+      <footer className="auth-legal-footer" aria-label="Legal">
+        <button type="button" aria-disabled="true">Privacy Policy</button>
+        <span aria-hidden="true">·</span>
+        <button type="button" aria-disabled="true">Terms and Conditions</button>
+      </footer>
     </main>
   );
 }
