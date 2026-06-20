@@ -103,6 +103,10 @@ export async function deleteDevGame(gameId: string): Promise<void> {
 export interface OrchestratorVersion {
   id: string;
   gitRef: string;
+  /** Exact commit this version is pinned to (resolved at registration). */
+  commit: string;
+  /** How gitRef was interpreted when registered. */
+  refType: 'tag' | 'branch' | 'commit';
   port: number;
   protocolVersion: number;
   schemaVersion: number;
@@ -135,6 +139,10 @@ export async function listRemoteVersions(): Promise<RemoteRef[]> {
 
 export async function registerOrchestratorVersion(gitRef: string, id?: string): Promise<void> {
   await requestJson('/api/dev/orchestrator/versions', { gitRef, id });
+}
+
+export async function unregisterOrchestratorVersion(versionId: string): Promise<void> {
+  await requestJson(`/api/dev/orchestrator/versions/${encodeURIComponent(versionId)}`, undefined, 'DELETE');
 }
 
 export async function listOrchestratorGames(): Promise<OrchestratorGame[]> {

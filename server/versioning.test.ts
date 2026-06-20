@@ -16,6 +16,8 @@ function sampleVersion(overrides: Partial<StoredGameVersion> = {}): StoredGameVe
   return {
     id: "v2",
     gitRef: "v2.0.0",
+    commit: "a".repeat(40),
+    refType: "tag",
     worktreePath: "versions/v2",
     port: 8810,
     protocolVersion: 2,
@@ -64,6 +66,37 @@ test("game version, status and state-version stamps are mutable", () => {
   assert.equal(updated?.status, "archived");
   assert.equal(updated?.schemaVersion, 20);
   assert.equal(updated?.protocolVersion, 2);
+});
+
+test("registered versions persist their pinned commit and ref type", () => {
+  const store = freshStore();
+  store.registerGameVersion(sampleVersion({ commit: "b".repeat(40), refType: "branch", gitRef: "main" }));
+  const [version] = store.listGameVersions();
+  assert.equal(version.commit, "b".repeat(40));
+  assert.equal(version.refType, "branch");
+  assert.equal(version.gitRef, "main");
+});
+
+test("archived games are hidden from the lobby for every account", () => {
+  const store = freshStore();
+  const account = store.getAccountByUsername("color_1");
+  assert.ok(account);
+  const game = store.createGame("Soon Archived");
+  // Visible while active...
+  assert.ok(store.getGameSummariesForAccount(account!).some((g) => g.id === game.id));
+  store.setGameStatus(game.id, "archived");
+  // ...and gone once archived (for joined and unjoined accounts alike).
+  assert.equal(store.getGameSummariesForAccount(account!).some((g) => g.id === game.id), false);
+  assert.equal(store.getGameSummaryForAccount(game.id, account!), null);
+});
+
+test("an archived game cannot be joined", () => {
+  const store = freshStore();
+  const account = store.getAccountByUsername("color_1");
+  assert.ok(account);
+  const game = store.createGame("No Entry");
+  store.setGameStatus(game.id, "archived");
+  assert.throws(() => store.joinGame(account!, game.id, "Latecomer"), /Game not found/);
 });
 
 test("compatibility gate matches a version's declared migratesFromSchema", () => {

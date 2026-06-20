@@ -24,7 +24,8 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { authStore } from "./auth-store";
-import type { StoredGame, StoredGameVersion } from "./auth-store";
+import type { StoredGame, StoredGameVersion, GameVersionRefType } from "./auth-store";
+import { VERSION_MANIFEST } from "./versionManifest";
 import { getGameStateDirectory, getGameStatePath } from "./game-state-path";
 
 const CONTROL_PORT = Number(process.env.CONTROL_PORT ?? 8790);
@@ -121,22 +122,77 @@ async function listRemoteRefs(): Promise<RemoteRef[]> {
   return refs;
 }
 
-async function registerVersion(gitRef: string, requestedId?: string, requestedPort?: number): Promise<StoredGameVersion> {
-  const id = sanitizeId(requestedId ?? gitRef);
-  if (id === DEV_VERSION_ID) throw new Error('"dev" is the reserved working-tree version.');
-  const worktreePath = path.join(VERSIONS_ROOT, id);
-  if (!existsSync(worktreePath)) {
-    await mkdir(VERSIONS_ROOT, { recursive: true });
-    // Fetch so any tag/branch/SHA from GitHub is available, then check it out
-    // detached (immutable snapshot — a branch ref won't drift afterwards).
-    await runCapture("git", ["fetch", GIT_REMOTE, "--tags", "--prune"]);
-    const result = await runCapture("git", ["worktree", "add", "--detach", worktreePath, gitRef]);
-    if (result.code !== 0) throw new Error(`git worktree add failed: ${result.stderr || result.stdout}`);
+/** Resolve a ref to the single commit it points at (peels tags, follows branches). */
+async function revCommit(ref: string): Promise<string | null> {
+  const result = await runCapture("git", ["rev-list", "-n", "1", ref]);
+  const sha = result.stdout.trim().split(/\s+/).pop() ?? "";
+  return result.code === 0 && /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+}
+
+/**
+ * Resolve an operator-supplied ref (branch / tag / raw commit) to an immutable
+ * commit SHA. Selecting a BRANCH pins its latest commit at registration time —
+ * the worktree is then detached at that SHA so the branch moving later never
+ * drifts a registered version.
+ */
+async function resolveRef(gitRef: string): Promise<{ sha: string; refType: GameVersionRefType }> {
+  const fetched = await runCapture("git", ["fetch", GIT_REMOTE, "--tags", "--prune"]);
+  if (fetched.code !== 0) throw new Error(`git fetch failed: ${fetched.stderr || fetched.stdout}`);
+  const asBranch = await revCommit(`refs/remotes/${GIT_REMOTE}/${gitRef}`);
+  if (asBranch) return { sha: asBranch, refType: "branch" };
+  const asTag = await revCommit(`refs/tags/${gitRef}`);
+  if (asTag) return { sha: asTag, refType: "tag" };
+  const asCommit = await revCommit(gitRef);
+  if (asCommit) return { sha: asCommit, refType: "commit" };
+  throw new Error(`Could not resolve "${gitRef}" to a commit on ${GIT_REMOTE} (tried branch, tag, then commit).`);
+}
+
+/** Detach a fresh worktree at an exact SHA, reusing or replacing any stale dir. */
+async function ensureWorktreeAt(worktreePath: string, sha: string): Promise<void> {
+  if (existsSync(worktreePath)) {
+    const head = await runCapture("git", ["-C", worktreePath, "rev-parse", "HEAD"]);
+    if (head.code === 0 && head.stdout.trim() === sha) return; // already the right commit
+    await removeWorktree(worktreePath); // stale/partial — clear it out and recreate
   }
-  const manifest = await probeManifest(worktreePath);
+  await runCapture("git", ["worktree", "prune"]);
+  const result = await runCapture("git", ["worktree", "add", "--detach", worktreePath, sha]);
+  if (result.code !== 0) throw new Error(`git worktree add failed: ${result.stderr || result.stdout}`);
+}
+
+async function removeWorktree(worktreePath: string): Promise<void> {
+  await runCapture("git", ["worktree", "remove", "--force", worktreePath]);
+  if (existsSync(worktreePath)) await rm(worktreePath, { recursive: true, force: true });
+  await runCapture("git", ["worktree", "prune"]);
+}
+
+async function registerVersion(gitRef: string, requestedId?: string, requestedPort?: number): Promise<StoredGameVersion> {
+  const trimmedRef = gitRef.trim();
+  if (!trimmedRef) throw new Error("A git ref (branch, tag, or commit) is required.");
+  const id = sanitizeId(requestedId ?? trimmedRef);
+  if (id === DEV_VERSION_ID) throw new Error('"dev" is the reserved working-tree version.');
+  if (authStore.getGameVersion(id)) {
+    throw new Error(`Version id "${id}" is already registered. Unregister it first or pick a different id.`);
+  }
+
+  const { sha, refType } = await resolveRef(trimmedRef);
+  const worktreePath = path.join(VERSIONS_ROOT, id);
+  await mkdir(VERSIONS_ROOT, { recursive: true });
+  await ensureWorktreeAt(worktreePath, sha);
+
+  let manifest: { protocolVersion: number; schemaVersion: number; migratesFromSchema: number[] };
+  try {
+    manifest = await probeManifest(worktreePath);
+  } catch (error) {
+    // A failed probe must not leave an orphaned worktree behind.
+    await removeWorktree(worktreePath);
+    throw error;
+  }
+
   const version: StoredGameVersion = {
     id,
-    gitRef,
+    gitRef: trimmedRef,
+    commit: sha,
+    refType,
     worktreePath,
     port: requestedPort ?? allocatePort(),
     protocolVersion: manifest.protocolVersion,
@@ -147,6 +203,45 @@ async function registerVersion(gitRef: string, requestedId?: string, requestedPo
   authStore.registerGameVersion(version);
   await reconcile();
   return version;
+}
+
+/** Remove a registered version + its worktree. Refuses while any game still uses it. */
+async function unregisterVersion(versionId: string): Promise<void> {
+  if (versionId === DEV_VERSION_ID) throw new Error('The "dev" working-tree version cannot be unregistered.');
+  const version = authStore.getGameVersion(versionId);
+  if (!version) throw new Error("Unknown version.");
+  const games = authStore.listGamesByVersion(versionId);
+  if (games.length > 0) {
+    throw new Error(`Cannot unregister: ${games.length} game(s) still run on this version. Reassign or delete them first.`);
+  }
+  await stopVersionProcess(versionId);
+  authStore.removeGameVersion(versionId);
+  await removeWorktree(version.worktreePath);
+}
+
+// The built-in "dev" working-tree version. The orchestrator IS that working tree,
+// so its identity comes from this process's own manifest + git HEAD (resolved once).
+let devVersionCache: StoredGameVersion | null = null;
+async function devVersionEntry(): Promise<StoredGameVersion> {
+  if (devVersionCache) return devVersionCache;
+  const head = await runCapture("git", ["rev-parse", "HEAD"]);
+  const branch = await runCapture("git", ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const commit = head.code === 0 ? head.stdout.trim() : "";
+  const branchName = branch.code === 0 ? branch.stdout.trim() : "HEAD";
+  const detached = branchName === "HEAD" || branchName === "";
+  devVersionCache = {
+    id: DEV_VERSION_ID,
+    gitRef: detached ? commit.slice(0, 12) || "working-tree" : branchName,
+    commit,
+    refType: detached ? "commit" : "branch",
+    worktreePath: process.cwd(),
+    port: DEV_INTERNAL_PORT,
+    protocolVersion: VERSION_MANIFEST.protocolVersion,
+    schemaVersion: VERSION_MANIFEST.schemaVersion,
+    migratesFromSchema: VERSION_MANIFEST.migratesFromSchema,
+    createdAt: 0,
+  };
+  return devVersionCache;
 }
 
 /** Internal port of the process hosting a game (for the gateway proxy). */
@@ -330,8 +425,18 @@ const server = http.createServer(async (request, response) => {
     const method = request.method ?? "GET";
     const body = method === "POST" ? await readJsonBody(request) : {};
     const gameMatch = url.pathname.match(/^\/games\/([a-z0-9]+)\/(reset|update|stop|start|archive|rollback|endpoint)$/i);
+    const versionMatch = url.pathname.match(/^\/versions\/([a-z0-9]+)$/i);
 
-    if (method === "GET" && url.pathname === "/versions") return send(response, 200, { versions: authStore.listGameVersions() });
+    if (method === "GET" && url.pathname === "/versions") {
+      // Lead with the built-in dev working tree so every selectable version —
+      // including dev — clearly shows which commit it is pinned to.
+      const dev = await devVersionEntry();
+      return send(response, 200, { versions: [dev, ...authStore.listGameVersions()] });
+    }
+    if (method === "DELETE" && versionMatch) {
+      await unregisterVersion(versionMatch[1]);
+      return send(response, 200, { ok: true });
+    }
     if (method === "GET" && url.pathname === "/remote-versions") return send(response, 200, { refs: await listRemoteRefs() });
     if (method === "GET" && url.pathname === "/games") return send(response, 200, { games: listGamesWithEndpoints() });
     if (method === "GET" && url.pathname === "/compat") return send(response, 200, { games: compatReport(String(url.searchParams.get("to") ?? "")) });

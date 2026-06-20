@@ -107,6 +107,8 @@ interface GameRow {
 interface GameVersionRow {
   id: string;
   git_ref: string;
+  commit_sha: string | null;
+  ref_type: string | null;
   worktree_path: string;
   port: number;
   protocol_version: number;
@@ -179,9 +181,17 @@ export interface StoredGame {
   protocolVersion: number | null;
 }
 
+/** What kind of git ref a version was resolved from when it was registered. */
+export type GameVersionRefType = "tag" | "branch" | "commit";
+
 export interface StoredGameVersion {
   id: string;
+  /** The ref the operator selected (branch name, tag, or raw SHA). */
   gitRef: string;
+  /** The exact commit SHA this version is pinned to (resolved at registration). */
+  commit: string;
+  /** How `gitRef` was interpreted when the version was registered. */
+  refType: GameVersionRefType;
   worktreePath: string;
   port: number;
   protocolVersion: number;
@@ -575,6 +585,8 @@ export class AuthStore {
       CREATE TABLE IF NOT EXISTS game_versions (
         id TEXT PRIMARY KEY,
         git_ref TEXT NOT NULL,
+        commit_sha TEXT,
+        ref_type TEXT,
         worktree_path TEXT NOT NULL,
         port INTEGER NOT NULL,
         protocol_version INTEGER NOT NULL,
@@ -673,6 +685,14 @@ export class AuthStore {
     }
     if (!gameColumns.some((column) => column.name === 'protocol_version')) {
       this.db.exec(`ALTER TABLE games ADD COLUMN protocol_version INTEGER`);
+    }
+
+    const versionColumns = this.db.prepare(`PRAGMA table_info(game_versions)`).all() as Array<{ name: string }>;
+    if (!versionColumns.some((column) => column.name === 'commit_sha')) {
+      this.db.exec(`ALTER TABLE game_versions ADD COLUMN commit_sha TEXT`);
+    }
+    if (!versionColumns.some((column) => column.name === 'ref_type')) {
+      this.db.exec(`ALTER TABLE game_versions ADD COLUMN ref_type TEXT`);
     }
 
     this.db.prepare(`
@@ -782,10 +802,12 @@ export class AuthStore {
 
   registerGameVersion(version: StoredGameVersion): StoredGameVersion {
     this.db.prepare(`
-      INSERT INTO game_versions (id, git_ref, worktree_path, port, protocol_version, schema_version, migrates_from_schema, created_at)
-      VALUES (@id, @gitRef, @worktreePath, @port, @protocolVersion, @schemaVersion, @migratesFromSchema, @createdAt)
+      INSERT INTO game_versions (id, git_ref, commit_sha, ref_type, worktree_path, port, protocol_version, schema_version, migrates_from_schema, created_at)
+      VALUES (@id, @gitRef, @commit, @refType, @worktreePath, @port, @protocolVersion, @schemaVersion, @migratesFromSchema, @createdAt)
       ON CONFLICT(id) DO UPDATE SET
         git_ref = excluded.git_ref,
+        commit_sha = excluded.commit_sha,
+        ref_type = excluded.ref_type,
         worktree_path = excluded.worktree_path,
         port = excluded.port,
         protocol_version = excluded.protocol_version,
@@ -794,6 +816,8 @@ export class AuthStore {
     `).run({
       id: version.id,
       gitRef: version.gitRef,
+      commit: version.commit,
+      refType: version.refType,
       worktreePath: version.worktreePath,
       port: version.port,
       protocolVersion: version.protocolVersion,
@@ -851,6 +875,7 @@ export class AuthStore {
       LEFT JOIN game_memberships all_members ON all_members.game_id = g.id
       LEFT JOIN game_memberships own_members ON own_members.game_id = g.id AND own_members.account_id = ?
       LEFT JOIN game_visits visits ON visits.game_id = g.id AND visits.account_id = ?
+      WHERE g.status != 'archived'
       GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.flag_design, own_members.species_setup, own_members.joined_at, visits.last_entered_at
       ORDER BY COALESCE(visits.last_entered_at, 0) DESC, g.created_at DESC, g.id ASC
     `).all(account.id, account.id) as GameSummaryRow[];
@@ -888,7 +913,8 @@ export class AuthStore {
     speciesSetupInput?: unknown,
   ): GameMembership | null {
     if (this.isPrivilegedGameAccount(account)) {
-      if (!this.getGameById(gameId)) throw new AuthError('Game not found', 404);
+      const game = this.getGameById(gameId);
+      if (!game || game.status === 'archived') throw new AuthError('Game not found', 404);
       return null;
     }
 
@@ -902,7 +928,7 @@ export class AuthStore {
 
     const membership = this.db.transaction(() => {
       const game = this.getGameById(gameId);
-      if (!game) throw new AuthError('Game not found', 404);
+      if (!game || game.status === 'archived') throw new AuthError('Game not found', 404);
       const current = this.getGameMembership(game.id, account.id);
       if (current) return current;
 
@@ -1550,9 +1576,15 @@ export class AuthStore {
     } catch {
       migratesFromSchema = [];
     }
+    const refType: GameVersionRefType =
+      row.ref_type === "tag" || row.ref_type === "branch" || row.ref_type === "commit"
+        ? row.ref_type
+        : "commit";
     return {
       id: row.id,
       gitRef: row.git_ref,
+      commit: row.commit_sha ?? "",
+      refType,
       worktreePath: row.worktree_path,
       port: row.port,
       protocolVersion: row.protocol_version,
