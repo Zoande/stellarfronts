@@ -476,6 +476,8 @@ const server = http.createServer(async (request, response) => {
 // Clients always connect here (the port Cloudflare tunnels). We look up the game's
 // version, open an upstream WS to that internal process forwarding the auth cookie
 // + origin, and pipe both directions. Cloudflare config never changes per version.
+const UPSTREAM_MAX_ATTEMPTS = 15;
+const UPSTREAM_RETRY_MS = 2000;
 const gateway = new WebSocketServer({ port: GATEWAY_PORT });
 gateway.on("connection", (client: WebSocket, request: IncomingMessage) => {
   const url = new URL(request.url ?? "/", "ws://localhost");
@@ -490,25 +492,58 @@ gateway.on("connection", (client: WebSocket, request: IncomingMessage) => {
     client.close(1011, "No host process for this game.");
     return;
   }
-  const upstream = new WebSocket(`ws://127.0.0.1:${port}${request.url ?? "/"}`, {
-    headers: { cookie: request.headers.cookie ?? "", origin: request.headers.origin ?? "" },
-  });
+
+  // Retry loop: the version subprocess may still be starting (tsx compilation)
+  // when the client first connects, causing ECONNREFUSED. Retry for up to
+  // UPSTREAM_MAX_ATTEMPTS * UPSTREAM_RETRY_MS ms before giving up.
   const pending: { data: RawData; isBinary: boolean }[] = [];
+  let clientClosed = false;
+  let currentUpstream: WebSocket | null = null;
+
   client.on("message", (data: RawData, isBinary: boolean) => {
-    if (upstream.readyState === WebSocket.OPEN) upstream.send(data, { binary: isBinary });
-    else pending.push({ data, isBinary });
+    if (currentUpstream && currentUpstream.readyState === WebSocket.OPEN) {
+      currentUpstream.send(data, { binary: isBinary });
+    } else {
+      pending.push({ data, isBinary });
+    }
   });
-  upstream.on("open", () => {
-    for (const msg of pending) upstream.send(msg.data, { binary: msg.isBinary });
-    pending.length = 0;
+  client.on("close", () => {
+    clientClosed = true;
+    currentUpstream?.close();
   });
-  upstream.on("message", (data: RawData, isBinary: boolean) => {
-    if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
-  });
-  client.on("close", () => upstream.close());
-  upstream.on("close", () => client.close());
-  upstream.on("error", () => client.close(1011, "Upstream error."));
-  client.on("error", () => upstream.close());
+  client.on("error", () => currentUpstream?.close());
+
+  function tryConnect(attempt: number): void {
+    if (clientClosed) return;
+    const upstream = new WebSocket(`ws://127.0.0.1:${port}${request.url ?? "/"}`, {
+      headers: { cookie: request.headers.cookie ?? "", origin: request.headers.origin ?? "" },
+    });
+    currentUpstream = upstream;
+    let connected = false;
+
+    upstream.on("open", () => {
+      connected = true;
+      for (const msg of pending) upstream.send(msg.data, { binary: msg.isBinary });
+      pending.length = 0;
+    });
+    upstream.on("message", (data: RawData, isBinary: boolean) => {
+      if (client.readyState === WebSocket.OPEN) client.send(data, { binary: isBinary });
+    });
+    upstream.on("close", () => {
+      if (!clientClosed) client.close();
+    });
+    upstream.on("error", () => {
+      if (connected) return; // error after connect → let close handler deal with it
+      if (!clientClosed && attempt < UPSTREAM_MAX_ATTEMPTS) {
+        setTimeout(() => tryConnect(attempt + 1), UPSTREAM_RETRY_MS);
+      } else if (!clientClosed) {
+        clientClosed = true;
+        client.close(1011, "Upstream error.");
+      }
+    });
+  }
+
+  tryConnect(1);
 });
 
 server.listen(CONTROL_PORT, () => {
