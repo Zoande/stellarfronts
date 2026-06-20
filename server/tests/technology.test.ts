@@ -1,8 +1,8 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BUILDING_KINDS } from "../src/data/Economy";
-import { SHIP_MODULE_DEFINITIONS, SHIP_SECTION_MODULE_DEFINITIONS } from "../src/data/ShipDesigns";
-import { STARBASE_BUILDING_KINDS, STARBASE_SHIP_KINDS } from "../src/data/Starbase";
+import { BUILDING_KINDS } from "../../src/data/Economy";
+import { SHIP_MODULE_DEFINITIONS, SHIP_SECTION_MODULE_DEFINITIONS } from "../../src/data/ShipDesigns";
+import { STARBASE_BUILDING_KINDS, STARBASE_SHIP_KINDS } from "../../src/data/Starbase";
 import {
   DEFAULT_COMPLETED_TECH_IDS,
   evaluateTechnologyResearch,
@@ -14,8 +14,8 @@ import {
   getRequiredTechIdsForStarbaseBuilding,
   normalizeFactionTechState,
   TECHNOLOGY_BY_ID,
-} from "../src/data/Technology";
-import type { ResearchContext } from "../src/data/Technology";
+} from "../../src/data/Technology";
+import type { ResearchContext } from "../../src/data/Technology";
 
 const EMPTY_CONTEXT: ResearchContext = {
   farmerJobs: 0,

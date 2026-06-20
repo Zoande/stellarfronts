@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   applyWeaponDamage,
@@ -10,8 +10,8 @@ import {
   rollWeaponShot,
   weaponCanFireAtDistance,
   weaponCanFireAtRange,
-} from "./combat";
-import type { WeaponMountDefinition } from "../src/data/Starbase";
+} from "../game/combat";
+import type { WeaponMountDefinition } from "../../src/data/Starbase";
 
 function weapon(overrides: Partial<WeaponMountDefinition> = {}): WeaponMountDefinition {
   return {

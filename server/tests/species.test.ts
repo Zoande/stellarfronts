@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DEFAULT_SPECIES_RIGHTS,
@@ -6,7 +6,7 @@ import {
   getLegalSpeciesRightsOptions,
   normalizeSpeciesRightsForLaws,
   validateSpeciesTraits,
-} from "../src/data/Species";
+} from "../../src/data/Species";
 
 test("species trait validation enforces duplicates, max traits, and point budget", () => {
   const valid = validateSpeciesTraits(["adaptive", "intelligent", "unruly"]);

@@ -92,7 +92,7 @@ import {
   getWeaponMinSystemRange,
   rollWeaponShot,
   weaponCanFireAtDistance,
-} from "./combat";
+} from "./game/combat";
 import { GAME_START_YEAR, REAL_MS_PER_GAME_HOUR, elapsedHoursToGameYear, gameYearToHourIndex, gameYearToWeekIndex } from "../src/game/GameTime";
 import { getFirstRequiredTechName, getMissingPrerequisites, getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel, getRequiredTechIdsForStarbaseBuilding, isTechnologyAvailable, isTechnologyCompleted, isUnlockedByAnyRequiredTech, TechId, TECHNOLOGY_BY_ID } from "../src/data/Technology";
 import { formatLeaderClass, getLeaderAssignmentClass } from "../src/data/Leaders";
@@ -108,7 +108,7 @@ import type { ActiveSituation } from "../src/data/Situations";
 import {
   buildSystemDetailPayload,
   createSystemDetailRevision,
-} from "./system-view";
+} from "./game/system-view";
 import { createInitialGovernmentState, GOVERNMENT_LAW_BY_ID, getGovernmentLawOption, getGovernmentPositionDefinition } from "../src/data/Government";
 import type {
   FactionGovernmentState,

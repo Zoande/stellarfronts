@@ -1,11 +1,11 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   getFleetFormationDimensions,
   getFleetTacticalRadius,
   getLayeredFleetFormationOffset,
   getLayeredFleetFormationPosition,
-} from "../src/game/tacticalFormation";
+} from "../../src/game/tacticalFormation";
 
 function makeShipIds(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `ship-${index}`);

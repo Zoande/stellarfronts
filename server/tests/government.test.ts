@@ -1,10 +1,10 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   GOVERNMENT_LAW_BY_ID,
   createInitialGovernmentState,
   normalizeGovernmentState,
-} from "../src/data/Government";
+} from "../../src/data/Government";
 
 test("initial government state includes migration policy law", () => {
   const state = createInitialGovernmentState(1);

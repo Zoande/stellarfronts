@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   MARKET_AUTO_PRESSURE_FACTOR,
@@ -7,8 +7,8 @@ import {
   calculateMarketPrice,
   createInitialMarketState,
   normalizeMarketState,
-} from "../src/data/Market";
-import { RESOURCE_KINDS } from "../src/data/Economy";
+} from "../../src/data/Market";
+import { RESOURCE_KINDS } from "../../src/data/Economy";
 
 test("market price formula clamps pressure multiplier", () => {
   assert.equal(calculateMarketPrice(10, 0.5, 0.25), 17.5);

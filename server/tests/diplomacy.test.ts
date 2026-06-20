@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DIPLOMACY_CHAT_LIMIT_PER_PAIR,
@@ -14,8 +14,8 @@ import {
   getBorderPolicy,
   normalizeDiplomacyState,
   setBorderPolicy,
-} from "../src/data/Diplomacy";
-import type { DiplomacyState } from "../src/data/Diplomacy";
+} from "../../src/data/Diplomacy";
+import type { DiplomacyState } from "../../src/data/Diplomacy";
 
 test("diplomacy normalization migrates old saves to closed directional borders", () => {
   const normalized = normalizeDiplomacyState(undefined, [1, 2, 3]);

@@ -1,11 +1,11 @@
-import { strict as assert } from "node:assert";
+﻿import { strict as assert } from "node:assert";
 import test from "node:test";
 import {
   ADMIN_COMMAND_DEFINITIONS,
   getAdminCommandDefinition,
   parseAdminCommand,
   tokenizeAdminCommand,
-} from "../src/game/AdminCommands";
+} from "../../src/game/AdminCommands";
 
 test("admin command tokenizer preserves quoted arguments", () => {
   assert.deepEqual(

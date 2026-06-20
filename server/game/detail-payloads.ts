@@ -34,7 +34,7 @@ import type {
   SocietyDetailPayload,
   SystemDetailPayload,
 } from "../../src/game/GameProtocol";
-import { buildSystemDetailPayload, createSystemDetailRevision } from "../system-view";
+import { buildSystemDetailPayload, createSystemDetailRevision } from "./system-view";
 import {
   calculateFactionResourceFlow,
   calculatePlayerMarketQuote,

@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   addResourceCounts,
@@ -23,9 +23,9 @@ import {
   progressPlanetConstructionQueue,
   recalculatePlanetStateEconomy,
   STARTING_HABITED_POPULATION,
-} from "../src/data/Economy";
-import type { DistrictCounts, PlanetBuildingSlot, PlanetEconomySpeciesContext } from "../src/data/Economy";
-import type { SpeciesState } from "../src/data/Species";
+} from "../../src/data/Economy";
+import type { DistrictCounts, PlanetBuildingSlot, PlanetEconomySpeciesContext } from "../../src/data/Economy";
+import type { SpeciesState } from "../../src/data/Species";
 
 const DEFAULT_LIMITS: DistrictCounts = {
   city: 12,

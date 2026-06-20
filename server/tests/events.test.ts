@@ -1,10 +1,10 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
-import { EVENT_DEFINITIONS } from "../src/data/Events";
-import { SITUATION_DEFINITIONS, getSituationDefinition } from "../src/data/Situations";
-import { deriveIndicators } from "../src/data/Notifications";
-import type { ActiveEvent } from "../src/data/Events";
-import type { ActiveSituation } from "../src/data/Situations";
+import { EVENT_DEFINITIONS } from "../../src/data/Events";
+import { SITUATION_DEFINITIONS, getSituationDefinition } from "../../src/data/Situations";
+import { deriveIndicators } from "../../src/data/Notifications";
+import type { ActiveEvent } from "../../src/data/Events";
+import type { ActiveSituation } from "../../src/data/Situations";
 
 test("every event has a default choice that exists and a positive timeout (no-pause safety)", () => {
   for (const definition of Object.values(EVENT_DEFINITIONS)) {

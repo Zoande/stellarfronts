@@ -1,11 +1,11 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { AuthStore } from "./auth-store";
-import type { StoredGameVersion } from "./auth-store";
-import { VERSION_MANIFEST, canMigrateFromSchema } from "./versionManifest";
+import { AuthStore } from "../auth-store";
+import type { StoredGameVersion } from "../auth-store";
+import { VERSION_MANIFEST, canMigrateFromSchema } from "../versionManifest";
 
 function freshStore(): AuthStore {
   const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-version-"));

@@ -1,7 +1,7 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildPlanetStatesFromStars, generateStarMap } from "../src/data/StarMap";
-import type { GalaxyPerspective } from "../src/data/Factions";
+import { buildPlanetStatesFromStars, generateStarMap } from "../../src/data/StarMap";
+import type { GalaxyPerspective } from "../../src/data/Factions";
 import type {
   FactionState,
   ServerCombatContact,
@@ -9,11 +9,11 @@ import type {
   ServerShip,
   ServerStarbase,
   SystemDetailPayload,
-} from "../src/game/GameProtocol";
+} from "../../src/game/GameProtocol";
 import {
   buildSystemDetailPayload,
   createSystemDetailRevision,
-} from "./system-view";
+} from "../game/system-view";
 
 function createStars() {
   return generateStarMap(220, 220, 18, 94031, 8, {

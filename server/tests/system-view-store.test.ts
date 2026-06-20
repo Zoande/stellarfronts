@@ -1,15 +1,15 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildPlanetStatesFromStars, generateStarMap } from "../src/data/StarMap";
+import { buildPlanetStatesFromStars, generateStarMap } from "../../src/data/StarMap";
 import {
   DEFAULT_ORBIT_EPOCH_MS,
   getPlanetSystemPosition,
   getSystemOrbitLayout,
   SYSTEM_FLEET_Y,
-} from "../src/data/SystemCoordinates";
-import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY } from "../src/game/GameTime";
-import type { ServerFleet, ServerShip, SystemDetailPayload } from "../src/game/GameProtocol";
-import { SystemViewStore } from "../src/scenes/system/SystemViewStore";
+} from "../../src/data/SystemCoordinates";
+import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY } from "../../src/game/GameTime";
+import type { ServerFleet, ServerShip, SystemDetailPayload } from "../../src/game/GameProtocol";
+import { SystemViewStore } from "../../src/scenes/system/SystemViewStore";
 
 function createStars() {
   return generateStarMap(220, 220, 18, 12015, 8, {

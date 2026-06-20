@@ -1,11 +1,11 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   calculateShipDesignStats,
   createDefaultShipDesign,
   getShipDesignLayout,
   normalizeShipDesign,
-} from "../src/data/ShipDesigns";
+} from "../../src/data/ShipDesigns";
 
 test("default corvette design uses section modules and five utility slots", () => {
   const design = createDefaultShipDesign(1, "corvette", 2100);

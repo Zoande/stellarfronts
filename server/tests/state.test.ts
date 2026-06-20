@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   applyPlanetStatesToStars,
@@ -10,15 +10,15 @@ import {
   HUMAN_BASE_HABITABILITY_BY_PLANET_TYPE,
   normalizePlanetStates,
   PlanetType,
-} from "../src/data/StarMap";
-import type { DistrictKind, PlanetConfig } from "../src/data/StarMap";
+} from "../../src/data/StarMap";
+import type { DistrictKind, PlanetConfig } from "../../src/data/StarMap";
 import {
   DEFAULT_ORBIT_EPOCH_MS,
   getPlanetOrbitAngularSpeed,
   getPlanetSystemOrbitRadius,
   normalizePlanetOrbitFields,
-} from "../src/data/SystemCoordinates";
-import { getEffectiveSpeciesHabitability, NEW_COLONY_POPULATION } from "../src/data/Economy";
+} from "../../src/data/SystemCoordinates";
+import { getEffectiveSpeciesHabitability, NEW_COLONY_POPULATION } from "../../src/data/Economy";
 
 const DISTRICT_KINDS: DistrictKind[] = ["city", "generator", "mining", "agriculture"];
 

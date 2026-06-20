@@ -60,7 +60,7 @@ import {
 } from "../../src/game/AdminCommands";
 import type { AdminCommandContext, AdminCommandResult, AdminCommandRow, ParsedAdminCommand } from "../../src/game/AdminCommands";
 import type { ClientCommand, ServerStarbase, ServerUpdateField } from "../../src/game/GameProtocol";
-import { getWeaponId } from "../combat";
+import { getWeaponId } from "./combat";
 import { saveState } from "./persistence";
 import { RECENT_COMBAT_CONTACT_HISTORY, DISCOVERY_JUMPS } from "./constants";
 import { clamp, systemCenterPosition, cloneSystemPosition } from "./pure-helpers";

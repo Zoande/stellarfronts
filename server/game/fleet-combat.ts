@@ -55,8 +55,8 @@ import {
   getWeaponMinSystemRange,
   rollWeaponShot,
   weaponCanFireAtDistance,
-} from "../combat";
-import type { CombatLayerState } from "../combat";
+} from "./combat";
+import type { CombatLayerState } from "./combat";
 import type { GameFleet, GameShip, RuntimeContext } from "./types";
 import {
   getFleetSpeedMultiplier,

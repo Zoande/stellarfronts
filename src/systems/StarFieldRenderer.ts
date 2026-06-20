@@ -415,7 +415,7 @@ export class StarFieldRenderer {
 
     this.starbaseIconManager = new SpriteManager(
       "starbaseIconSprites",
-      new URL("../../own_starbase_icon.webp", import.meta.url).toString(),
+      "/textures/own_starbase_icon.webp",
       Math.max(1, stars.length),
       {
         width: STARBASE_ICON_TEXTURE_SIZE,

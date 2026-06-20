@@ -1,11 +1,11 @@
-import assert from "node:assert/strict";
+﻿import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { AuthStore } from "./auth-store";
-import type { AuthAccount } from "../src/auth/types";
-import type { SpeciesSetup } from "../src/data/Species";
+import { AuthStore } from "../auth-store";
+import type { AuthAccount } from "../../src/auth/types";
+import type { SpeciesSetup } from "../../src/data/Species";
 
 function requireAccount(account: AuthAccount | null): AuthAccount {
   assert.ok(account);

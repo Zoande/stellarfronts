@@ -1,5 +1,5 @@
-import type { GalaxyPerspective } from "../src/data/Factions";
-import type { FactionState } from "../src/game/GameProtocol";
+import type { GalaxyPerspective } from "../../src/data/Factions";
+import type { FactionState } from "../../src/game/GameProtocol";
 import type {
   ServerCombatContact,
   ServerFleet,
@@ -9,15 +9,15 @@ import type {
   ServerStarbaseSummary,
   SystemDetailPayload,
   SystemHyperlaneExitPoint,
-} from "../src/game/GameProtocol";
-import type { PlanetState } from "../src/data/Economy";
-import type { ShipDesign } from "../src/data/ShipDesigns";
-import type { FactionTechnologyView } from "../src/data/Technology";
-import type { StarData } from "../src/data/StarMap";
+} from "../../src/game/GameProtocol";
+import type { PlanetState } from "../../src/data/Economy";
+import type { ShipDesign } from "../../src/data/ShipDesigns";
+import type { FactionTechnologyView } from "../../src/data/Technology";
+import type { StarData } from "../../src/data/StarMap";
 import {
   getHyperlaneDirection,
   getHyperlaneExitSystemPosition,
-} from "../src/data/SystemCoordinates";
+} from "../../src/data/SystemCoordinates";
 
 export interface BuildSystemDetailPayloadInput {
   perspective: GalaxyPerspective;

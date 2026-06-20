@@ -2,9 +2,9 @@ import {
   RANGE_BAND_INDEX,
   rangeBandFromIndex,
   type RangeBand,
-} from "../src/game/CombatTypes";
-import { WEAPON_KIND_DEFINITIONS } from "../src/data/Starbase";
-import type { WeaponMountDefinition } from "../src/data/Starbase";
+} from "../../src/game/CombatTypes";
+import { WEAPON_KIND_DEFINITIONS } from "../../src/data/Starbase";
+import type { WeaponMountDefinition } from "../../src/data/Starbase";
 
 export interface CombatLayerState {
   shield: number;

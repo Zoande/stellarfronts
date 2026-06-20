@@ -1,5 +1,5 @@
 import { getSystemFleetStagingPosition, SYSTEM_FLEET_Y } from "../../src/data/SystemCoordinates";
-import { getWeaponMaxSystemRange, getWeaponMinSystemRange } from "../combat";
+import { getWeaponMaxSystemRange, getWeaponMinSystemRange } from "./combat";
 import type { WeaponMountDefinition } from "../../src/data/Starbase";
 import { MIGRATION_DISTANCE_DECAY, MIGRATION_DISTANCE_FLOOR } from "./constants";
 import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
