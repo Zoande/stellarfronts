@@ -773,6 +773,43 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     return;
   }
 
+  // ─── Direct Messages ────────────────────────────────────────────────────────
+
+  if (request.method === 'GET' && url.pathname === '/api/messages') {
+    const account = getAuthenticatedAccount(request);
+    if (!account) { writeJson(response, 401, { error: 'Authentication required' }); return; }
+    writeJson(response, 200, { conversations: authStore.getConversations(account.id) });
+    return;
+  }
+
+  const messagesWithMatch = url.pathname.match(/^\/api\/messages\/with\/(\d+)$/);
+  if (request.method === 'GET' && messagesWithMatch) {
+    const account = getAuthenticatedAccount(request);
+    if (!account) { writeJson(response, 401, { error: 'Authentication required' }); return; }
+    const partnerId = Number(messagesWithMatch[1]);
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? '100')));
+    writeJson(response, 200, { messages: authStore.getMessagesWith(account.id, partnerId, limit) });
+    return;
+  }
+
+  const messagesReadMatch = url.pathname.match(/^\/api\/messages\/with\/(\d+)\/read$/);
+  if (request.method === 'POST' && messagesReadMatch) {
+    const account = getAuthenticatedAccount(request);
+    if (!account) { writeJson(response, 401, { error: 'Authentication required' }); return; }
+    authStore.markConversationRead(account.id, Number(messagesReadMatch[1]));
+    writeJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/messages/send') {
+    const account = getAuthenticatedAccount(request);
+    if (!account) { writeJson(response, 401, { error: 'Authentication required' }); return; }
+    const body = await readJsonBody<{ recipientUsername?: unknown; body?: unknown }>(request);
+    const message = authStore.sendMessage(account, body.recipientUsername, body.body);
+    writeJson(response, 201, { message });
+    return;
+  }
+
   // Called by the game engine (orchestrator) to award XP for in-game activity.
   // Requires the shared control token in x-control-token header.
   if (request.method === 'POST' && url.pathname === '/api/internal/game-xp') {

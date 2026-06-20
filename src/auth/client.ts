@@ -3,12 +3,16 @@ import type {
   AuthMeResponse,
   AuthSessionResponse,
   ClaimQuestResponse,
+  ConversationsResponse,
   Credentials,
+  DirectConversation,
+  DirectMessage,
   LoginCredentials,
   DevStatsResponse,
   GamesResponse,
   GameSummary,
   JoinGameResponse,
+  MessagesWithResponse,
   NewsComment,
   NewsCommentVote,
   NewsMediaFile,
@@ -21,6 +25,7 @@ import type {
   NewsPostsResponse,
   PlayerProfile,
   PlayerProfileResponse,
+  SendMessageResponse,
 } from './types';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
@@ -243,4 +248,27 @@ export async function claimQuestReward(questId: string, windowKey: string): Prom
     `/api/player/quests/${encodeURIComponent(questId)}/claim`,
     { windowKey },
   );
+}
+
+export async function getConversations(): Promise<DirectConversation[]> {
+  const result = await requestJson<ConversationsResponse>(`/api/messages`, undefined, 'GET');
+  return result.conversations;
+}
+
+export async function getMessagesWith(partnerId: number, limit = 100): Promise<DirectMessage[]> {
+  const result = await requestJson<MessagesWithResponse>(
+    `/api/messages/with/${encodeURIComponent(String(partnerId))}?limit=${limit}`,
+    undefined,
+    'GET',
+  );
+  return result.messages;
+}
+
+export async function sendMessage(recipientUsername: string, body: string): Promise<DirectMessage> {
+  const result = await requestJson<SendMessageResponse>(`/api/messages/send`, { recipientUsername, body });
+  return result.message;
+}
+
+export async function markConversationRead(partnerId: number): Promise<void> {
+  await requestJson(`/api/messages/with/${encodeURIComponent(String(partnerId))}/read`, undefined, 'POST');
 }

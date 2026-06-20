@@ -301,3 +301,35 @@ export interface ClaimQuestResponse {
   newTotalXp: number;
   newLevel: number;
 }
+
+// ─── Direct Messages ──────────────────────────────────────────────────────────
+
+export interface DirectMessage {
+  id: number;
+  senderId: number;
+  senderUsername: string;
+  recipientId: number;
+  recipientUsername: string;
+  body: string;
+  sentAt: number;
+  readAt: number | null;
+}
+
+export interface DirectConversation {
+  partnerId: number;
+  partnerUsername: string;
+  unreadCount: number;
+  lastMessage: DirectMessage;
+}
+
+export interface ConversationsResponse {
+  conversations: DirectConversation[];
+}
+
+export interface MessagesWithResponse {
+  messages: DirectMessage[];
+}
+
+export interface SendMessageResponse {
+  message: DirectMessage;
+}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getGames, getPlayerProfile, joinGame, claimQuestReward } from '@/auth/client';
 import type { AuthAccount, GameSummary, PlayerProfile, QuestInfo, AchievementInfo } from '@/auth/types';
+import { MessagesPanel } from '@/components/MessagesPanel';
 import { FlagJoinForm } from '@/components/FlagJoinForm';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
@@ -268,22 +269,18 @@ function LevelTrackSlot({ profile }: { profile: PlayerProfile | null }) {
   );
 }
 
-const QUEST_PREVIEW_COUNT = 6;
-
 function QuestsSlot({ profile, onClick }: { profile: PlayerProfile | null; onClick: () => void }) {
   const claimable = profile ? profile.quests.filter((q) => q.completedAt !== null && q.claimedAt === null).length : 0;
-  const previewQuests = profile ? profile.quests.slice(0, QUEST_PREVIEW_COUNT) : [];
-  const remaining = profile ? Math.max(0, profile.quests.length - QUEST_PREVIEW_COUNT) : 0;
 
   return (
     <div className="home-stat home-quests-slot" role="button" tabIndex={0} onClick={onClick} onKeyDown={(e) => e.key === 'Enter' && onClick()}>
-      <div className="home-stat-label">
+      <div className="home-stat-label home-quests-label">
         Quests
         {claimable > 0 && <span className="home-quest-badge">{claimable}</span>}
       </div>
       {profile ? (
         <div className="home-quest-preview">
-          {previewQuests.map((q) => {
+          {profile.quests.map((q) => {
             const pct = Math.min(100, Math.round((q.progress / q.target) * 100));
             const claimed = q.claimedAt !== null;
             const done = q.completedAt !== null;
@@ -299,9 +296,6 @@ function QuestsSlot({ profile, onClick }: { profile: PlayerProfile | null; onCli
               </div>
             );
           })}
-          {remaining > 0 && (
-            <div className="home-quest-more">+{remaining} more — click to view all</div>
-          )}
         </div>
       ) : (
         <div className="home-level-loading">Loading…</div>
@@ -314,6 +308,7 @@ function QuestsSlot({ profile, onClick }: { profile: PlayerProfile | null; onCli
 
 export default function HomePage({ account, onContinuePlaying }: HomePageProps) {
   const [section, setSection] = useState<'Home' | 'Games'>('Home');
+  const [tab, setTab] = useState<'Overview' | 'Messages'>('Overview');
   const [games, setGames] = useState<GameSummary[]>([]);
   const [gamesLoading, setGamesLoading] = useState(true);
   const [gamesError, setGamesError] = useState('');
@@ -469,7 +464,12 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
             <button
               key={item}
               type="button"
-              className={`home-tab ${item === 'Overview' ? 'is-active' : ''}`}
+              className={`home-tab ${item === tab ? 'is-active' : ''}`}
+              onClick={() => {
+                if (item === 'News') { window.location.href = '/news'; return; }
+                if (item === 'Messages') { setTab('Messages'); setSection('Home'); return; }
+                if (item === 'Overview') { setTab('Overview'); setSection('Home'); return; }
+              }}
             >
               {item}
             </button>
@@ -492,6 +492,10 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
                 {games.map(renderGameRow)}
               </div>
             </section>
+          </main>
+        ) : tab === 'Messages' ? (
+          <main className="home-messages-main">
+            <MessagesPanel account={account} />
           </main>
         ) : (
           <main className="home-grid">

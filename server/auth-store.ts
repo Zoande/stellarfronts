@@ -38,6 +38,8 @@ import type {
   NewsPostListItem,
   NewsPostMutationPayload,
   NewsPostStatus,
+  DirectMessage,
+  DirectConversation,
   PlayerProfile,
   QuestInfo,
 } from '../src/auth/types';
@@ -725,6 +727,19 @@ export class AuthStore {
       CREATE INDEX IF NOT EXISTS idx_news_votes_comment ON news_comment_votes(comment_id);
       CREATE INDEX IF NOT EXISTS idx_player_achievements_account ON player_achievements(account_id);
       CREATE INDEX IF NOT EXISTS idx_player_quests_account ON player_quests(account_id, window_key);
+
+      CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_id INTEGER NOT NULL,
+        recipient_id INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        sent_at INTEGER NOT NULL,
+        read_at INTEGER,
+        FOREIGN KEY(sender_id) REFERENCES accounts(id) ON DELETE CASCADE,
+        FOREIGN KEY(recipient_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_pair ON messages(sender_id, recipient_id, sent_at);
+      CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id, read_at);
     `);
 
     const membershipColumns = this.db.prepare(`PRAGMA table_info(game_memberships)`).all() as Array<{ name: string }>;
@@ -2127,6 +2142,127 @@ export class AuthStore {
         ...activeTriday.map((q) => toQuestInfo(q, tridayKey)),
       ],
     };
+  }
+
+  // ─── Direct Messages ──────────────────────────────────────────────────────────
+
+  sendMessage(sender: AuthAccount, recipientUsernameInput: unknown, bodyInput: unknown): DirectMessage {
+    const recipientUsername = sanitizePlainText(recipientUsernameInput, 'Recipient username', 80);
+    const body = sanitizePlainText(bodyInput, 'Message body', 2000);
+
+    if (recipientUsername.toLowerCase() === sender.username.toLowerCase()) {
+      throw new AuthError('Cannot message yourself', 400);
+    }
+    const recipient = this.db.prepare(
+      `SELECT id, username FROM accounts WHERE username = ? COLLATE NOCASE`,
+    ).get(recipientUsername) as { id: number; username: string } | undefined;
+    if (!recipient) throw new AuthError('User not found', 404);
+
+    const now = Date.now();
+    const result = this.db.prepare(
+      `INSERT INTO messages (sender_id, recipient_id, body, sent_at) VALUES (?, ?, ?, ?)`,
+    ).run(sender.id, recipient.id, body, now);
+    return {
+      id: Number(result.lastInsertRowid),
+      senderId: sender.id,
+      senderUsername: sender.username,
+      recipientId: recipient.id,
+      recipientUsername: recipient.username,
+      body,
+      sentAt: now,
+      readAt: null,
+    };
+  }
+
+  getConversations(accountId: number): DirectConversation[] {
+    type Row = {
+      partner_id: number; partner_username: string;
+      id: number; sender_id: number; sender_username: string;
+      recipient_id: number; recipient_username: string;
+      body: string; sent_at: number; read_at: number | null;
+      unread_count: number;
+    };
+    const rows = this.db.prepare(`
+      SELECT
+        partner.id          AS partner_id,
+        partner.username    AS partner_username,
+        m.id,
+        m.sender_id,
+        sa.username         AS sender_username,
+        m.recipient_id,
+        ra.username         AS recipient_username,
+        m.body,
+        m.sent_at,
+        m.read_at,
+        (SELECT COUNT(*) FROM messages u
+         WHERE u.recipient_id = @me AND u.sender_id = partner.id AND u.read_at IS NULL
+        ) AS unread_count
+      FROM (
+        SELECT
+          CASE WHEN sender_id = @me THEN recipient_id ELSE sender_id END AS partner_id,
+          MAX(id) AS last_id
+        FROM messages
+        WHERE sender_id = @me OR recipient_id = @me
+        GROUP BY CASE WHEN sender_id = @me THEN recipient_id ELSE sender_id END
+      ) conv
+      JOIN accounts partner ON partner.id = conv.partner_id
+      JOIN messages m ON m.id = conv.last_id
+      JOIN accounts sa ON sa.id = m.sender_id
+      JOIN accounts ra ON ra.id = m.recipient_id
+      ORDER BY m.sent_at DESC
+    `).all({ me: accountId }) as Row[];
+
+    return rows.map((r) => ({
+      partnerId: r.partner_id,
+      partnerUsername: r.partner_username,
+      unreadCount: r.unread_count,
+      lastMessage: {
+        id: r.id,
+        senderId: r.sender_id,
+        senderUsername: r.sender_username,
+        recipientId: r.recipient_id,
+        recipientUsername: r.recipient_username,
+        body: r.body,
+        sentAt: r.sent_at,
+        readAt: r.read_at,
+      },
+    }));
+  }
+
+  getMessagesWith(accountId: number, partnerId: number, limit = 100): DirectMessage[] {
+    type Row = {
+      id: number; sender_id: number; sender_username: string;
+      recipient_id: number; recipient_username: string;
+      body: string; sent_at: number; read_at: number | null;
+    };
+    const rows = this.db.prepare(`
+      SELECT m.id, m.sender_id, sa.username AS sender_username,
+             m.recipient_id, ra.username AS recipient_username,
+             m.body, m.sent_at, m.read_at
+      FROM messages m
+      JOIN accounts sa ON sa.id = m.sender_id
+      JOIN accounts ra ON ra.id = m.recipient_id
+      WHERE (m.sender_id = @me AND m.recipient_id = @partner)
+         OR (m.sender_id = @partner AND m.recipient_id = @me)
+      ORDER BY m.sent_at ASC
+      LIMIT @limit
+    `).all({ me: accountId, partner: partnerId, limit }) as Row[];
+    return rows.map((r) => ({
+      id: r.id,
+      senderId: r.sender_id,
+      senderUsername: r.sender_username,
+      recipientId: r.recipient_id,
+      recipientUsername: r.recipient_username,
+      body: r.body,
+      sentAt: r.sent_at,
+      readAt: r.read_at,
+    }));
+  }
+
+  markConversationRead(accountId: number, partnerId: number): void {
+    this.db.prepare(
+      `UPDATE messages SET read_at = ? WHERE recipient_id = ? AND sender_id = ? AND read_at IS NULL`,
+    ).run(Date.now(), accountId, partnerId);
   }
 }
 
