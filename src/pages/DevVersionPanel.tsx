@@ -112,6 +112,11 @@ export default function DevVersionPanel() {
             <input placeholder="version id (optional)" value={versionId} onChange={(event) => setVersionId(event.target.value)} />
             <button type="button" className="dev-primary-button" disabled={busy || !selectedRef} onClick={register}>Register</button>
           </div>
+          <p style={{ marginTop: 6, opacity: 0.6, fontSize: 12 }}>
+            Leave the id blank to auto-name from the ref. Re-registering a branch that has moved
+            captures a new snapshot (e.g. <code>main</code>, <code>main2</code>); if it hasn&apos;t
+            moved you get the existing version back.
+          </p>
           <ul style={{ marginTop: 12 }}>
             {versions.map((version) => (
               <li key={version.id} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>

@@ -26,7 +26,7 @@ import { copyFile, mkdir, readdir, rm } from "node:fs/promises";
 import { authStore } from "./auth-store";
 import type { StoredGame, StoredGameVersion, GameVersionRefType } from "./auth-store";
 import { VERSION_MANIFEST } from "./versionManifest";
-import { getGameStateDirectory, getGameStatePath } from "./game-state-path";
+import { getGameStateDirectory, getGameStatePath, STATE_ROOT } from "./game-state-path";
 
 const CONTROL_PORT = Number(process.env.CONTROL_PORT ?? 8790);
 const CONTROL_TOKEN = process.env.CONTROL_TOKEN ?? "dev-control-token";
@@ -41,13 +41,29 @@ const PORT_BASE = Number(process.env.VERSION_PORT_BASE ?? 8810);
 const GIT_REMOTE = process.env.GIT_REMOTE ?? "origin";
 const RESTART_DELAY_MS = 2000;
 const RECONCILE_INTERVAL_MS = 5000;
+// Crash supervision: a process that stays up this long is treated as a healthy
+// run and clears its crash history. Rapid crashes back off exponentially up to a
+// cap, and after too many in a row the version is quarantined (no auto-restart)
+// so a broken snapshot can't spin `npx tsx` forever.
+const HEALTHY_UPTIME_MS = 60_000;
+const MAX_RAPID_RESTARTS = 5;
+const MAX_RESTART_BACKOFF_MS = 30_000;
 
 interface VersionProcess {
   child: ChildProcess;
   port: number;
   stopping: boolean;
-  restarts: number;
+  startedAt: number;
 }
+
+// Per-version crash health, consulted by reconcile (the single spawn authority).
+// nextRetryAt = Infinity means quarantined. Cleared on healthy exit, on (re)
+// registration, and on an explicit start — and entirely on orchestrator restart.
+interface VersionHealth {
+  crashes: number;
+  nextRetryAt: number;
+}
+const versionHealth = new Map<string, VersionHealth>();
 
 interface VersionSpec {
   id: string;
@@ -87,17 +103,56 @@ function runCapture(command: string, args: string[], cwd?: string): Promise<{ co
   });
 }
 
-function allocatePort(): number {
+// Internal ports already claimed: every registered version's port plus the two
+// the orchestrator itself binds. Used both to auto-allocate and to reject an
+// explicit port that would crash-loop a subprocess with EADDRINUSE.
+function usedPorts(): Set<number> {
   const used = new Set(authStore.listGameVersions().map((version) => version.port));
   used.add(DEV_INTERNAL_PORT);
   used.add(GATEWAY_PORT);
+  return used;
+}
+
+function allocatePort(): number {
+  const used = usedPorts();
   let port = PORT_BASE;
   while (used.has(port)) port += 1;
   return port;
 }
 
+/**
+ * Pick a free, route-safe version id from a base name. Ids must match the control
+ * API's [a-z0-9]+ route pattern, so collisions are resolved with a numeric suffix
+ * (main, main2, main3, …) rather than a separator. "dev" is reserved. This is what
+ * lets the same moving branch be pinned repeatedly: each registration that finds
+ * its base taken claims the next free number.
+ */
+function allocateVersionId(base: string): string {
+  const taken = new Set(authStore.listGameVersions().map((version) => version.id));
+  taken.add(DEV_VERSION_ID);
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base}${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+// Registrations read the catalog to choose an id/port, then do async git work
+// before inserting — so two concurrent calls could otherwise pick the same id or
+// port. This promise-chain mutex serializes the whole resolve→pin→insert so each
+// registration sees the previous one's committed result.
+let registrationChain: Promise<void> = Promise.resolve();
+function withRegistrationLock<T>(task: () => Promise<T>): Promise<T> {
+  const result = registrationChain.then(task);
+  registrationChain = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 async function probeManifest(worktreePath: string): Promise<{ protocolVersion: number; schemaVersion: number; migratesFromSchema: number[] }> {
-  const result = await runCapture("npx", ["tsx", path.join("server", "index.ts"), "--print-version"], worktreePath);
+  // Run from the orchestrator's cwd (root) so importing the version's index.ts —
+  // which instantiates the authStore singleton before the --print-version exit —
+  // touches the shared root DB rather than littering an empty one in the worktree.
+  const result = await runCapture("npx", ["tsx", path.join(worktreePath, "server", "index.ts"), "--print-version"]);
   const line = result.stdout.split("\n").map((value) => value.trim()).filter(Boolean).pop() ?? "";
   const manifest = JSON.parse(line) as { protocolVersion: number; schemaVersion: number; migratesFromSchema: number[] };
   return manifest;
@@ -165,44 +220,93 @@ async function removeWorktree(worktreePath: string): Promise<void> {
   await runCapture("git", ["worktree", "prune"]);
 }
 
+/**
+ * Pin a git ref (branch / tag / commit) to an immutable, runnable version.
+ *
+ * Naming: pass an explicit id to name it yourself (clashes error). Otherwise the
+ * id is derived from the ref. Because branches MOVE, re-registering one captures a
+ * fresh snapshot each time it has advanced:
+ *   - ref still at the same commit as a prior auto-named version → returns that
+ *     existing version unchanged (idempotent; no duplicate worktree/port).
+ *   - ref has advanced (new commits) → a new snapshot under the next free id
+ *     (main, main2, main3, …), leaving older games pinned to their old code.
+ * The whole flow is serialized so concurrent registrations can't collide.
+ */
 async function registerVersion(gitRef: string, requestedId?: string, requestedPort?: number): Promise<StoredGameVersion> {
-  const trimmedRef = gitRef.trim();
-  if (!trimmedRef) throw new Error("A git ref (branch, tag, or commit) is required.");
-  const id = sanitizeId(requestedId ?? trimmedRef);
-  if (id === DEV_VERSION_ID) throw new Error('"dev" is the reserved working-tree version.');
-  if (authStore.getGameVersion(id)) {
-    throw new Error(`Version id "${id}" is already registered. Unregister it first or pick a different id.`);
-  }
+  return withRegistrationLock(async () => {
+    const trimmedRef = gitRef.trim();
+    if (!trimmedRef) throw new Error("A git ref (branch, tag, or commit) is required.");
 
-  const { sha, refType } = await resolveRef(trimmedRef);
-  const worktreePath = path.join(VERSIONS_ROOT, id);
-  await mkdir(VERSIONS_ROOT, { recursive: true });
-  await ensureWorktreeAt(worktreePath, sha);
+    const explicitId = requestedId && requestedId.trim() ? sanitizeId(requestedId) : null;
+    if (explicitId === DEV_VERSION_ID) throw new Error('"dev" is the reserved working-tree version.');
 
-  let manifest: { protocolVersion: number; schemaVersion: number; migratesFromSchema: number[] };
-  try {
-    manifest = await probeManifest(worktreePath);
-  } catch (error) {
-    // A failed probe must not leave an orphaned worktree behind.
-    await removeWorktree(worktreePath);
-    throw error;
-  }
+    // Resolve to an immutable commit first. This fetch is also how we learn
+    // whether a moving branch has advanced since it was last registered.
+    const { sha, refType } = await resolveRef(trimmedRef);
 
-  const version: StoredGameVersion = {
-    id,
-    gitRef: trimmedRef,
-    commit: sha,
-    refType,
-    worktreePath,
-    port: requestedPort ?? allocatePort(),
-    protocolVersion: manifest.protocolVersion,
-    schemaVersion: manifest.schemaVersion,
-    migratesFromSchema: manifest.migratesFromSchema,
-    createdAt: Date.now(),
-  };
-  authStore.registerGameVersion(version);
-  await reconcile();
-  return version;
+    // Idempotency (auto-named only): if this exact ref is already pinned at this
+    // exact commit, hand back the existing version instead of cloning it. An
+    // explicit id always means "make a distinct named version", so it opts out.
+    if (!explicitId) {
+      const existing = authStore.listGameVersions().find(
+        (version) => version.gitRef === trimmedRef && version.commit === sha,
+      );
+      if (existing) return existing;
+    }
+
+    let id: string;
+    if (explicitId) {
+      if (authStore.getGameVersion(explicitId)) {
+        throw new Error(`Version id "${explicitId}" is already registered. Unregister it first or pick a different id.`);
+      }
+      id = explicitId;
+    } else {
+      id = allocateVersionId(sanitizeId(trimmedRef));
+    }
+
+    let port: number;
+    if (requestedPort !== undefined) {
+      if (!Number.isInteger(requestedPort) || requestedPort <= 0 || requestedPort > 65535) {
+        throw new Error(`Invalid port ${requestedPort}.`);
+      }
+      if (usedPorts().has(requestedPort)) {
+        throw new Error(`Port ${requestedPort} is already in use by another version or the orchestrator.`);
+      }
+      port = requestedPort;
+    } else {
+      port = allocatePort();
+    }
+
+    const worktreePath = path.join(VERSIONS_ROOT, id);
+    await mkdir(VERSIONS_ROOT, { recursive: true });
+    await ensureWorktreeAt(worktreePath, sha);
+
+    let manifest: { protocolVersion: number; schemaVersion: number; migratesFromSchema: number[] };
+    try {
+      manifest = await probeManifest(worktreePath);
+    } catch (error) {
+      // A failed probe must not leave an orphaned worktree behind.
+      await removeWorktree(worktreePath);
+      throw error;
+    }
+
+    const version: StoredGameVersion = {
+      id,
+      gitRef: trimmedRef,
+      commit: sha,
+      refType,
+      worktreePath,
+      port,
+      protocolVersion: manifest.protocolVersion,
+      schemaVersion: manifest.schemaVersion,
+      migratesFromSchema: manifest.migratesFromSchema,
+      createdAt: Date.now(),
+    };
+    authStore.registerGameVersion(version);
+    versionHealth.delete(id); // a fresh registration gets a clean restart slate
+    await reconcile();
+    return version;
+  });
 }
 
 /** Remove a registered version + its worktree. Refuses while any game still uses it. */
@@ -262,25 +366,44 @@ function resolveGameEndpoint(game: StoredGame): { versionId: string; status: str
 
 function spawnVersionProcess(spec: VersionSpec): void {
   if (processes.has(spec.id)) return;
-  const child = spawn("npx", ["tsx", path.join("server", "index.ts")], {
-    cwd: spec.worktreePath,
+  // Run with the orchestrator's own cwd (the repo root) but load the version's
+  // code by absolute path. This is the load-bearing fix for the shared catalog:
+  // process.cwd() inside the child resolves to the root, so EVERY version —
+  // including older ones whose code still derives state paths from cwd — opens
+  // the single root server/state (auth.sqlite + games/) instead of an empty
+  // worktree-local copy. SF_STATE_DIR additionally pins newer builds explicitly.
+  const child = spawn("npx", ["tsx", path.join(spec.worktreePath, "server", "index.ts")], {
+    cwd: process.cwd(),
     shell: true,
-    env: { ...process.env, GAME_SERVER_PORT: String(spec.port), SF_VERSION_ID: spec.id },
+    env: { ...process.env, GAME_SERVER_PORT: String(spec.port), SF_VERSION_ID: spec.id, SF_STATE_DIR: STATE_ROOT },
   });
-  const entry: VersionProcess = { child, port: spec.port, stopping: false, restarts: 0 };
+  const entry: VersionProcess = { child, port: spec.port, stopping: false, startedAt: Date.now() };
   processes.set(spec.id, entry);
   child.stdout?.on("data", (chunk) => process.stdout.write(`[v:${spec.id}] ${chunk}`));
   child.stderr?.on("data", (chunk) => process.stderr.write(`[v:${spec.id}] ${chunk}`));
   child.on("exit", (code) => {
-    console.warn(`[Orchestrator] version ${spec.id} process exited (code ${code}).`);
+    const uptimeMs = Date.now() - entry.startedAt;
+    console.warn(`[Orchestrator] version ${spec.id} process exited (code ${code}) after ${Math.round(uptimeMs / 1000)}s.`);
     processes.delete(spec.id);
-    if (entry.stopping) return;
-    // Auto-restart on crash if it still has active games.
-    void delay(RESTART_DELAY_MS).then(() => {
-      const stillActive = authStore.listGames().some((game) => game.versionId === spec.id && game.status === "active");
-      const fresh = versionSpec(spec.id);
-      if (stillActive && fresh) spawnVersionProcess(fresh);
-    });
+    // Record crash health only; reconcile owns (re)spawning so there is a single
+    // restart path that honors backoff/quarantine instead of two racing ones.
+    if (entry.stopping) {
+      versionHealth.delete(spec.id);
+      return;
+    }
+    if (uptimeMs >= HEALTHY_UPTIME_MS) {
+      versionHealth.delete(spec.id); // a real run — forget earlier crashes
+      return;
+    }
+    const crashes = (versionHealth.get(spec.id)?.crashes ?? 0) + 1;
+    if (crashes > MAX_RAPID_RESTARTS) {
+      versionHealth.set(spec.id, { crashes, nextRetryAt: Number.POSITIVE_INFINITY });
+      console.error(`[Orchestrator] version ${spec.id} crashed ${crashes}× rapidly — quarantined. Fix and re-register it, restart a game on it, or restart the orchestrator to retry.`);
+      return;
+    }
+    const backoffMs = Math.min(RESTART_DELAY_MS * 2 ** (crashes - 1), MAX_RESTART_BACKOFF_MS);
+    versionHealth.set(spec.id, { crashes, nextRetryAt: Date.now() + backoffMs });
+    console.warn(`[Orchestrator] version ${spec.id} will retry in ~${Math.round(backoffMs / 1000)}s (crash ${crashes}/${MAX_RAPID_RESTARTS}).`);
   });
 }
 
@@ -298,8 +421,12 @@ async function reconcile(): Promise<void> {
   const activeVersionIds = new Set(
     authStore.listGames().filter((game) => game.status === "active").map((game) => game.versionId),
   );
+  const now = Date.now();
   for (const versionId of activeVersionIds) {
     if (processes.has(versionId)) continue;
+    // Respect crash backoff / quarantine: skip until the scheduled retry time.
+    const health = versionHealth.get(versionId);
+    if (health && now < health.nextRetryAt) continue;
     const spec = versionSpec(versionId);
     if (spec) spawnVersionProcess(spec);
   }
@@ -457,7 +584,15 @@ const server = http.createServer(async (request, response) => {
         case "update": await updateGame(gameId, String(body.toVersion ?? "")); break;
         case "rollback": await rollbackGame(gameId); break;
         case "stop": authStore.setGameStatus(gameId, "stopped"); await reconcile(); break;
-        case "start": authStore.setGameStatus(gameId, "active"); await reconcile(); break;
+        case "start": {
+          // Explicitly starting a game is an operator's "try again" — clear any
+          // crash quarantine on its version so reconcile will respawn it.
+          authStore.setGameStatus(gameId, "active");
+          const startedVersionId = authStore.getGameById(gameId)?.versionId;
+          if (startedVersionId) versionHealth.delete(startedVersionId);
+          await reconcile();
+          break;
+        }
         case "archive": authStore.setGameStatus(gameId, "archived"); await reconcile(); break;
         case "endpoint": {
           const game = authStore.getGameById(gameId);
