@@ -421,11 +421,15 @@ function sanitizeNewsPostPayload(value: unknown): NewsPostMutationPayload {
   const status = sanitizeNewsPostStatus(value.status);
   const payload: NewsPostMutationPayload = {
     title: sanitizePlainText(value.title, 'Title', 140),
-    summary: sanitizePlainText(value.summary, 'Summary', 420),
+    summary: sanitizePlainText(value.summary, 'Summary', 420, false),
     coverImageUrl: sanitizeImageUrl(value.coverImageUrl, 'Cover image URL', false),
     blocks: sanitizeNewsBlocks(value.blocks),
     status,
   };
+
+  if (status === 'published' && !payload.summary) {
+    throw new AuthError('Summary is required to publish a post', 400);
+  }
 
   if (status === 'published' && !payload.blocks.some(newsBlockHasContent)) {
     throw new AuthError('Published news posts need at least one content block', 400);
