@@ -1,6 +1,6 @@
 ﻿import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BUILDING_KINDS } from "../../src/data/Economy";
+import { BUILDING_DEFINITIONS, BUILDING_KINDS } from "../../src/data/Economy";
 import { SHIP_MODULE_DEFINITIONS, SHIP_SECTION_MODULE_DEFINITIONS } from "../../src/data/ShipDesigns";
 import { STARBASE_BUILDING_KINDS, STARBASE_SHIP_KINDS } from "../../src/data/Starbase";
 import {
@@ -72,6 +72,10 @@ test("unlock requirements point at existing locked content", () => {
 test("all current buildings, hulls, modules, and sections have a technology mapping", () => {
   const missing: string[] = [];
   for (const building of BUILDING_KINDS) {
+    // Auto-placed buildings (e.g. the Planetary Capital) are anchored by the
+    // simulation rather than researched, so they intentionally have no level-1
+    // unlock technology.
+    if (BUILDING_DEFINITIONS[building].autoPlaced) continue;
     if (getRequiredTechIdsForBuilding(building).length === 0) missing.push(`building:${building}`);
   }
   for (const building of STARBASE_BUILDING_KINDS) {

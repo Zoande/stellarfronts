@@ -68,8 +68,9 @@ test("starter habited planets receive population, starter districts, buildings, 
     mining: 2,
     agriculture: 2,
   });
-  assertBuilding(planet.buildings.city[0], "administrativeComplex");
-  assertBuilding(planet.buildings.city[1], "housingComplex");
+  assertBuilding(planet.buildings.city[0], "planetaryCapital");
+  assertBuilding(planet.buildings.city[1], "administrativeComplex");
+  assertBuilding(planet.buildings.city[2], "housingComplex");
   assertBuilding(planet.buildings.generator[0], "energyGrid");
   assertBuilding(planet.buildings.mining[0], "mineralPurificationPlant");
   assertBuilding(planet.buildings.agriculture[0], "foodProcessingPlant");
@@ -364,7 +365,7 @@ test("planet modifiers alter job output, capacity, and growth", () => {
 test("construction queue completes districts and buildings over time", () => {
   const planet = createHabitedPlanet();
   const districtItem = createDistrictConstructionQueueItem("agriculture", "district-test");
-  const buildingItem = createBuildingConstructionQueueItem("housingComplex", "city", 2, undefined, "building-test");
+  const buildingItem = createBuildingConstructionQueueItem("housingComplex", "city", 3, undefined, "building-test");
   const queued = recalculatePlanetStateEconomy({
     ...planet,
     constructionQueue: [districtItem, buildingItem],
@@ -377,7 +378,7 @@ test("construction queue completes districts and buildings over time", () => {
   );
 
   assert.equal(result.state.builtDistricts.agriculture, planet.builtDistricts.agriculture + 1);
-  assertBuilding(result.state.buildings.city[2], "housingComplex");
+  assertBuilding(result.state.buildings.city[3], "housingComplex");
   assert.equal(result.state.constructionQueue.length, 0);
   assert.equal(result.completed.length, 2);
 });
@@ -385,7 +386,7 @@ test("construction queue completes districts and buildings over time", () => {
 test("building upgrades complete through construction and scale building effects", () => {
   const planet = createHabitedPlanet();
   const baseline = recalculatePlanetStateEconomy(planet, DEFAULT_LIMITS);
-  const upgradeItem = createBuildingUpgradeConstructionQueueItem("housingComplex", 1, "city", 1, undefined, "upgrade-test");
+  const upgradeItem = createBuildingUpgradeConstructionQueueItem("housingComplex", 1, "city", 2, undefined, "upgrade-test");
   const queued = recalculatePlanetStateEconomy({
     ...planet,
     constructionQueue: [upgradeItem],
@@ -394,7 +395,7 @@ test("building upgrades complete through construction and scale building effects
   const result = progressPlanetConstructionQueue(queued, upgradeItem.totalDays, DEFAULT_LIMITS);
   const upgraded = recalculatePlanetStateEconomy(result.state, DEFAULT_LIMITS);
 
-  assertBuilding(upgraded.buildings.city[1], "housingComplex", 2);
+  assertBuilding(upgraded.buildings.city[2], "housingComplex", 2);
   assert.equal(result.completed.length, 1);
   assert.ok(upgraded.economy.housing > baseline.economy.housing);
 });
