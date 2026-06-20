@@ -415,20 +415,50 @@ async function stopVersionProcess(versionId: string): Promise<void> {
   processes.delete(versionId);
 }
 
+// Make sure a registered version's worktree is actually on disk and runnable
+// before we try to launch it. A pruned/partial/corrupted checkout (entry file
+// missing) is rebuilt cleanly from the pinned commit — an environment problem we
+// can fix, as opposed to genuinely broken code. Returns true if the worktree is
+// ready to run. The built-in "dev" version is the root tree and always ready.
+async function ensureVersionRunnable(versionId: string, worktreePath: string): Promise<boolean> {
+  if (versionId === DEV_VERSION_ID) return true;
+  const entryPoint = path.join(worktreePath, "server", "index.ts");
+  if (existsSync(entryPoint)) return true;
+  const version = authStore.getGameVersion(versionId);
+  if (!version) return false;
+  try {
+    console.warn(`[Orchestrator] worktree for version ${versionId} is missing or broken — rebuilding at ${version.commit}.`);
+    await removeWorktree(worktreePath);
+    await ensureWorktreeAt(worktreePath, version.commit);
+    if (!existsSync(entryPoint)) {
+      console.error(`[Orchestrator] rebuilt worktree for ${versionId} still has no ${path.join("server", "index.ts")} — is commit ${version.commit} valid?`);
+      return false;
+    }
+    versionHealth.delete(versionId); // a successful repair earns a fresh restart slate
+    return true;
+  } catch (error) {
+    console.error(`[Orchestrator] failed to rebuild worktree for ${versionId}:`, error);
+    return false;
+  }
+}
+
 // Ensure exactly the right per-version processes are running for the catalog
 // (including the built-in "dev" working-tree version).
 async function reconcile(): Promise<void> {
   const activeVersionIds = new Set(
     authStore.listGames().filter((game) => game.status === "active").map((game) => game.versionId),
   );
-  const now = Date.now();
   for (const versionId of activeVersionIds) {
     if (processes.has(versionId)) continue;
-    // Respect crash backoff / quarantine: skip until the scheduled retry time.
-    const health = versionHealth.get(versionId);
-    if (health && now < health.nextRetryAt) continue;
     const spec = versionSpec(versionId);
-    if (spec) spawnVersionProcess(spec);
+    if (!spec) continue;
+    // Repair a missing worktree first (clears crash health on success), so a bad
+    // checkout self-heals instead of crash-looping into permanent quarantine.
+    if (!(await ensureVersionRunnable(versionId, spec.worktreePath))) continue;
+    // Respect crash backoff / quarantine for genuinely failing processes.
+    const health = versionHealth.get(versionId);
+    if (health && Date.now() < health.nextRetryAt) continue;
+    spawnVersionProcess(spec);
   }
   for (const versionId of Array.from(processes.keys())) {
     if (!activeVersionIds.has(versionId)) await stopVersionProcess(versionId);
