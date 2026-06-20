@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes, pbkdf2Sync, timingSafeEqual, createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
+import { STATE_ROOT } from './game-state-path';
 import { buildFactions } from '../src/data/Factions';
 import { FACTION_COUNT } from '../src/data/Factions';
 import { GALAXY_MAP } from '../src/data/GalaxyMap';
@@ -545,7 +546,7 @@ function buildSeedAccounts(): Array<{ username: string; password: string; accoun
 export class AuthStore {
   private readonly db: DatabaseInstance;
 
-  constructor(dbPath = path.join(process.cwd(), 'server', 'state', 'auth.sqlite')) {
+  constructor(dbPath = path.join(STATE_ROOT, 'auth.sqlite')) {
     mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
@@ -921,6 +922,8 @@ export class AuthStore {
 
   removeGameVersion(versionId: string): boolean {
     const result = this.db.prepare(`DELETE FROM game_versions WHERE id = ?`).run(versionId);
+    // Drop the retired process's heartbeat row so it never lingers in dev stats.
+    this.db.prepare(`DELETE FROM game_runtime_stats WHERE key = ?`).run(`game:${versionId}`);
     return result.changes > 0;
   }
 
@@ -1352,11 +1355,18 @@ export class AuthStore {
       online: true,
       lastHeartbeatAt: now,
     };
+    // One row PER version process (key "game:<versionId>"). Every registered
+    // version runs as its own game-server process and publishes the games it
+    // hosts; a single shared "game" row would let them clobber each other (last
+    // writer wins, every other version's games falsely appear offline). The dev
+    // stats reader fans these rows back together. Falls back to "dev" for the
+    // working-tree process. See getGameRuntimeStats for the merge.
+    const versionId = process.env.SF_VERSION_ID ?? 'dev';
     this.db.prepare(`
       INSERT INTO game_runtime_stats (key, value, updated_at)
-      VALUES ('game', ?, ?)
+      VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run(JSON.stringify(runtimeStats), now);
+    `).run(`game:${versionId}`, JSON.stringify(runtimeStats), now);
   }
 
   getDevStats(): DevStatsResponse {
@@ -1582,46 +1592,77 @@ export class AuthStore {
       games: offlineGames,
     };
 
-    const row = this.db.prepare(`
+    // Gather every version process's heartbeat row (key "game:<versionId>") and
+    // keep only the fresh ones. A crashed/retired process's row simply ages out
+    // past GAME_RUNTIME_STALE_MS and stops counting toward "online".
+    const rows = this.db.prepare(`
       SELECT value, updated_at
       FROM game_runtime_stats
-      WHERE key = 'game'
-    `).get() as { value: string; updated_at: number } | undefined;
+      WHERE key LIKE 'game:%'
+    `).all() as Array<{ value: string; updated_at: number }>;
 
-    if (!row) return fallback;
-
-    try {
-      const parsed = JSON.parse(row.value) as Partial<DevGameRuntimeStats>;
-      const lastHeartbeatAt = Number(parsed.lastHeartbeatAt ?? row.updated_at) || row.updated_at;
-      const games = this.mergeGameRuntimeRows(
-        Array.isArray(parsed.games) ? parsed.games as DevGameRuntimeRow[] : [],
-        now,
-      );
-      return {
-        ...fallback,
-        ...parsed,
-        activeConnections: Number(parsed.activeConnections ?? 0),
-        activeAccounts: Array.isArray(parsed.activeAccounts) ? parsed.activeAccounts : [],
-        serverStartedAt: parsed.serverStartedAt ?? null,
-        lastHeartbeatAt,
-        gameYear: parsed.gameYear ?? null,
-        paused: parsed.paused === true,
-        speedMultiplier: Number(parsed.speedMultiplier ?? 0),
-        starCount: Number(parsed.starCount ?? 0),
-        factionCount: Number(parsed.factionCount ?? 0),
-        fleetCount: Number(parsed.fleetCount ?? 0),
-        shipCount: Number(parsed.shipCount ?? 0),
-        starbaseCount: Number(parsed.starbaseCount ?? 0),
-        planetCount: Number(parsed.planetCount ?? 0),
-        habitedPlanetCount: Number(parsed.habitedPlanetCount ?? 0),
-        combatContactCount: Number(parsed.combatContactCount ?? 0),
-        gameCount: games.length,
-        games,
-        online: now - lastHeartbeatAt <= GAME_RUNTIME_STALE_MS,
-      };
-    } catch {
-      return fallback;
+    const freshProcesses: Array<{ stats: Partial<DevGameRuntimeStats>; heartbeat: number }> = [];
+    for (const row of rows) {
+      try {
+        const stats = JSON.parse(row.value) as Partial<DevGameRuntimeStats>;
+        const heartbeat = Number(stats.lastHeartbeatAt ?? row.updated_at) || row.updated_at;
+        if (now - heartbeat > GAME_RUNTIME_STALE_MS) continue;
+        freshProcesses.push({ stats, heartbeat });
+      } catch {
+        // Skip an unparseable row rather than blanking the whole view.
+      }
     }
+
+    if (freshProcesses.length === 0) return fallback;
+
+    // Collapse the per-game rows reported across all live processes, newest
+    // heartbeat winning if a game id somehow appears twice (it shouldn't — each
+    // game is hosted by exactly one version at a time).
+    const runtimeById = new Map<string, DevGameRuntimeRow>();
+    for (const { stats } of freshProcesses) {
+      if (!Array.isArray(stats.games)) continue;
+      for (const game of stats.games as DevGameRuntimeRow[]) {
+        const existing = runtimeById.get(game.id);
+        if (!existing || (game.lastHeartbeatAt ?? 0) >= (existing.lastHeartbeatAt ?? 0)) {
+          runtimeById.set(game.id, game);
+        }
+      }
+    }
+
+    // Overlay onto the full catalog so unhosted games still show as offline, then
+    // recompute the top-level aggregate FROM the merged online games — this stays
+    // correct no matter how many version processes are reporting.
+    const games = this.mergeGameRuntimeRows(Array.from(runtimeById.values()), now);
+    const onlineGames = games.filter((game) => game.online);
+    const activeAccounts = Array.from(new Set(onlineGames.flatMap((game) => game.activeAccounts)))
+      .sort((a, b) => a.localeCompare(b));
+    const sum = (pick: (game: DevGameRuntimeRow) => number): number =>
+      onlineGames.reduce((total, game) => total + (Number(pick(game)) || 0), 0);
+    const serverStartedAt = freshProcesses
+      .map((process) => process.stats.serverStartedAt)
+      .filter((value): value is number => typeof value === 'number')
+      .reduce<number | null>((earliest, value) => (earliest === null ? value : Math.min(earliest, value)), null);
+
+    return {
+      ...fallback,
+      online: true,
+      activeConnections: sum((game) => game.activeConnections),
+      activeAccounts,
+      serverStartedAt,
+      lastHeartbeatAt: Math.max(...freshProcesses.map((process) => process.heartbeat)),
+      // Single-game scalars stay meaningful only when exactly one game is live.
+      gameYear: onlineGames.length === 1 ? onlineGames[0].gameYear : null,
+      paused: onlineGames.length > 0 && onlineGames.every((game) => game.paused),
+      speedMultiplier: onlineGames.length === 1 ? onlineGames[0].speedMultiplier : 0,
+      starCount: sum((game) => game.starCount),
+      factionCount: sum((game) => game.factionCount),
+      fleetCount: sum((game) => game.fleetCount),
+      shipCount: sum((game) => game.shipCount),
+      starbaseCount: sum((game) => game.starbaseCount),
+      habitedPlanetCount: sum((game) => game.habitedPlanetCount),
+      gameCount: games.length,
+      games,
+    };
   }
 
   private toAccount(row: AccountRow): AuthAccount {

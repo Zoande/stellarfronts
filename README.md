@@ -45,7 +45,7 @@ The app is split into pathname-driven flows in `src/App.tsx`:
 - `/game/:gameId` boots the BabylonJS command view for a specific game.
 - `/dev` opens the developer panel.
 
-The client uses React 19, Vite, React Router, BabylonJS 7, and Vercel Analytics. The space backdrop is procedural rather than image-only, and the command view mixes 3D scenes with HUD-style overlays.
+The client uses React 19, Vite, React Router, and BabylonJS 7. The space backdrop is procedural rather than image-only, and the command view mixes 3D scenes with HUD-style overlays.
 
 ## Authentication And Accounts
 
@@ -127,7 +127,7 @@ WS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 Production examples in `.env.example` show a split frontend/backend deployment with separate auth and WebSocket endpoints, plus cookie domain and secure-cookie settings for cross-subdomain auth.
 
-`vercel.json` is set up for single-page-app rewrites, and `wrangler.jsonc` points Cloudflare-style static assets at `dist/`.
+`wrangler.jsonc` points Cloudflare Pages static assets at `dist/` with single-page-application fallback for client-side routing.
 
 ## Current Limitations
 
@@ -157,5 +157,4 @@ The current README content is aligned with the checked-in code and repo config i
 - `server/combat.ts`
 - `server/combat.test.ts`
 - `.env.example`
-- `vercel.json`
 - `wrangler.jsonc`

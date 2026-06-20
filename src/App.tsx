@@ -1,5 +1,4 @@
 import { BrowserRouter as Router } from 'react-router-dom';
-import { Analytics } from '@vercel/analytics/react';
 import LoginPage from './pages/LoginPage';
 import GamePage from './pages/GamePage';
 import HomePage from './pages/HomePage';
@@ -42,7 +41,6 @@ function MainAppFlow() {
           accountType={auth.account.accountType}
           onLogout={handleLogout}
         />
-        <Analytics />
       </Router>
     );
   }
@@ -75,7 +73,6 @@ function MainAppFlow() {
           onHidden={handleHomeTransitionHidden}
           zIndex={240}
         />
-        <Analytics />
       </Router>
     );
   }
@@ -87,7 +84,6 @@ function MainAppFlow() {
           account={auth.account ?? { id: 0, username: '', accountType: 'observer', factionId: null, createdAt: 0, updatedAt: 0 }}
           onContinuePlaying={handleStartGameFromHome}
         />
-        <Analytics />
       </Router>
     );
   }
@@ -120,7 +116,6 @@ function MainAppFlow() {
           />
         )}
       </div>
-      <Analytics />
     </Router>
   );
 }
@@ -142,7 +137,6 @@ function App() {
     return (
       <Router>
         <NewsPage />
-        <Analytics />
       </Router>
     );
   }

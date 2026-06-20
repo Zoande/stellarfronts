@@ -5,7 +5,11 @@
  *
  * Commands:
  *   versions                              List versions (dev + registered, with commits)
- *   register-version <gitRef> [--id x] [--port n]   Pin a branch/tag/commit to a version
+ *   register-version <gitRef> [--id x] [--port n]   Pin a branch/tag/commit to a version.
+ *                                         Re-registering a moving branch auto-snapshots:
+ *                                         same commit → returns the existing version;
+ *                                         advanced → next free id (main, main2, main3, …).
+ *                                         --id names it explicitly (clashes error).
  *   unregister-version <id>               Remove a version + its worktree (no games may use it)
  *   games                                 List games (+version, status, endpoint)
  *   create-game <name> [--version v]
