@@ -2,6 +2,7 @@ import type {
   AuthAccount,
   AuthMeResponse,
   AuthSessionResponse,
+  ClaimQuestResponse,
   Credentials,
   LoginCredentials,
   DevStatsResponse,
@@ -18,6 +19,8 @@ import type {
   NewsPostMutationPayload,
   NewsPostResponse,
   NewsPostsResponse,
+  PlayerProfile,
+  PlayerProfileResponse,
 } from './types';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
@@ -228,4 +231,16 @@ export async function voteNewsComment(commentId: number, vote: NewsCommentVote):
 export async function requestOAuthPlaceholder(provider: 'google' | 'microsoft'): Promise<never> {
   await requestJson(`/api/oauth/${provider}`, undefined, 'POST');
   throw new Error('Unexpected OAuth placeholder response');
+}
+
+export async function getPlayerProfile(): Promise<PlayerProfile> {
+  const result = await requestJson<PlayerProfileResponse>(`/api/player/profile`, undefined, 'GET');
+  return result.profile;
+}
+
+export async function claimQuestReward(questId: string, windowKey: string): Promise<ClaimQuestResponse> {
+  return requestJson<ClaimQuestResponse>(
+    `/api/player/quests/${encodeURIComponent(questId)}/claim`,
+    { windowKey },
+  );
 }

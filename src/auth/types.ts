@@ -245,3 +245,59 @@ export interface NewsMediaFile {
 export interface NewsMediaListResponse {
   files: NewsMediaFile[];
 }
+
+// ─── Player Progression ───────────────────────────────────────────────────────
+
+export interface LevelInfo {
+  level: number;
+  name: string;
+  xpRequired: number;
+  color: string;
+}
+
+export interface AchievementInfo {
+  id: string;
+  title: string;
+  description: string;
+  xpReward: number;
+  unlockedAt: number | null;
+}
+
+export interface QuestInfo {
+  id: string;
+  title: string;
+  description: string;
+  type: 'weekly' | 'triday';
+  target: number;
+  xpReward: number;
+  action: string;
+  progress: number;
+  completedAt: number | null;
+  claimedAt: number | null;
+  windowKey: string;
+  resetsAt: number;
+}
+
+export interface PlayerProfile {
+  totalXp: number;
+  level: number;
+  levelName: string;
+  levelColor: string;
+  xpIntoLevel: number;
+  xpForNextLevel: number;
+  levelProgress: number;
+  nextLevelName: string | null;
+  levels: LevelInfo[];
+  achievements: AchievementInfo[];
+  quests: QuestInfo[];
+}
+
+export interface PlayerProfileResponse {
+  profile: PlayerProfile;
+}
+
+export interface ClaimQuestResponse {
+  xpGained: number;
+  newTotalXp: number;
+  newLevel: number;
+}

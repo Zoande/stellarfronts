@@ -24,6 +24,7 @@ import type { SpeciesSetup } from '../src/data/Species';
 import type {
   AuthAccount,
   AccountType,
+  AchievementInfo,
   Credentials,
   DevGameRuntimeRow,
   DevGameRuntimeStats,
@@ -37,7 +38,27 @@ import type {
   NewsPostListItem,
   NewsPostMutationPayload,
   NewsPostStatus,
+  PlayerProfile,
+  QuestInfo,
 } from '../src/auth/types';
+import {
+  ACHIEVEMENTS,
+  GAME_XP_CAPS,
+  GAME_XP_RATES,
+  LEVELS,
+  TRIDAY_QUESTS,
+  WEEKLY_QUESTS,
+  getActiveQuestIds,
+  getLevelDef,
+  getLevelForXp,
+  getTridayWindowIndex,
+  getTridayWindowKey,
+  getWeeklyWindowIndex,
+  getWeeklyWindowKey,
+  getWindowResetTime,
+  getXpProgress,
+  type ProgressionStats,
+} from './game/progression';
 
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DEV_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -655,6 +676,45 @@ export class AuthStore {
         FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS player_progression (
+        account_id INTEGER PRIMARY KEY,
+        total_xp INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS player_stats (
+        account_id INTEGER PRIMARY KEY,
+        comment_count INTEGER NOT NULL DEFAULT 0,
+        vote_count INTEGER NOT NULL DEFAULT 0,
+        upvote_count INTEGER NOT NULL DEFAULT 0,
+        downvote_count INTEGER NOT NULL DEFAULT 0,
+        quests_claimed INTEGER NOT NULL DEFAULT 0,
+        game_damage_dealt REAL NOT NULL DEFAULT 0,
+        game_profit_earned REAL NOT NULL DEFAULT 0,
+        game_stability_ticks INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS player_achievements (
+        account_id INTEGER NOT NULL,
+        achievement_id TEXT NOT NULL,
+        unlocked_at INTEGER NOT NULL,
+        PRIMARY KEY(account_id, achievement_id),
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS player_quests (
+        account_id INTEGER NOT NULL,
+        quest_id TEXT NOT NULL,
+        window_key TEXT NOT NULL,
+        progress INTEGER NOT NULL DEFAULT 0,
+        completed_at INTEGER,
+        claimed_at INTEGER,
+        PRIMARY KEY(account_id, quest_id, window_key),
+        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      );
+
       CREATE INDEX IF NOT EXISTS idx_dev_sessions_expires_at ON dev_sessions(expires_at);
       CREATE INDEX IF NOT EXISTS idx_dev_events_type_time ON dev_events(event_type, occurred_at);
       CREATE INDEX IF NOT EXISTS idx_dev_events_account_id ON dev_events(account_id);
@@ -663,6 +723,8 @@ export class AuthStore {
       CREATE INDEX IF NOT EXISTS idx_news_posts_status_time ON news_posts(status, published_at, updated_at);
       CREATE INDEX IF NOT EXISTS idx_news_comments_post_time ON news_comments(post_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_news_votes_comment ON news_comment_votes(comment_id);
+      CREATE INDEX IF NOT EXISTS idx_player_achievements_account ON player_achievements(account_id);
+      CREATE INDEX IF NOT EXISTS idx_player_quests_account ON player_quests(account_id, window_key);
     `);
 
     const membershipColumns = this.db.prepare(`PRAGMA table_info(game_memberships)`).all() as Array<{ name: string }>;
@@ -1832,6 +1894,239 @@ export class AuthStore {
         online: !!lastHeartbeatAt && now - lastHeartbeatAt <= GAME_RUNTIME_STALE_MS,
       };
     });
+  }
+
+  // ─── Player Progression ──────────────────────────────────────────────────────
+
+  private ensurePlayerRow(accountId: number): void {
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT OR IGNORE INTO player_progression (account_id, total_xp, updated_at) VALUES (?, 0, ?)`,
+    ).run(accountId, now);
+    this.db.prepare(
+      `INSERT OR IGNORE INTO player_stats (account_id, comment_count, vote_count, upvote_count, downvote_count, quests_claimed, game_damage_dealt, game_profit_earned, game_stability_ticks) VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0)`,
+    ).run(accountId);
+  }
+
+  private getProgressionStats(accountId: number): ProgressionStats {
+    this.ensurePlayerRow(accountId);
+    const stats = this.db.prepare(`SELECT * FROM player_stats WHERE account_id = ?`).get(accountId) as {
+      comment_count: number; vote_count: number; upvote_count: number;
+      downvote_count: number; quests_claimed: number;
+      game_damage_dealt: number; game_profit_earned: number; game_stability_ticks: number;
+    };
+    const totalXp = (this.db.prepare(`SELECT total_xp FROM player_progression WHERE account_id = ?`).get(accountId) as { total_xp: number } | undefined)?.total_xp ?? 0;
+    const gamesJoined = (this.db.prepare(`SELECT COUNT(*) AS c FROM game_memberships WHERE account_id = ?`).get(accountId) as { c: number }).c;
+    const achievementCount = (this.db.prepare(`SELECT COUNT(*) AS c FROM player_achievements WHERE account_id = ?`).get(accountId) as { c: number }).c;
+    return {
+      commentCount: stats.comment_count,
+      voteCount: stats.vote_count,
+      upvoteCount: stats.upvote_count,
+      downvoteCount: stats.downvote_count,
+      gamesJoined,
+      questsClaimed: stats.quests_claimed,
+      achievementCount,
+      level: getLevelForXp(totalXp),
+      gameDamageDealt: stats.game_damage_dealt,
+      gameProfitEarned: stats.game_profit_earned,
+      gameStabilityTicks: stats.game_stability_ticks,
+    };
+  }
+
+  addPlayerXp(accountId: number, amount: number): number {
+    this.ensurePlayerRow(accountId);
+    const now = Date.now();
+    this.db.prepare(`UPDATE player_progression SET total_xp = total_xp + ?, updated_at = ? WHERE account_id = ?`).run(amount, now, accountId);
+    return (this.db.prepare(`SELECT total_xp FROM player_progression WHERE account_id = ?`).get(accountId) as { total_xp: number }).total_xp;
+  }
+
+  getPlayerXp(accountId: number): number {
+    this.ensurePlayerRow(accountId);
+    return (this.db.prepare(`SELECT total_xp FROM player_progression WHERE account_id = ?`).get(accountId) as { total_xp: number }).total_xp;
+  }
+
+  awardGameXp(accountId: number, type: 'damage' | 'stability' | 'profit', rawValue: number): number {
+    this.ensurePlayerRow(accountId);
+    const rate = GAME_XP_RATES[type];
+    const cap = GAME_XP_CAPS[type];
+    const xp = Math.max(0, Math.min(Math.round(rawValue * rate), cap));
+    if (xp === 0) return 0;
+    const col = type === 'damage' ? 'game_damage_dealt' : type === 'profit' ? 'game_profit_earned' : 'game_stability_ticks';
+    this.db.prepare(`UPDATE player_stats SET ${col} = ${col} + ? WHERE account_id = ?`).run(rawValue, accountId);
+    this.addPlayerXp(accountId, xp);
+    return xp;
+  }
+
+  getUnlockedAchievementIds(accountId: number): string[] {
+    return (this.db.prepare(`SELECT achievement_id FROM player_achievements WHERE account_id = ?`).all(accountId) as Array<{ achievement_id: string }>).map((r) => r.achievement_id);
+  }
+
+  private unlockAchievement(accountId: number, achievementId: string, xpReward: number): boolean {
+    const now = Date.now();
+    const result = this.db.prepare(`INSERT OR IGNORE INTO player_achievements (account_id, achievement_id, unlocked_at) VALUES (?, ?, ?)`).run(accountId, achievementId, now);
+    if (result.changes > 0 && xpReward > 0) {
+      this.addPlayerXp(accountId, xpReward);
+    }
+    return result.changes > 0;
+  }
+
+  checkAndUnlockAchievements(accountId: number): string[] {
+    this.ensurePlayerRow(accountId);
+    const allUnlocked: string[] = [];
+    let changed = true;
+    while (changed) {
+      changed = false;
+      const stats = this.getProgressionStats(accountId);
+      const alreadyUnlocked = new Set(this.getUnlockedAchievementIds(accountId));
+      for (const ach of ACHIEVEMENTS) {
+        if (alreadyUnlocked.has(ach.id)) continue;
+        if (ach.check(stats)) {
+          if (this.unlockAchievement(accountId, ach.id, ach.xpReward)) {
+            allUnlocked.push(ach.id);
+            changed = true;
+          }
+        }
+      }
+    }
+    return allUnlocked;
+  }
+
+  upsertQuestProgress(accountId: number, questId: string, windowKey: string, amount: number, target: number): void {
+    const now = Date.now();
+    const initialProgress = Math.min(amount, target);
+    const initialCompletedAt = amount >= target ? now : null;
+    this.db.prepare(`
+      INSERT INTO player_quests (account_id, quest_id, window_key, progress, completed_at, claimed_at)
+      VALUES (@accountId, @questId, @windowKey, @initialProgress, @initialCompletedAt, NULL)
+      ON CONFLICT(account_id, quest_id, window_key) DO UPDATE SET
+        progress = CASE WHEN claimed_at IS NULL THEN MIN(progress + @amount, @target) ELSE progress END,
+        completed_at = CASE
+          WHEN claimed_at IS NULL AND completed_at IS NULL AND progress + @amount >= @target THEN @now
+          ELSE completed_at
+        END
+    `).run({ accountId, questId, windowKey, initialProgress, initialCompletedAt, amount, target, now });
+  }
+
+  claimQuestReward(accountId: number, questId: string, windowKey: string): boolean {
+    const now = Date.now();
+    const result = this.db.prepare(`
+      UPDATE player_quests SET claimed_at = ?
+      WHERE account_id = ? AND quest_id = ? AND window_key = ? AND completed_at IS NOT NULL AND claimed_at IS NULL
+    `).run(now, accountId, questId, windowKey);
+    if (result.changes === 0) return false;
+    this.db.prepare(`UPDATE player_stats SET quests_claimed = quests_claimed + 1 WHERE account_id = ?`).run(accountId);
+    return true;
+  }
+
+  onPlayerComment(accountId: number): void {
+    this.ensurePlayerRow(accountId);
+    this.db.prepare(`UPDATE player_stats SET comment_count = comment_count + 1 WHERE account_id = ?`).run(accountId);
+    const now = Date.now();
+    const weeklyKey = getWeeklyWindowKey(now);
+    const tridayKey = getTridayWindowKey(now);
+    const activeWeeklyIds = getActiveQuestIds(WEEKLY_QUESTS, getWeeklyWindowIndex(now));
+    const activeTridayIds = getActiveQuestIds(TRIDAY_QUESTS, getTridayWindowIndex(now));
+    for (const qid of activeWeeklyIds) {
+      const q = WEEKLY_QUESTS.find((def) => def.id === qid && def.action === 'comment');
+      if (q) this.upsertQuestProgress(accountId, qid, weeklyKey, 1, q.target);
+    }
+    for (const qid of activeTridayIds) {
+      const q = TRIDAY_QUESTS.find((def) => def.id === qid && def.action === 'comment');
+      if (q) this.upsertQuestProgress(accountId, qid, tridayKey, 1, q.target);
+    }
+    this.checkAndUnlockAchievements(accountId);
+  }
+
+  onPlayerVote(accountId: number, vote: number): void {
+    this.ensurePlayerRow(accountId);
+    this.db.prepare(`UPDATE player_stats SET vote_count = vote_count + 1 WHERE account_id = ?`).run(accountId);
+    if (vote > 0) this.db.prepare(`UPDATE player_stats SET upvote_count = upvote_count + 1 WHERE account_id = ?`).run(accountId);
+    if (vote < 0) this.db.prepare(`UPDATE player_stats SET downvote_count = downvote_count + 1 WHERE account_id = ?`).run(accountId);
+    const now = Date.now();
+    const weeklyKey = getWeeklyWindowKey(now);
+    const tridayKey = getTridayWindowKey(now);
+    const activeWeeklyIds = getActiveQuestIds(WEEKLY_QUESTS, getWeeklyWindowIndex(now));
+    const activeTridayIds = getActiveQuestIds(TRIDAY_QUESTS, getTridayWindowIndex(now));
+    const voteAction = vote > 0 ? 'upvote' : 'downvote';
+    for (const qid of activeWeeklyIds) {
+      const q = WEEKLY_QUESTS.find((def) => def.id === qid && (def.action === 'vote' || def.action === voteAction));
+      if (q) this.upsertQuestProgress(accountId, qid, weeklyKey, 1, q.target);
+    }
+    for (const qid of activeTridayIds) {
+      const q = TRIDAY_QUESTS.find((def) => def.id === qid && (def.action === 'vote' || def.action === voteAction));
+      if (q) this.upsertQuestProgress(accountId, qid, tridayKey, 1, q.target);
+    }
+    this.checkAndUnlockAchievements(accountId);
+  }
+
+  buildPlayerProfile(account: AuthAccount): PlayerProfile {
+    this.ensurePlayerRow(account.id);
+    const now = Date.now();
+    const totalXp = this.getPlayerXp(account.id);
+    const { level, xpIntoLevel, xpForNextLevel, levelProgress } = getXpProgress(totalXp);
+    const currentLevelDef = getLevelDef(level);
+    const nextLevelDef = level < LEVELS.length ? getLevelDef(level + 1) : null;
+
+    const unlockedMap = new Map(
+      (this.db.prepare(`SELECT achievement_id, unlocked_at FROM player_achievements WHERE account_id = ?`).all(account.id) as Array<{ achievement_id: string; unlocked_at: number }>).map((r) => [r.achievement_id, r.unlocked_at]),
+    );
+    const achievements: AchievementInfo[] = ACHIEVEMENTS.map((ach) => ({
+      id: ach.id,
+      title: ach.title,
+      description: ach.description,
+      xpReward: ach.xpReward,
+      unlockedAt: unlockedMap.get(ach.id) ?? null,
+    }));
+
+    const weeklyIdx = getWeeklyWindowIndex(now);
+    const tridayIdx = getTridayWindowIndex(now);
+    const weeklyKey = getWeeklyWindowKey(now);
+    const tridayKey = getTridayWindowKey(now);
+    const activeWeeklyIds = getActiveQuestIds(WEEKLY_QUESTS, weeklyIdx);
+    const activeTridayIds = getActiveQuestIds(TRIDAY_QUESTS, tridayIdx);
+    const activeWeekly = WEEKLY_QUESTS.filter((q) => activeWeeklyIds.includes(q.id));
+    const activeTriday = TRIDAY_QUESTS.filter((q) => activeTridayIds.includes(q.id));
+
+    type QuestRow = { quest_id: string; progress: number; completed_at: number | null; claimed_at: number | null };
+    const questProgressMap = new Map<string, QuestRow>();
+    const queryProgress = (ids: string[], key: string) => {
+      if (ids.length === 0) return;
+      const placeholders = ids.map(() => '?').join(',');
+      const rows = this.db.prepare(`SELECT quest_id, progress, completed_at, claimed_at FROM player_quests WHERE account_id = ? AND window_key = ? AND quest_id IN (${placeholders})`).all(account.id, key, ...ids) as QuestRow[];
+      for (const row of rows) questProgressMap.set(`${key}:${row.quest_id}`, row);
+    };
+    queryProgress(activeWeeklyIds, weeklyKey);
+    queryProgress(activeTridayIds, tridayKey);
+
+    const toQuestInfo = (q: typeof WEEKLY_QUESTS[0], key: string): QuestInfo => {
+      const p = questProgressMap.get(`${key}:${q.id}`);
+      return {
+        id: q.id, title: q.title, description: q.description,
+        type: q.type, target: q.target, xpReward: q.xpReward, action: q.action,
+        progress: p?.progress ?? 0,
+        completedAt: p?.completed_at ?? null,
+        claimedAt: p?.claimed_at ?? null,
+        windowKey: key,
+        resetsAt: getWindowResetTime(q.type, now),
+      };
+    };
+
+    return {
+      totalXp,
+      level,
+      levelName: currentLevelDef.name,
+      levelColor: currentLevelDef.color,
+      xpIntoLevel,
+      xpForNextLevel,
+      levelProgress,
+      nextLevelName: nextLevelDef?.name ?? null,
+      levels: LEVELS.map((l) => ({ level: l.level, name: l.name, xpRequired: l.xpRequired, color: l.color })),
+      achievements,
+      quests: [
+        ...activeWeekly.map((q) => toQuestInfo(q, weeklyKey)),
+        ...activeTriday.map((q) => toQuestInfo(q, tridayKey)),
+      ],
+    };
   }
 }
 
