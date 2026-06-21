@@ -15,6 +15,7 @@ import type {
   MarketAutoTradeOrder,
   MarketPriceSnapshot,
   MarketTransactionRecord,
+  MarketTradeAlert,
 } from "../data/Market";
 import type {
   StarbaseConstructionQueueItem,
@@ -113,7 +114,8 @@ export type ServerUpdateField =
   | "market"
   | "combatContacts"
   | "situations"
-  | "events";
+  | "events"
+  | "tradeAlerts";
 
 export interface ServerStar extends StarData {}
 
@@ -911,6 +913,7 @@ export interface GameSnapshot {
   diplomacy: DiplomacyMovementPayload;
   situations: ActiveSituation[];
   events: ActiveEvent[];
+  tradeAlerts: MarketTradeAlert[];
 }
 
 export interface GameUpdate {
@@ -940,6 +943,7 @@ export interface GameUpdate {
   diplomacy?: DiplomacyMovementPayload;
   situations?: ActiveSituation[];
   events?: ActiveEvent[];
+  tradeAlerts?: MarketTradeAlert[];
 }
 
 export interface CommandResultEvent {

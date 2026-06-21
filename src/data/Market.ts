@@ -51,12 +51,24 @@ export interface MarketAutoTradeOrder {
   updatedAt: number;
 }
 
+export interface MarketTradeAlert {
+  /** Stable id: `${playerId}:${resourceId}:${tradeType}` */
+  id: string;
+  playerId: number;
+  resourceId: ResourceKind;
+  tradeType: "auto_buy" | "auto_sell";
+  requestedPerHour: number;
+  /** Actual amount traded in the last processed period, normalised to per-hour. */
+  executedPerHour: number;
+}
+
 export interface MarketState {
   resources: MarketResourceState[];
   playerStats: MarketPlayerStats[];
   autoTrades: MarketAutoTradeOrder[];
   transactions: MarketTransactionRecord[];
   priceSnapshots: MarketPriceSnapshot[];
+  tradeAlerts: MarketTradeAlert[];
   lastProcessedHour: number;
   lastSnapshotHour: number;
 }
@@ -136,6 +148,7 @@ export function createInitialMarketState(
     })),
     autoTrades: [],
     transactions: [],
+    tradeAlerts: [],
     priceSnapshots: resources.map((resource) => ({
       resourceId: resource.resourceId,
       price: resource.currentPrice,
@@ -249,6 +262,7 @@ export function normalizeMarketState(
       playerStats,
       autoTrades,
       transactions: transactions.slice(-MARKET_TRANSACTION_LIMIT),
+      tradeAlerts: Array.isArray(raw.tradeAlerts) ? raw.tradeAlerts.filter((a) => a && typeof a.id === "string") : [],
       priceSnapshots: trimMarketPriceSnapshots(priceSnapshots),
       lastProcessedHour: sanitizeFiniteNumber(raw.lastProcessedHour, currentHour),
       lastSnapshotHour: sanitizeFiniteNumber(raw.lastSnapshotHour, currentHour),

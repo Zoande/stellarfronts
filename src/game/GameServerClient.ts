@@ -160,6 +160,7 @@ export class GameServerClient {
             diplomacy: parsed.diplomacy ?? this.latestSnapshot.diplomacy,
             situations: parsed.situations ?? this.latestSnapshot.situations,
             events: parsed.events ?? this.latestSnapshot.events,
+            tradeAlerts: parsed.tradeAlerts ?? this.latestSnapshot.tradeAlerts,
           };
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);
           return;

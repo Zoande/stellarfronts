@@ -1968,6 +1968,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
   }
   if (marketResult.marketChanged) {
     changed.add("market");
+    changed.add("tradeAlerts");
   }
   if (marketResult.economyChanged || (marketResult.marketChanged && ctx.state.market.autoTrades.length > 0)) {
     changed.add("factionEconomies");

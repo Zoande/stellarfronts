@@ -14,6 +14,7 @@ import type { ActiveEvent } from "../data/Events";
 import type { ActiveSituation } from "../data/Situations";
 import { deriveIndicators } from "../data/Notifications";
 import type { NotificationIndicator } from "../data/Notifications";
+import type { MarketTradeAlert } from "../data/Market";
 
 export type HudToggleKey = "hyperlanes" | "bloom" | "centerCloud" | "stars" | "ownership";
 export type HudSidebarItemKey =
@@ -45,6 +46,7 @@ export interface HudState {
   flagDesign?: FlagDesign | null;
   situations?: ActiveSituation[];
   events?: ActiveEvent[];
+  tradeAlerts?: MarketTradeAlert[];
 }
 
 export interface HudResourcePlanetSummary {
@@ -65,6 +67,7 @@ export interface HudCallbacks {
   onSidebarItem?: (key: HudSidebarItemKey) => void;
   onOpenEvent?: (eventId: string) => void;
   onOpenSituation?: (situationId: string) => void;
+  onOpenMarket?: () => void;
 }
 
 const STYLE_ID = "space-rts-hud-style";
@@ -995,6 +998,7 @@ export class HudOverlay {
       if (!refId) return;
       if (kind === "event") this.callbacks.onOpenEvent?.(refId);
       else if (kind === "situation") this.callbacks.onOpenSituation?.(refId);
+      else if (kind === "tradeAlert") this.callbacks.onOpenMarket?.();
     });
 
     this.sidebarEl = document.createElement("div");
@@ -1188,6 +1192,7 @@ export class HudOverlay {
       events: state.events ?? [],
       situations: state.situations ?? [],
       economy: state.economy ?? null,
+      tradeAlerts: state.tradeAlerts ?? [],
     });
     const signature = indicators
       .map((indicator) => `${indicator.id}:${indicator.severity}:${Math.round(indicator.progress ?? -1)}`)
@@ -1205,7 +1210,7 @@ export class HudOverlay {
   }
 
   private renderIndicator(indicator: NotificationIndicator): string {
-    const clickable = indicator.kind === "event" || indicator.kind === "situation";
+    const clickable = indicator.kind === "event" || indicator.kind === "situation" || indicator.kind === "tradeAlert";
     const ring = indicator.progress !== undefined
       ? `<span class="spaceHudIndicatorRing" style="--ind-progress:${Math.max(0, Math.min(100, indicator.progress))}"></span>`
       : "";

@@ -192,7 +192,10 @@ export function executeMarketAutoTrade(ctx: RuntimeContext, order: MarketAutoTra
   if (order.type === "auto_buy") {
     const unitCost = quote.finalQuotePrice * (1 + MARKET_FEE_RATE);
     amount = Math.min(amount, unitCost > 0 ? economy.stockpiles.energy / unitCost : 0);
-    if (amount <= 0.000001) return false;
+    if (amount <= 0.000001) {
+      recordTradeAlert(ctx, order, elapsedHours, 0);
+      return false;
+    }
     const grossEnergy = amount * quote.finalQuotePrice;
     const feePaid = grossEnergy * MARKET_FEE_RATE;
     const buyCost = grossEnergy + feePaid;
@@ -206,7 +209,10 @@ export function executeMarketAutoTrade(ctx: RuntimeContext, order: MarketAutoTra
     applyMarketTradePressure(ctx, resource, "auto_buy", amount);
   } else {
     amount = Math.min(amount, economy.stockpiles[order.resourceId]);
-    if (amount <= 0.000001) return false;
+    if (amount <= 0.000001) {
+      recordTradeAlert(ctx, order, elapsedHours, 0);
+      return false;
+    }
     const grossEnergy = amount * quote.finalQuotePrice;
     const feePaid = grossEnergy * MARKET_FEE_RATE;
     const sellPayout = grossEnergy - feePaid;
@@ -221,7 +227,32 @@ export function executeMarketAutoTrade(ctx: RuntimeContext, order: MarketAutoTra
   }
 
   order.updatedAt = ctx.state.clock.year;
+  recordTradeAlert(ctx, order, elapsedHours, amount);
   return true;
+}
+
+function recordTradeAlert(ctx: RuntimeContext, order: MarketAutoTradeOrder, elapsedHours: number, executedAmount: number): void {
+  const alertId = `${order.playerId}:${order.resourceId}:${order.type}`;
+  const requestedAmount = order.amountPerHour * elapsedHours;
+  if (executedAmount < requestedAmount - 0.001) {
+    const executedPerHour = elapsedHours > 0 ? executedAmount / elapsedHours : 0;
+    const existing = ctx.state.market.tradeAlerts.find((a) => a.id === alertId);
+    if (existing) {
+      existing.executedPerHour = executedPerHour;
+      existing.requestedPerHour = order.amountPerHour;
+    } else {
+      ctx.state.market.tradeAlerts.push({
+        id: alertId,
+        playerId: order.playerId,
+        resourceId: order.resourceId,
+        tradeType: order.type,
+        requestedPerHour: order.amountPerHour,
+        executedPerHour,
+      });
+    }
+  } else {
+    ctx.state.market.tradeAlerts = ctx.state.market.tradeAlerts.filter((a) => a.id !== alertId);
+  }
 }
 
 export function processShipShortageEffects(ctx: RuntimeContext): { shipsChanged: boolean; starbasesChanged: boolean } {

@@ -1031,6 +1031,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       flagDesign: currentFaction?.flagDesign ?? null,
       situations: snapshot.situations,
       events: snapshot.events,
+      tradeAlerts: snapshot.tradeAlerts ?? [],
     });
     syncEventAndSituationModals();
   }
@@ -1448,6 +1449,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       const situation = snapshot.situations?.find((candidate) => candidate.id === situationId);
       if (situation) situationModal.show(situation);
     },
+    onOpenMarket: () => openMarketPanel(),
   });
 
   const pressedCodes = new Set<string>();
