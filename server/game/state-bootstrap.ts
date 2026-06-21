@@ -19,7 +19,7 @@ import {
 } from "../../src/data/StarMap";
 import { buildHyperlanePairs, buildHyperlaneAdjacency } from "../../src/data/Hyperlanes";
 import { getSystemStarbasePosition } from "../../src/data/SystemCoordinates";
-import { buildFactions, buildHomeSystemOwnership } from "../../src/data/Factions";
+import { buildFactions, buildHomeSystemOwnership, computeVisibleStarIds } from "../../src/data/Factions";
 import {
   STARBASE_LEVEL_DEFINITIONS,
   STARBASE_SHIP_KINDS,
@@ -191,6 +191,21 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   created.speciesRights = normalizeSpeciesRightsForFactions(created);
   recalculatePlanetEconomies(created);
   refreshFactionEconomyDeltas(created);
+
+  // Seed each faction's discovery with all other factions' capitals + their adjacent systems.
+  // This gives players immediate intel on where rivals started without granting ongoing vision.
+  for (const faction of created.factions) {
+    const key = String(faction.id);
+    const seeded = new Set<number>(created.discoveredByFaction[key] ?? []);
+    for (const other of created.factions) {
+      if (other.id === faction.id) continue;
+      for (const starId of computeVisibleStarIds(created.adjacency, other.homeStarId, 1)) {
+        seeded.add(starId);
+      }
+    }
+    created.discoveredByFaction[key] = Array.from(seeded).sort((a, b) => a - b);
+  }
+
   refreshDiscovery(created);
   return created;
 }

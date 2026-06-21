@@ -168,10 +168,10 @@ const HABITED_PLANET_LEFT_BADGE_U = 43 / STAR_LABEL_TEXTURE_WIDTH;
 const STARBASE_BADGE_V = 0.5;
 const STARBASE_BADGE_RADIUS_U = 42 / STAR_LABEL_TEXTURE_WIDTH;
 const STARBASE_BADGE_RADIUS_V = 42 / STAR_LABEL_TEXTURE_HEIGHT;
-const FOGGED_STAR_COLOR = new Color4(0.4, 0.43, 0.48, 1);
+const FOGGED_STAR_COLOR = new Color4(0.58, 0.62, 0.68, 1);
 const STALE_STAR_LABEL_COLOR = new Color3(0.56, 0.6, 0.66);
-const FOGGED_CORE_ALPHA_SCALE = 0.36;
-const FOGGED_HALO_ALPHA_SCALE = 0.12;
+const FOGGED_CORE_ALPHA_SCALE = 0.55;
+const FOGGED_HALO_ALPHA_SCALE = 0.28;
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
@@ -1119,8 +1119,8 @@ export class StarFieldRenderer {
       const known = this.isStarKnown(i);
       const current = this.isStarCurrentlyVisible(i);
       const renderColor = known ? base : FOGGED_STAR_COLOR;
-      const coreFogScale = current ? 1 : FOGGED_CORE_ALPHA_SCALE;
-      const haloFogScale = current ? 1 : FOGGED_HALO_ALPHA_SCALE;
+      const coreFogScale = (known || current) ? 1 : FOGGED_CORE_ALPHA_SCALE;
+      const haloFogScale = (known || current) ? 1 : FOGGED_HALO_ALPHA_SCALE;
       const a = this.alphaOverrides[i];
       const s = this.scaleOverrides[i];
       const coreSize = this.baseCoreSizes[i];
