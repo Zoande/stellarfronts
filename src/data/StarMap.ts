@@ -684,6 +684,7 @@ export function normalizeCelestialObjectDetails(stars: StarData[]): boolean {
 
     for (let i = 0; i < star.system.planets.length; i++) {
       const planet = star.system.planets[i];
+      if (!planet) continue;
       const expectedId = createPlanetId(star.id, i);
       if (planet.id !== expectedId) {
         planet.id = expectedId;
