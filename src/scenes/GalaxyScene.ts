@@ -1694,7 +1694,6 @@ export class GalaxyScene implements IGameScene {
       for (const neighbor of this.hyperlaneAdjacency[current] ?? []) {
         if (neighbor < 0 || neighbor >= this.hyperlaneAdjacency.length) continue;
         if (reachable.has(neighbor)) continue;
-        if (!this.isStarKnownToPerspective(neighbor)) continue;
         if (!this.canEnterStar(neighbor)) continue;
 
         reachable.add(neighbor);
@@ -1960,7 +1959,7 @@ export class GalaxyScene implements IGameScene {
 
   private openShipActionMenuAtPointer(ev: PointerEvent): void {
     const star = this.findNearestStarAtPointer();
-    if (!star || !this.selectedShip || !this.isStarKnownToPerspective(star.id)) {
+    if (!star || !this.selectedShip) {
       this.closeActionMenu();
       return;
     }
@@ -2019,8 +2018,6 @@ export class GalaxyScene implements IGameScene {
     let nearestDistSq = Infinity;
 
     for (const star of this.stars) {
-      if (!this.isStarKnownToPerspective(star.id)) continue;
-
       const dx = clickX - star.x;
       const dz = clickZ - star.z;
       const dSq = dx * dx + dz * dz;
