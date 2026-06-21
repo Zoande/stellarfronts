@@ -13,18 +13,19 @@ import { createDefaultSpeciesRightsState, normalizeSpeciesRightsForLaws } from "
 import type { FactionSpeciesRightsState, SpeciesId, SpeciesRights, SpeciesLawSelections } from "../../src/data/Species";
 import type { GalaxyPerspective } from "../../src/data/Factions";
 import type { PlanetConfig } from "../../src/data/StarMap";
-import { SHORTAGE_GRACE_MONTHS } from "./constants";
 import { clamp } from "./pure-helpers";
 import type { GameState, RuntimeContext } from "./types";
 
 // --- Shortage severity ---
 
 export function computeShortageSeverity(stockpile: number, monthlyDelta: number, consumption: number): number {
+  // Shortage only escalates once the stockpile is fully exhausted.
+  if (stockpile > 0) return 0;
   const deficit = Math.max(0, -monthlyDelta);
   if (deficit <= 0) return 0;
-  const deficitFraction = clamp(deficit / Math.max(consumption, deficit, 1), 0, 1);
-  const bufferFactor = clamp(1 - Math.max(0, stockpile) / (deficit * SHORTAGE_GRACE_MONTHS), 0, 1);
-  return clamp(deficitFraction * bufferFactor, 0, 1);
+  // Severity scales with how large the deficit is relative to consumption:
+  // full deficit (producing nothing) → 1.0; partial deficit → proportional.
+  return clamp(deficit / Math.max(consumption, deficit, 1), 0, 1);
 }
 
 // Single source of truth for shortage severity: the Resource Shortage *situation*.

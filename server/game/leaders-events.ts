@@ -177,6 +177,29 @@ export function applyGameEffects(ctx: RuntimeContext, factionId: number, effects
       case "notify":
         // Notifications are derived client-side from situations/events; nothing to persist.
         break;
+      case "disbandShipsFraction": {
+        const factionShips = ctx.state.ships.filter((s) => s.ownerId === factionId);
+        const toDisband = Math.floor(factionShips.length * effect.fraction);
+        if (toDisband > 0) {
+          const shuffled = [...factionShips].sort(() => Math.random() - 0.5);
+          const disbanded = new Set(shuffled.slice(0, toDisband).map((s) => s.id));
+          ctx.state.ships = ctx.state.ships.filter((s) => !disbanded.has(s.id));
+          for (const fleet of ctx.state.fleets) {
+            if (fleet.ownerId !== factionId) continue;
+            fleet.shipIds = fleet.shipIds.filter((id) => !disbanded.has(id));
+          }
+          ctx.hasDirtyState = true;
+        }
+        break;
+      }
+      case "clearContextSituation": {
+        const situationId = context?.situationId as string | undefined;
+        if (situationId) {
+          ctx.state.situations = ctx.state.situations.filter((s) => s.id !== situationId);
+          ctx.hasDirtyState = true;
+        }
+        break;
+      }
     }
   }
 }

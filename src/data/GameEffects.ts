@@ -17,7 +17,11 @@ export type GameEffect =
   | { type: "spawnLeader"; leaderClass?: LeaderClass; bonusLevel?: number }
   | { type: "fleetMissing"; fleetId: string; days: number }
   | { type: "adjustSituation"; situationId: string; delta: number }
-  | { type: "notify"; message: string; severity?: IndicatorSeverity };
+  | { type: "notify"; message: string; severity?: IndicatorSeverity }
+  /** Randomly removes `fraction` (0–1) of the faction's ships and cleans up fleet rosters. */
+  | { type: "disbandShipsFraction"; fraction: number }
+  /** Removes the situation that fired this effect, identified via event context.situationId. */
+  | { type: "clearContextSituation" };
 
 export type IndicatorSeverity = "info" | "warn" | "crisis";
 

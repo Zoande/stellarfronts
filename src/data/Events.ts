@@ -96,13 +96,36 @@ export const EVENT_DEFINITIONS: Record<string, EventDefinition> = {
   [SHORTAGE_CRISIS_EVENT_ID]: {
     id: SHORTAGE_CRISIS_EVENT_ID,
     category: "crisis",
-    title: "Shortage Crisis",
-    body: "The chronic lack of {resource} has reached a breaking point. Unrest spreads across your worlds as basic needs go unmet.",
+    title: "Economic Bankruptcy",
+    body: "The chronic {resource} shortage has brought the empire to its knees. Creditors foreclose, supply chains collapse, and unrest sweeps the worlds. The government must declare bankruptcy: emergency reserves are distributed empire-wide, but 70% of the standing fleet will be decommissioned to fund the relief effort. The economy will eventually recover — but you are vulnerable now.",
     weight: 0,
-    timeoutDays: 120,
-    defaultChoiceId: "endure",
+    timeoutDays: 30,
+    defaultChoiceId: "declare",
     choices: [
-      { id: "endure", label: "Endure the hardship", effects: [] },
+      {
+        id: "declare",
+        label: "Declare Bankruptcy",
+        tooltip: "Receive emergency reserves and reset the shortage — but lose 70% of your fleet.",
+        effects: [
+          { type: "addResource", resource: "food", amount: 8000 },
+          { type: "addResource", resource: "minerals", amount: 8000 },
+          { type: "addResource", resource: "energy", amount: 8000 },
+          { type: "addResource", resource: "goods", amount: 5000 },
+          { type: "addResource", resource: "alloys", amount: 4000 },
+          { type: "disbandShipsFraction", fraction: 0.7 },
+          {
+            type: "factionModifier",
+            id: "bankruptcy_fallout",
+            label: "Bankruptcy Fallout",
+            modifiers: [
+              { id: "bkr_stability", label: "Bankruptcy Fallout", source: "effect:bankruptcy_fallout", target: "stability", operation: "add", value: -20 },
+              { id: "bkr_happiness", label: "Bankruptcy Fallout", source: "effect:bankruptcy_fallout", target: "happiness", operation: "add", value: -15 },
+            ],
+            durationDays: 180,
+          },
+          { type: "clearContextSituation" },
+        ],
+      },
     ],
   },
 };

@@ -60,9 +60,12 @@ export const MIGRATION_DESTINATION_CAPACITY_BUFFER = 1.02;
 export const MIGRATION_DISTANCE_DECAY = 0.78;
 export const MIGRATION_DISTANCE_FLOOR = 0.12;
 export const MIGRATION_DISTANCE_MAX_JUMPS = 16;
-export const SHORTAGE_GRACE_MONTHS = 3;
-export const SHORTAGE_PROGRESS_RISE_PER_DAY = 9;
-export const SHORTAGE_PROGRESS_FALL_PER_DAY = 6;
+// Shortage only begins when stockpile hits 0; no pre-buffer.
+// Rates are tuned to real-time: 1 game hour = 1 real second at default speed.
+// 0→100 in 7 real days (25,200 game days) at full deficit; 100→0 in 2 real days (7,200 game days).
+export const SHORTAGE_GRACE_MONTHS = 0;
+export const SHORTAGE_PROGRESS_RISE_PER_DAY = 100 / 25_200; // ~0.00397
+export const SHORTAGE_PROGRESS_FALL_PER_DAY = 100 / 7_200;  // ~0.01389
 export const LOST_IN_TRANSIT_CHANCE_PER_DAY = 0.0018;
 export const LOST_IN_TRANSIT_MIN_DAYS = 25;
 export const LOST_IN_TRANSIT_MAX_DAYS = 210;
