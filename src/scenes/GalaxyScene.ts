@@ -1697,7 +1697,10 @@ export class GalaxyScene implements IGameScene {
         if (!this.canEnterStar(neighbor)) continue;
 
         reachable.add(neighbor);
-        queue.push(neighbor);
+        // Only keep expanding through known systems — undiscovered systems are
+        // reachable via their visible (fading) hyperlane but can't be used as
+        // stepping stones into further unknown space.
+        if (this.isStarKnownToPerspective(neighbor)) queue.push(neighbor);
       }
     }
 
