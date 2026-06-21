@@ -9,6 +9,7 @@ import {
   Vector3,
   Color3,
   Color4,
+  Constants,
   MeshBuilder,
   StandardMaterial,
   Texture,
@@ -30,6 +31,9 @@ import type { PlanetState } from "../data/Economy";
 import type { LeaderState } from "../data/Leaders";
 import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
+import { NebulaFieldRenderer } from "../systems/NebulaFieldRenderer";
+import { findNebulaForStar } from "../data/Nebula";
+import type { NebulaRegion } from "../data/Nebula";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
 import type { GalaxyIconClickType, GalaxyShipIcon, ShipIconStyle } from "../systems/StarFieldRenderer";
 import { SelectionPanel } from "../ui/SelectionPanel";
@@ -62,6 +66,7 @@ export interface GalaxyViewState {
 
 export interface GalaxySceneOptions {
   stars?: StarData[];
+  nebulae?: NebulaRegion[];
   initialViewState?: GalaxyViewState;
   factions?: FactionInfo[];
   perspective?: GalaxyPerspective;
@@ -122,6 +127,10 @@ const OWNERSHIP_FACTION_COUNT = 15;
 const OWNERSHIP_TEXTURE_SIZE = 2400;
 const OWNERSHIP_OVERLAY_PADDING_FACTOR = 0.16;
 const OWNERSHIP_OVERLAY_Y = 0.055;
+const NEBULA_TEXTURE_SIZE = 2048;
+// Sits just above the ownership overlay; star sprites render in a later pass so
+// they stay legible over the cloud.
+const NEBULA_OVERLAY_Y = 0.06;
 const OWNERSHIP_TIE_EPSILON = 0.0001;
 const STAR_PICK_RADIUS_MIN = 5.5;
 const STAR_PICK_RADIUS_MAX = 10;
@@ -934,6 +943,9 @@ export class GalaxyScene implements IGameScene {
   private hyperlaneMesh: Mesh | null = null;
   private ownershipOverlayMesh: Mesh | null = null;
   private ownershipRenderer: OwnershipOverlayRenderer | null = null;
+  private nebulaOverlayMesh: Mesh | null = null;
+  private nebulaRenderer: NebulaFieldRenderer | null = null;
+  private nebulae: NebulaRegion[] = [];
   private hyperlanePairs: Array<[number, number]> = [];
   private hyperlaneAdjacency: number[][] = [];
   private starOwnership: number[] = [];
@@ -1027,6 +1039,7 @@ export class GalaxyScene implements IGameScene {
           cfg.minStarSpacing,
           cfg.shape,
         );
+    this.nebulae = this.options.nebulae ?? [];
     this.planetStates = this.options.planetStates ?? [];
     applyPlanetStatesToStars(this.stars, this.planetStates);
     this.factions =
@@ -1140,6 +1153,7 @@ export class GalaxyScene implements IGameScene {
     this.setupGalacticCore(cfg.width, cfg.height);
     this.setupHyperlanes(cfg.width, cfg.height, cfg.shape, cfg.seed);
     this.setupOwnershipLayer(cfg.width, cfg.height, cfg.seed);
+    this.setupNebulaLayer(cfg.width, cfg.height);
 
     this.starField = new StarFieldRenderer(
       this.scene,
@@ -1447,6 +1461,47 @@ export class GalaxyScene implements IGameScene {
     overlay.material = mat;
     overlay.setEnabled(this.ownershipVisible);
     this.ownershipOverlayMesh = overlay;
+  }
+
+  private setupNebulaLayer(width: number, height: number): void {
+    if (this.stars.length === 0 || this.nebulae.length === 0) return;
+
+    const padding = Math.min(width, height) * OWNERSHIP_OVERLAY_PADDING_FACTOR;
+    const nebulaWidth = width + padding * 2;
+    const nebulaHeight = height + padding * 2;
+
+    this.nebulaRenderer = new NebulaFieldRenderer(this.scene, {
+      textureSize: NEBULA_TEXTURE_SIZE,
+      mapWidth: nebulaWidth,
+      mapHeight: nebulaHeight,
+      stars: this.stars,
+      nebulae: this.nebulae,
+    });
+
+    const overlay = MeshBuilder.CreateGround(
+      "galaxyNebulaOverlay",
+      { width: nebulaWidth, height: nebulaHeight },
+      this.scene,
+    );
+    overlay.position.y = NEBULA_OVERLAY_Y;
+    overlay.isPickable = false;
+    overlay.alwaysSelectAsActiveMesh = true;
+
+    const tex = this.nebulaRenderer.texture;
+    const mat = new StandardMaterial("galaxyNebulaOverlayMat", this.scene);
+    mat.emissiveTexture = tex;
+    mat.opacityTexture = tex;
+    mat.emissiveColor = Color3.White();
+    mat.diffuseColor = Color3.Black();
+    mat.specularColor = Color3.Black();
+    mat.disableLighting = true;
+    mat.backFaceCulling = false;
+    // Additive blend so the clouds glow over the starfield without occluding stars.
+    mat.alphaMode = Constants.ALPHA_ADD;
+    mat.alpha = 1;
+
+    overlay.material = mat;
+    this.nebulaOverlayMesh = overlay;
   }
 
   private setupGalacticCore(width: number, height: number): void {
@@ -2570,6 +2625,7 @@ export class GalaxyScene implements IGameScene {
       status: starbase?.status ?? "online",
       power: this.formatStarbasePower(starbase),
       technology: this.options.technology,
+      nebulaKind: findNebulaForStar(this.nebulae, starId)?.kind ?? null,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
       onClose: (starbaseId) => this.options.onReleaseStarbaseDetails?.(starbaseId),
     });
@@ -3013,6 +3069,16 @@ export class GalaxyScene implements IGameScene {
     }
     this.ownershipRenderer?.dispose();
     this.ownershipRenderer = null;
+    if (this.nebulaOverlayMesh) {
+      const nebulaMaterial = this.nebulaOverlayMesh.material;
+      this.nebulaOverlayMesh.material = null;
+      this.nebulaOverlayMesh.dispose();
+      nebulaMaterial?.dispose(false, false);
+      this.nebulaOverlayMesh = null;
+    }
+    this.nebulaRenderer?.dispose();
+    this.nebulaRenderer = null;
+    this.nebulae = [];
     this.hyperlanePairs = [];
     this.hyperlaneAdjacency = [];
     this.starOwnership = [];

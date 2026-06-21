@@ -19,6 +19,7 @@ import {
 import type { PlanetState } from "@/data/Economy";
 import type { GalaxySceneOptions, GalaxyViewState } from "@/scenes/GalaxyScene";
 import { buildHyperlaneAdjacency } from "@/data/Hyperlanes";
+import { findNebulaForStar } from "@/data/Nebula";
 import { HudOverlay } from "@/ui/HudOverlay";
 import type { HudConnectedSystem, HudResourcePlanetSummary, HudSidebarItemKey, HudVisualToggles } from "@/ui/HudOverlay";
 import { EventModal } from "@/ui/EventModal";
@@ -1261,6 +1262,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
     const optionsForGalaxy: GalaxySceneOptions = {
       stars: snapshot.stars,
+      nebulae: snapshot.nebulae,
       factions: snapshot.factions,
       perspective: snapshot.perspective,
       playerFactionId: snapshot.perspective.mode === "faction" ? snapshot.perspective.factionId : 0,
@@ -1349,6 +1351,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
         {
           playerShipSystemIds: getFleetSystemIds(),
           systemPayload,
+          nebula: findNebulaForStar(snapshot.nebulae, systemStar.id),
           serverFleets: systemPayload.fleets,
           serverShips: systemPayload.ships,
           shipDesigns: systemPayload.shipDesigns,

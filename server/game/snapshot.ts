@@ -218,6 +218,7 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
       paused: ctx.state.clock.paused,
       syncedAtMs: ctx.state.clock.syncedAtMs,
     },
+    nebulae: ctx.state.nebulae ?? [],
     hyperlanes,
     factions,
     starOwnership: toOwnershipEntries(starOwnership),

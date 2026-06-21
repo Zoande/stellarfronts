@@ -26,6 +26,7 @@ import type {
   WeaponMountDefinition,
 } from "../../src/data/Starbase";
 import { areFactionsAtWar, getBorderPolicy } from "../../src/data/Diplomacy";
+import { nebulaTravelSpeedMultiplier } from "../../src/data/Nebula";
 import type { GalaxyPerspective } from "../../src/data/Factions";
 import {
   GAME_DAYS_PER_YEAR,
@@ -254,7 +255,9 @@ export function hyperlaneTravelDays(
   const to = ctx.state.stars[toStarId];
   if (!from || !to) return phaseDurationDays(ctx, "jumpingHyperlane", fleet);
   const distance = Math.hypot(to.x - from.x, to.z - from.z);
-  const speed = Math.max(0.05, fleet.speed * getFleetSpeedMultiplier(ctx.state, fleet) * 2);
+  // Ion storms and similar nebulas mire fleets crossing into/out of them.
+  const nebulaSpeedMultiplier = nebulaTravelSpeedMultiplier(ctx.state.nebulae, fromStarId, toStarId);
+  const speed = Math.max(0.05, fleet.speed * getFleetSpeedMultiplier(ctx.state, fleet) * 2 * nebulaSpeedMultiplier);
   return Math.max(0.1, distance / speed);
 }
 

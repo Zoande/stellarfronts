@@ -27,6 +27,7 @@ import {
   progressStarbaseShipQueue,
 } from "../../src/data/Starbase";
 import type { StarbaseShipKind, StarbaseShipQueueItem } from "../../src/data/Starbase";
+import { NEBULA_DEFINITIONS, buildNebulaByStarId } from "../../src/data/Nebula";
 import { applyPlanetStatesToStars } from "../../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../../src/data/SystemCoordinates";
 import { GAME_HOURS_PER_MONTH, gameYearToMonthIndex, elapsedHoursToGameYear } from "../../src/game/GameTime";
@@ -258,17 +259,45 @@ function recordTradeAlert(ctx: RuntimeContext, order: MarketAutoTradeOrder, elap
 export function processShipShortageEffects(ctx: RuntimeContext): { shipsChanged: boolean; starbasesChanged: boolean } {
   let shipsChanged = false;
   let starbasesChanged = false;
+  const nebulaByStar = buildNebulaByStarId(ctx.state.nebulae);
+  const fleetById = new Map(ctx.state.fleets.map((fleet) => [fleet.id, fleet] as const));
+
   for (const ship of ctx.state.ships) {
+    const fleet = fleetById.get(ship.fleetId) ?? null;
+    const nebula = fleet ? nebulaByStar.get(fleet.currentStarId) : undefined;
+    const nebulaDef = nebula ? NEBULA_DEFINITIONS[nebula.kind] : undefined;
+
+    // Radiation nebulas corrode hull/armor each tick (floored at 1 so they harass
+    // rather than annihilate). Applies even once shields are already down.
+    if (nebulaDef?.hullDamagePerTick && ship.maxHull > 0 && ship.hull > 1) {
+      let remaining = nebulaDef.hullDamagePerTick;
+      const armorAbsorbed = Math.min(ship.armor, remaining);
+      ship.armor = Math.max(0, ship.armor - armorAbsorbed);
+      remaining -= armorAbsorbed;
+      if (remaining > 0) ship.hull = Math.max(1, ship.hull - remaining);
+      shipsChanged = true;
+    }
+
     if (ship.maxShield <= 0 || ship.shield <= 0) continue;
-    const fleet = ctx.state.fleets.find((candidate) => candidate.id === ship.fleetId) ?? null;
-    const shieldCap = ship.maxShield * (fleet ? getFleetShieldMultiplier(ctx.state, fleet) : getFactionFleetShortageEffects(ctx.state, ship.ownerId).shieldMultiplier);
+    // Electric/ion nebulas collapse shields entirely; otherwise the usual cap applies.
+    const shieldMultiplier = nebulaDef?.forcesShieldsToZero
+      ? 0
+      : (fleet ? getFleetShieldMultiplier(ctx.state, fleet) : getFactionFleetShortageEffects(ctx.state, ship.ownerId).shieldMultiplier);
+    const shieldCap = ship.maxShield * shieldMultiplier;
     if (ship.shield <= shieldCap) continue;
     ship.shield = Math.max(0, shieldCap);
     shipsChanged = true;
   }
   for (const starbase of ctx.state.starbases) {
     if (starbase.status !== "online" || starbase.maxShield <= 0 || starbase.shield <= 0) continue;
-    const shieldCap = starbase.maxShield * getFactionFleetShortageEffects(ctx.state, starbase.ownerId).shieldMultiplier;
+    const nebulaDef = (() => {
+      const nebula = nebulaByStar.get(starbase.starId);
+      return nebula ? NEBULA_DEFINITIONS[nebula.kind] : undefined;
+    })();
+    const shieldMultiplier = nebulaDef?.forcesShieldsToZero
+      ? 0
+      : getFactionFleetShortageEffects(ctx.state, starbase.ownerId).shieldMultiplier;
+    const shieldCap = starbase.maxShield * shieldMultiplier;
     if (starbase.shield <= shieldCap) continue;
     starbase.shield = Math.max(0, shieldCap);
     starbasesChanged = true;

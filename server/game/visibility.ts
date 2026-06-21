@@ -13,34 +13,41 @@
 
 import { computeVisibleStarIds } from "../../src/data/Factions";
 import type { GalaxyPerspective } from "../../src/data/Factions";
+import { buildNebulaStarIdSet } from "../../src/data/Nebula";
 import type { ServerFleet } from "../../src/game/GameProtocol";
 import { DISCOVERY_JUMPS } from "./constants";
 import type { GameState, RuntimeContext } from "./types";
 
-export function addDiscoveryFrom(nextState: GameState, sourceStarId: number, visible: Set<number>): void {
+export function addDiscoveryFrom(
+  nextState: GameState,
+  sourceStarId: number,
+  visible: Set<number>,
+  nebulaStarIds: Set<number> = buildNebulaStarIdSet(nextState.nebulae),
+): void {
   if (sourceStarId < 0 || sourceStarId >= nextState.adjacency.length) return;
-  for (const starId of computeVisibleStarIds(nextState.adjacency, sourceStarId, DISCOVERY_JUMPS)) {
+  for (const starId of computeVisibleStarIds(nextState.adjacency, sourceStarId, DISCOVERY_JUMPS, nebulaStarIds)) {
     visible.add(starId);
   }
 }
 
 export function computeCurrentVisibleSet(nextState: GameState, factionId: number): Set<number> {
   const visible = new Set<number>();
+  const nebulaStarIds = buildNebulaStarIdSet(nextState.nebulae);
   const faction = nextState.factions.find((candidate) => candidate.id === factionId);
-  if (faction) addDiscoveryFrom(nextState, faction.homeStarId, visible);
+  if (faction) addDiscoveryFrom(nextState, faction.homeStarId, visible, nebulaStarIds);
 
   for (const starbase of nextState.starbases) {
     if (starbase.ownerId === factionId && starbase.status === "online") {
-      addDiscoveryFrom(nextState, starbase.starId, visible);
+      addDiscoveryFrom(nextState, starbase.starId, visible, nebulaStarIds);
     }
   }
 
   for (const fleet of nextState.fleets) {
     if (fleet.ownerId !== factionId) continue;
-    addDiscoveryFrom(nextState, fleet.currentStarId, visible);
+    addDiscoveryFrom(nextState, fleet.currentStarId, visible, nebulaStarIds);
     if (fleet.hyperlanePosition) {
-      addDiscoveryFrom(nextState, fleet.hyperlanePosition.fromStarId, visible);
-      addDiscoveryFrom(nextState, fleet.hyperlanePosition.toStarId, visible);
+      addDiscoveryFrom(nextState, fleet.hyperlanePosition.fromStarId, visible, nebulaStarIds);
+      addDiscoveryFrom(nextState, fleet.hyperlanePosition.toStarId, visible, nebulaStarIds);
     }
   }
 

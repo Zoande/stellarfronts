@@ -11,6 +11,8 @@ import {
 } from "../data/Starbase";
 import type { ResourceCounts } from "../data/Economy";
 import type { StarbaseBuildingKind } from "../data/Starbase";
+import { NEBULA_DEFINITIONS, getNebulaGatedBuildingKinds } from "../data/Nebula";
+import type { NebulaKind } from "../data/Nebula";
 import type { ClientCommand, ServerStarbase } from "../game/GameProtocol";
 import {
   getFirstRequiredTechName,
@@ -30,6 +32,8 @@ export interface StarbasePanelData {
   power?: string;
   starbase?: ServerStarbase;
   technology?: FactionTechnologyView | null;
+  /** Kind of nebula the starbase's system sits in, if any (gates some buildings). */
+  nebulaKind?: NebulaKind | null;
   onStarbaseCommand?: (command: ClientCommand) => void;
   onClose?: (starbaseId: string) => void;
 }
@@ -495,7 +499,9 @@ export class StarbasePanel {
           <button type="button" data-sb-close-building-picker>X</button>
         </div>
         <div class="sbBuildingList">
-          ${STARBASE_BUILDING_KINDS.map((kind) => {
+          ${STARBASE_BUILDING_KINDS
+            .filter((kind) => this.isStarbaseBuildingAvailableHere(kind))
+            .map((kind) => {
             const definition = STARBASE_BUILDING_DEFINITIONS[kind];
             const lockedByTechnology = !this.isStarbaseBuildingUnlocked(this.currentData?.technology, kind);
             const note = lockedByTechnology
@@ -515,6 +521,14 @@ export class StarbasePanel {
         </div>
       </div>
     `;
+  }
+
+  // Nebula-gated buildings (e.g. the Mineral Harvester) only appear when the
+  // starbase sits inside the enabling nebula type.
+  private isStarbaseBuildingAvailableHere(building: StarbaseBuildingKind): boolean {
+    if (!getNebulaGatedBuildingKinds().has(building)) return true;
+    const nebulaKind = this.currentData?.nebulaKind;
+    return !!nebulaKind && NEBULA_DEFINITIONS[nebulaKind].enablesStarbaseBuilding === building;
   }
 
   private isStarbaseBuildingUnlocked(technology: FactionTechnologyView | null | undefined, building: StarbaseBuildingKind): boolean {

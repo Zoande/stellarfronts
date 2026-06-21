@@ -47,6 +47,7 @@ import type {
   TreatyArticleId,
 } from "../data/Diplomacy";
 import type { PlanetConfig, StarData } from "../data/StarMap";
+import type { NebulaRegion } from "../data/Nebula";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type {
   CombatTargetKind,
@@ -893,6 +894,9 @@ export interface GameSnapshot {
   perspective: GalaxyPerspective;
   clock: GameClock;
   stars: ServerStar[];
+  // Nebula regions are public/global — always sent in full regardless of fog so
+  // the galaxy-map cloud renders even over unexplored systems.
+  nebulae: NebulaRegion[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
   habitedPlanetSystemIds: number[];
@@ -923,6 +927,7 @@ export interface GameUpdate {
   changed: ServerUpdateField[];
   clock?: GameClock;
   stars?: ServerStar[];
+  nebulae?: NebulaRegion[];
   planetStates?: PlanetState[];
   factionEconomies?: FactionEconomyState[];
   habitedPlanetSystemIds?: number[];

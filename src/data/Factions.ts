@@ -156,13 +156,19 @@ export function computeVisibleStarIds(
   adjacency: number[][],
   homeStarId: number,
   maxJumps = FOG_OF_WAR_MAX_JUMPS,
+  nebulaStarIds?: Set<number>,
 ): Set<number> {
   const visible = new Set<number>();
   if (homeStarId < 0 || homeStarId >= adjacency.length) return visible;
 
+  // The occupied system itself is always seen. Nebulas scatter sensors, so a
+  // unit sitting inside one sees only its own system (no propagation out), and
+  // coverage from outside never enters or passes through a nebula system.
+  visible.add(homeStarId);
+  if (nebulaStarIds?.has(homeStarId)) return visible;
+
   const queue: Array<{ starId: number; jumps: number }> = [{ starId: homeStarId, jumps: 0 }];
   let head = 0;
-  visible.add(homeStarId);
 
   while (head < queue.length) {
     const current = queue[head++];
@@ -172,6 +178,9 @@ export function computeVisibleStarIds(
     for (const neighborId of neighbors) {
       if (neighborId < 0 || neighborId >= adjacency.length) continue;
       if (visible.has(neighborId)) continue;
+      // A nebula system can only be seen by physically occupying it, so it is
+      // never revealed via propagation and never relays coverage onward.
+      if (nebulaStarIds?.has(neighborId)) continue;
       visible.add(neighborId);
       queue.push({ starId: neighborId, jumps: current.jumps + 1 });
     }
@@ -185,12 +194,13 @@ export function getPerspectiveVisibleStarIds(
   factions: FactionInfo[],
   adjacency: number[][],
   maxJumps = FOG_OF_WAR_MAX_JUMPS,
+  nebulaStarIds?: Set<number>,
 ): Set<number> | null {
   if (perspective.mode === "observer") return null;
 
   const faction = factions.find((f) => f.id === perspective.factionId);
   if (!faction) return new Set<number>();
-  return computeVisibleStarIds(adjacency, faction.homeStarId, maxJumps);
+  return computeVisibleStarIds(adjacency, faction.homeStarId, maxJumps, nebulaStarIds);
 }
 
 export function colorToCss(color: [number, number, number]): string {

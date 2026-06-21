@@ -12,6 +12,7 @@ import type { ServerFleet, ServerStarbase } from "../../src/game/GameProtocol";
 import { createDefaultSpeciesRightsState, normalizeSpeciesRightsForLaws } from "../../src/data/Species";
 import type { FactionSpeciesRightsState, SpeciesId, SpeciesRights, SpeciesLawSelections } from "../../src/data/Species";
 import type { GalaxyPerspective } from "../../src/data/Factions";
+import { NEBULA_DEFINITIONS, findNebulaForStar } from "../../src/data/Nebula";
 import type { PlanetConfig } from "../../src/data/StarMap";
 import { clamp } from "./pure-helpers";
 import type { GameState, RuntimeContext } from "./types";
@@ -456,8 +457,21 @@ export function getTechnologyPlanetModifiers(nextState: GameState, factionId: nu
   return modifiers;
 }
 
+// Environmental nebula effects on a planet. Tagged `source: "nebula:<id>"` and routed
+// through the same stacking pipeline as tech/government/etc., so a future "nebula
+// shielding" tech or building can nullify/diminish them by emitting counter-modifiers.
+export function getNebulaPlanetModifiers(nextState: GameState, planetState: PlanetState): PlanetModifier[] {
+  const nebula = findNebulaForStar(nextState.nebulae, planetState.starId);
+  if (!nebula) return [];
+  return NEBULA_DEFINITIONS[nebula.kind].planetModifiers.map((template) => ({
+    ...template,
+    source: `nebula:${nebula.id}`,
+  }));
+}
+
 export function getPlanetTechnologyModifiers(nextState: GameState, planetState: PlanetState): PlanetModifier[] {
   const ownerId = nextState.starOwnership[planetState.starId] ?? -1;
+  const nebulaModifiers = getNebulaPlanetModifiers(nextState, planetState);
   return ownerId >= 0
     ? [
       ...getTechnologyPlanetModifiers(nextState, ownerId),
@@ -465,8 +479,9 @@ export function getPlanetTechnologyModifiers(nextState: GameState, planetState: 
       ...getFactionShortagePlanetModifiers(nextState, ownerId),
       ...getActiveFactionPlanetModifiers(nextState, ownerId),
       ...getPlanetLeaderModifiers(nextState, planetState, ownerId),
+      ...nebulaModifiers,
     ]
-    : [];
+    : nebulaModifiers;
 }
 
 export function getFactionEconomy(nextState: GameState, factionId: number): FactionEconomyState | null {

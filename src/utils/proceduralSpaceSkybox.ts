@@ -7,6 +7,8 @@ import {
   Texture,
 } from "@babylonjs/core";
 
+import { NEBULA_DEFINITIONS } from "../data/Nebula";
+import type { NebulaRegion } from "../data/Nebula";
 import nebulaShaderSource from "../assets/space-3d/glsl/nebula.glsl?raw";
 import pointStarsShaderSource from "../assets/space-3d/glsl/point-stars.glsl?raw";
 import starShaderSource from "../assets/space-3d/glsl/star.glsl?raw";
@@ -27,6 +29,10 @@ export interface SpaceSkyboxRenderSettings {
   maxPointStarLayers?: number;
   maxBrightStars?: number;
   maxNebulae?: number;
+  /** Bias generated nebula colors toward this palette (e.g. a system's nebula theme). */
+  nebulaPalette?: Vec3[];
+  /** 0 = fully random color, 1 = exactly the palette color. Defaults to ~0.8 when a palette is set. */
+  nebulaColorBias?: number;
 }
 
 export interface ProceduralSpaceSkyboxOptions {
@@ -48,6 +54,8 @@ interface NormalizedSkyboxRenderSettings {
   maxPointStarLayers: number;
   maxBrightStars: number;
   maxNebulae: number;
+  nebulaPalette: Vec3[];
+  nebulaColorBias: number;
 }
 
 interface SkyboxFaceUrls {
@@ -119,8 +127,11 @@ export function getGalaxySkyboxSettings(): SpaceSkyboxRenderSettings {
   };
 }
 
-export function getSystemSkyboxSettings(star: { id: number; name: string; type?: string }): SpaceSkyboxRenderSettings {
-  return {
+export function getSystemSkyboxSettings(
+  star: { id: number; name: string; type?: string },
+  nebula?: NebulaRegion | null,
+): SpaceSkyboxRenderSettings {
+  const base: SpaceSkyboxRenderSettings = {
     seed: `stellar-fronts-system-skybox-v1:${star.id}:${star.name}:${star.type ?? ""}`,
     resolution: 1024,
     pointStars: true,
@@ -130,6 +141,19 @@ export function getSystemSkyboxSettings(star: { id: number; name: string; type?:
     maxPointStarLayers: 7,
     maxBrightStars: 130,
     maxNebulae: 4,
+  };
+  if (!nebula) return base;
+
+  // Inside a nebula: keep the layout procedural/random (the seed still varies per
+  // system) but saturate it with the nebula's signature colors and add more clouds.
+  const definition = NEBULA_DEFINITIONS[nebula.kind];
+  return {
+    ...base,
+    seed: `${base.seed}:nebula-${nebula.id}-${nebula.kind}`,
+    maxNebulae: 7,
+    maxBrightStars: 150,
+    nebulaPalette: [definition.color, definition.accentColor],
+    nebulaColorBias: 0.82,
   };
 }
 
@@ -209,6 +233,8 @@ function normalizeSettings(settings: SpaceSkyboxRenderSettings): NormalizedSkybo
     maxPointStarLayers: clampInteger(settings.maxPointStarLayers ?? 8, 0, 12),
     maxBrightStars: clampInteger(settings.maxBrightStars ?? 140, 0, 240),
     maxNebulae: clampInteger(settings.maxNebulae ?? 5, 0, 8),
+    nebulaPalette: settings.nebulaPalette ?? [],
+    nebulaColorBias: Math.max(0, Math.min(1, settings.nebulaColorBias ?? (settings.nebulaPalette ? 0.8 : 0))),
   };
 }
 
@@ -227,6 +253,8 @@ function skyboxCacheKey(settings: NormalizedSkyboxRenderSettings): string {
     settings.maxPointStarLayers,
     settings.maxBrightStars,
     settings.maxNebulae,
+    settings.nebulaPalette.map((color) => color.join(",")).join(";"),
+    settings.nebulaColorBias,
   ].join("|");
 }
 
@@ -399,11 +427,25 @@ class SpaceSkyboxGenerator {
   private createNebulaParams(settings: NormalizedSkyboxRenderSettings): NebulaParams[] {
     if (!settings.nebulae) return [];
     const rand = new MT19937(hashcode(settings.seed) + 2000);
+    const palette = settings.nebulaPalette;
+    const bias = settings.nebulaColorBias;
     const params: NebulaParams[] = [];
     while (params.length < settings.maxNebulae) {
+      const randomColor: Vec3 = [rand.random(), rand.random(), rand.random()];
+      let color = randomColor;
+      if (palette.length > 0 && bias > 0) {
+        // Blend the random color toward a palette entry so clouds read as the
+        // nebula's color while staying varied.
+        const target = palette[Math.floor(rand.random() * palette.length)];
+        color = [
+          randomColor[0] + (target[0] - randomColor[0]) * bias,
+          randomColor[1] + (target[1] - randomColor[1]) * bias,
+          randomColor[2] + (target[2] - randomColor[2]) * bias,
+        ];
+      }
       params.push({
         scale: rand.random() * 0.5 + 0.25,
-        color: [rand.random(), rand.random(), rand.random()],
+        color,
         intensity: rand.random() * 0.2 + 0.9,
         falloff: rand.random() * 3 + 3,
         offset: [

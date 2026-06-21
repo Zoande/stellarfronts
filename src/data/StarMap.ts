@@ -850,6 +850,8 @@ export interface StarData {
   galaxyPulseAmplitude: number;
   /** Galaxy-view pulse frequency used by sprite renderer */
   galaxyPulseFrequency: number;
+  /** Id of the nebula covering this system, if any (see src/data/Nebula.ts). */
+  nebulaId?: number;
   objectDetails: CelestialObjectDetails;
   system: StarSystemConfig;
 }
