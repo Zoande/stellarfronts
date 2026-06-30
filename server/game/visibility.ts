@@ -80,14 +80,47 @@ export function refreshDiscovery(nextState: GameState): void {
     nextState.lastKnownOwnershipByFaction[String(faction.id)] = lastKnown.slice(0, nextState.stars.length);
   }
 
-  // First contact: a faction has "met" every other faction whose territory it has
-  // ever discovered. Derived from the (monotonic) discovered sets, recorded symmetrically.
+  // First contact: a faction has "met" another only once it has charted a
+  // continuous hyperlane route to it — i.e. there is a path, entirely through
+  // discovered systems, from its own territory to a system the rival owns. This
+  // deliberately excludes the long-range capitals revealed at game start, whose
+  // discovered tiles form isolated islands with no discovered lane back home, so
+  // distant rivals do not count as "met" (and cannot trade migrants) until a
+  // scout actually links the two territories. Recorded symmetrically.
   for (const faction of nextState.factions) {
-    const discovered = nextState.discoveredByFaction[String(faction.id)] ?? [];
-    for (const starId of discovered) {
-      const owner = nextState.starOwnership[starId] ?? -1;
-      if (owner >= 0 && owner !== faction.id) markFactionsMet(nextState, faction.id, owner);
-    }
+    markMetFromDiscoveredConnections(nextState, faction.id);
+  }
+}
+
+/**
+ * BFS outward from a faction's own systems across the subgraph of hyperlanes
+ * whose endpoints it has both discovered, marking first contact with the owner
+ * of any rival-held system the search reaches.
+ */
+function markMetFromDiscoveredConnections(nextState: GameState, factionId: number): void {
+  const discovered = new Set<number>(nextState.discoveredByFaction[String(factionId)] ?? []);
+  if (discovered.size === 0) return;
+
+  const visited = new Set<number>();
+  const queue: number[] = [];
+  const enqueue = (starId: number): void => {
+    if (starId < 0 || !discovered.has(starId) || visited.has(starId)) return;
+    visited.add(starId);
+    queue.push(starId);
+  };
+
+  const faction = nextState.factions.find((candidate) => candidate.id === factionId);
+  if (faction) enqueue(faction.homeStarId);
+  for (let starId = 0; starId < nextState.starOwnership.length; starId++) {
+    if (nextState.starOwnership[starId] === factionId) enqueue(starId);
+  }
+
+  let head = 0;
+  while (head < queue.length) {
+    const current = queue[head++];
+    const owner = nextState.starOwnership[current] ?? -1;
+    if (owner >= 0 && owner !== factionId) markFactionsMet(nextState, factionId, owner);
+    for (const neighbor of nextState.adjacency[current] ?? []) enqueue(neighbor);
   }
 }
 

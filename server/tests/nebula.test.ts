@@ -4,6 +4,7 @@ import { computeVisibleStarIds } from "../../src/data/Factions";
 import {
   NEBULA_DEFINITIONS,
   buildNebulaStarIdSet,
+  connectNebulaeWithHyperlanes,
   findNebulaForStar,
   generateNebulae,
   getNebulaGatedBuildingKinds,
@@ -11,7 +12,10 @@ import {
   nebulaTravelSpeedMultiplier,
   stampNebulaIds,
 } from "../../src/data/Nebula";
+import { buildHyperlaneAdjacency } from "../../src/data/Hyperlanes";
 import type { NebulaRegion } from "../../src/data/Nebula";
+import { findRoute } from "../game/fleet-combat";
+import type { GameFleet, RuntimeContext } from "../game/types";
 
 // 0 - 1 - 2 - 3 - 4 line, with star 2 inside a nebula.
 const LINE_ADJACENCY = [[1], [0, 2], [1, 3], [2, 4], [3]];
@@ -84,6 +88,85 @@ test("mineral harvester is gated to dust-cloud nebulas", () => {
   assert.equal(nebulaEnablesBuildingAtStar(dustCloud, 5, "mineralHarvester"), true);
   assert.equal(nebulaEnablesBuildingAtStar(dustCloud, 6, "mineralHarvester"), false);
   assert.equal(nebulaEnablesBuildingAtStar(NEBULA_AT_2, 2, "mineralHarvester"), false);
+});
+
+test("connectNebulaeWithHyperlanes welds disconnected members into one component", () => {
+  // Five members of one nebula, but the base lanes only link {0,1} and {2,3}; 4 is loose.
+  const stars = [0, 1, 2, 3, 4].map((id) => ({ id, x: id * 10, z: 0 }));
+  const nebula: NebulaRegion[] = [
+    { id: 0, kind: "standard", centerX: 20, centerZ: 0, radiusWorld: 30, starIds: [0, 1, 2, 3, 4] },
+  ];
+  const base: Array<[number, number]> = [[0, 1], [2, 3]];
+
+  const connected = connectNebulaeWithHyperlanes(base, nebula, stars);
+  assert.ok(connected.length > base.length, "should add bridging lanes");
+
+  // Every member must now be reachable from member 0 across the lane graph.
+  const adjacency = buildHyperlaneAdjacency(connected, stars.length);
+  const seen = new Set<number>([0]);
+  const queue = [0];
+  while (queue.length) {
+    const current = queue.shift() as number;
+    for (const neighbor of adjacency[current]) {
+      if (!seen.has(neighbor)) {
+        seen.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+  }
+  for (const member of nebula[0].starIds) {
+    assert.ok(seen.has(member), `member ${member} should be connected`);
+  }
+
+  // Deterministic and a no-op once already connected.
+  assert.deepEqual(connectNebulaeWithHyperlanes(base, nebula, stars), connected);
+  assert.deepEqual(connectNebulaeWithHyperlanes(connected, nebula, stars), connected);
+});
+
+// --- Routing into nebulas (findRoute) ------------------------------------
+// 0 - 1 - 2 - 3 - 4 line; stars 2 & 3 sit inside a nebula, so faction 0 (home at
+// 0) has charted only {0,1}. A fleet should still be able to *enter* the nebula
+// one jump at a time, but never path blindly through an uncharted system.
+function buildRoutingCtx(discovered: number[], fleetStarId: number): { ctx: RuntimeContext; fleet: GameFleet } {
+  const stars = [0, 1, 2, 3, 4].map((id) => ({ id, x: id * 10, z: 0 }));
+  const adjacency = [[1], [0, 2], [1, 3], [2, 4], [3]];
+  const nebulae: NebulaRegion[] = [
+    { id: 0, kind: "standard", centerX: 25, centerZ: 0, radiusWorld: 12, starIds: [2, 3] },
+  ];
+  const state = {
+    stars,
+    adjacency,
+    nebulae,
+    starOwnership: [-1, -1, -1, -1, -1],
+    discoveredByFaction: { "0": [...discovered] },
+    diplomacy: { wars: [], borders: [] },
+    situations: [],
+    leaders: [],
+    governments: [],
+  };
+  const ctx = { state } as unknown as RuntimeContext;
+  const fleet = { id: "f1", ownerId: 0, currentStarId: fleetStarId, speed: 1 } as unknown as GameFleet;
+  return { ctx, fleet };
+}
+
+test("a fleet can be routed one jump into an undiscovered nebula system", () => {
+  const { ctx, fleet } = buildRoutingCtx([0, 1], 1);
+  // Star 2 is uncharted (inside the nebula) but adjacent to charted star 1.
+  assert.deepEqual(findRoute(ctx, fleet, 2), [1, 2]);
+});
+
+test("an uncharted system cannot be a stepping stone to a deeper one", () => {
+  const { ctx, fleet } = buildRoutingCtx([0, 1], 1);
+  // Star 3 sits two hops in, only reachable by blindly crossing uncharted star 2.
+  assert.equal(findRoute(ctx, fleet, 3), null);
+  // And a charted system on the far side of the nebula is likewise unreachable.
+  assert.equal(findRoute(ctx, fleet, 4), null);
+});
+
+test("once inside the nebula, a fleet can grope to the next nebula system", () => {
+  // Fleet now sits at star 2 (discovered by occupying it); star 3 is its neighbour.
+  const { ctx, fleet } = buildRoutingCtx([0, 1, 2], 2);
+  assert.deepEqual(findRoute(ctx, fleet, 3), [2, 3]);
 });
 
 test("ion storms slow travel; standard nebulas do not", () => {

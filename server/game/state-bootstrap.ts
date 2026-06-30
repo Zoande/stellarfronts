@@ -20,7 +20,12 @@ import {
 import { buildHyperlanePairs, buildHyperlaneAdjacency } from "../../src/data/Hyperlanes";
 import { getSystemStarbasePosition } from "../../src/data/SystemCoordinates";
 import { buildFactions, buildHomeSystemOwnership, computeVisibleStarIds } from "../../src/data/Factions";
-import { buildNebulaStarIdSet, generateNebulae, stampNebulaIds } from "../../src/data/Nebula";
+import {
+  buildNebulaStarIdSet,
+  connectNebulaeWithHyperlanes,
+  generateNebulae,
+  stampNebulaIds,
+} from "../../src/data/Nebula";
 import {
   STARBASE_LEVEL_DEFINITIONS,
   STARBASE_SHIP_KINDS,
@@ -84,14 +89,20 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     cfg.minStarSpacing,
     cfg.shape,
   );
-  const hyperlanes = buildHyperlanePairs(stars, cfg.width, cfg.height, cfg.shape, cfg.seed);
-  const adjacency = buildHyperlaneAdjacency(hyperlanes, stars.length);
   const factions = buildFactions(stars, cfg);
   const species = normalizeSpeciesForFactions(factions, []);
   ensureHabitedHomePlanets(stars, factions.map((faction) => faction.homeStarId));
   const homeStarIds = factions.map((faction) => faction.homeStarId);
   const nebulae = generateNebulae(stars, cfg.seed, { avoidStarIds: homeStarIds });
   stampNebulaIds(stars, nebulae);
+  // Generate lanes, then weld each nebula's members into one connected region so
+  // fleets can traverse the whole cloud (matched on the client in GalaxyScene).
+  const hyperlanes = connectNebulaeWithHyperlanes(
+    buildHyperlanePairs(stars, cfg.width, cfg.height, cfg.shape, cfg.seed),
+    nebulae,
+    stars,
+  );
+  const adjacency = buildHyperlaneAdjacency(hyperlanes, stars.length);
   const planetStates = buildPlanetStatesFromStars(stars, homeStarIds);
   applyPlanetStatesToStars(stars, planetStates);
   const starOwnership = buildHomeSystemOwnership(stars, factions);
@@ -210,6 +221,17 @@ export function createInitialState(ctx: RuntimeContext): GameState {
       }
     }
     created.discoveredByFaction[key] = Array.from(seeded).sort((a, b) => a - b);
+
+    // Record the ownership we learned for these revealed systems so their borders
+    // draw on the map. refreshDiscovery only stamps last-known ownership for the
+    // currently-visible set, which never includes these out-of-range capitals, so
+    // without this they would render as unowned (no borders) despite being shown.
+    const lastKnown = created.lastKnownOwnershipByFaction[key] ?? [];
+    while (lastKnown.length < created.stars.length) lastKnown.push(-1);
+    for (const starId of seeded) {
+      lastKnown[starId] = created.starOwnership[starId] ?? -1;
+    }
+    created.lastKnownOwnershipByFaction[key] = lastKnown;
   }
 
   refreshDiscovery(created);
@@ -231,7 +253,6 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     }
     parsed.schemaVersion = 22;
     delete (parsed as GameState & { battles?: unknown }).battles;
-    parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
     // the caller) recompute visibility with nebula blocking applied.
@@ -241,6 +262,15 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       });
     }
     stampNebulaIds(parsed.stars, parsed.nebulae);
+    // Weld nebula members together by hyperlane (matches createInitialState and the
+    // client). Mutates the persisted lane set for existing saves, so flag dirty and
+    // always rebuild adjacency from the resulting lanes.
+    const connectedHyperlanes = connectNebulaeWithHyperlanes(parsed.hyperlanes, parsed.nebulae, parsed.stars);
+    if (connectedHyperlanes.length !== parsed.hyperlanes.length) {
+      parsed.hyperlanes = connectedHyperlanes;
+      ctx.hasDirtyState = true;
+    }
+    parsed.adjacency = buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.metByFaction = parsed.metByFaction ?? {};
     parsed.situations = Array.isArray(parsed.situations) ? parsed.situations : [];

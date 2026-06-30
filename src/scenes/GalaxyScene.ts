@@ -9,7 +9,6 @@ import {
   Vector3,
   Color3,
   Color4,
-  Constants,
   MeshBuilder,
   StandardMaterial,
   Texture,
@@ -32,7 +31,7 @@ import type { LeaderState } from "../data/Leaders";
 import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
 import { NebulaFieldRenderer } from "../systems/NebulaFieldRenderer";
-import { findNebulaForStar } from "../data/Nebula";
+import { buildNebulaStarIdSet, connectNebulaeWithHyperlanes, findNebulaForStar } from "../data/Nebula";
 import type { NebulaRegion } from "../data/Nebula";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
 import type { GalaxyIconClickType, GalaxyShipIcon, ShipIconStyle } from "../systems/StarFieldRenderer";
@@ -128,9 +127,18 @@ const OWNERSHIP_TEXTURE_SIZE = 2400;
 const OWNERSHIP_OVERLAY_PADDING_FACTOR = 0.16;
 const OWNERSHIP_OVERLAY_Y = 0.055;
 const NEBULA_TEXTURE_SIZE = 2048;
-// Sits just above the ownership overlay; star sprites render in a later pass so
-// they stay legible over the cloud.
 const NEBULA_OVERLAY_Y = 0.06;
+// Rendering-group stack (groups draw strictly low→high, ignoring depth). The
+// nebula gas is the load-bearing layer here: it sits ABOVE the additive star glow
+// (group 1) so a dense cluster of stars no longer sums their halos to white over
+// the cloud, but BELOW the crisp star cores, icons and lanes (group 3) so systems
+// stay visible and clickable through the gas. Star sprites split halo↔core across
+// groups 1 and 3 in StarFieldRenderer to straddle the gas.
+//   0 territory tint (ownership) + galactic core   →  1 star glow (halos)
+//   2 nebula gas                                    →  3 star cores, icons, lanes
+const BACKGROUND_RENDERING_GROUP = 0;
+const NEBULA_RENDERING_GROUP = 2;
+const FOREGROUND_RENDERING_GROUP = 3;
 const OWNERSHIP_TIE_EPSILON = 0.0001;
 const STAR_PICK_RADIUS_MIN = 5.5;
 const STAR_PICK_RADIUS_MAX = 10;
@@ -1165,6 +1173,9 @@ export class GalaxyScene implements IGameScene {
     );
     this.starField.setVisibleStarIds(this.visibleStarIds);
     this.starField.setKnownStarIds(this.knownStarIds);
+    // Damp the halos of stars inside nebulas so their clustered glow stops washing
+    // the coloured gas white (the gas itself supplies the regional glow).
+    this.starField.setNebulaStarIds(buildNebulaStarIdSet(this.nebulae));
     if (this.options.habitedPlanetSystemIds) {
       this.hasExplicitHabitedPlanetSystemIds = true;
       this.starField.setHabitedPlanetSystemIds(this.options.habitedPlanetSystemIds);
@@ -1316,7 +1327,13 @@ export class GalaxyScene implements IGameScene {
     shape: CoreTextureShape,
     seed: number,
   ): void {
-    const hyperlanes = buildHyperlanePairs(this.stars, width, height, shape, seed);
+    // Mirror the server (state-bootstrap): weld each nebula's members into one
+    // connected region so the lanes and adjacency match the authoritative state.
+    const hyperlanes = connectNebulaeWithHyperlanes(
+      buildHyperlanePairs(this.stars, width, height, shape, seed),
+      this.nebulae,
+      this.stars,
+    );
     this.hyperlanePairs = hyperlanes;
     this.hyperlaneAdjacency = buildHyperlaneAdjacency(hyperlanes, this.stars.length);
     this.updateVisibilityFromPerspective();
@@ -1402,6 +1419,7 @@ export class GalaxyScene implements IGameScene {
     );
     this.hyperlaneMesh.isPickable = false;
     this.hyperlaneMesh.alwaysSelectAsActiveMesh = true;
+    this.hyperlaneMesh.renderingGroupId = FOREGROUND_RENDERING_GROUP;
     this.hyperlaneMesh.visibility = this.hyperlanesVisible
       ? HYPERLANE_BASE_VISIBILITY + HYPERLANE_ZOOM_VISIBILITY_BOOST
       : 0;
@@ -1444,6 +1462,8 @@ export class GalaxyScene implements IGameScene {
     overlay.position.y = OWNERSHIP_OVERLAY_Y;
     overlay.isPickable = false;
     overlay.alwaysSelectAsActiveMesh = true;
+    // Territory tint sits on the floor of the stack, beneath the gas and stars.
+    overlay.renderingGroupId = BACKGROUND_RENDERING_GROUP;
 
     const tex = this.ownershipRenderer.texture;
 
@@ -1476,6 +1496,7 @@ export class GalaxyScene implements IGameScene {
       mapHeight: nebulaHeight,
       stars: this.stars,
       nebulae: this.nebulae,
+      hyperlanePairs: this.hyperlanePairs,
     });
 
     const overlay = MeshBuilder.CreateGround(
@@ -1486,18 +1507,25 @@ export class GalaxyScene implements IGameScene {
     overlay.position.y = NEBULA_OVERLAY_Y;
     overlay.isPickable = false;
     overlay.alwaysSelectAsActiveMesh = true;
+    overlay.renderingGroupId = NEBULA_RENDERING_GROUP;
 
     const tex = this.nebulaRenderer.texture;
+    // Mirror the ownership overlay's material EXACTLY — it is the proven path for
+    // showing a DynamicTexture's true colours on a galaxy-plane ground. The earlier
+    // setup (no diffuseTexture, black diffuse, a forced ALPHA_COMBINE alphaMode) made
+    // the cloud render as flat white — its painted hues were dropped and only the
+    // texture's alpha shaped a white blob. Sampling diffuse+emissive from the texture
+    // with white tint colours (and letting the opacityTexture drive Babylon's own
+    // transparency, no manual alphaMode) is what makes the colour read.
     const mat = new StandardMaterial("galaxyNebulaOverlayMat", this.scene);
-    mat.emissiveTexture = tex;
+    mat.diffuseTexture = tex;
     mat.opacityTexture = tex;
+    mat.emissiveTexture = tex;
+    mat.diffuseColor = Color3.White();
     mat.emissiveColor = Color3.White();
-    mat.diffuseColor = Color3.Black();
     mat.specularColor = Color3.Black();
     mat.disableLighting = true;
     mat.backFaceCulling = false;
-    // Additive blend so the clouds glow over the starfield without occluding stars.
-    mat.alphaMode = Constants.ALPHA_ADD;
     mat.alpha = 1;
 
     overlay.material = mat;
@@ -2555,7 +2583,7 @@ export class GalaxyScene implements IGameScene {
       line.color = FLEET_ROUTE_LINE_COLOR;
       line.alpha = 0.92;
       line.isPickable = false;
-      line.renderingGroupId = 1;
+      line.renderingGroupId = FOREGROUND_RENDERING_GROUP;
       this.fleetRouteLines.push(line);
     }
   }

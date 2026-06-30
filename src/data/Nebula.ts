@@ -79,8 +79,9 @@ export const NEBULA_DEFINITIONS: Record<NebulaKind, NebulaDefinition> = {
     kind: "standard",
     label: "Nebula",
     description: "A dense veil of interstellar gas and dust. Scatters sensors so nothing inside can be seen from outside.",
-    color: [0.42, 0.5, 0.78],
-    accentColor: [0.7, 0.55, 0.85],
+    // Deep cobalt reflection cloud with violet wisps — the calm baseline blue.
+    color: [0.26, 0.40, 0.82],
+    accentColor: [0.52, 0.36, 0.80],
     planetModifiers: [],
     spawnWeight: 3,
   },
@@ -88,8 +89,9 @@ export const NEBULA_DEFINITIONS: Record<NebulaKind, NebulaDefinition> = {
     kind: "toxic",
     label: "Toxic Nebula",
     description: "Caustic clouds poison biospheres — crops fail and populations sicken — but exotic chemistry accelerates research.",
-    color: [0.45, 0.72, 0.34],
-    accentColor: [0.78, 0.82, 0.2],
+    // Sickly chartreuse green fading to acid yellow — unmistakably toxic.
+    color: [0.44, 0.74, 0.26],
+    accentColor: [0.74, 0.80, 0.20],
     planetModifiers: [
       mod("nebula-toxic-food", "Toxic atmosphere", "jobOutput:farmer:food", "multiply", -0.3),
       mod("nebula-toxic-growth", "Toxic atmosphere", "populationGrowth", "multiply", -0.3),
@@ -102,8 +104,9 @@ export const NEBULA_DEFINITIONS: Record<NebulaKind, NebulaDefinition> = {
     kind: "dustCloud",
     label: "Dust Cloud",
     description: "Mineral-rich dust enriches mining and shelters crops, but the gloom wears on morale and starves power grids.",
-    color: [0.7, 0.5, 0.32],
-    accentColor: [0.85, 0.62, 0.38],
+    // Muted rusty ochre — a dim, earthy dust bank rather than a glowing cloud.
+    color: [0.60, 0.40, 0.24],
+    accentColor: [0.78, 0.55, 0.32],
     planetModifiers: [
       mod("nebula-dust-minerals", "Mineral-rich dust", "jobOutput:miner:minerals", "multiply", 0.3),
       mod("nebula-dust-food", "Sheltered cultivation", "jobOutput:farmer:food", "multiply", 0.1),
@@ -117,8 +120,9 @@ export const NEBULA_DEFINITIONS: Record<NebulaKind, NebulaDefinition> = {
     kind: "electric",
     label: "Electric Nebula",
     description: "Crackling ion storms flood reactors with power but fry agriculture and prevent shields from holding a charge.",
-    color: [0.36, 0.62, 0.9],
-    accentColor: [0.55, 0.8, 1.0],
+    // Vivid electric cyan with a deep-teal core — crackles, never washes white.
+    color: [0.16, 0.68, 0.92],
+    accentColor: [0.08, 0.44, 0.80],
     planetModifiers: [
       mod("nebula-electric-energy", "Charged plasma", "jobOutput:technician:energy", "multiply", 0.5),
       mod("nebula-electric-food", "Electrified soil", "jobOutput:farmer:food", "multiply", -0.5),
@@ -131,8 +135,9 @@ export const NEBULA_DEFINITIONS: Record<NebulaKind, NebulaDefinition> = {
     kind: "radiation",
     label: "Radiation Nebula",
     description: "A pulsar's glare bathes the region in hard radiation — a research bonanza that slowly corrodes ship hulls.",
-    color: [0.85, 0.32, 0.55],
-    accentColor: [1.0, 0.5, 0.7],
+    // Hot crimson bleeding to ember orange — an angry, irradiated red.
+    color: [0.88, 0.20, 0.36],
+    accentColor: [1.0, 0.46, 0.26],
     planetModifiers: [
       mod("nebula-radiation-research", "Exotic radiation", "jobOutput:researcher:research", "multiply", 0.4),
       mod("nebula-radiation-happiness", "Radiation sickness", "happiness", "add", -10),
@@ -144,8 +149,9 @@ export const NEBULA_DEFINITIONS: Record<NebulaKind, NebulaDefinition> = {
     kind: "stellarNursery",
     label: "Stellar Nursery",
     description: "Young, hot stars light the clouds, flooding the region with energy and speeding orbital construction.",
-    color: [0.5, 0.7, 1.0],
-    accentColor: [1.0, 0.78, 0.85],
+    // Rosy hydrogen-alpha pink lit by blue newborn stars — classic star-forming hue.
+    color: [0.94, 0.46, 0.60],
+    accentColor: [0.40, 0.58, 0.95],
     planetModifiers: [
       mod("nebula-nursery-energy", "Radiant young stars", "jobOutput:technician:energy", "multiply", 0.3),
       mod("nebula-nursery-construction", "Abundant raw material", "constructionSpeed", "multiply", 0.25),
@@ -157,8 +163,9 @@ export const NEBULA_DEFINITIONS: Record<NebulaKind, NebulaDefinition> = {
     kind: "ionStorm",
     label: "Ion Storm",
     description: "Violent ion tempests power reactors yet cripple agriculture, collapse shields, and mire fleets in transit.",
-    color: [0.5, 0.4, 0.85],
-    accentColor: [0.7, 0.85, 1.0],
+    // Stormy amethyst violet shot through with electric blue — a churning tempest.
+    color: [0.54, 0.28, 0.92],
+    accentColor: [0.30, 0.50, 0.94],
     planetModifiers: [
       mod("nebula-ion-energy", "Ion discharge", "jobOutput:technician:energy", "multiply", 0.4),
       mod("nebula-ion-food", "Storm-blasted fields", "jobOutput:farmer:food", "multiply", -0.4),
@@ -368,6 +375,104 @@ export function generateNebulae(
   }
 
   return regions;
+}
+
+// ---------------------------------------------------------------------------
+// Hyperlane connectivity
+// ---------------------------------------------------------------------------
+
+interface NebulaConnectStar {
+  id: number;
+  x: number;
+  z: number;
+}
+
+/**
+ * Guarantee that every system inside a nebula is reachable from every other
+ * system in the same nebula via hyperlanes. The base hyperlane generator can
+ * leave a region's members split across disconnected sub-clusters; that makes a
+ * nebula look (and play) like a barrier with isolated pockets. We weld those
+ * sub-clusters together by adding the shortest cross-cluster lanes, ignoring the
+ * usual per-star degree cap so the cloud always reads as one navigable region.
+ *
+ * Deterministic: given the same hyperlanes/nebulae/stars it returns the same
+ * edges, so the client (which regenerates lanes locally) and the server stay in
+ * lockstep. Returns a new array; the input is not mutated.
+ */
+export function connectNebulaeWithHyperlanes(
+  hyperlanes: Array<[number, number]>,
+  nebulae: NebulaRegion[] | undefined,
+  stars: NebulaConnectStar[],
+): Array<[number, number]> {
+  if (!nebulae || nebulae.length === 0) return hyperlanes;
+
+  const result: Array<[number, number]> = hyperlanes.map(([a, b]) => [a, b] as [number, number]);
+  const edgeKey = (a: number, b: number): string => `${Math.min(a, b)}:${Math.max(a, b)}`;
+  const edges = new Set(result.map(([a, b]) => edgeKey(a, b)));
+  const addEdge = (a: number, b: number): void => {
+    if (a === b) return;
+    const key = edgeKey(a, b);
+    if (edges.has(key)) return;
+    edges.add(key);
+    result.push([Math.min(a, b), Math.max(a, b)]);
+  };
+
+  for (const nebula of nebulae) {
+    const members = nebula.starIds.filter((id) => id >= 0 && id < stars.length);
+    if (members.length < 2) continue;
+    const memberSet = new Set(members);
+
+    // Union-find over the members, seeded with the lanes that already join them.
+    const parent = new Map<number, number>(members.map((id) => [id, id]));
+    const find = (x: number): number => {
+      let root = x;
+      while (parent.get(root) !== root) root = parent.get(root) as number;
+      let cur = x;
+      while (parent.get(cur) !== root) {
+        const next = parent.get(cur) as number;
+        parent.set(cur, root);
+        cur = next;
+      }
+      return root;
+    };
+    const union = (a: number, b: number): void => {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent.set(ra, rb);
+    };
+    for (const [a, b] of result) {
+      if (memberSet.has(a) && memberSet.has(b)) union(a, b);
+    }
+
+    // Repeatedly weld the two closest members that sit in different clusters
+    // until the whole region is one connected component.
+    const distinctRoots = (): Set<number> => new Set(members.map((id) => find(id)));
+    while (distinctRoots().size > 1) {
+      let bestA = -1;
+      let bestB = -1;
+      let bestDistSq = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < members.length; i++) {
+        for (let j = i + 1; j < members.length; j++) {
+          const a = members[i];
+          const b = members[j];
+          if (find(a) === find(b)) continue;
+          const dx = stars[a].x - stars[b].x;
+          const dz = stars[a].z - stars[b].z;
+          const distSq = dx * dx + dz * dz;
+          if (distSq < bestDistSq) {
+            bestDistSq = distSq;
+            bestA = a;
+            bestB = b;
+          }
+        }
+      }
+      if (bestA < 0) break;
+      addEdge(bestA, bestB);
+      union(bestA, bestB);
+    }
+  }
+
+  return result;
 }
 
 /** Stamp each star's `nebulaId` from a set of regions (mutates in place). */

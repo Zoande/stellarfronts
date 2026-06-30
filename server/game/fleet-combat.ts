@@ -463,8 +463,14 @@ export function routeIsAllowed(ctx: RuntimeContext, route: number[], ownerId: nu
 
 export function findRoute(ctx: RuntimeContext, fleet: GameFleet, targetStarId: number): number[] | null {
   const discovered = new Set(ctx.state.discoveredByFaction[String(fleet.ownerId)] ?? []);
-  if (!discovered.has(targetStarId)) return null;
   const startStarId = fleet.currentStarId;
+  // A nebula scatters sensors, so its systems stay "undiscovered" until a fleet
+  // physically enters one. Such a system can still be a *destination* — a single
+  // jump out of charted space — but never a stepping stone to anywhere beyond it.
+  // We therefore let the search end on an undiscovered target while only ever
+  // relaying through discovered systems, mirroring the client's getReachableStarIds
+  // (GalaxyScene). The start star always counts as reachable (the fleet is there).
+  const canRouteTo = (starId: number): boolean => starId === targetStarId || discovered.has(starId);
   const distances = new Map<number, number>([[startStarId, 0]]);
   const previous = new Map<number, number | null>([[startStarId, null]]);
   const unsettled = new Set<number>([startStarId]);
@@ -484,7 +490,9 @@ export function findRoute(ctx: RuntimeContext, fleet: GameFleet, targetStarId: n
     if (current === targetStarId) break;
 
     for (const neighbor of ctx.state.adjacency[current] ?? []) {
-      if (!discovered.has(neighbor)) continue;
+      // Only the destination itself may be an undiscovered (e.g. nebula) system;
+      // every intermediate hop must be charted so we never path blindly.
+      if (!canRouteTo(neighbor)) continue;
       if (neighbor !== startStarId && !canEnterSystem(ctx, fleet.ownerId, neighbor)) continue;
       const nextDistance = currentDistance + hyperlaneTravelDays(ctx, current, neighbor, fleet);
       if (nextDistance >= (distances.get(neighbor) ?? Number.POSITIVE_INFINITY)) continue;
