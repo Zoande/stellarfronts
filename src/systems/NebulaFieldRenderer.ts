@@ -34,24 +34,24 @@ type Rgb = { r: number; g: number; b: number };
 // (which is where the star glow is brightest, so it needs the most tint), and many
 // small organic puffs + fine wisps for a filamentary, gassy look rather than a
 // flat blob.
-const BASE_GRADIENT_ALPHA = 0.3;
-const CORE_PUFF_ALPHA = 0.52;
-const PUFF_ALPHA = 0.3;
+const BASE_GRADIENT_ALPHA = 0.24;
+const CORE_PUFF_ALPHA = 0.42;
+const PUFF_ALPHA = 0.25;
 const PUFFS_PER_MEMBER = 5;
-const WISP_ALPHA = 0.16;
+const WISP_ALPHA = 0.13;
 const WISPS_PER_MEMBER = 5;
 // Puffs strung along each in-nebula hyperlane so neighbouring systems read as one
 // continuous cloud.
 const BRIDGE_PUFFS_MIN = 2;
-const BRIDGE_PUFF_ALPHA = 0.24;
+const BRIDGE_PUFF_ALPHA = 0.2;
 const BRIDGE_PUFF_SPACING = 0.7;
 // How far the accent colour is allowed to wash the type tint. Kept low so each
 // nebula type stays recognisably its own colour even before discovery.
 const ACCENT_MIX_MAX = 0.35;
-// The palette is already saturated; nudge a little further so the hue still reads
-// at low alpha without tipping into neon.
-const BASE_SATURATE = 1.25;
-const ACCENT_SATURATE = 1.12;
+// The palette is already saturated, so keep this near 1 (no extra punch) — pushing
+// it harder tips the clouds into a neon, over-intense look.
+const BASE_SATURATE = 1.06;
+const ACCENT_SATURATE = 1.0;
 
 function mulberry32(seed: number): () => number {
   let s = seed | 0;
