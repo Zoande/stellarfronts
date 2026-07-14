@@ -37,6 +37,7 @@ export interface OwnershipOverlayRendererOptions {
   mapHeight: number;
   stars: StarData[];
   palette: Color3[];
+  borderPalette?: Color3[];
   hyperlanePairs?: Array<[number, number]>;
   territoryRadiusWorld?: number;
 }
@@ -131,7 +132,8 @@ export class OwnershipOverlayRenderer {
   private readonly widthPx: number;
   private readonly heightPx: number;
   private readonly stars: StarData[];
-  private readonly paletteRgb: Array<{ r: number; g: number; b: number }>;
+  private paletteRgb: Array<{ r: number; g: number; b: number }>;
+  private borderPaletteRgb: Array<{ r: number; g: number; b: number }>;
   private readonly projectedStars: ProjectedStar[];
   private readonly hyperlanePairs: Array<[number, number]>;
   private readonly fullBounds: PixelBounds;
@@ -160,6 +162,7 @@ export class OwnershipOverlayRenderer {
     this.stars = options.stars;
     this.ownerByStar = new Array<number>(options.stars.length).fill(-1);
     this.paletteRgb = options.palette.map(colorToRgb);
+    this.borderPaletteRgb = (options.borderPalette ?? options.palette).map(colorToRgb);
     this.hyperlanePairs = options.hyperlanePairs ?? [];
     this.borderPixelScale = options.textureSize / REFERENCE_TEXTURE_SIZE;
     this.fullBounds = {
@@ -221,6 +224,25 @@ export class OwnershipOverlayRenderer {
     while (this.ownerByStar.length < this.stars.length) {
       this.ownerByStar.push(-1);
     }
+    this.render();
+  }
+
+  setPalette(palette: Color3[], borderPalette: Color3[] = palette): void {
+    const nextPalette = palette.map(colorToRgb);
+    const nextBorderPalette = borderPalette.map(colorToRgb);
+    const sameFill = nextPalette.length === this.paletteRgb.length
+      && nextPalette.every((color, index) => {
+        const current = this.paletteRgb[index];
+        return current?.r === color.r && current.g === color.g && current.b === color.b;
+      });
+    const sameBorder = nextBorderPalette.length === this.borderPaletteRgb.length
+      && nextBorderPalette.every((color, index) => {
+        const current = this.borderPaletteRgb[index];
+        return current?.r === color.r && current.g === color.g && current.b === color.b;
+      });
+    if (sameFill && sameBorder) return;
+    this.paletteRgb = nextPalette;
+    this.borderPaletteRgb = nextBorderPalette;
     this.render();
   }
 
@@ -747,7 +769,7 @@ export class OwnershipOverlayRenderer {
     this.ctx.globalCompositeOperation = "source-over";
 
     for (let owner = 0; owner < paths.length; owner++) {
-      const color = this.paletteRgb[owner];
+      const color = this.borderPaletteRgb[owner];
       if (!color) continue;
       this.ctx.strokeStyle = rgbaString(color, alpha, lift);
       this.ctx.shadowColor = rgbaString(color, alpha * 0.9, lift);

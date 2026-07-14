@@ -89,6 +89,10 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let activeSystemScene: SystemScene | null = null;
   let cachedGalaxyStars: StarData[] | null = snapshot.stars;
   let cachedGalaxyViewState: GalaxyViewState | null = null;
+  // Galaxy snapshots deliberately omit system planets. Keep full system
+  // payloads separately so a normal snapshot update cannot replace the base
+  // star while an individual planet-detail request is still in flight.
+  const cachedSystemStars = new Map<number, StarData>();
   let cachedHyperlanePairs: Array<[number, number]> = snapshot.hyperlanes;
   let cachedHyperlaneAdjacency: number[][] = buildHyperlaneAdjacency(snapshot.hyperlanes, snapshot.stars.length);
   let currentSystemStar: StarData | null = null;
@@ -954,7 +958,12 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     return Array.from(byId.values());
   };
 
-  const cacheSystemDetails = (star: StarData, planetStates: PlanetState[]): void => {
+  const cacheSystemDetails = (
+    star: StarData,
+    planetStates: PlanetState[],
+    hasFullSystem = true,
+  ): void => {
+    if (hasFullSystem) cachedSystemStars.set(star.id, star);
     const stars = snapshot.stars.slice();
     stars[star.id] = star;
     const mergedPlanetStates = mergePlanetStates(snapshot.planetStates, planetStates);
@@ -971,15 +980,24 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   };
 
   const cachePlanetDetails = (starId: number, planet: PlanetConfig, planetState: PlanetState): StarData | null => {
-    const star = snapshot.stars[starId];
+    const cachedSystemStar = cachedSystemStars.get(starId);
+    const star = cachedSystemStar ?? snapshot.stars[starId];
     if (!star) return null;
     const planets = star.system.planets.slice();
-    planets[planetState.planetIndex] = planet;
+    // Do not create holes in a redacted map star. The normal galaxy-icon flow
+    // has a full cached system here; other callers may only have the map shell.
+    if (
+      Number.isInteger(planetState.planetIndex)
+      && planetState.planetIndex >= 0
+      && planetState.planetIndex <= planets.length
+    ) {
+      planets[planetState.planetIndex] = planet;
+    }
     const nextStar = {
       ...star,
       system: { planets },
     };
-    cacheSystemDetails(nextStar, [planetState]);
+    cacheSystemDetails(nextStar, [planetState], cachedSystemStar !== undefined);
     return nextStar;
   };
 

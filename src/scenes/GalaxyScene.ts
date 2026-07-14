@@ -42,6 +42,12 @@ import { StarbasePanel } from "../ui/StarbasePanel";
 import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { computeStarbasePower } from "../game/combatPower";
+import {
+  getEmpireBorderColor,
+  getEmpireDisplayColor,
+  getEmpireSystemRelation,
+} from "../game/EmpireDisplayColors";
+import type { EmpireSystemRelation } from "../game/EmpireDisplayColors";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, DiplomacyMovementPayload, ServerFleet, ServerShip, ServerStarbase, ServerStarbaseSummary } from "../game/GameProtocol";
@@ -952,6 +958,7 @@ export class GalaxyScene implements IGameScene {
   private ownershipOverlayMesh: Mesh | null = null;
   private ownershipRenderer: OwnershipOverlayRenderer | null = null;
   private nebulaOverlayMesh: Mesh | null = null;
+  private nebulaEffectsOverlayMesh: Mesh | null = null;
   private nebulaRenderer: NebulaFieldRenderer | null = null;
   private nebulae: NebulaRegion[] = [];
   private hyperlanePairs: Array<[number, number]> = [];
@@ -1170,6 +1177,7 @@ export class GalaxyScene implements IGameScene {
       Array.from(this.promotedStarbaseSystemIds),
       Array.from(this.playerShipSystemIds),
       this.getShipIconStyles(),
+      this.getSystemRelations(),
     );
     this.starField.setVisibleStarIds(this.visibleStarIds);
     this.starField.setKnownStarIds(this.knownStarIds);
@@ -1246,6 +1254,7 @@ export class GalaxyScene implements IGameScene {
       (this.cam.radius - minRadius) / Math.max(0.0001, maxRadius - minRadius);
 
     this.starField.update(dt);
+    this.nebulaRenderer?.update(dt);
     this.starField.resetOverrides();
     if (this.hoveredStarId >= 0 && this.hoveredStarId < this.stars.length) {
       this.starField.setStarScale(this.hoveredStarId, this.hoverScaleBoost);
@@ -1431,9 +1440,8 @@ export class GalaxyScene implements IGameScene {
     const factionCount = Math.min(this.factions.length, this.stars.length);
     if (factionCount <= 0) return;
 
-    const palette = this.factions
-      .slice(0, factionCount)
-      .map((faction) => new Color3(faction.color[0], faction.color[1], faction.color[2]));
+    const palette = this.getRelationshipPalette().slice(0, factionCount);
+    const borderPalette = this.getRelationshipBorderPalette().slice(0, factionCount);
     this.starOwnership = this.options.starOwnership
       ? this.options.starOwnership.slice(0, this.stars.length)
       : buildHomeSystemOwnership(this.stars, this.factions);
@@ -1450,6 +1458,7 @@ export class GalaxyScene implements IGameScene {
       mapHeight: ownershipHeight,
       stars: this.stars,
       palette,
+      borderPalette,
       hyperlanePairs: this.hyperlanePairs,
     });
     this.ownershipRenderer.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
@@ -1530,6 +1539,34 @@ export class GalaxyScene implements IGameScene {
 
     overlay.material = mat;
     this.nebulaOverlayMesh = overlay;
+
+    const effectsTex = this.nebulaRenderer.effectsTexture;
+    if (effectsTex) {
+      const effectsOverlay = MeshBuilder.CreateGround(
+        "galaxyNebulaEffectsOverlay",
+        { width: nebulaWidth, height: nebulaHeight },
+        this.scene,
+      );
+      effectsOverlay.position.y = NEBULA_OVERLAY_Y + 0.004;
+      effectsOverlay.isPickable = false;
+      effectsOverlay.alwaysSelectAsActiveMesh = true;
+      effectsOverlay.renderingGroupId = NEBULA_RENDERING_GROUP;
+      effectsOverlay.alphaIndex = 1;
+
+      const effectsMat = new StandardMaterial("galaxyNebulaEffectsMat", this.scene);
+      effectsMat.diffuseTexture = effectsTex;
+      effectsMat.opacityTexture = effectsTex;
+      effectsMat.emissiveTexture = effectsTex;
+      effectsMat.diffuseColor = Color3.White();
+      effectsMat.emissiveColor = Color3.White();
+      effectsMat.specularColor = Color3.Black();
+      effectsMat.disableLighting = true;
+      effectsMat.backFaceCulling = false;
+      effectsMat.alpha = 1;
+
+      effectsOverlay.material = effectsMat;
+      this.nebulaEffectsOverlayMesh = effectsOverlay;
+    }
   }
 
   private setupGalacticCore(width: number, height: number): void {
@@ -2819,6 +2856,7 @@ export class GalaxyScene implements IGameScene {
 
   setFactions(factions: FactionInfo[]): void {
     this.factions = factions;
+    this.refreshEmpireRelationshipVisuals();
     if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
@@ -3022,6 +3060,7 @@ export class GalaxyScene implements IGameScene {
       starId,
       this.isStarKnownToPerspective(starId) ? owner : -1,
     );
+    this.starField?.setSystemRelation(starId, this.getEmpireRelation(owner));
     if (this.activeShipAction) {
       this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
@@ -3041,6 +3080,7 @@ export class GalaxyScene implements IGameScene {
       this.starOwnership.push(-1);
     }
     this.ownershipRenderer?.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
+    this.starField?.setSystemRelations(this.getSystemRelations());
     if (this.activeShipAction) {
       this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
@@ -3049,6 +3089,7 @@ export class GalaxyScene implements IGameScene {
 
   setDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
     this.applyDiplomacyMovement(diplomacy);
+    this.refreshEmpireRelationshipVisuals();
     if (this.activeShipAction) {
       this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
@@ -3058,6 +3099,38 @@ export class GalaxyScene implements IGameScene {
   private applyDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
     this.openBorderFactionIds = new Set(diplomacy?.openBorderFactionIds ?? []);
     this.warFactionIds = new Set(diplomacy?.warFactionIds ?? []);
+  }
+
+  private getEmpireRelation(ownerFactionId: number): EmpireSystemRelation {
+    return getEmpireSystemRelation(ownerFactionId, this.playerFactionId, this.warFactionIds);
+  }
+
+  private getSystemRelations(): EmpireSystemRelation[] {
+    return this.stars.map((_star, starId) => (
+      this.getEmpireRelation(this.starOwnership[starId] ?? -1)
+    ));
+  }
+
+  private getRelationshipPalette(): Color3[] {
+    return this.factions.map((faction) => {
+      const color = getEmpireDisplayColor(faction.color, this.getEmpireRelation(faction.id));
+      return new Color3(color[0], color[1], color[2]);
+    });
+  }
+
+  private getRelationshipBorderPalette(): Color3[] {
+    return this.factions.map((faction) => {
+      const color = getEmpireBorderColor(faction.color, this.getEmpireRelation(faction.id));
+      return new Color3(color[0], color[1], color[2]);
+    });
+  }
+
+  private refreshEmpireRelationshipVisuals(): void {
+    this.ownershipRenderer?.setPalette(
+      this.getRelationshipPalette(),
+      this.getRelationshipBorderPalette(),
+    );
+    this.starField?.setSystemRelations(this.getSystemRelations());
   }
 
   captureViewState(): GalaxyViewState | null {
@@ -3103,6 +3176,13 @@ export class GalaxyScene implements IGameScene {
       this.nebulaOverlayMesh.dispose();
       nebulaMaterial?.dispose(false, false);
       this.nebulaOverlayMesh = null;
+    }
+    if (this.nebulaEffectsOverlayMesh) {
+      const nebulaEffectsMaterial = this.nebulaEffectsOverlayMesh.material;
+      this.nebulaEffectsOverlayMesh.material = null;
+      this.nebulaEffectsOverlayMesh.dispose();
+      nebulaEffectsMaterial?.dispose(false, false);
+      this.nebulaEffectsOverlayMesh = null;
     }
     this.nebulaRenderer?.dispose();
     this.nebulaRenderer = null;

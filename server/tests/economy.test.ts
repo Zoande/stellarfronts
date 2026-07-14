@@ -10,6 +10,7 @@ import {
   createBuildingUpgradeConstructionQueueItem,
   createEmptyResourceCounts,
   createDistrictConstructionQueueItem,
+  createPlanetBuildingState,
   createPlanetStateFromSeed,
   getEffectiveSpeciesHabitability,
   getPlanetBuildingKind,
@@ -105,6 +106,30 @@ test("job assignment fills upper and middle jobs before lower jobs", () => {
   assert.equal(researchers, 500_000_000);
   assert.equal(farmers, 0);
   assert.equal(economy.employedPopulation, 1_200_000_000);
+});
+
+test("disabled buildings suspend their jobs until re-enabled", () => {
+  const planet = createHabitedPlanet();
+  planet.population = 600_000_000;
+  planet.buildings.city = [
+    createPlanetBuildingState("administrativeComplex", 1, false),
+    null,
+    null,
+    null,
+    null,
+    null,
+  ];
+  planet.urbanSubDistricts = [
+    { kind: "residential", buildings: [null, null, null] },
+    { kind: "mixedIndustry", buildings: [null, null, null] },
+  ];
+
+  const disabledEconomy = calculatePlanetEconomy(planet);
+  assert.equal(disabledEconomy.jobCapacity.administrator, 0);
+
+  planet.buildings.city[0] = createPlanetBuildingState("administrativeComplex", 1, true);
+  const enabledEconomy = calculatePlanetEconomy(planet);
+  assert.equal(enabledEconomy.jobCapacity.administrator, 300_000_000);
 });
 
 test("resource deltas and deficits are computed from assigned population", () => {

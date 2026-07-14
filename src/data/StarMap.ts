@@ -782,6 +782,11 @@ export function applyPlanetStatesToStars(stars: StarData[], planetStates: Planet
   for (const star of stars) {
     for (let planetIndex = 0; planetIndex < star.system.planets.length; planetIndex++) {
       const planet = star.system.planets[planetIndex];
+      // Client-side detail caches can temporarily contain a sparse planet array
+      // while a full system payload and an individual planet payload cross in
+      // flight. Persisted/server-owned star maps are dense, but this shared
+      // applicator also runs against those transient client copies.
+      if (!planet) continue;
       const state = byId.get(planet.id) ?? byId.get(createPlanetId(star.id, planetIndex));
       if (!state) continue;
 

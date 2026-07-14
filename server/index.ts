@@ -5,7 +5,7 @@ import type { FactionInfo, GalaxyPerspective } from "../src/data/Factions";
 import { applyPlanetStatesToStars, createPlanetStateFromConfig } from "../src/data/StarMap";
 import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../src/data/SystemCoordinates";
-import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, filterInvalidQueuedBuildingsForSubDistrictChange, getEffectiveSpeciesHabitability, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, NEW_COLONY_POPULATION, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
+import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getEffectiveSpeciesHabitability, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, NEW_COLONY_POPULATION, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
 import { MARKET_FEE_RATE } from "../src/data/Market";
 import { countStarbaseShipyards, createStarbaseBuildingQueueItem, createStarbaseShipQueueItem, createStarbaseUpgradeQueueItem, hasQueuedStarbaseBuildingTarget, isStarbaseBuildingKind, isStarbaseShipKind, STARBASE_LEVEL_DEFINITIONS } from "../src/data/Starbase";
 import { getNebulaGatedBuildingKinds, nebulaEnablesBuildingAtStar } from "../src/data/Nebula";
@@ -1662,6 +1662,102 @@ function handleUpgradePlanetBuilding(
   });
 }
 
+function getPlanetBuildingAt(
+  planetState: PlanetState,
+  area: BuildingSlotArea,
+  slotIndex: number,
+  subDistrictIndex?: number,
+): PlanetBuildingSlot | undefined {
+  if (area === "urbanSubDistrict") {
+    if (subDistrictIndex === undefined || !isValidSlotIndex(subDistrictIndex, planetState.urbanSubDistricts.length)) return undefined;
+    const buildings = planetState.urbanSubDistricts[subDistrictIndex].buildings;
+    return isValidSlotIndex(slotIndex, buildings.length) ? buildings[slotIndex] : undefined;
+  }
+  if (!isDistrictKind(area)) return undefined;
+  const buildings = planetState.buildings[area];
+  return isValidSlotIndex(slotIndex, buildings.length) ? buildings[slotIndex] : undefined;
+}
+
+function withPlanetBuildingAt(
+  planetState: PlanetState,
+  area: BuildingSlotArea,
+  slotIndex: number,
+  building: PlanetBuildingSlot,
+  subDistrictIndex?: number,
+): PlanetState {
+  if (area === "urbanSubDistrict" && subDistrictIndex !== undefined) {
+    return {
+      ...planetState,
+      urbanSubDistricts: planetState.urbanSubDistricts.map((subDistrict, index) => index === subDistrictIndex
+        ? { ...subDistrict, buildings: subDistrict.buildings.map((slot, buildingIndex) => buildingIndex === slotIndex ? building : slot) }
+        : subDistrict),
+    };
+  }
+  if (area === "urbanSubDistrict") return planetState;
+  return {
+    ...planetState,
+    buildings: {
+      ...planetState.buildings,
+      [area]: planetState.buildings[area].map((slot, index) => index === slotIndex ? building : slot),
+    },
+  };
+}
+
+function handleDowngradePlanetBuilding(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  area: BuildingSlotArea,
+  slotIndex: number,
+  subDistrictIndex?: number,
+): void {
+  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!planetState) return;
+  const building = getPlanetBuildingAt(planetState, area, slotIndex, subDistrictIndex);
+  const buildingKind = getPlanetBuildingKind(building);
+  if (!buildingKind) return reject(socket, "Building slot is empty or invalid.");
+  if (hasQueuedBuildingTarget(planetState, area, slotIndex, subDistrictIndex)) {
+    return reject(socket, "Cancel this building's queued construction first.");
+  }
+  const level = getPlanetBuildingLevel(building);
+  if (level <= 1 && BUILDING_DEFINITIONS[buildingKind].autoPlaced) {
+    return reject(socket, "This building cannot be demolished.");
+  }
+  const replacement = level > 1
+    ? createPlanetBuildingState(buildingKind, level - 1, isPlanetBuildingEnabled(building))
+    : null;
+  commitPlanetState(
+    socket,
+    perspective,
+    level > 1 ? "Building downgraded." : "Building demolished.",
+    withPlanetBuildingAt(planetState, area, slotIndex, replacement, subDistrictIndex),
+  );
+}
+
+function handleSetPlanetBuildingEnabled(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  area: BuildingSlotArea,
+  slotIndex: number,
+  enabled: boolean,
+  subDistrictIndex?: number,
+): void {
+  if (typeof enabled !== "boolean") return reject(socket, "Invalid building status.");
+  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!planetState) return;
+  const building = getPlanetBuildingAt(planetState, area, slotIndex, subDistrictIndex);
+  const buildingKind = getPlanetBuildingKind(building);
+  if (!buildingKind) return reject(socket, "Building slot is empty or invalid.");
+  const replacement = createPlanetBuildingState(buildingKind, getPlanetBuildingLevel(building), enabled);
+  commitPlanetState(
+    socket,
+    perspective,
+    enabled ? "Building enabled." : "Building disabled.",
+    withPlanetBuildingAt(planetState, area, slotIndex, replacement, subDistrictIndex),
+  );
+}
+
 function handleCancelPlanetConstruction(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -2533,6 +2629,29 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     );
     return;
   }
+  if (command.type === "downgradePlanetBuilding") {
+    handleDowngradePlanetBuilding(
+      session.socket,
+      session.perspective,
+      command.planetId,
+      command.area,
+      command.slotIndex,
+      command.subDistrictIndex,
+    );
+    return;
+  }
+  if (command.type === "setPlanetBuildingEnabled") {
+    handleSetPlanetBuildingEnabled(
+      session.socket,
+      session.perspective,
+      command.planetId,
+      command.area,
+      command.slotIndex,
+      command.enabled,
+      command.subDistrictIndex,
+    );
+    return;
+  }
   if (command.type === "cancelPlanetConstruction") {
     handleCancelPlanetConstruction(session.socket, session.perspective, command.planetId, command.queueItemId);
     return;
@@ -2786,5 +2905,3 @@ return {
 }
 
 await initServer(createGameRuntime);
-
-
