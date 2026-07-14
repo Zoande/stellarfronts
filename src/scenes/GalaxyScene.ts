@@ -958,6 +958,7 @@ export class GalaxyScene implements IGameScene {
   private ownershipOverlayMesh: Mesh | null = null;
   private ownershipRenderer: OwnershipOverlayRenderer | null = null;
   private nebulaOverlayMesh: Mesh | null = null;
+  private nebulaEffectsOverlayMesh: Mesh | null = null;
   private nebulaRenderer: NebulaFieldRenderer | null = null;
   private nebulae: NebulaRegion[] = [];
   private hyperlanePairs: Array<[number, number]> = [];
@@ -1253,6 +1254,7 @@ export class GalaxyScene implements IGameScene {
       (this.cam.radius - minRadius) / Math.max(0.0001, maxRadius - minRadius);
 
     this.starField.update(dt);
+    this.nebulaRenderer?.update(dt);
     this.starField.resetOverrides();
     if (this.hoveredStarId >= 0 && this.hoveredStarId < this.stars.length) {
       this.starField.setStarScale(this.hoveredStarId, this.hoverScaleBoost);
@@ -1537,6 +1539,34 @@ export class GalaxyScene implements IGameScene {
 
     overlay.material = mat;
     this.nebulaOverlayMesh = overlay;
+
+    const effectsTex = this.nebulaRenderer.effectsTexture;
+    if (effectsTex) {
+      const effectsOverlay = MeshBuilder.CreateGround(
+        "galaxyNebulaEffectsOverlay",
+        { width: nebulaWidth, height: nebulaHeight },
+        this.scene,
+      );
+      effectsOverlay.position.y = NEBULA_OVERLAY_Y + 0.004;
+      effectsOverlay.isPickable = false;
+      effectsOverlay.alwaysSelectAsActiveMesh = true;
+      effectsOverlay.renderingGroupId = NEBULA_RENDERING_GROUP;
+      effectsOverlay.alphaIndex = 1;
+
+      const effectsMat = new StandardMaterial("galaxyNebulaEffectsMat", this.scene);
+      effectsMat.diffuseTexture = effectsTex;
+      effectsMat.opacityTexture = effectsTex;
+      effectsMat.emissiveTexture = effectsTex;
+      effectsMat.diffuseColor = Color3.White();
+      effectsMat.emissiveColor = Color3.White();
+      effectsMat.specularColor = Color3.Black();
+      effectsMat.disableLighting = true;
+      effectsMat.backFaceCulling = false;
+      effectsMat.alpha = 1;
+
+      effectsOverlay.material = effectsMat;
+      this.nebulaEffectsOverlayMesh = effectsOverlay;
+    }
   }
 
   private setupGalacticCore(width: number, height: number): void {
@@ -3146,6 +3176,13 @@ export class GalaxyScene implements IGameScene {
       this.nebulaOverlayMesh.dispose();
       nebulaMaterial?.dispose(false, false);
       this.nebulaOverlayMesh = null;
+    }
+    if (this.nebulaEffectsOverlayMesh) {
+      const nebulaEffectsMaterial = this.nebulaEffectsOverlayMesh.material;
+      this.nebulaEffectsOverlayMesh.material = null;
+      this.nebulaEffectsOverlayMesh.dispose();
+      nebulaEffectsMaterial?.dispose(false, false);
+      this.nebulaEffectsOverlayMesh = null;
     }
     this.nebulaRenderer?.dispose();
     this.nebulaRenderer = null;
