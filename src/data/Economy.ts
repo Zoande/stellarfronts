@@ -149,6 +149,7 @@ export interface BuildingDefinition {
 export interface PlanetBuildingState {
   kind: BuildingKind;
   level: number;
+  enabled?: boolean;
 }
 
 export type PlanetBuildingSlot = BuildingKind | PlanetBuildingState | null;
@@ -699,10 +700,11 @@ export function clampBuildingLevel(level: unknown): number {
   return Math.max(1, Math.min(BUILDING_MAX_LEVEL, numeric));
 }
 
-export function createPlanetBuildingState(kind: BuildingKind, level = 1): PlanetBuildingState {
+export function createPlanetBuildingState(kind: BuildingKind, level = 1, enabled = true): PlanetBuildingState {
   return {
     kind,
     level: clampBuildingLevel(level),
+    enabled,
   };
 }
 
@@ -716,6 +718,11 @@ export function getPlanetBuildingLevel(slot: PlanetBuildingSlot | undefined): nu
   if (!slot) return 0;
   if (typeof slot === "string") return 1;
   return clampBuildingLevel(slot.level);
+}
+
+export function isPlanetBuildingEnabled(slot: PlanetBuildingSlot | undefined): boolean {
+  if (!slot || typeof slot === "string") return Boolean(slot);
+  return slot.enabled !== false;
 }
 
 export function getBuildingLevelEffectMultiplier(level: number): number {
@@ -1192,7 +1199,7 @@ function normalizeBuildingSlot(value: unknown): PlanetBuildingSlot {
   if (value && typeof value === "object") {
     const record = value as Partial<PlanetBuildingState>;
     if (record.kind && BUILDING_KINDS.includes(record.kind)) {
-      return createPlanetBuildingState(record.kind, record.level);
+      return createPlanetBuildingState(record.kind, record.level, record.enabled !== false);
     }
   }
   return null;
@@ -1426,9 +1433,11 @@ function applyBuildingEffect(
   const levelMultiplier = getBuildingLevelEffectMultiplier(level);
   const definition = BUILDING_DEFINITIONS[buildingKind];
   if (!definition) return context?.housing ?? 0;
-  for (const effect of definition.jobs ?? []) {
-    const multiplier = effect.perDistrict ? builtDistricts[effect.perDistrict] : 1;
-    addJobCapacity(capacity, effect.job, effect.amount * multiplier * levelMultiplier, modifiers);
+  if (isPlanetBuildingEnabled(building)) {
+    for (const effect of definition.jobs ?? []) {
+      const multiplier = effect.perDistrict ? builtDistricts[effect.perDistrict] : 1;
+      addJobCapacity(capacity, effect.job, effect.amount * multiplier * levelMultiplier, modifiers);
+    }
   }
   return (definition.housing ?? 0) * levelMultiplier;
 }
@@ -2168,7 +2177,16 @@ function completeConstructionItem(
   }
 
   if ((item.kind !== "building" && item.kind !== "buildingUpgrade") || !item.buildingKind || !item.area || item.slotIndex === undefined) return state;
-  const completedBuilding = createPlanetBuildingState(item.buildingKind, item.targetLevel ?? 1);
+  const existingBuilding = item.area === "urbanSubDistrict"
+    ? item.subDistrictIndex === undefined
+      ? undefined
+      : state.urbanSubDistricts[item.subDistrictIndex]?.buildings[item.slotIndex]
+    : state.buildings[item.area]?.[item.slotIndex];
+  const completedBuilding = createPlanetBuildingState(
+    item.buildingKind,
+    item.targetLevel ?? 1,
+    item.kind === "buildingUpgrade" ? isPlanetBuildingEnabled(existingBuilding) : true,
+  );
   if (item.area === "urbanSubDistrict") {
     if (item.subDistrictIndex === undefined) return state;
     return {

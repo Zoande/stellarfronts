@@ -601,6 +601,23 @@ export interface UpgradePlanetBuildingCommand {
   subDistrictIndex?: number;
 }
 
+export interface DowngradePlanetBuildingCommand {
+  type: "downgradePlanetBuilding";
+  planetId: string;
+  area: BuildingSlotArea;
+  slotIndex: number;
+  subDistrictIndex?: number;
+}
+
+export interface SetPlanetBuildingEnabledCommand {
+  type: "setPlanetBuildingEnabled";
+  planetId: string;
+  area: BuildingSlotArea;
+  slotIndex: number;
+  subDistrictIndex?: number;
+  enabled: boolean;
+}
+
 export interface SetUrbanSubDistrictCommand {
   type: "setUrbanSubDistrict";
   planetId: string;
@@ -851,6 +868,8 @@ export type ClientCommand =
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
   | UpgradePlanetBuildingCommand
+  | DowngradePlanetBuildingCommand
+  | SetPlanetBuildingEnabledCommand
   | CancelPlanetConstructionCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
