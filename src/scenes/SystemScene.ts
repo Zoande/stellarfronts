@@ -91,6 +91,8 @@ import type { SystemLabelOverlayItem } from "./system/SystemLabelOverlay";
 import { SystemObjectRenderer } from "./system/SystemObjectRenderer";
 import type { SystemRenderableDefinition } from "./system/SystemObjectRenderer";
 import { SystemEffectsRenderer } from "./system/SystemEffectsRenderer";
+import { createSystemNebulaEnvironment } from "./system/SystemNebulaEnvironment";
+import type { SystemNebulaEnvironment } from "./system/SystemNebulaEnvironment";
 import { SystemInputController } from "./system/SystemInputController";
 import { SystemActionTargetRenderer } from "./system/SystemActionTargetRenderer";
 import type { SystemActionTarget } from "./system/SystemActionTargetRenderer";
@@ -262,6 +264,7 @@ export class SystemScene implements IGameScene {
   private shipVisualRefreshVersion = 0;
   private fleetPickMaterial: StandardMaterial | null = null;
   private effectsRenderer: SystemEffectsRenderer | null = null;
+  private nebulaEnvironment: SystemNebulaEnvironment | null = null;
   private combatContactSeen = new Set<string>();
 
   private starbaseRoot: TransformNode | null = null;
@@ -717,6 +720,12 @@ export class SystemScene implements IGameScene {
     this.setupCamera(canvas);
     this.inputController = new SystemInputController(this.scene, this.camera, () => this.engine.getRenderingCanvas());
     this.setupLighting();
+    this.nebulaEnvironment = createSystemNebulaEnvironment(
+      this.scene,
+      this.glowLayer,
+      this.options.nebula,
+      this.star.id,
+    );
     this.buildSystemObjects();
     this.objectPanel = new CelestialObjectPanel();
     this.selectionPanel = new SelectionPanel(canvas, {
@@ -806,6 +815,7 @@ export class SystemScene implements IGameScene {
 
     this.objectRenderer.update(dt, 3.8);
     this.effectsRenderer?.update(dt);
+    this.nebulaEnvironment?.update(dt);
 
     if (this.starKind === "pulsar") {
       const beamPulse = 0.5 + 0.5 * Math.abs(Math.sin(this.elapsed * this.glowPulseSpeed));
@@ -4573,6 +4583,8 @@ export class SystemScene implements IGameScene {
     this.disposeStarbaseVisuals();
     this.effectsRenderer?.dispose();
     this.effectsRenderer = null;
+    this.nebulaEnvironment?.dispose();
+    this.nebulaEnvironment = null;
     this.hyperlaneExitMaterial?.dispose();
     this.hyperlaneExitMaterial = null;
     this.disposePlayerShipTrail();
