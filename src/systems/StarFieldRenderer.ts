@@ -30,6 +30,7 @@ import {
 import type { Mesh, Scene } from "@babylonjs/core";
 import { STAR_TYPES, StarType } from "../data/StarMap";
 import type { StarData } from "../data/StarMap";
+import type { EmpireSystemRelation } from "../game/EmpireDisplayColors";
 import type { GalaxyShipTransit } from "../game/GameplayTypes";
 
 export interface ShipIconStyle {
@@ -53,6 +54,40 @@ export interface GalaxyShipIcon {
 }
 
 export type GalaxyIconClickType = "ship" | "starbase" | "habitedPlanet";
+
+interface GalaxyNameplateTheme {
+  fill: string;
+  stroke: string;
+  accent: string;
+  text: string;
+}
+
+const GALAXY_NAMEPLATE_THEMES: Record<EmpireSystemRelation, GalaxyNameplateTheme> = {
+  own: {
+    fill: "rgba(5, 45, 39, 0.94)",
+    stroke: "rgba(152, 240, 219, 0.86)",
+    accent: "rgba(35, 137, 116, 0.34)",
+    text: "rgba(230, 255, 250, 0.98)",
+  },
+  foreign: {
+    fill: "rgba(28, 32, 37, 0.95)",
+    stroke: "rgba(174, 182, 190, 0.86)",
+    accent: "rgba(112, 120, 128, 0.42)",
+    text: "rgba(238, 241, 244, 0.98)",
+  },
+  unowned: {
+    fill: "rgba(25, 29, 34, 0.94)",
+    stroke: "rgba(146, 154, 162, 0.8)",
+    accent: "rgba(96, 104, 112, 0.36)",
+    text: "rgba(229, 233, 237, 0.96)",
+  },
+  hostile: {
+    fill: "rgba(65, 10, 14, 0.96)",
+    stroke: "rgba(255, 101, 105, 0.94)",
+    accent: "rgba(196, 35, 42, 0.52)",
+    text: "rgba(255, 226, 226, 0.99)",
+  },
+};
 
 const SPRITE_BLEND_ADD = 1; // ALPHA_ADD
 const STAR_TEXTURE_SIZE = 128;
@@ -319,6 +354,7 @@ export class StarFieldRenderer {
   private starLabelMeshes: Mesh[] = [];
   private starNames: string[] = [];
   private starHasHabitedPlanet: boolean[] = [];
+  private systemRelations: EmpireSystemRelation[] = [];
   private visibleStarIds: Set<number> | null = null;
   private knownStarIds: Set<number> | null = null;
   // Stars sitting inside a nebula: their broad additive halos are heavily damped so
@@ -352,10 +388,12 @@ export class StarFieldRenderer {
     starbaseSystemIds: number[] = [],
     playerShipSystemIds: number[] = [],
     shipIconStyles: ShipIconStyle[] = [],
+    systemRelations: EmpireSystemRelation[] = [],
   ) {
     this.scene = scene;
     this.playerShipStarId = playerShipStarId;
     this.playerShipSystemIds = new Set(playerShipSystemIds);
+    this.systemRelations = stars.map((star) => systemRelations[star.id] ?? "unowned");
     if (playerShipStarId >= 0) {
       this.playerShipSystemIds.add(playerShipStarId);
     }
@@ -656,6 +694,8 @@ export class StarFieldRenderer {
 
   private createStarLabel(star: StarData, hasStarbase = false, hasHabitedPlanet = false): Mesh {
     const hasNameplate = hasStarbase || hasHabitedPlanet;
+    const relation = this.systemRelations[star.id] ?? "unowned";
+    const nameplateTheme = GALAXY_NAMEPLATE_THEMES[relation];
 
     const labelTexture = new DynamicTexture(
       "starLabelTexture_" + star.id,
@@ -675,7 +715,7 @@ export class StarFieldRenderer {
     ctx.lineJoin = "round";
 
     if (hasNameplate) {
-      this.drawGalaxyNameplate(ctx, hasStarbase, hasHabitedPlanet);
+      this.drawGalaxyNameplate(ctx, hasStarbase, hasHabitedPlanet, nameplateTheme);
     }
 
     const maxTextWidth = hasNameplate
@@ -697,7 +737,7 @@ export class StarFieldRenderer {
     ctx.strokeStyle = "rgba(0, 0, 0, 0.95)";
     ctx.lineWidth = Math.max(hasNameplate ? 4 : 6, fontSize * (hasNameplate ? 0.07 : 0.12));
     ctx.strokeText(labelText, x, y);
-    ctx.fillStyle = hasNameplate ? "rgba(230, 255, 250, 0.98)" : "rgba(255, 255, 255, 0.96)";
+    ctx.fillStyle = hasNameplate ? nameplateTheme.text : "rgba(255, 255, 255, 0.96)";
     ctx.fillText(labelText, x, y);
     
     labelTexture.update(true);
@@ -736,7 +776,12 @@ export class StarFieldRenderer {
     return labelMesh;
   }
 
-  private drawGalaxyNameplate(ctx: CanvasRenderingContext2D, hasStarbase: boolean, hasHabitedPlanet: boolean): void {
+  private drawGalaxyNameplate(
+    ctx: CanvasRenderingContext2D,
+    hasStarbase: boolean,
+    hasHabitedPlanet: boolean,
+    theme: GalaxyNameplateTheme,
+  ): void {
     const plateX = 72;
     const plateY = 31;
     const plateW = 334;
@@ -750,15 +795,15 @@ export class StarFieldRenderer {
     ctx.shadowColor = "rgba(0, 0, 0, 0.82)";
     ctx.shadowBlur = 9;
     ctx.shadowOffsetY = 4;
-    ctx.fillStyle = "rgba(5, 45, 39, 0.94)";
-    ctx.strokeStyle = "rgba(152, 240, 219, 0.86)";
+    ctx.fillStyle = theme.fill;
+    ctx.strokeStyle = theme.stroke;
     ctx.lineWidth = 4;
     this.drawRoundedRect(ctx, plateX, plateY, plateW, plateH, 4);
     ctx.fill();
     ctx.stroke();
 
     ctx.shadowBlur = 0;
-    ctx.fillStyle = "rgba(35, 137, 116, 0.34)";
+    ctx.fillStyle = theme.accent;
     ctx.fillRect(plateX + 6, plateY + 7, plateW - 12, 8);
     if (hasStarbase) {
       this.drawHexBadge(ctx, rightBadgeX, badgeY, badgeR);
@@ -958,6 +1003,26 @@ export class StarFieldRenderer {
 
   setKnownStarIds(starIds: Iterable<number> | null): void {
     this.knownStarIds = starIds ? new Set(starIds) : null;
+  }
+
+  setSystemRelations(relations: readonly EmpireSystemRelation[]): void {
+    for (let starId = 0; starId < this.starPositions.length; starId++) {
+      const next = relations[starId] ?? "unowned";
+      if (this.systemRelations[starId] === next) continue;
+      this.systemRelations[starId] = next;
+      if (this.starbaseSystemIds.has(starId) || this.starHasHabitedPlanet[starId] === true) {
+        this.rebuildStarLabel(starId);
+      }
+    }
+  }
+
+  setSystemRelation(starId: number, relation: EmpireSystemRelation): void {
+    if (starId < 0 || starId >= this.starPositions.length) return;
+    if (this.systemRelations[starId] === relation) return;
+    this.systemRelations[starId] = relation;
+    if (this.starbaseSystemIds.has(starId) || this.starHasHabitedPlanet[starId] === true) {
+      this.rebuildStarLabel(starId);
+    }
   }
 
   /** Stars inside a nebula, whose halos are damped so the gas colour reads. */

@@ -42,6 +42,11 @@ import { StarbasePanel } from "../ui/StarbasePanel";
 import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { computeStarbasePower } from "../game/combatPower";
+import {
+  getEmpireDisplayColor,
+  getEmpireSystemRelation,
+} from "../game/EmpireDisplayColors";
+import type { EmpireSystemRelation } from "../game/EmpireDisplayColors";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, DiplomacyMovementPayload, ServerFleet, ServerShip, ServerStarbase, ServerStarbaseSummary } from "../game/GameProtocol";
@@ -1170,6 +1175,7 @@ export class GalaxyScene implements IGameScene {
       Array.from(this.promotedStarbaseSystemIds),
       Array.from(this.playerShipSystemIds),
       this.getShipIconStyles(),
+      this.getSystemRelations(),
     );
     this.starField.setVisibleStarIds(this.visibleStarIds);
     this.starField.setKnownStarIds(this.knownStarIds);
@@ -1431,9 +1437,7 @@ export class GalaxyScene implements IGameScene {
     const factionCount = Math.min(this.factions.length, this.stars.length);
     if (factionCount <= 0) return;
 
-    const palette = this.factions
-      .slice(0, factionCount)
-      .map((faction) => new Color3(faction.color[0], faction.color[1], faction.color[2]));
+    const palette = this.getRelationshipPalette().slice(0, factionCount);
     this.starOwnership = this.options.starOwnership
       ? this.options.starOwnership.slice(0, this.stars.length)
       : buildHomeSystemOwnership(this.stars, this.factions);
@@ -2819,6 +2823,7 @@ export class GalaxyScene implements IGameScene {
 
   setFactions(factions: FactionInfo[]): void {
     this.factions = factions;
+    this.refreshEmpireRelationshipVisuals();
     if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
@@ -3022,6 +3027,7 @@ export class GalaxyScene implements IGameScene {
       starId,
       this.isStarKnownToPerspective(starId) ? owner : -1,
     );
+    this.starField?.setSystemRelation(starId, this.getEmpireRelation(owner));
     if (this.activeShipAction) {
       this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
@@ -3041,6 +3047,7 @@ export class GalaxyScene implements IGameScene {
       this.starOwnership.push(-1);
     }
     this.ownershipRenderer?.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
+    this.starField?.setSystemRelations(this.getSystemRelations());
     if (this.activeShipAction) {
       this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
@@ -3049,6 +3056,7 @@ export class GalaxyScene implements IGameScene {
 
   setDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
     this.applyDiplomacyMovement(diplomacy);
+    this.refreshEmpireRelationshipVisuals();
     if (this.activeShipAction) {
       this.targetableStarIds = this.getReachableStarIds(this.activeShipAction);
       this.starField?.setHighlightedStarIds(this.targetableStarIds);
@@ -3058,6 +3066,28 @@ export class GalaxyScene implements IGameScene {
   private applyDiplomacyMovement(diplomacy: DiplomacyMovementPayload | undefined): void {
     this.openBorderFactionIds = new Set(diplomacy?.openBorderFactionIds ?? []);
     this.warFactionIds = new Set(diplomacy?.warFactionIds ?? []);
+  }
+
+  private getEmpireRelation(ownerFactionId: number): EmpireSystemRelation {
+    return getEmpireSystemRelation(ownerFactionId, this.playerFactionId, this.warFactionIds);
+  }
+
+  private getSystemRelations(): EmpireSystemRelation[] {
+    return this.stars.map((_star, starId) => (
+      this.getEmpireRelation(this.starOwnership[starId] ?? -1)
+    ));
+  }
+
+  private getRelationshipPalette(): Color3[] {
+    return this.factions.map((faction) => {
+      const color = getEmpireDisplayColor(faction.color, this.getEmpireRelation(faction.id));
+      return new Color3(color[0], color[1], color[2]);
+    });
+  }
+
+  private refreshEmpireRelationshipVisuals(): void {
+    this.ownershipRenderer?.setPalette(this.getRelationshipPalette());
+    this.starField?.setSystemRelations(this.getSystemRelations());
   }
 
   captureViewState(): GalaxyViewState | null {

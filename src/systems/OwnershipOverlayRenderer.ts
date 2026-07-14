@@ -131,7 +131,7 @@ export class OwnershipOverlayRenderer {
   private readonly widthPx: number;
   private readonly heightPx: number;
   private readonly stars: StarData[];
-  private readonly paletteRgb: Array<{ r: number; g: number; b: number }>;
+  private paletteRgb: Array<{ r: number; g: number; b: number }>;
   private readonly projectedStars: ProjectedStar[];
   private readonly hyperlanePairs: Array<[number, number]>;
   private readonly fullBounds: PixelBounds;
@@ -221,6 +221,18 @@ export class OwnershipOverlayRenderer {
     while (this.ownerByStar.length < this.stars.length) {
       this.ownerByStar.push(-1);
     }
+    this.render();
+  }
+
+  setPalette(palette: Color3[]): void {
+    const nextPalette = palette.map(colorToRgb);
+    const unchanged = nextPalette.length === this.paletteRgb.length
+      && nextPalette.every((color, index) => {
+        const current = this.paletteRgb[index];
+        return current?.r === color.r && current.g === color.g && current.b === color.b;
+      });
+    if (unchanged) return;
+    this.paletteRgb = nextPalette;
     this.render();
   }
 
