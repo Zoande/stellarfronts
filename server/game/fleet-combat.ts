@@ -58,7 +58,7 @@ import {
   weaponCanFireAtDistance,
 } from "./combat";
 import type { CombatLayerState } from "./combat";
-import type { GameFleet, GameShip, RuntimeContext } from "./types";
+import type { GameFleet, GameShip, GameState, RuntimeContext } from "./types";
 import {
   getFleetSpeedMultiplier,
   getFleetAttackMultiplier,
@@ -69,6 +69,12 @@ import {
 import { clamp, gameDaysToYears, getMountRangeSummary, getMaxWeaponSystemRange } from "./pure-helpers";
 import { getShipDesignForShip } from "./ship-designs";
 import { getKnownOwnership } from "./visibility";
+import {
+  getKnownLanePairs,
+  getKnownStarIds,
+  getOperationalCommandSourceStarIds,
+  hasCommandLink,
+} from "./intelligence";
 import {
   DEPART_DURATION_MS,
   JUMP_DURATION_MS,
@@ -462,7 +468,10 @@ export function routeIsAllowed(ctx: RuntimeContext, route: number[], ownerId: nu
 }
 
 export function findRoute(ctx: RuntimeContext, fleet: GameFleet, targetStarId: number): number[] | null {
-  const discovered = new Set(ctx.state.discoveredByFaction[String(fleet.ownerId)] ?? []);
+  const legacyDiscovered = (ctx.state as GameState & { discoveredByFaction?: Record<string, number[]> }).discoveredByFaction;
+  const discovered = ctx.state.intelligenceByFaction
+    ? getKnownStarIds(ctx.state, fleet.ownerId)
+    : new Set(legacyDiscovered?.[String(fleet.ownerId)] ?? []);
   const startStarId = fleet.currentStarId;
   // A nebula scatters sensors, so its systems stay "undiscovered" until a fleet
   // physically enters one. Such a system can still be a *destination* — a single
@@ -694,6 +703,56 @@ export function startMoveOrder(
     ? [fleet.currentStarId, targetStarId]
     : null;
   startPositionOrder(ctx, fleet, targetStarId, "move", destination.position, destination.orbitTarget, routeOverride);
+}
+
+export function processFleetCommandLinkLoss(ctx: RuntimeContext): boolean {
+  let changed = false;
+  for (const fleet of ctx.state.fleets) {
+    if (fleet.combatStatus === "destroyed" || fleet.phase === "missingInAction") continue;
+    if (fleet.hyperlanePosition) continue; // finish the active lane segment
+    if (hasCommandLink(ctx.state, fleet.ownerId, fleet.currentStarId)) continue;
+
+    const targets = getOperationalCommandSourceStarIds(ctx.state, fleet.ownerId);
+    const laneAdjacency = new Map<number, number[]>();
+    for (const [a, b] of getKnownLanePairs(ctx.state, fleet.ownerId)) {
+      laneAdjacency.set(a, [...(laneAdjacency.get(a) ?? []), b]);
+      laneAdjacency.set(b, [...(laneAdjacency.get(b) ?? []), a]);
+    }
+    const queue = [fleet.currentStarId];
+    const previous = new Map<number, number | null>([[fleet.currentStarId, null]]);
+    let destination: number | null = targets.has(fleet.currentStarId) ? fleet.currentStarId : null;
+    for (let head = 0; head < queue.length && destination === null; head += 1) {
+      const current = queue[head];
+      for (const neighbor of laneAdjacency.get(current) ?? []) {
+        if (previous.has(neighbor) || !canEnterSystem(ctx, fleet.ownerId, neighbor)) continue;
+        previous.set(neighbor, current);
+        queue.push(neighbor);
+        if (targets.has(neighbor)) {
+          destination = neighbor;
+          break;
+        }
+      }
+    }
+
+    if (destination === null || destination === fleet.currentStarId) {
+      if (fleet.movementPlan || fleet.targetStarId !== null || fleet.orderType !== null) {
+        clearFleetMovementNow(ctx, fleet);
+        changed = true;
+      }
+      continue;
+    }
+    if (fleet.targetStarId === destination && fleet.movementPlan) continue;
+    const route: number[] = [];
+    for (let cursor: number | null = destination; cursor !== null; cursor = previous.get(cursor) ?? null) route.push(cursor);
+    route.reverse();
+    const target = route[route.length - 1];
+    if (target === undefined) continue;
+    clearFleetMovementNow(ctx, fleet);
+    const moveTarget = getDefaultMoveDestination(ctx, target);
+    startPositionOrder(ctx, fleet, target, "move", moveTarget.position, moveTarget.orbitTarget, route);
+    changed = true;
+  }
+  return changed;
 }
 
 export function startAttackSystemOrder(ctx: RuntimeContext, fleet: GameFleet, targetStarId: number): void {

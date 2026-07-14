@@ -112,10 +112,10 @@ export const ADMIN_COMMAND_DEFINITIONS: AdminCommandDefinition[] = [
   command("show_labels", "navigation", "show_labels <on|off>", "Toggle local labels.", { localOnly: true }),
   command("effect_test", "navigation", "effect_test <laser|missile|point_defense> <sourceId> <targetId> [count=1]", "Spawn local/server test combat effects."),
 
-  command("discover", "ownership", "discover <owner|me> <systemId|selected|current|all> [jumps=0]", "Reveal systems to a faction."),
-  command("forget", "ownership", "forget <owner|me> <systemId|all> [--confirm]", "Forget systems for a faction.", { destructive: true }),
-  command("reveal_all", "ownership", "reveal_all <owner|me>", "Reveal all systems to a faction."),
-  command("reset_visibility", "ownership", "reset_visibility <owner|me> [--confirm]", "Reset visibility to natural discovery.", { destructive: true }),
+  command("intel_inspect", "ownership", "intel_inspect <owner|me> [kind] [id]", "Inspect stored intelligence and current sensor grants."),
+  command("intel_report", "ownership", "intel_report <owner|me> <star|system|planet|starbase|fleet|ship|faction> <id> [fields=a,b]", "Add a dated one-shot intelligence report."),
+  command("intel_revoke", "ownership", "intel_revoke <owner|me> [kind] [id] [--confirm]", "Revoke stored intelligence reports.", { destructive: true }),
+  command("sensor_debug", "ownership", "sensor_debug <owner|me>", "Inspect sources, bands, grants, command links, and nebula blocks."),
   command("own_system", "ownership", "own_system <systemId|selected|current> <owner|none>", "Set system ownership."),
   command("set_home_system", "ownership", "set_home_system <owner> <systemId> [--confirm]", "Move a faction home-system pointer.", { destructive: true }),
 

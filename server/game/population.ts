@@ -96,7 +96,7 @@ function getMigrationHousingRatio(planetState: PlanetState): number {
 
 function createMigrationProfile(ctx: RuntimeContext, planetState: PlanetState, index: number): MigrationPlanetProfile | null {
   if (!planetState.isHabited || planetState.population <= MIGRATION_MIN_SOURCE_POPULATION) return null;
-  const ownerId = ctx.state.starOwnership[planetState.starId] ?? -1;
+  const ownerId = planetState.ownerId ?? -1;
   if (!Number.isInteger(ownerId) || ownerId < 0) return null;
 
   const population = planetState.population;

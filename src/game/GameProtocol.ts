@@ -1,4 +1,5 @@
 import type { FactionInfo, GalaxyPerspective } from "../data/Factions";
+import type { GalaxyIntelligenceView, IntelEntityView } from "../data/Intelligence";
 import type { ActiveEvent } from "../data/Events";
 import type { ActiveSituation } from "../data/Situations";
 import type {
@@ -168,6 +169,8 @@ export type GameDetailScope =
   | "hud";
 
 export interface SystemDetailPayload {
+  intelligence?: IntelEntityView[];
+  commandLinked?: boolean;
   star: ServerStar;
   planetStates: PlanetState[];
   fleets: ServerFleet[];
@@ -190,16 +193,22 @@ export interface SystemHyperlaneExitPoint {
 }
 
 export interface PlanetDetailPayload {
+  intelligence?: IntelEntityView[];
+  commandLinked?: boolean;
   starId: number;
   planet: PlanetConfig;
   planetState: PlanetState;
 }
 
 export interface StarbaseDetailPayload {
+  intelligence?: IntelEntityView[];
+  commandLinked?: boolean;
   starbase: ServerStarbase;
 }
 
 export interface FleetDetailPayload {
+  intelligence?: IntelEntityView[];
+  commandLinked?: boolean;
   fleet: ServerFleet;
   ships: ServerShip[];
 }
@@ -909,8 +918,9 @@ export type ClientCommand =
 
 export interface GameSnapshot {
   type: "snapshot";
-  protocolVersion?: 2;
+  protocolVersion?: 3;
   perspective: GalaxyPerspective;
+  intelligence: GalaxyIntelligenceView;
   clock: GameClock;
   stars: ServerStar[];
   // Nebula regions are public/global — always sent in full regardless of fog so
@@ -941,8 +951,9 @@ export interface GameSnapshot {
 
 export interface GameUpdate {
   type: "update";
-  protocolVersion?: 2;
+  protocolVersion?: 3;
   perspective: GalaxyPerspective;
+  intelligence?: GalaxyIntelligenceView;
   changed: ServerUpdateField[];
   clock?: GameClock;
   stars?: ServerStar[];
@@ -999,7 +1010,8 @@ export interface GameDetailEvent {
   scope: GameDetailScope;
   id?: string | number | null;
   revision: string;
-  status: "full" | "notModified";
+  status: "full" | "notModified" | "unavailable";
+  message?: string;
   payload?: GameDetailPayload;
 }
 

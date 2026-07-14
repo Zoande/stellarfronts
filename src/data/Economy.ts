@@ -144,6 +144,7 @@ export interface BuildingDefinition {
    * slot by the simulation and cannot be queued or demolished by players.
    */
   autoPlaced?: boolean;
+  sensorSuiteIds?: import("./Intelligence").SensorSuiteId[];
 }
 
 export interface PlanetBuildingState {
@@ -248,6 +249,7 @@ export interface PlanetState {
   id: string;
   starId: number;
   planetIndex: number;
+  ownerId: number | null;
   isHabited: boolean;
   habitability: number | null;
   population: number;
@@ -274,6 +276,7 @@ export interface PlanetEconomySeed {
   id: string;
   starId: number;
   planetIndex: number;
+  ownerId?: number | null;
   isHabited: boolean;
   habitability: number | null;
   features?: PlanetFeatureKind[];
@@ -516,6 +519,7 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     buildDays: 1,
     compatibility: [{ area: "city" }],
     autoPlaced: true,
+    sensorSuiteIds: ["planetaryCapitalSensors"],
     jobs: [
       { job: "ruler", amount: 200_000_000 },
       { job: "entertainer", amount: 400_000_000 },
@@ -1297,6 +1301,7 @@ export function createPlanetStateFromSeed(
     id: seed.id,
     starId: seed.starId,
     planetIndex: seed.planetIndex,
+    ownerId: existing?.ownerId ?? seed.ownerId ?? null,
     isHabited,
     habitability: existing?.habitability ?? seed.habitability,
     population,

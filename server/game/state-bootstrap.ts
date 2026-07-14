@@ -19,9 +19,8 @@ import {
 } from "../../src/data/StarMap";
 import { buildHyperlanePairs, buildHyperlaneAdjacency } from "../../src/data/Hyperlanes";
 import { getSystemStarbasePosition } from "../../src/data/SystemCoordinates";
-import { buildFactions, buildHomeSystemOwnership, computeVisibleStarIds } from "../../src/data/Factions";
+import { buildFactions, buildHomeSystemOwnership } from "../../src/data/Factions";
 import {
-  buildNebulaStarIdSet,
   connectNebulaeWithHyperlanes,
   generateNebulae,
   stampNebulaIds,
@@ -48,7 +47,7 @@ import {
   gameYearToWeekIndex,
 } from "../../src/game/GameTime";
 import type { ServerShip, ServerStarbase } from "../../src/game/GameProtocol";
-import { VERSION_MANIFEST, canMigrateFromSchema } from "../versionManifest";
+import { VERSION_MANIFEST } from "../versionManifest";
 import {
   DEFAULT_TICK_SIZE_DAYS,
   DEFAULT_TICK_SPEED_SECONDS,
@@ -104,8 +103,14 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   );
   const adjacency = buildHyperlaneAdjacency(hyperlanes, stars.length);
   const planetStates = buildPlanetStatesFromStars(stars, homeStarIds);
-  applyPlanetStatesToStars(stars, planetStates);
   const starOwnership = buildHomeSystemOwnership(stars, factions);
+  for (const faction of factions) {
+    const homePlanet = planetStates.find((planetState) => (
+      planetState.starId === faction.homeStarId && planetState.isHabited
+    ));
+    if (homePlanet) homePlanet.ownerId = faction.id;
+  }
+  applyPlanetStatesToStars(stars, planetStates);
   const starbaseCombat = STARBASE_LEVEL_DEFINITIONS.starbase.combat;
   const starbases = factions.map<ServerStarbase>((faction) => ({
     id: `starbase-${faction.id}`,
@@ -162,7 +167,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 22,
+    schemaVersion: 23,
     stars,
     nebulae,
     planetStates,
@@ -186,9 +191,8 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     ships,
     fleets,
     recentCombatContacts: [],
-    discoveredByFaction: {},
-    metByFaction: {},
-    lastKnownOwnershipByFaction: {},
+    intelligenceByFaction: {},
+    startingIntelligenceSeeded: false,
     clock: {
       year: GAME_START_YEAR,
       tickSizeDays: DEFAULT_TICK_SIZE_DAYS,
@@ -207,33 +211,6 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   recalculatePlanetEconomies(created);
   refreshFactionEconomyDeltas(created);
 
-  // Seed each faction's discovery with all other factions' capitals + their adjacent systems.
-  // This gives players immediate intel on where rivals started without granting ongoing vision.
-  // Nebula systems stay hidden (sensors don't reach inside even at game start).
-  const nebulaStarIds = buildNebulaStarIdSet(created.nebulae);
-  for (const faction of created.factions) {
-    const key = String(faction.id);
-    const seeded = new Set<number>(created.discoveredByFaction[key] ?? []);
-    for (const other of created.factions) {
-      if (other.id === faction.id) continue;
-      for (const starId of computeVisibleStarIds(created.adjacency, other.homeStarId, 1, nebulaStarIds)) {
-        seeded.add(starId);
-      }
-    }
-    created.discoveredByFaction[key] = Array.from(seeded).sort((a, b) => a - b);
-
-    // Record the ownership we learned for these revealed systems so their borders
-    // draw on the map. refreshDiscovery only stamps last-known ownership for the
-    // currently-visible set, which never includes these out-of-range capitals, so
-    // without this they would render as unowned (no borders) despite being shown.
-    const lastKnown = created.lastKnownOwnershipByFaction[key] ?? [];
-    while (lastKnown.length < created.stars.length) lastKnown.push(-1);
-    for (const starId of seeded) {
-      lastKnown[starId] = created.starOwnership[starId] ?? -1;
-    }
-    created.lastKnownOwnershipByFaction[key] = lastKnown;
-  }
-
   refreshDiscovery(created);
   return created;
 }
@@ -246,12 +223,12 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     // opened by an older version). The orchestrator gates updates so this is a
     // last-line guard against save corruption.
     const onDiskSchema = Number(parsed.schemaVersion);
-    if (Number.isFinite(onDiskSchema) && !canMigrateFromSchema(VERSION_MANIFEST, onDiskSchema)) {
+    if (onDiskSchema !== VERSION_MANIFEST.schemaVersion) {
       throw new Error(
         `Game ${ctx.game.id} ctx.state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
       );
     }
-    parsed.schemaVersion = 22;
+    parsed.schemaVersion = 23;
     delete (parsed as GameState & { battles?: unknown }).battles;
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
@@ -271,12 +248,11 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       ctx.hasDirtyState = true;
     }
     parsed.adjacency = buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
-    parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
-    parsed.metByFaction = parsed.metByFaction ?? {};
+    parsed.intelligenceByFaction = parsed.intelligenceByFaction ?? {};
+    parsed.startingIntelligenceSeeded = parsed.startingIntelligenceSeeded === true;
     parsed.situations = Array.isArray(parsed.situations) ? parsed.situations : [];
     parsed.events = Array.isArray(parsed.events) ? parsed.events : [];
     parsed.factionModifiers = Array.isArray(parsed.factionModifiers) ? parsed.factionModifiers : [];
-    parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.recentCombatContacts = [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
     parsed.clock = normalizeClock(parsed.clock);

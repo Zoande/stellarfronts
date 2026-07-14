@@ -75,6 +75,7 @@ export interface ShipModuleDefinition {
   shipKinds?: StarbaseShipKind[];
   iconKind?: string;
   availableInDesigner?: boolean;
+  sensorSuiteIds?: import("./Intelligence").SensorSuiteId[];
 }
 
 export interface ShipSectionModuleDefinition {
@@ -1161,8 +1162,8 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
   },
   utility_optical_array: {
     id: "utility_optical_array",
-    label: "Optical Array",
-    description: "Extends weapon engagement profiles and sensor reach.",
+    label: "Tactical Sensor Array",
+    description: "Tracks stellar contacts, military traffic, and basic planetary characteristics across nearby systems.",
     slotType: "utility",
     iconKind: "sensor",
     modifiers: {
@@ -1173,6 +1174,21 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
     },
     cost: resources({ alloys: 24, goods: 10 }),
     upkeep: resources({ energy: 0.1 }),
+    sensorSuiteIds: ["tacticalArraySensors"],
+  },
+  utility_survey_array: {
+    id: "utility_survey_array",
+    label: "Survey Array",
+    description: "High-resolution survey instruments reveal complete local planetary and system information.",
+    slotType: "utility",
+    iconKind: "sensor",
+    modifiers: {
+      cost: { alloys: 28, goods: 14, research: 4 },
+      upkeep: { energy: 0.14 },
+    },
+    cost: resources({ alloys: 28, goods: 14, research: 4 }),
+    upkeep: resources({ energy: 0.14 }),
+    sensorSuiteIds: ["surveyArraySensors"],
   },
   utility_fire_control: {
     id: "utility_fire_control",
@@ -1367,12 +1383,12 @@ const DEFAULT_UTILITY_MODULES: Record<StarbaseShipKind, string[]> = {
     "utility_repair_drones",
   ],
   constructionShip: [
-    "utility_optical_array",
+    "utility_survey_array",
     "utility_repair_drones",
     "utility_shield_capacitor",
   ],
   colonizationShip: [
-    "utility_optical_array",
+    "utility_survey_array",
     "utility_repair_drones",
     "utility_shield_capacitor",
   ],

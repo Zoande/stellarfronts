@@ -84,6 +84,7 @@ import type { FleetPolicyControl, FleetPolicyValue, SelectionData, SelectionShip
 import { StarbasePanel } from "../ui/StarbasePanel";
 import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
+import { getClientIntelField } from "../game/ClientIntelligence";
 import { SystemAssetRegistry } from "./system/SystemAssetRegistry";
 import type { SystemAssetDefinition } from "./system/SystemAssetRegistry";
 import { SystemLabelOverlay } from "./system/SystemLabelOverlay";
@@ -3588,10 +3589,16 @@ export class SystemScene implements IGameScene {
     );
 
     const mat = new StandardMaterial(`systemPlanetMat_${index}`, this.scene);
-    const planetTexture = new Texture(texturePath, this.scene);
-    planetTexture.hasAlpha = false;
-    mat.diffuseTexture = planetTexture;
-    mat.specularColor = new Color3(0.12, 0.12, 0.12);
+    const typeIntel = getClientIntelField("planet", planet.id, "type");
+    if (typeIntel.status === "unknown") {
+      mat.diffuseColor = new Color3(0.28, 0.31, 0.33);
+      mat.specularColor = new Color3(0.05, 0.05, 0.05);
+    } else {
+      const planetTexture = new Texture(texturePath, this.scene);
+      planetTexture.hasAlpha = false;
+      mat.diffuseTexture = planetTexture;
+      mat.specularColor = new Color3(0.12, 0.12, 0.12);
+    }
     // Keep a subtle baseline lift for readability without making planets
     // look self-illuminated or washing out the sunlit side.
     mat.emissiveColor = this.planetNightLift.scale(0.2);
@@ -4009,7 +4016,8 @@ export class SystemScene implements IGameScene {
         panelPlanet = details.planet;
         planetState = details.planetState;
       } catch (error) {
-        console.error("Failed to load planet details", error);
+        console.info(error instanceof Error ? error.message : "Information does not exist.");
+        return;
       }
     }
     this.objectPanel.show({

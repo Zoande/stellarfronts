@@ -68,6 +68,8 @@ import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 import { requestOpenLeadersPanel } from "./leaderEvents";
 import { FloatingTooltipManager } from "./FloatingTooltipManager";
+import { formatIntelFreshness, getClientIntelField, getClientIntelYear, hasClientEntityCommandLink } from "../game/ClientIntelligence";
+import type { IntelValue } from "../data/Intelligence";
 
 export type CelestialObjectKind = "planet" | "star";
 
@@ -934,7 +936,12 @@ export class CelestialObjectPanel {
   private patchPlanetSummary(data: CelestialObjectPanelData): void {
     if (!this.panelElement) return;
     const typeName = this.panelElement.querySelector<HTMLElement>("[data-co-type-name]");
-    if (typeName) typeName.textContent = data.objectDetails.typeName;
+    if (typeName) {
+      const intel = this.planetIntel(data, "objectDetails.typeName");
+      typeName.textContent = intel?.status === "unknown" ? "?" : data.objectDetails.typeName;
+      typeName.classList.toggle("coIntelStale", intel?.status === "stale");
+      typeName.classList.toggle("coIntelUnknown", intel?.status === "unknown");
+    }
     const summaryGrid = this.panelElement.querySelector<HTMLElement>("[data-co-summary-grid]");
     if (summaryGrid) this.replaceElementWithHtmlIfChanged(summaryGrid, this.renderSummaryGrid(data));
     const heroModifiers = this.panelElement.querySelector<HTMLElement>("[data-co-hero-modifiers]");
@@ -953,7 +960,7 @@ export class CelestialObjectPanel {
     if (!this.panelElement || !data.planetState) return;
     const body = this.panelElement.querySelector<HTMLElement>('[data-co-body="economy"]');
     if (!body) return;
-    const html = this.renderEconomyBody(data.planetState);
+    const html = this.renderIntelEconomyBody(data, data.planetState);
     if (body.outerHTML === html.trim()) return;
     const scrollState = captureScrollState(this.panelElement, CELESTIAL_SCROLL_SELECTORS);
     const nextBody = this.replaceElementWithHtml(body, html);
@@ -1709,13 +1716,22 @@ export class CelestialObjectPanel {
     const isPlanet = data.kind === "planet";
     const isHabitedPlanet = isPlanet && data.isHabited;
     const planetState = data.planetState;
-    const tabsDisabled = isHabitedPlanet ? "" : " disabled";
+    const commandLinked = !isPlanet || hasClientEntityCommandLink("planet", data.objectId);
+    const tabsDisabled = isHabitedPlanet && commandLinked ? "" : " disabled";
+    const nameIntel = this.planetIntel(data, "name");
+    const nameFreshness = nameIntel ? formatIntelFreshness(nameIntel, getClientIntelYear()) : null;
+    const nameClass = nameIntel?.status === "stale" ? " coIntelStale" : nameIntel?.status === "unknown" ? " coIntelUnknown" : "";
+    const displayedName = nameIntel?.status === "unknown" ? "????" : data.name;
+    const typeIntel = this.planetIntel(data, "objectDetails.typeName");
+    const typeFreshness = typeIntel ? formatIntelFreshness(typeIntel, getClientIntelYear()) : null;
+    const typeClass = typeIntel?.status === "stale" ? " coIntelStale" : typeIntel?.status === "unknown" ? " coIntelUnknown" : "";
+    const displayedType = typeIntel?.status === "unknown" ? "?" : data.objectDetails.typeName;
 
     return `
       <div class="coHeader" data-co-drag>
         <div class="coHeaderSigil">${isPlanet ? "P" : "S"}</div>
         <div>
-          <div class="coTitle">${this.escapeHtml(data.name)}</div>
+          <div class="coTitle${nameClass}"${nameFreshness ? ` data-co-tooltip="${this.tooltipAttr(nameFreshness)}"` : ""}>${this.escapeHtml(displayedName)}</div>
           <div class="coSubtitle">${this.escapeHtml(data.subtitle)}</div>
         </div>
         <button class="coClose" type="button" data-co-close aria-label="Close object panel">X</button>
@@ -1729,14 +1745,14 @@ export class CelestialObjectPanel {
         </div>
         <aside class="coSummary">
           <div class="coSectionTitle">${isPlanet ? "Planet Summary" : "Stellar Summary"}</div>
-          <div class="coTypeName" data-co-type-name>${this.escapeHtml(data.objectDetails.typeName)}</div>
+          <div class="coTypeName${typeClass}" data-co-type-name${typeFreshness ? ` data-co-tooltip="${this.tooltipAttr(typeFreshness)}"` : ""}>${this.escapeHtml(displayedType)}</div>
           ${this.renderSummaryGrid(data)}
           <div class="coPortrait" data-co-portrait></div>
         </aside>
         ${this.renderResourceStrip(planetState)}
       </div>
       ${this.activeTab === "economy" && isHabitedPlanet && planetState
-        ? this.renderEconomyBody(planetState)
+        ? this.renderIntelEconomyBody(data, planetState)
         : this.renderSurfaceBody(data)}
       <nav class="coTabs">
         <button class="${this.activeTab === "surface" ? "active" : ""}" type="button" data-co-tab="surface">Overview</button>
@@ -1756,11 +1772,11 @@ export class CelestialObjectPanel {
     const habitability = habitabilityValue === null ? "?%" : `${habitabilityValue}%`;
     return `
       <div class="coSummaryGrid" data-co-summary-grid>
-        ${this.renderSummaryStat("habitability", "Habitability", habitability, data.planetState ? this.renderHabitabilityTooltip(data.planetState) : undefined)}
-        ${this.renderSummaryStat("population", "Habited", data.isHabited ? "Yes" : "No")}
-        ${this.renderSummaryStat("size", "Size", String(details.size))}
-        ${data.planetState ? this.renderSummaryStat("housing", "Housing", this.formatPeople(data.planetState.economy.housing), this.renderHousingTooltip(data.planetState)) : ""}
-        ${data.planetState ? this.renderSummaryStat("amenities", "Amenities", this.formatCompact(data.planetState.economy.amenities), this.renderAmenitiesTooltip(data.planetState)) : ""}
+        ${this.renderSummaryStat("habitability", "Habitability", habitability, data.planetState ? this.renderHabitabilityTooltip(data.planetState) : undefined, this.planetIntel(data, "habitability"))}
+        ${this.renderSummaryStat("population", "Habited", data.isHabited ? "Yes" : "No", undefined, this.planetIntel(data, "isHabited"))}
+        ${this.renderSummaryStat("size", "Size", String(details.size), undefined, this.planetIntel(data, "objectDetails.size"))}
+        ${data.planetState ? this.renderSummaryStat("housing", "Housing", this.formatPeople(data.planetState.economy.housing), this.renderHousingTooltip(data.planetState), this.planetIntel(data, "economy.housing")) : ""}
+        ${data.planetState ? this.renderSummaryStat("amenities", "Amenities", this.formatCompact(data.planetState.economy.amenities), this.renderAmenitiesTooltip(data.planetState), this.planetIntel(data, "economy.amenities")) : ""}
       </div>
     `;
   }
@@ -1794,13 +1810,17 @@ export class CelestialObjectPanel {
     `;
   }
 
-  private renderSummaryStat(icon: string, label: string, value: string, tooltip?: string): string {
-    const tooltipAttribute = tooltip ? ` data-co-tooltip="${this.tooltipAttr(tooltip)}"` : "";
+  private renderSummaryStat(icon: string, label: string, value: string, tooltip?: string, intel?: IntelValue<unknown>): string {
+    const renderedValue = intel?.status === "unknown" ? "?" : value;
+    const freshness = intel ? formatIntelFreshness(intel, getClientIntelYear()) : null;
+    const combinedTooltip = [tooltip, freshness].filter(Boolean).join("<br>");
+    const tooltipAttribute = combinedTooltip ? ` data-co-tooltip="${this.tooltipAttr(combinedTooltip)}"` : "";
+    const freshnessClass = intel?.status === "stale" ? " coIntelStale" : intel?.status === "unknown" ? " coIntelUnknown" : "";
     return `
-      <div class="coSummaryStat"${tooltipAttribute}>
+      <div class="coSummaryStat${freshnessClass}"${tooltipAttribute}>
         ${this.renderStatIcon(icon)}
         <span>${this.escapeHtml(label)}</span>
-        <strong>${this.escapeHtml(value)}</strong>
+        <strong>${this.escapeHtml(renderedValue)}</strong>
       </div>
     `;
   }
@@ -1822,27 +1842,32 @@ export class CelestialObjectPanel {
 
     const economy = planetState.economy;
     const support = this.getPlanetSupportMetrics(planetState);
+    const intel = (fieldId: string) => getClientIntelField("planet", planetState.id, fieldId);
 
     return `
       <div class="coResourceStrip" data-co-resource-strip>
-        ${this.renderResourceStripStat("stability", "Stability", `${economy.stability.toFixed(0)}%`, this.getHighStatTone(economy.stability), this.renderStabilityTooltip(planetState))}
-        ${this.renderResourceStripStat("population", "Pop", this.formatPeople(planetState.population))}
-        ${this.renderResourceStripStat("unemployment", "Unemployed", this.formatPeople(economy.unemployedPopulation), "neutral", this.renderUnemploymentTooltip(planetState))}
-        ${this.renderResourceStripStat("happiness", "Happiness", `${economy.happiness.toFixed(0)}%`, this.getHighStatTone(economy.happiness), this.renderHappinessTooltip(planetState))}
-        ${this.renderResourceStripStat("crime", "Crime", `${economy.crime.toFixed(0)}%`, this.getCrimeTone(economy.crime), this.renderCrimeTooltip(planetState))}
-        ${this.renderResourceStripStat("amenities", "Amenities Balance", this.formatSignedCompact(support.amenityBalance), this.getNeedBalanceTone(support.amenityRatio), this.renderAmenitiesTooltip(planetState))}
-        ${this.renderResourceStripStat("housing", "Housing Balance", this.formatSignedPeople(support.housingBalance), this.getNeedBalanceTone(support.housingRatio), this.renderHousingTooltip(planetState))}
+        ${this.renderResourceStripStat("stability", "Stability", `${economy.stability.toFixed(0)}%`, this.getHighStatTone(economy.stability), this.renderStabilityTooltip(planetState), intel("economy.stability"))}
+        ${this.renderResourceStripStat("population", "Pop", this.formatPeople(planetState.population), "neutral", undefined, intel("population"))}
+        ${this.renderResourceStripStat("unemployment", "Unemployed", this.formatPeople(economy.unemployedPopulation), "neutral", this.renderUnemploymentTooltip(planetState), intel("economy.unemployedPopulation"))}
+        ${this.renderResourceStripStat("happiness", "Happiness", `${economy.happiness.toFixed(0)}%`, this.getHighStatTone(economy.happiness), this.renderHappinessTooltip(planetState), intel("economy.happiness"))}
+        ${this.renderResourceStripStat("crime", "Crime", `${economy.crime.toFixed(0)}%`, this.getCrimeTone(economy.crime), this.renderCrimeTooltip(planetState), intel("economy.crime"))}
+        ${this.renderResourceStripStat("amenities", "Amenities Balance", this.formatSignedCompact(support.amenityBalance), this.getNeedBalanceTone(support.amenityRatio), this.renderAmenitiesTooltip(planetState), intel("economy.amenities"))}
+        ${this.renderResourceStripStat("housing", "Housing Balance", this.formatSignedPeople(support.housingBalance), this.getNeedBalanceTone(support.housingRatio), this.renderHousingTooltip(planetState), intel("economy.housing"))}
       </div>
     `;
   }
 
-  private renderResourceStripStat(icon: string, label: string, value: string, tone = "neutral", tooltip?: string): string {
-    const tooltipAttribute = tooltip ? ` data-co-tooltip="${this.tooltipAttr(tooltip)}"` : "";
+  private renderResourceStripStat(icon: string, label: string, value: string, tone = "neutral", tooltip?: string, intel?: IntelValue<unknown>): string {
+    const renderedValue = intel?.status === "unknown" ? "?" : value;
+    const freshness = intel ? formatIntelFreshness(intel, getClientIntelYear()) : null;
+    const combinedTooltip = [tooltip, freshness].filter(Boolean).join("<br>");
+    const tooltipAttribute = combinedTooltip ? ` data-co-tooltip="${this.tooltipAttr(combinedTooltip)}"` : "";
+    const freshnessClass = intel?.status === "stale" ? " coIntelStale" : intel?.status === "unknown" ? " coIntelUnknown" : "";
     return `
-      <span class="coResourceStripItem coTone-${tone}" data-co-resource-stat="${this.escapeHtml(icon)}"${tooltipAttribute}>
+      <span class="coResourceStripItem coTone-${tone}${freshnessClass}" data-co-resource-stat="${this.escapeHtml(icon)}"${tooltipAttribute}>
         ${this.renderStatIcon(icon)}
         <small>${this.escapeHtml(label)}</small>
-        <strong>${this.escapeHtml(value)}</strong>
+        <strong>${this.escapeHtml(renderedValue)}</strong>
       </span>
     `;
   }
@@ -1894,18 +1919,17 @@ export class CelestialObjectPanel {
     const planetState = data.planetState;
     const built = planetState?.builtDistricts ?? details.builtDistricts;
     const limits = details.districtLimits;
-    const canBuild = data.kind === "planet" && data.isHabited && Boolean(planetState);
+    const canBuild = data.kind === "planet" && data.isHabited && Boolean(planetState) && hasClientEntityCommandLink("planet", data.objectId);
     const buildTray = this.renderBuildingTray(data);
     const featuresTray = this.renderFeaturesTray(data);
     const buildingDetails = this.renderBuildingDetails(data);
     const sidePanel = featuresTray || buildTray || buildingDetails || this.renderPlanetDefenses(data);
-
     return `
       <section class="coBody" data-co-body="surface">
         <div class="coSurfaceLayout${sidePanel ? " withSide" : ""}" data-co-surface-layout>
           <div class="coDistrictGrid">
             <article class="coDistrictCard coDistrictCity" data-co-district-card="city">
-              ${this.renderDistrict("city", "City Districts", built, limits, data.isHabited, canBuild, planetState)}
+              ${this.renderDistrict("city", "City Districts", built, limits, data.isHabited, canBuild, planetState, data)}
               <div class="coEmbeddedBuildings coCityBuildings" data-co-building-area="city">
                 ${this.renderBuildingSlotsForArea(data, "city", planetState?.buildings.city ?? [], 6)}
               </div>
@@ -1915,19 +1939,19 @@ export class CelestialObjectPanel {
               ${planetState && data.isHabited ? this.renderProductionPanels(planetState) : this.renderDescription(details)}
             </article>
             <article class="coDistrictCard" data-co-district-card="generator">
-              ${this.renderDistrict("generator", "Generator Districts", built, limits, false, canBuild, planetState)}
+              ${this.renderDistrict("generator", "Generator Districts", built, limits, false, canBuild, planetState, data)}
               <div class="coEmbeddedBuildings" data-co-building-area="generator">
                 ${this.renderBuildingSlotsForArea(data, "generator", planetState?.buildings.generator ?? [], 3)}
               </div>
             </article>
             <article class="coDistrictCard" data-co-district-card="mining">
-              ${this.renderDistrict("mining", "Mining Districts", built, limits, false, canBuild, planetState)}
+              ${this.renderDistrict("mining", "Mining Districts", built, limits, false, canBuild, planetState, data)}
               <div class="coEmbeddedBuildings" data-co-building-area="mining">
                 ${this.renderBuildingSlotsForArea(data, "mining", planetState?.buildings.mining ?? [], 3)}
               </div>
             </article>
             <article class="coDistrictCard" data-co-district-card="agriculture">
-              ${this.renderDistrict("agriculture", "Agriculture Districts", built, limits, false, canBuild, planetState)}
+              ${this.renderDistrict("agriculture", "Agriculture Districts", built, limits, false, canBuild, planetState, data)}
               <div class="coEmbeddedBuildings" data-co-building-area="agriculture">
                 ${this.renderBuildingSlotsForArea(data, "agriculture", planetState?.buildings.agriculture ?? [], 3)}
               </div>
@@ -1971,19 +1995,24 @@ export class CelestialObjectPanel {
     limits: DistrictCounts,
     showCityIndustry: boolean,
     canBuild: boolean,
-    planetState?: PlanetState,
+    planetState: PlanetState | undefined,
+    data: CelestialObjectPanelData,
   ): string {
     const used = built[kind];
     const queued = planetState ? this.getQueuedDistrictCount(planetState, kind) : 0;
     const limit = limits[kind];
+    const usedUnknown = this.planetIntel(data, `builtDistricts.${kind}`)?.status === "unknown";
+    const limitUnknown = this.planetIntel(data, `districtLimits.${kind}`)?.status === "unknown";
     const district = DISTRICTS.find((entry) => entry.kind === kind);
-    const buildDisabled = !canBuild || used + queued >= limit ? " disabled" : "";
+    const buildDisabled = !canBuild || usedUnknown || limitUnknown || used + queued >= limit ? " disabled" : "";
     const queuedLabel = queued > 0 ? ` +${queued} queued` : "";
     const tooltip = this.tooltipAttr(this.renderDistrictTooltip(kind));
     const totalUsed = DISTRICTS.reduce((sum, districtKind) => sum + built[districtKind.kind], 0);
     const totalLimit = DISTRICTS.reduce((sum, districtKind) => sum + limits[districtKind.kind], 0);
+    const totalUsedUnknown = this.planetIntel(data, "builtDistricts")?.status === "unknown";
+    const totalLimitUnknown = this.planetIntel(data, "districtLimits")?.status === "unknown";
     const totalCapacity = kind === "city"
-      ? `<span class="coTotalDistrictCapacity" data-co-total-district-capacity title="Total planet district capacity">${totalUsed}/${totalLimit}</span>`
+      ? `<span class="coTotalDistrictCapacity${totalUsedUnknown || totalLimitUnknown ? " coIntelUnknown" : ""}" data-co-total-district-capacity title="Total planet district capacity">${totalUsedUnknown ? "?" : totalUsed}/${totalLimitUnknown ? "?" : totalLimit}</span>`
       : "";
     return `
       <div class="coDistrictTitle">
@@ -2000,9 +2029,9 @@ export class CelestialObjectPanel {
         </div>
         <div class="coDistrictMeta">
           ${showCityIndustry ? '<div class="coSpecialization">Space Age Industry</div>' : ""}
-          <div class="coDistrictCount" data-co-district-count="${kind}">${used}/${limit}${queuedLabel}</div>
+          <div class="coDistrictCount${usedUnknown || limitUnknown ? " coIntelUnknown" : ""}" data-co-district-count="${kind}">${usedUnknown ? "?" : used}/${limitUnknown ? "?" : limit}${usedUnknown ? "" : queuedLabel}</div>
           <div class="coDistrictBar ${kind}" data-co-district-bar="${kind}">
-            ${this.renderDistrictSlots(used, limit)}
+            ${usedUnknown || limitUnknown ? '<span class="empty zero coIntelUnknown">?</span>' : this.renderDistrictSlots(used, limit)}
           </div>
         </div>
       </div>
@@ -2023,6 +2052,13 @@ export class CelestialObjectPanel {
     slotCount: number,
     subDistrictIndex?: number,
   ): string {
+    const buildingsIntel = this.planetIntel(data, "buildings");
+    if (buildingsIntel?.status === "unknown") {
+      return Array.from({ length: slotCount }, (_, index) => {
+        const attributes = this.getBuildingSlotViewAttributes(area, index, subDistrictIndex);
+        return `<span class="coBuildingSlot coIntelUnknown" ${attributes} data-co-tooltip="Building information unknown">?</span>`;
+      }).join("");
+    }
     return Array.from({ length: slotCount }, (_, index) => (
       this.renderBuildingSlotForArea(data, area, slots[index] ?? null, index, subDistrictIndex)
     )).join("");
@@ -2183,7 +2219,26 @@ export class CelestialObjectPanel {
     `;
   }
 
+  private renderIntelEconomyBody(data: CelestialObjectPanelData, planetState: PlanetState): string {
+    const intel = this.planetIntel(data, "economy");
+    if (intel?.status === "unknown") {
+      return '<section class="coBody coIntelUnknown" data-co-body="economy"><div class="coIntelCollectionPlaceholder" data-co-tooltip="Economic collection cardinality unknown">?</div></section>';
+    }
+    const html = this.renderEconomyBody(planetState);
+    if (intel?.status !== "stale") return html;
+    const freshness = formatIntelFreshness(intel, getClientIntelYear());
+    return html.replace('class="coBody', `class="coBody coIntelStale`).replace('data-co-body="economy"', `data-co-body="economy"${freshness ? ` data-co-tooltip="${this.tooltipAttr(freshness)}"` : ""}`);
+  }
+
+  private planetIntel(data: CelestialObjectPanelData, fieldId: string): IntelValue<unknown> | undefined {
+    return data.kind === "planet" ? getClientIntelField("planet", data.objectId, fieldId) : undefined;
+  }
+
   private renderHeroModifiers(data: CelestialObjectPanelData): string {
+    const intel = this.planetIntel(data, "economy.activeModifiers");
+    if (intel?.status === "unknown") {
+      return `<div class="coHeroModifiers" data-co-hero-modifiers data-co-modifier-key="unknown"><span class="coHeroModifierSlot"><span class="coHeroModifierBadge coIntelUnknown" data-co-tooltip="Planet modifiers unknown">?</span></span></div>`;
+    }
     const groups = this.getHeroModifierGroups(data);
     const renderedGroups = Array.from(groups.entries()).map(([source, sourceModifiers], index) => {
       const presentation = this.getModifierSourcePresentation(source, sourceModifiers);
@@ -2198,7 +2253,9 @@ export class CelestialObjectPanel {
         </span>
       `;
     }).join("");
-    return `<div class="coHeroModifiers" data-co-hero-modifiers data-co-modifier-key="${this.escapeHtml(this.getHeroModifierRenderKey(data))}">${renderedGroups}</div>`;
+    const freshness = intel ? formatIntelFreshness(intel, getClientIntelYear()) : null;
+    const stale = intel?.status === "stale" ? " coIntelStale" : "";
+    return `<div class="coHeroModifiers${stale}" data-co-hero-modifiers data-co-modifier-key="${this.escapeHtml(this.getHeroModifierRenderKey(data))}"${freshness ? ` data-co-tooltip="${this.tooltipAttr(freshness)}"` : ""}>${renderedGroups}</div>`;
   }
 
   private getHeroModifierGroups(data: CelestialObjectPanelData): Map<string, PlanetModifier[]> {
@@ -2419,7 +2476,8 @@ export class CelestialObjectPanel {
 
   private renderPlanetDefenses(data: CelestialObjectPanelData): string {
     const planetState = data.planetState;
-    if (!planetState || !data.isHabited) return "";
+    const habitationIntel = this.planetIntel(data, "isHabited");
+    if (!planetState || (!data.isHabited && habitationIntel?.status !== "unknown")) return "";
 
     return `
       <aside class="coPlanetDefenses" data-co-side-panel="defenses">
@@ -2430,22 +2488,25 @@ export class CelestialObjectPanel {
           </div>
         </div>
         <div class="coDefenseGrid">
-          ${this.renderDefenseStat("population", "Soldiers", "0")}
-          ${this.renderDefenseStat("districts", "Defense Armies", "0")}
-          ${this.renderDefenseStat("stability", "Fortification", "0%")}
-          ${this.renderDefenseStat("habitability", "Orbital Defense", "None")}
+          ${this.renderDefenseStat("population", "Soldiers", "0", this.planetIntel(data, "defenses.soldiers"))}
+          ${this.renderDefenseStat("districts", "Defense Armies", "0", this.planetIntel(data, "defenses.armies"))}
+          ${this.renderDefenseStat("stability", "Fortification", "0%", this.planetIntel(data, "defenses.fortification"))}
+          ${this.renderDefenseStat("habitability", "Orbital Defense", "None", this.planetIntel(data, "defenses.orbitalDefense"))}
         </div>
         ${this.renderConstructionQueue(data)}
       </aside>
     `;
   }
 
-  private renderDefenseStat(icon: string, label: string, value: string): string {
+  private renderDefenseStat(icon: string, label: string, value: string, intel?: IntelValue<unknown>): string {
+    const displayed = intel?.status === "unknown" ? "?" : value;
+    const freshness = intel ? formatIntelFreshness(intel, getClientIntelYear()) : null;
+    const intelClass = intel?.status === "stale" ? " coIntelStale" : intel?.status === "unknown" ? " coIntelUnknown" : "";
     return `
-      <div class="coDefenseStat coTone-neutral">
+      <div class="coDefenseStat coTone-neutral${intelClass}"${freshness ? ` data-co-tooltip="${this.tooltipAttr(freshness)}"` : ""}>
         ${this.renderStatIcon(icon)}
         <span>${this.escapeHtml(label)}</span>
-        <strong>${this.escapeHtml(value)}</strong>
+        <strong>${this.escapeHtml(displayed)}</strong>
       </div>
     `;
   }
@@ -3245,6 +3306,20 @@ export class CelestialObjectPanel {
   private renderConstructionQueue(data: CelestialObjectPanelData): string {
     const planetState = data.planetState;
     if (!planetState) return "";
+    const queueIntel = this.planetIntel(data, "constructionQueue");
+    if (queueIntel?.status === "unknown") {
+      return `
+        <div class="coQueuePanel coIntelUnknown" data-co-queue-panel>
+          <div class="coQueueHeader">
+            <strong>Build Queue</strong>
+            <span data-co-queue-count>? active</span>
+          </div>
+          <div class="coQueueList" data-co-queue-list>
+            <div class="coQueueEmpty">?</div>
+          </div>
+        </div>
+      `;
+    }
     const queue = this.getEstimatedConstructionQueue(planetState);
     const canCancel = data.canManageLeaders === true;
     return `
@@ -4279,6 +4354,28 @@ export class CelestialObjectPanel {
 
 .coSummaryStat strong {
   color: #f4d56f;
+}
+
+.coIntelStale,
+.coIntelStale strong,
+.coIntelStale > span:not(.coStatIcon) {
+  color: #8c9a9c !important;
+  filter: saturate(0.3);
+}
+
+.coIntelUnknown,
+.coIntelUnknown strong {
+  color: #a7b1b3 !important;
+}
+
+.coIntelCollectionPlaceholder {
+  display: grid;
+  place-items: center;
+  min-height: 58px;
+  border: 1px dashed rgba(167, 177, 179, 0.45);
+  background: rgba(100, 112, 116, 0.08);
+  color: #a7b1b3;
+  font-size: 24px;
 }
 
 .coPortrait {

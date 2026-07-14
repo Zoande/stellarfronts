@@ -561,7 +561,7 @@ export function assignFoundingSpeciesToOwnedPops(nextState: GameState): boolean 
   const factionById = new Map(nextState.factions.map((faction) => [faction.id, faction]));
   nextState.planetStates = nextState.planetStates.map((planetState) => {
     if (!planetState.isHabited) return planetState;
-    const ownerId = nextState.starOwnership[planetState.starId] ?? -1;
+    const ownerId = planetState.ownerId ?? -1;
     const faction = factionById.get(ownerId);
     const foundingSpeciesId = faction?.foundingSpeciesId ?? (faction ? getFactionFoundingSpeciesId(faction.id) : null);
     if (!foundingSpeciesId) return planetState;
@@ -618,7 +618,7 @@ function addInferredTechIdsFromShipDesign(techIds: Set<TechId>, design: ShipDesi
 export function inferCompletedTechIdsFromExistingAssets(nextState: GameState, factionId: number): TechId[] {
   const techIds = new Set<TechId>();
   for (const planetState of nextState.planetStates) {
-    if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    if (planetState.ownerId !== factionId) continue;
     for (const building of Object.values(planetState.buildings).flat()) {
       const buildingKind = getPlanetBuildingKind(building);
       if (buildingKind) addInferredTechIdsFromBuilding(techIds, buildingKind, getPlanetBuildingLevel(building));

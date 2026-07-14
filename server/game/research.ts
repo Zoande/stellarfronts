@@ -37,7 +37,7 @@ import type { RuntimeContext } from "./types";
 function countOwnedPlanetBuildings(ctx: RuntimeContext, factionId: number, buildingKind: string): number {
   let count = 0;
   for (const planetState of ctx.state.planetStates) {
-    if ((ctx.state.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    if (planetState.ownerId !== factionId) continue;
     for (const building of Object.values(planetState.buildings).flat()) {
       if (getPlanetBuildingKind(building) === buildingKind) count += 1;
     }
@@ -61,7 +61,7 @@ function buildResearchContext(ctx: RuntimeContext, factionId: number): ResearchC
     technician: 0,
   };
   for (const planetState of ctx.state.planetStates) {
-    if ((ctx.state.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    if (planetState.ownerId !== factionId) continue;
     for (const group of planetState.economy.popGroups) {
       if (Object.prototype.hasOwnProperty.call(jobs, group.job)) {
         jobs[group.job] += group.population / PEOPLE_PER_MONTHLY_UNIT;

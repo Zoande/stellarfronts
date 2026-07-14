@@ -1096,7 +1096,8 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     }
     if (cached?.starbase) return Promise.resolve(cached.starbase);
     return server.requestDetail<StarbaseDetailPayload>("starbase", starbaseId)
-      .then((event) => (event.payload && "starbase" in event.payload ? event.payload.starbase : null));
+      .then((event) => (event.payload && "starbase" in event.payload ? event.payload.starbase : null))
+      .catch(() => null);
   }
 
   function releaseSystemDetail(): void {

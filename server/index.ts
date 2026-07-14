@@ -171,6 +171,7 @@ import { findShipDesign, findShipDesignById, getNewestActiveShipDesign } from ".
 import { calculateFactionResourceFlow, calculatePlayerMarketQuote, refreshFactionEconomyDeltas as applyFactionEconomyDeltas, recalculatePlanetEconomies as applyRecalculatePlanetEconomies, getMarketPlayerStats, getMarketResourceState, recordMarketTransaction, applyMarketTradePressure } from "./game/economy-market";
 import type { FactionResourceFlow, PlayerMarketQuote } from "./game/economy-market";
 import { refreshDiscovery as applyRefreshDiscovery } from "./game/visibility";
+import { getKnownStarIds, hasCommandLink } from "./game/intelligence";
 import { createSnapshot, createUpdate } from "./game/snapshot";
 import { createDetailPayload } from "./game/detail-payloads";
 import { calculateShipUpgradePlan, createDefaultFleetCombatSettings, normalizeFleetTacticalOrder } from "./game/fleet-factory";
@@ -205,7 +206,7 @@ import {
   processLeaderDays,
 } from "./game/population";
 import { isShipDesignUnlockedForFaction, getShipDesignMissingTechnologyName } from "./game/research";
-import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow } from "./game/fleet-combat";
+import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow, processFleetCommandLinkLoss } from "./game/fleet-combat";
 
 // Probe mode: the orchestrator runs each worktree with `--print-version` to read
 // its committed identity (protocol/schema/migratesFrom) without booting a server.
@@ -232,6 +233,7 @@ const ctx: RuntimeContext = {
   refreshFactionEconomyDeltas, // hoisted
   queuePlanetDetailRefresh, // hoisted
   refreshDiscovery: () => refreshDiscovery(), // hoisted â€” wrapper needed for default param
+  refreshIntelligence: () => refreshDiscovery(),
   syncSystemOwnershipFromStarbases: () => syncSystemOwnershipFromStarbases(ctx.state),
   syncFleetMembership: () => syncFleetMembership(ctx, ctx.state),
   createRuntimeId, // hoisted
@@ -331,8 +333,15 @@ function isFleetAvailableForOrders(fleet: GameFleet): boolean {
   return fleet.phase === "idle" || fleet.phase === "orbitingPlanet" || fleet.phase === "orbiting";
 }
 
+function hasFleetCommandLink(fleet: GameFleet): boolean {
+  return !fleet.hyperlanePosition && hasCommandLink(ctx.state, fleet.ownerId, fleet.currentStarId);
+}
+
 function canFleetAcceptReplacementOrder(fleet: GameFleet): boolean {
-  return fleet.phase !== "missingInAction" && fleet.combatStatus !== "destroyed" && fleet.shipIds.length > 0;
+  return fleet.phase !== "missingInAction"
+    && fleet.combatStatus !== "destroyed"
+    && fleet.shipIds.length > 0
+    && hasFleetCommandLink(fleet);
 }
 
 
@@ -438,12 +447,13 @@ function handleColonizePlanet(socket: WebSocket, perspective: GalaxyPerspective,
   const fleet = resolveFleetForCommand(fleetId, undefined);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
 
   const planetState = getPlanetState(ctx, planetId);
   if (!planetState) return reject(socket, "Planet not found.");
   const planet = getPlanetConfig(ctx, planetState);
   if (!planet) return reject(socket, "Planet details are unavailable.");
-  if ((ctx.state.starOwnership[planetState.starId] ?? -1) !== factionId) {
+  if (ctx.state.starOwnership[planetState.starId] !== factionId) {
     return reject(socket, "Planet must be in an owned system.");
   }
   if (planetState.isHabited || planet.isHabited === true) {
@@ -464,6 +474,7 @@ function handleColonizePlanet(socket: WebSocket, perspective: GalaxyPerspective,
     planet,
     {
       ...planetState,
+      ownerId: factionId,
       isHabited: true,
       population: NEW_COLONY_POPULATION,
       speciesPopulations: [{ speciesId: foundingSpeciesId, population: NEW_COLONY_POPULATION }],
@@ -511,6 +522,7 @@ function handleMergeFleets(
   const targetFleet = ctx.state.fleets.find((fleet) => fleet.id === targetFleetId);
   if (!targetFleet) return reject(socket, "Target fleet not found.");
   if (targetFleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (!hasFleetCommandLink(targetFleet)) return reject(socket, "Fleet command link unavailable.");
 
   const uniqueSourceIds = Array.from(new Set(sourceFleetIds)).filter((id) => id !== targetFleetId);
   if (uniqueSourceIds.length === 0) return reject(socket, "No fleets selected to merge.");
@@ -522,6 +534,7 @@ function handleMergeFleets(
   if (sourceFleets.length !== uniqueSourceIds.length) return reject(socket, "A source fleet was not found.");
   for (const fleet of sourceFleets) {
     if (fleet.ownerId !== factionId) return reject(socket, "You do not own all selected fleets.");
+    if (!hasFleetCommandLink(fleet)) return reject(socket, "A selected fleet has no command link.");
     if (!isMergeSourceEligible(fleet)) return reject(socket, "A selected fleet cannot currently merge.");
     if (fleet.currentStarId !== targetFleet.currentStarId && !findRoute(ctx, fleet, targetFleet.currentStarId)) {
       return reject(socket, "No discovered safe route to the target fleet.");
@@ -551,6 +564,7 @@ function handleStopFleet(socket: WebSocket, perspective: GalaxyPerspective, flee
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
   if (fleet.phase === "missingInAction") return reject(socket, "Fleet is missing in action.");
 
   clearFleetMovementNow(ctx, fleet);
@@ -572,8 +586,8 @@ function validateRetreatTarget(socket: WebSocket, perspective: GalaxyPerspective
     return false;
   }
   if (perspective.mode !== "observer") {
-    const known = ctx.state.discoveredByFaction[String(perspective.factionId)] ?? [];
-    if (!known.includes(targetStarId)) {
+    const known = getKnownStarIds(ctx.state, perspective.factionId);
+    if (!known.has(targetStarId)) {
       reject(socket, "Retreat target is not known.");
       return false;
     }
@@ -597,6 +611,7 @@ function handleRetreatFleetTo(
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
   if (!validateRetreatTarget(socket, perspective, fleet, targetStarId, true)) return;
 
   fleet.retreatState = {
@@ -648,6 +663,7 @@ function handleEmergencyRetreatFleetTo(
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
   if (!validateRetreatTarget(socket, perspective, fleet, targetStarId, false)) return;
 
   const lostShipIds = new Set<string>();
@@ -704,6 +720,7 @@ function handleAttackTarget(
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
   const targetOwnerId = targetKind === "fleet"
     ? ctx.state.fleets.find((candidate) => candidate.id === targetId)?.ownerId
     : ctx.state.starbases.find((candidate) => candidate.id === targetId)?.ownerId;
@@ -768,6 +785,10 @@ function getOwnedFleetForCombatCommand(socket: WebSocket, perspective: GalaxyPer
   }
   if (fleet.ownerId !== factionId) {
     reject(socket, "You do not own that fleet.");
+    return null;
+  }
+  if (!hasFleetCommandLink(fleet)) {
+    reject(socket, "Fleet command link unavailable.");
     return null;
   }
   return fleet;
@@ -856,7 +877,14 @@ function sendDetailEvent(
 ): string | null {
   const detail = createDetailPayload(ctx, perspective, scope, id);
   if ("error" in detail) {
-    reject(socket, detail.error);
+    sendEvent(socket, {
+      type: "detail",
+      scope,
+      id: id ?? null,
+      revision: "unavailable",
+      status: "unavailable",
+      message: "Information does not exist.",
+    });
     return null;
   }
   const matchesKnownRevision = !!knownRevision && knownRevision === detail.revision;
@@ -889,7 +917,14 @@ function handleSubscribeDetails(
 ): void {
   const detail = createDetailPayload(ctx, session.perspective, scope, id);
   if ("error" in detail) {
-    reject(session.socket, detail.error);
+    sendEvent(session.socket, {
+      type: "detail",
+      scope,
+      id: id ?? null,
+      revision: "unavailable",
+      status: "unavailable",
+      message: "Information does not exist.",
+    });
     return;
   }
   const key = createDetailKey(scope, detail.normalizedId);
@@ -922,6 +957,14 @@ function broadcastSubscribedDetails(): void {
     for (const [key, subscription] of Array.from(client.detailSubscriptions.entries())) {
       const detail = createDetailPayload(ctx, client.perspective, subscription.scope, subscription.id);
       if ("error" in detail) {
+        sendEvent(client.socket, {
+          type: "detail",
+          scope: subscription.scope,
+          id: subscription.id,
+          revision: "unavailable",
+          status: "unavailable",
+          message: "Information does not exist.",
+        });
         client.detailSubscriptions.delete(key);
         continue;
       }
@@ -959,8 +1002,12 @@ function validatePlanetCommand(socket: WebSocket, perspective: GalaxyPerspective
     reject(socket, "Only habited planets can be managed.");
     return null;
   }
-  if ((ctx.state.starOwnership[planetState.starId] ?? -1) !== factionId) {
+  if (planetState.ownerId !== factionId) {
     reject(socket, "You do not own that planet.");
+    return null;
+  }
+  if (!hasCommandLink(ctx.state, factionId, planetState.starId)) {
+    reject(socket, "Planet command link unavailable.");
     return null;
   }
   return planetState;
@@ -1211,6 +1258,10 @@ function validateStarbaseCommand(socket: WebSocket, perspective: GalaxyPerspecti
   }
   if (starbase.ownerId !== factionId) {
     reject(socket, "You do not own that starbase.");
+    return null;
+  }
+  if (!hasCommandLink(ctx.state, factionId, starbase.starId)) {
+    reject(socket, "Starbase command link unavailable.");
     return null;
   }
   if (!canAccessStar(ctx, perspective, starbase.starId)) {
@@ -1975,6 +2026,12 @@ function advanceState(now: number): Set<ServerUpdateField> {
   ctx.state.clock.syncedAtMs = now;
   changed.add("clock");
 
+  refreshDiscovery();
+  if (processFleetCommandLinkLoss(ctx)) {
+    changed.add("fleets");
+    changed.add("visibility");
+  }
+
   const movingBefore = ctx.state.fleets.some((fleet) => fleet.phase !== "idle");
   for (const fleet of ctx.state.fleets) {
     if (advanceFleet(ctx, fleet, scaledMs)) {
@@ -2361,7 +2418,7 @@ function validateLeaderAssignment(
       reject(socket, "Planet not found.");
       return false;
     }
-    if ((ctx.state.starOwnership[planetState.starId] ?? -1) !== factionId) {
+    if (planetState.ownerId !== factionId) {
       reject(socket, "You do not own that planet.");
       return false;
     }

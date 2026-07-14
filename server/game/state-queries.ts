@@ -16,6 +16,7 @@ import { NEBULA_DEFINITIONS, findNebulaForStar } from "../../src/data/Nebula";
 import type { PlanetConfig } from "../../src/data/StarMap";
 import { clamp } from "./pure-helpers";
 import type { GameState, RuntimeContext } from "./types";
+import { getIntelEntityView } from "./intelligence";
 
 // --- Shortage severity ---
 
@@ -399,7 +400,7 @@ export function getSpeciesRightsForFaction(nextState: GameState, factionId: numb
 }
 
 export function getPlanetSpeciesContext(nextState: GameState, planetState: PlanetState): PlanetEconomySpeciesContext | undefined {
-  const ownerId = nextState.starOwnership[planetState.starId] ?? -1;
+  const ownerId = planetState.ownerId ?? -1;
   if (!Number.isInteger(ownerId) || ownerId < 0) {
     return { species: nextState.species, rightsBySpeciesId: {} };
   }
@@ -415,8 +416,8 @@ export function getPlanetDistrictLimitsFromState(nextState: GameState, planetSta
 }
 
 export function haveFactionsMet(nextState: GameState, a: number, b: number): boolean {
-  if (a === b) return true;
-  return (nextState.metByFaction[String(a)] ?? []).includes(b);
+  void nextState;
+  return a === b;
 }
 
 // --- Technology queries ---
@@ -470,7 +471,7 @@ export function getNebulaPlanetModifiers(nextState: GameState, planetState: Plan
 }
 
 export function getPlanetTechnologyModifiers(nextState: GameState, planetState: PlanetState): PlanetModifier[] {
-  const ownerId = nextState.starOwnership[planetState.starId] ?? -1;
+  const ownerId = planetState.ownerId ?? -1;
   const nebulaModifiers = getNebulaPlanetModifiers(nextState, planetState);
   return ownerId >= 0
     ? [
@@ -505,7 +506,7 @@ export function getFactionStarbaseShipBuildSpeedMultiplier(nextState: GameState,
 export function getEmpireSpeciesIds(nextState: GameState, factionId: number): SpeciesId[] {
   const ids = new Set<SpeciesId>();
   for (const planetState of nextState.planetStates) {
-    if (!planetState.isHabited || (nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    if (!planetState.isHabited || planetState.ownerId !== factionId) continue;
     for (const population of planetState.speciesPopulations ?? []) {
       if (population.population > 0) ids.add(population.speciesId);
     }
@@ -526,8 +527,8 @@ export function getPlanetConfig(ctx: RuntimeContext, planetState: PlanetState): 
 export function canAccessStar(ctx: RuntimeContext, perspective: GalaxyPerspective, starId: number): boolean {
   if (starId < 0 || starId >= ctx.state.stars.length) return false;
   if (perspective.mode === "observer") return true;
-  const known = ctx.state.discoveredByFaction[String(perspective.factionId)] ?? [];
-  return known.includes(starId);
+  const view = getIntelEntityView(ctx.state, perspective.factionId, "star", starId);
+  return view?.fields.type?.status !== undefined && view.fields.type.status !== "unknown";
 }
 
 export function canAccessPlanet(ctx: RuntimeContext, perspective: GalaxyPerspective, planetState: PlanetState): boolean {

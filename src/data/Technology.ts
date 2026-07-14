@@ -262,6 +262,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_ship_module", moduleId: "defense_reinforced_hull" },
       { type: "unlock_ship_module", moduleId: "utility_ion_propulsors" },
       { type: "unlock_ship_module", moduleId: "utility_optical_array" },
+      { type: "unlock_ship_module", moduleId: "utility_survey_array" },
       { type: "unlock_ship_module", moduleId: "utility_fire_control" },
       { type: "unlock_ship_module", moduleId: "utility_reactor_capacitor" },
       { type: "unlock_ship_module", moduleId: "utility_repair_drones" },
@@ -313,6 +314,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_starbase_building", building: "alloyAssemblyDock" },
       { type: "unlock_starbase_building", building: "researchAnnex" },
       { type: "unlock_starbase_building", building: "logisticsDepot" },
+      { type: "unlock_starbase_building", building: "listeningStation" },
     ],
   },
   {

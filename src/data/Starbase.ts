@@ -4,6 +4,7 @@ import type { RangeBand } from "../game/CombatTypes";
 
 export type StarbaseLevel = "outpost" | "starbase" | "starhold" | "starFortress";
 export type StarbaseBuildingKind =
+  | "listeningStation"
   | "shipyard"
   | "solarArray"
   | "hydroponicsBay"
@@ -154,6 +155,7 @@ export interface StarbaseBuildingDefinition {
   cost: ResourceCounts;
   buildDays: number;
   shipyards?: number;
+  sensorSuiteIds?: import("./Intelligence").SensorSuiteId[];
 }
 
 export interface StarbaseShipDefinition {
@@ -308,6 +310,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
 };
 
 export const STARBASE_BUILDING_KINDS: StarbaseBuildingKind[] = [
+  "listeningStation",
   "shipyard",
   "solarArray",
   "hydroponicsBay",
@@ -319,6 +322,16 @@ export const STARBASE_BUILDING_KINDS: StarbaseBuildingKind[] = [
 ];
 
 export const STARBASE_BUILDING_DEFINITIONS: Record<StarbaseBuildingKind, StarbaseBuildingDefinition> = {
+  listeningStation: {
+    kind: "listeningStation",
+    label: "Listening Station",
+    description: "Long-baseline arrays catalogue distant systems and maintain command telemetry across friendly space.",
+    production: resources({}),
+    upkeep: resources({ energy: 6, goods: 1 }),
+    cost: resources({ minerals: 320, alloys: 70, goods: 30 }),
+    buildDays: 30,
+    sensorSuiteIds: ["listeningStationSensors"],
+  },
   shipyard: {
     kind: "shipyard",
     label: "Shipyard",
@@ -665,7 +678,9 @@ export function getNextStarbaseLevel(level: StarbaseLevel): StarbaseLevel | null
 }
 
 export function createEmptyStarbaseSlots(): Array<StarbaseBuildingKind | null> {
-  return Array<StarbaseBuildingKind | null>(9).fill(null);
+  const slots = Array<StarbaseBuildingKind | null>(9).fill(null);
+  slots[0] = "listeningStation";
+  return slots;
 }
 
 export function createStarbaseBuildingQueueItem(

@@ -49,6 +49,7 @@ import {
 } from "../game/EmpireDisplayColors";
 import type { EmpireSystemRelation } from "../game/EmpireDisplayColors";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
+import { getClientIntelField } from "../game/ClientIntelligence";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, DiplomacyMovementPayload, ServerFleet, ServerShip, ServerStarbase, ServerStarbaseSummary } from "../game/GameProtocol";
 import type { FactionTechnologyView } from "../data/Technology";
@@ -2551,6 +2552,7 @@ export class GalaxyScene implements IGameScene {
   }
 
   private getFleetIconColor(fleet: ServerFleet): [number, number, number] {
+    if (getClientIntelField("fleet", fleet.id, "existence").status === "stale") return [0.48, 0.52, 0.54];
     const owner = this.factions.find((faction) => faction.id === fleet.ownerId);
     return owner?.color ?? [1, 1, 1];
   }
@@ -2972,7 +2974,7 @@ export class GalaxyScene implements IGameScene {
           this.objectPanel.refreshAssignedLeader(
             planet.id,
             this.getAssignedLeader("planet", planet.id),
-            this.starOwnership[planetState.starId] === this.playerFactionId,
+            planetState.ownerId === this.playerFactionId,
           );
         }
       }
