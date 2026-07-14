@@ -43,6 +43,7 @@ import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { computeStarbasePower } from "../game/combatPower";
 import {
+  getEmpireBorderColor,
   getEmpireDisplayColor,
   getEmpireSystemRelation,
 } from "../game/EmpireDisplayColors";
@@ -1438,6 +1439,7 @@ export class GalaxyScene implements IGameScene {
     if (factionCount <= 0) return;
 
     const palette = this.getRelationshipPalette().slice(0, factionCount);
+    const borderPalette = this.getRelationshipBorderPalette().slice(0, factionCount);
     this.starOwnership = this.options.starOwnership
       ? this.options.starOwnership.slice(0, this.stars.length)
       : buildHomeSystemOwnership(this.stars, this.factions);
@@ -1454,6 +1456,7 @@ export class GalaxyScene implements IGameScene {
       mapHeight: ownershipHeight,
       stars: this.stars,
       palette,
+      borderPalette,
       hyperlanePairs: this.hyperlanePairs,
     });
     this.ownershipRenderer.updateOwnership(this.applyVisibilityToOwnership(this.starOwnership));
@@ -3085,8 +3088,18 @@ export class GalaxyScene implements IGameScene {
     });
   }
 
+  private getRelationshipBorderPalette(): Color3[] {
+    return this.factions.map((faction) => {
+      const color = getEmpireBorderColor(faction.color, this.getEmpireRelation(faction.id));
+      return new Color3(color[0], color[1], color[2]);
+    });
+  }
+
   private refreshEmpireRelationshipVisuals(): void {
-    this.ownershipRenderer?.setPalette(this.getRelationshipPalette());
+    this.ownershipRenderer?.setPalette(
+      this.getRelationshipPalette(),
+      this.getRelationshipBorderPalette(),
+    );
     this.starField?.setSystemRelations(this.getSystemRelations());
   }
 

@@ -47,3 +47,20 @@ export function getEmpireDisplayColor(
     mix(color[2], grey, FOREIGN_DESATURATION),
   ];
 }
+
+export function getEmpireBorderColor(
+  source: EmpireDisplayColor,
+  relation: EmpireSystemRelation,
+): EmpireDisplayColor {
+  const color = getEmpireDisplayColor(source, relation);
+  if (relation !== "own") return color;
+
+  const maxChannel = Math.max(...color);
+  if (maxChannel <= 0) return color;
+
+  const saturationBoost = 1.3;
+  const brightnessBoost = Math.max(maxChannel, 0.94) / maxChannel;
+  return color.map((channel) => (
+    clamp01((maxChannel - (maxChannel - channel) * saturationBoost) * brightnessBoost)
+  )) as EmpireDisplayColor;
+}
