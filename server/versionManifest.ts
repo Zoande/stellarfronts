@@ -10,7 +10,7 @@
  */
 
 // Bump these in lockstep with GameState.schemaVersion and the snapshot protocol.
-export const CURRENT_SCHEMA_VERSION = 20;
+export const CURRENT_SCHEMA_VERSION = 22;
 export const CURRENT_PROTOCOL_VERSION = 2;
 
 export interface VersionManifest {

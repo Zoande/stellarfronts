@@ -187,12 +187,15 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
     ? ctx.state.leaders.filter((leader) => leader.factionId === perspective.factionId && leader.status !== "dead")
     : ctx.state.leaders.filter((leader) => leader.status !== "dead");
   const species = ctx.state.species;
-  // Events and situations are private to the owning faction.
+  // Events, situations, and trade alerts are private to the owning faction.
   const situations = perspective.mode === "faction"
     ? ctx.state.situations.filter((situation) => situation.factionId === perspective.factionId)
     : [];
   const events = perspective.mode === "faction"
     ? ctx.state.events.filter((event) => event.factionId === perspective.factionId)
+    : [];
+  const tradeAlerts = perspective.mode === "faction"
+    ? (ctx.state.market.tradeAlerts ?? []).filter((alert) => alert.playerId === perspective.factionId)
     : [];
   const recentCombatContacts = visibleSet
     ? ctx.state.recentCombatContacts.filter((contact) => {
@@ -215,6 +218,7 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
       paused: ctx.state.clock.paused,
       syncedAtMs: ctx.state.clock.syncedAtMs,
     },
+    nebulae: ctx.state.nebulae ?? [],
     hyperlanes,
     factions,
     starOwnership: toOwnershipEntries(starOwnership),
@@ -235,6 +239,7 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
     habitedPlanetSystemIds: createHabitedPlanetSystemIds(ctx, knownSet),
     situations,
     events,
+    tradeAlerts,
   };
 }
 
@@ -317,6 +322,9 @@ export function createUpdate(ctx: RuntimeContext, perspective: GalaxyPerspective
   }
   if (changed.includes("events")) {
     update.events = visibleState.events;
+  }
+  if (changed.includes("tradeAlerts")) {
+    update.tradeAlerts = visibleState.tradeAlerts;
   }
   return update;
 }

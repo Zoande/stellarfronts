@@ -5,9 +5,10 @@ import type { FactionInfo, GalaxyPerspective } from "../src/data/Factions";
 import { applyPlanetStatesToStars, createPlanetStateFromConfig } from "../src/data/StarMap";
 import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../src/data/SystemCoordinates";
-import { addResourceCounts, BUILDING_KINDS, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, filterInvalidQueuedBuildingsForSubDistrictChange, getEffectiveSpeciesHabitability, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, NEW_COLONY_POPULATION, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
+import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, filterInvalidQueuedBuildingsForSubDistrictChange, getEffectiveSpeciesHabitability, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, NEW_COLONY_POPULATION, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
 import { MARKET_FEE_RATE } from "../src/data/Market";
 import { countStarbaseShipyards, createStarbaseBuildingQueueItem, createStarbaseShipQueueItem, createStarbaseUpgradeQueueItem, hasQueuedStarbaseBuildingTarget, isStarbaseBuildingKind, isStarbaseShipKind, STARBASE_LEVEL_DEFINITIONS } from "../src/data/Starbase";
+import { getNebulaGatedBuildingKinds, nebulaEnablesBuildingAtStar } from "../src/data/Nebula";
 import type {
   StarbaseBuildingKind,
   StarbaseLevel,
@@ -1261,6 +1262,10 @@ function handleBuildStarbaseBuilding(
   if (!starbase) return;
   if (!isStarbaseBuildingKind(buildingKind)) return reject(socket, "Invalid starbase building.");
   if (!requireUnlocked(socket, starbase.ownerId, getRequiredTechIdsForStarbaseBuilding(buildingKind))) return;
+  if (getNebulaGatedBuildingKinds().has(buildingKind)
+    && !nebulaEnablesBuildingAtStar(ctx.state.nebulae, starbase.starId, buildingKind)) {
+    return reject(socket, "This building can only be built inside the right nebula.");
+  }
   const unlockedSlots = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.buildingSlots ?? 0;
   if (!isValidSlotIndex(slotIndex, starbase.buildingSlots.length) || slotIndex >= unlockedSlots) {
     return reject(socket, "Invalid starbase building slot.");
@@ -1549,6 +1554,7 @@ function handleBuildPlanetBuilding(
   const planetState = validatePlanetCommand(socket, perspective, planetId);
   if (!planetState) return;
   if (!BUILDING_KINDS.includes(buildingKind)) return reject(socket, "Invalid building.");
+  if (BUILDING_DEFINITIONS[buildingKind].autoPlaced) return reject(socket, "This building cannot be constructed manually.");
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
   if (factionId === null) return reject(socket, "Observer mode is read-only.");
   if (!requireUnlocked(socket, factionId, getRequiredTechIdsForBuilding(buildingKind))) return;
@@ -1635,6 +1641,9 @@ function handleUpgradePlanetBuilding(
   const targetLevel = getBuildingUpgradeTargetLevel(buildingSlot);
   if (!targetLevel) return reject(socket, "Building is already at maximum level.");
   if (!requireUnlocked(socket, factionId, getRequiredTechIdsForBuildingLevel(buildingKind, targetLevel))) return;
+  if (!meetsCapitalUpgradePopulation(buildingKind, targetLevel, planetState.population)) {
+    return reject(socket, `Requires a population of at least ${getCapitalUpgradePopulationThreshold(targetLevel).toLocaleString()}.`);
+  }
   if (hasQueuedBuildingTarget(planetState, area, slotIndex, subDistrictIndex)) {
     return reject(socket, "Building slot is already queued.");
   }
@@ -1964,6 +1973,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
   }
   if (marketResult.marketChanged) {
     changed.add("market");
+    changed.add("tradeAlerts");
   }
   if (marketResult.economyChanged || (marketResult.marketChanged && ctx.state.market.autoTrades.length > 0)) {
     changed.add("factionEconomies");

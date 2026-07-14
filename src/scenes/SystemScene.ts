@@ -39,6 +39,7 @@ import {
   withPlanetObjectDetails,
 } from "../data/StarMap";
 import type { PlanetConfig, StarData, StarVisualKind } from "../data/StarMap";
+import type { NebulaRegion } from "../data/Nebula";
 import {
   getHyperlaneExitSystemPosition,
   getPlanetSystemOrbitRadius,
@@ -115,6 +116,8 @@ interface TacticalFleetView {
 
 export interface SystemSceneOptions {
   systemPayload?: SystemDetailPayload;
+  /** The nebula covering this system, if any (themes the skybox + gates buildings). */
+  nebula?: NebulaRegion | null;
   playerShipStarId?: number;
   playerShipSystemIds?: number[];
   fleetSystemPositions?: Record<string, { x: number; y: number; z: number }>;
@@ -2168,6 +2171,7 @@ export class SystemScene implements IGameScene {
       status: starbase.status,
       power: this.formatStarbasePower(starbase),
       technology: this.options.technology,
+      nebulaKind: this.options.nebula?.kind ?? null,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
       onClose: (starbaseId) => this.options.onReleaseStarbaseDetails?.(starbaseId),
     });
@@ -2579,7 +2583,7 @@ export class SystemScene implements IGameScene {
       name: "systemSkybox",
       materialName: "systemSkyboxMat",
       size: 4000,
-      render: getSystemSkyboxSettings(this.star),
+      render: getSystemSkyboxSettings(this.star, this.options.nebula ?? null),
       textureLevel: 0.9,
       environmentIntensity: 0.38,
     });

@@ -10,7 +10,8 @@ export type StarbaseBuildingKind =
   | "orbitalFabricator"
   | "alloyAssemblyDock"
   | "researchAnnex"
-  | "logisticsDepot";
+  | "logisticsDepot"
+  | "mineralHarvester";
 export type StarbaseShipKind =
   | "corvette"
   | "destroyer"
@@ -314,6 +315,7 @@ export const STARBASE_BUILDING_KINDS: StarbaseBuildingKind[] = [
   "alloyAssemblyDock",
   "researchAnnex",
   "logisticsDepot",
+  "mineralHarvester",
 ];
 
 export const STARBASE_BUILDING_DEFINITIONS: Record<StarbaseBuildingKind, StarbaseBuildingDefinition> = {
@@ -380,6 +382,15 @@ export const STARBASE_BUILDING_DEFINITIONS: Record<StarbaseBuildingKind, Starbas
     upkeep: resources({}),
     cost: resources({ minerals: 320, alloys: 60 }),
     buildDays: 30,
+  },
+  mineralHarvester: {
+    kind: "mineralHarvester",
+    label: "Mineral Harvester",
+    description: "Electrostatic collectors scrape mineral-rich dust straight from the nebula. Only buildable inside a dust cloud.",
+    production: resources({ minerals: 16 }),
+    upkeep: resources({ energy: 5 }),
+    cost: resources({ minerals: 340, alloys: 60 }),
+    buildDays: 45,
   },
 };
 

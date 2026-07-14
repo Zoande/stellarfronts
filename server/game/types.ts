@@ -2,6 +2,7 @@ import type { WebSocket } from "ws";
 import type { AuthAccount, DevGameRuntimeRow } from "../../src/auth/types";
 import type { FactionInfo, GalaxyPerspective } from "../../src/data/Factions";
 import type { StarData } from "../../src/data/StarMap";
+import type { NebulaRegion } from "../../src/data/Nebula";
 import type { PlanetState, FactionEconomyState } from "../../src/data/Economy";
 import type { FactionTechState } from "../../src/data/Technology";
 import type { FactionGovernmentState } from "../../src/data/Government";
@@ -32,8 +33,9 @@ export interface GameFleet extends ServerFleet {
 export interface GameShip extends ServerShip {}
 
 export interface GameState {
-  schemaVersion: 20;
+  schemaVersion: 22;
   stars: StarData[];
+  nebulae: NebulaRegion[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
   factionTechnologies: FactionTechState[];

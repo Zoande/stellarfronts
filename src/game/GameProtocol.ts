@@ -15,6 +15,7 @@ import type {
   MarketAutoTradeOrder,
   MarketPriceSnapshot,
   MarketTransactionRecord,
+  MarketTradeAlert,
 } from "../data/Market";
 import type {
   StarbaseConstructionQueueItem,
@@ -46,6 +47,7 @@ import type {
   TreatyArticleId,
 } from "../data/Diplomacy";
 import type { PlanetConfig, StarData } from "../data/StarMap";
+import type { NebulaRegion } from "../data/Nebula";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type {
   CombatTargetKind,
@@ -113,7 +115,8 @@ export type ServerUpdateField =
   | "market"
   | "combatContacts"
   | "situations"
-  | "events";
+  | "events"
+  | "tradeAlerts";
 
 export interface ServerStar extends StarData {}
 
@@ -891,6 +894,9 @@ export interface GameSnapshot {
   perspective: GalaxyPerspective;
   clock: GameClock;
   stars: ServerStar[];
+  // Nebula regions are public/global — always sent in full regardless of fog so
+  // the galaxy-map cloud renders even over unexplored systems.
+  nebulae: NebulaRegion[];
   planetStates: PlanetState[];
   factionEconomies: FactionEconomyState[];
   habitedPlanetSystemIds: number[];
@@ -911,6 +917,7 @@ export interface GameSnapshot {
   diplomacy: DiplomacyMovementPayload;
   situations: ActiveSituation[];
   events: ActiveEvent[];
+  tradeAlerts: MarketTradeAlert[];
 }
 
 export interface GameUpdate {
@@ -920,6 +927,7 @@ export interface GameUpdate {
   changed: ServerUpdateField[];
   clock?: GameClock;
   stars?: ServerStar[];
+  nebulae?: NebulaRegion[];
   planetStates?: PlanetState[];
   factionEconomies?: FactionEconomyState[];
   habitedPlanetSystemIds?: number[];
@@ -940,6 +948,7 @@ export interface GameUpdate {
   diplomacy?: DiplomacyMovementPayload;
   situations?: ActiveSituation[];
   events?: ActiveEvent[];
+  tradeAlerts?: MarketTradeAlert[];
 }
 
 export interface CommandResultEvent {

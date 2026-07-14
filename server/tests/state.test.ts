@@ -18,7 +18,7 @@ import {
   getPlanetSystemOrbitRadius,
   normalizePlanetOrbitFields,
 } from "../../src/data/SystemCoordinates";
-import { getEffectiveSpeciesHabitability, NEW_COLONY_POPULATION } from "../../src/data/Economy";
+import { getEffectiveSpeciesHabitability, getPlanetBuildingKind, NEW_COLONY_POPULATION } from "../../src/data/Economy";
 
 const DISTRICT_KINDS: DistrictKind[] = ["city", "generator", "mining", "agriculture"];
 
@@ -102,7 +102,13 @@ test("colonized planets can start with low population and no starter infrastruct
   assert.equal(colony.isHabited, true);
   assert.equal(colony.population, NEW_COLONY_POPULATION);
   assert.deepEqual(colony.builtDistricts, { city: 0, generator: 0, mining: 0, agriculture: 0 });
-  assert.equal(Object.values(colony.buildings).flat().every((building) => building === null), true);
+  // The Planetary Capital is auto-anchored to the first city slot on every
+  // habited world, even one founded with no other starter infrastructure.
+  assert.equal(getPlanetBuildingKind(colony.buildings.city[0]), "planetaryCapital");
+  assert.equal(
+    Object.values(colony.buildings).flat().filter((building) => building !== null).length,
+    1,
+  );
   assert.equal(colony.constructionQueue.length, 0);
 });
 

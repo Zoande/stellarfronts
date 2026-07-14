@@ -23,6 +23,8 @@ import {
   getHabitabilityUpkeepMultiplier,
   getPlanetBuildingKind,
   getPlanetBuildingLevel,
+  getCapitalUpgradePopulationThreshold,
+  meetsCapitalUpgradePopulation,
   AMENITY_NEED_PER_UNIT,
   getAmenityNeed,
   JOB_FILL_ORDER,
@@ -137,6 +139,9 @@ const DISTRICT_ICON_BY_KIND: Record<DistrictKind, string> = {
 };
 
 const BUILDING_ICON_BY_KIND: Record<BuildingKind, string> = {
+  // Placeholder icon: the art asset does not exist yet, so the slot falls back
+  // to the building initials until a Planetary_Capital.webp is added.
+  planetaryCapital: `${BUILDING_ICON_DIR}/Planetary_Capital.webp`,
   housingComplex: `${BUILDING_ICON_DIR}/Housing_Complex.webp`,
   administrativeComplex: `${BUILDING_ICON_DIR}/Administrative_Complex.webp`,
   researchLabs: `${BUILDING_ICON_DIR}/Research_Labs.webp`,
@@ -647,6 +652,7 @@ export class CelestialObjectPanel {
     const targetLevel = getBuildingUpgradeTargetLevel(buildingSlot);
     if (!buildingKind || !targetLevel) return;
     if (!this.isBuildingLevelUnlocked(freshData.technology, buildingKind, targetLevel)) return;
+    if (!meetsCapitalUpgradePopulation(buildingKind, targetLevel, planetState.population)) return;
     if (this.getQueuedBuildingForSlot(planetState, area, slotIndex, subDistrictIndex)) return;
     const nextPlanetState = this.withQueuedBuildingUpgrade(planetState, { area, slotIndex, subDistrictIndex }, buildingKind, getPlanetBuildingLevel(buildingSlot));
     freshData.onPlanetCommand?.({
@@ -1780,7 +1786,9 @@ export class CelestialObjectPanel {
         subDistrictIndex,
       );
       const upgradeQueued = queued?.kind === "buildingUpgrade";
-      const upgradeUnlocked = targetLevel !== null && this.isBuildingLevelUnlocked(data.technology, buildingKind, targetLevel);
+      const upgradeUnlocked = targetLevel !== null
+        && this.isBuildingLevelUnlocked(data.technology, buildingKind, targetLevel)
+        && meetsCapitalUpgradePopulation(buildingKind, targetLevel, data.planetState.population);
       const canUpgrade = Boolean(data.onPlanetCommand && targetLevel !== null && upgradeUnlocked && !queued);
       const tagName = canUpgrade ? "button" : "span";
       const controlAttrs = canUpgrade
@@ -1866,7 +1874,7 @@ export class CelestialObjectPanel {
           <button type="button" data-co-close-building-picker aria-label="Close building list">X</button>
         </div>
         <div class="coBuildList">
-          ${BUILDING_KINDS.map((building) => {
+          ${BUILDING_KINDS.filter((building) => !BUILDING_DEFINITIONS[building].autoPlaced).map((building) => {
             const isCompatible = compatible.has(building);
             const lockedByTechnology = !this.isBuildingUnlocked(data.technology, building);
             const definition = BUILDING_DEFINITIONS[building];
@@ -2636,7 +2644,16 @@ export class CelestialObjectPanel {
   ): string {
     const level = Math.max(1, getPlanetBuildingLevel(building) || queued?.targetLevel || 1);
     const targetLevel = getBuildingUpgradeTargetLevel(building);
-    const canUpgrade = targetLevel !== null && this.isBuildingLevelUnlocked(technology, definition.kind, targetLevel);
+    const techUnlocked = targetLevel !== null && this.isBuildingLevelUnlocked(technology, definition.kind, targetLevel);
+    const populationMet = targetLevel !== null && meetsCapitalUpgradePopulation(definition.kind, targetLevel, planetState.population);
+    const canUpgrade = techUnlocked && populationMet;
+    const upgradeBlockedReason = targetLevel === null
+      ? null
+      : !techUnlocked
+        ? `Requires ${this.escapeHtml(this.getRequiredBuildingLevelTechnologyName(definition.kind, targetLevel))}`
+        : !populationMet
+          ? `Requires ${this.formatPeople(getCapitalUpgradePopulationThreshold(targetLevel))} population`
+          : null;
     const levelLabel = targetLevel && canUpgrade
       ? `Level ${level} -> ${targetLevel}`
       : `Level ${level}${level >= BUILDING_MAX_LEVEL ? " (max)" : ""}`;
@@ -2668,7 +2685,7 @@ export class CelestialObjectPanel {
       </div>
       ${building && targetLevel !== null ? `
         <button class="coTooltipAction" type="button" ${canUpgrade ? "" : "disabled"}>
-          ${canUpgrade ? `Upgrade to level ${targetLevel}` : `Requires ${this.escapeHtml(this.getRequiredBuildingLevelTechnologyName(definition.kind, targetLevel))}`}
+          ${canUpgrade ? `Upgrade to level ${targetLevel}` : upgradeBlockedReason ?? "Maxed"}
         </button>
       ` : ""}
       <div class="coTooltipSectionTitle">Jobs And Housing</div>
@@ -2840,7 +2857,7 @@ export class CelestialObjectPanel {
   private renderJobClass(planetState: PlanetState, className: JobClass, label: string, selectedJob: JobKind | null): string {
     const jobs = this.getJobsForClass(className);
     const total = jobs.reduce((sum, job) => sum + this.getPopForJob(planetState, job), 0);
-    const capacity = jobs.reduce((sum, job) => sum + planetState.economy.jobCapacity[job], 0);
+    const capacity = jobs.reduce((sum, job) => sum + this.getJobCapacity(planetState, job), 0);
     const expanded = this.expandedJobClasses.has(className);
 
     return `
@@ -2882,7 +2899,7 @@ export class CelestialObjectPanel {
 
   private renderJobRow(planetState: PlanetState, job: JobKind, selectedJob: JobKind | null): string {
     const population = this.getPopForJob(planetState, job);
-    const capacity = planetState.economy.jobCapacity[job];
+    const capacity = this.getJobCapacity(planetState, job);
     const selected = selectedJob === job ? " selected" : "";
     return `
       <button
@@ -2915,7 +2932,7 @@ export class CelestialObjectPanel {
         <span class="coSelectedJobIcon">${this.renderJobIcon(job)}</span>
         <div>
           <h4>${this.escapeHtml(JOB_LABELS[job])}</h4>
-          <p>${this.escapeHtml(this.formatJobClassLabel(jobClass))} | ${this.formatPeople(population)} / ${this.formatPeople(planetState.economy.jobCapacity[job])}</p>
+          <p>${this.escapeHtml(this.formatJobClassLabel(jobClass))} | ${this.formatPeople(population)} / ${this.formatPeople(this.getJobCapacity(planetState, job))}</p>
         </div>
       </div>
       <div class="coSelectedJobRecipe">
@@ -2949,7 +2966,7 @@ export class CelestialObjectPanel {
 
   private renderJobTooltip(planetState: PlanetState, job: JobKind): string {
     const population = this.getPopForJob(planetState, job);
-    const capacity = planetState.economy.jobCapacity[job];
+    const capacity = this.getJobCapacity(planetState, job);
     return `
       <div class="coTooltipSectionTitle">${this.escapeHtml(JOB_LABELS[job])}</div>
       <p>${this.escapeHtml(JOB_DEFINITIONS[job].description)}</p>
@@ -3029,7 +3046,7 @@ export class CelestialObjectPanel {
     const allJobs = JOB_FILL_ORDER.concat("criminal", "unemployed");
     if (this.selectedJob && allJobs.includes(this.selectedJob)) return this.selectedJob;
     return allJobs.find((job) => this.getPopForJob(planetState, job) > 0)
-      ?? allJobs.find((job) => planetState.economy.jobCapacity[job] > 0)
+      ?? allJobs.find((job) => this.getJobCapacity(planetState, job) > 0)
       ?? null;
   }
 
@@ -3037,6 +3054,12 @@ export class CelestialObjectPanel {
     return JOB_FILL_ORDER
       .concat("criminal", "unemployed")
       .filter((job) => this.getJobClass(job) === className);
+  }
+
+  // Tolerates job kinds an older server's economy summary omits (e.g. "ruler"),
+  // keeping a freshly-updated client backwards compatible with prior server code.
+  private getJobCapacity(planetState: PlanetState, job: JobKind): number {
+    return planetState.economy.jobCapacity[job] ?? 0;
   }
 
   private getPopForJob(planetState: PlanetState, job: JobKind): number {
@@ -3076,6 +3099,7 @@ export class CelestialObjectPanel {
 
   private renderJobIcon(job: JobKind): string {
     const icons: Record<JobKind, string> = {
+      ruler: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 11l5 5 6-9 6 9 5-5v12H5z"/><path d="M5 25h22"/><circle cx="5" cy="9" r="1.6"/><circle cx="27" cy="9" r="1.6"/><circle cx="16" cy="5" r="1.8"/></svg>',
       administrator: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 12h22L16 5 5 12z"/><path d="M8 13v11M14 13v11M20 13v11M26 13v11"/><path d="M5 25h22"/></svg>',
       researcher: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="2.5"/><path d="M5 16c3-5 19-5 22 0-3 5-19 5-22 0z"/><path d="M16 5c5 3 5 19 0 22-5-3-5-19 0-22z"/><path d="M9 9c5 1 12 8 14 14"/></svg>',
       artisan: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M10 22l8-8"/><path d="M15 7l10 10-4 4L11 11l4-4z"/><path d="M7 25l4-1 13-13-3-3L8 21l-1 4z"/></svg>',

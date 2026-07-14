@@ -140,6 +140,7 @@ export class GameServerClient {
             perspective: parsed.perspective,
             clock: update.clock ?? this.latestSnapshot.clock,
             stars: parsed.stars ?? this.latestSnapshot.stars,
+            nebulae: parsed.nebulae ?? this.latestSnapshot.nebulae,
             planetStates: parsed.planetStates ?? this.latestSnapshot.planetStates,
             factionEconomies: parsed.factionEconomies ?? this.latestSnapshot.factionEconomies,
             habitedPlanetSystemIds: parsed.habitedPlanetSystemIds ?? this.latestSnapshot.habitedPlanetSystemIds,
@@ -160,6 +161,7 @@ export class GameServerClient {
             diplomacy: parsed.diplomacy ?? this.latestSnapshot.diplomacy,
             situations: parsed.situations ?? this.latestSnapshot.situations,
             events: parsed.events ?? this.latestSnapshot.events,
+            tradeAlerts: parsed.tradeAlerts ?? this.latestSnapshot.tradeAlerts,
           };
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);
           return;

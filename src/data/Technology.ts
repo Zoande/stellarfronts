@@ -153,6 +153,10 @@ const modifier = (
 ): TechnologyResearchModifier => ({ id, label, source, operation, value, cap });
 
 const SERVICE_BUILDINGS: BuildingKind[] = [
+  // Planetary Capital is auto-placed (no level-1 unlock tech), but its higher
+  // levels are gated by the same governance/service techs as other civic
+  // buildings, alongside a population threshold enforced in the economy layer.
+  "planetaryCapital",
   "housingComplex",
   "administrativeComplex",
   "commercialForum",

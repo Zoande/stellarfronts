@@ -684,6 +684,7 @@ export function normalizeCelestialObjectDetails(stars: StarData[]): boolean {
 
     for (let i = 0; i < star.system.planets.length; i++) {
       const planet = star.system.planets[i];
+      if (!planet) continue;
       const expectedId = createPlanetId(star.id, i);
       if (planet.id !== expectedId) {
         planet.id = expectedId;
@@ -849,6 +850,8 @@ export interface StarData {
   galaxyPulseAmplitude: number;
   /** Galaxy-view pulse frequency used by sprite renderer */
   galaxyPulseFrequency: number;
+  /** Id of the nebula covering this system, if any (see src/data/Nebula.ts). */
+  nebulaId?: number;
   objectDetails: CelestialObjectDetails;
   system: StarSystemConfig;
 }

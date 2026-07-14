@@ -30,6 +30,9 @@ import type { PlanetState } from "../data/Economy";
 import type { LeaderState } from "../data/Leaders";
 import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
+import { NebulaFieldRenderer } from "../systems/NebulaFieldRenderer";
+import { buildNebulaStarIdSet, connectNebulaeWithHyperlanes, findNebulaForStar } from "../data/Nebula";
+import type { NebulaRegion } from "../data/Nebula";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
 import type { GalaxyIconClickType, GalaxyShipIcon, ShipIconStyle } from "../systems/StarFieldRenderer";
 import { SelectionPanel } from "../ui/SelectionPanel";
@@ -62,6 +65,7 @@ export interface GalaxyViewState {
 
 export interface GalaxySceneOptions {
   stars?: StarData[];
+  nebulae?: NebulaRegion[];
   initialViewState?: GalaxyViewState;
   factions?: FactionInfo[];
   perspective?: GalaxyPerspective;
@@ -122,6 +126,19 @@ const OWNERSHIP_FACTION_COUNT = 15;
 const OWNERSHIP_TEXTURE_SIZE = 2400;
 const OWNERSHIP_OVERLAY_PADDING_FACTOR = 0.16;
 const OWNERSHIP_OVERLAY_Y = 0.055;
+const NEBULA_TEXTURE_SIZE = 2048;
+const NEBULA_OVERLAY_Y = 0.06;
+// Rendering-group stack (groups draw strictly low→high, ignoring depth). The
+// nebula gas is the load-bearing layer here: it sits ABOVE the additive star glow
+// (group 1) so a dense cluster of stars no longer sums their halos to white over
+// the cloud, but BELOW the crisp star cores, icons and lanes (group 3) so systems
+// stay visible and clickable through the gas. Star sprites split halo↔core across
+// groups 1 and 3 in StarFieldRenderer to straddle the gas.
+//   0 territory tint (ownership) + galactic core   →  1 star glow (halos)
+//   2 nebula gas                                    →  3 star cores, icons, lanes
+const BACKGROUND_RENDERING_GROUP = 0;
+const NEBULA_RENDERING_GROUP = 2;
+const FOREGROUND_RENDERING_GROUP = 3;
 const OWNERSHIP_TIE_EPSILON = 0.0001;
 const STAR_PICK_RADIUS_MIN = 5.5;
 const STAR_PICK_RADIUS_MAX = 10;
@@ -934,6 +951,9 @@ export class GalaxyScene implements IGameScene {
   private hyperlaneMesh: Mesh | null = null;
   private ownershipOverlayMesh: Mesh | null = null;
   private ownershipRenderer: OwnershipOverlayRenderer | null = null;
+  private nebulaOverlayMesh: Mesh | null = null;
+  private nebulaRenderer: NebulaFieldRenderer | null = null;
+  private nebulae: NebulaRegion[] = [];
   private hyperlanePairs: Array<[number, number]> = [];
   private hyperlaneAdjacency: number[][] = [];
   private starOwnership: number[] = [];
@@ -1027,6 +1047,7 @@ export class GalaxyScene implements IGameScene {
           cfg.minStarSpacing,
           cfg.shape,
         );
+    this.nebulae = this.options.nebulae ?? [];
     this.planetStates = this.options.planetStates ?? [];
     applyPlanetStatesToStars(this.stars, this.planetStates);
     this.factions =
@@ -1140,6 +1161,7 @@ export class GalaxyScene implements IGameScene {
     this.setupGalacticCore(cfg.width, cfg.height);
     this.setupHyperlanes(cfg.width, cfg.height, cfg.shape, cfg.seed);
     this.setupOwnershipLayer(cfg.width, cfg.height, cfg.seed);
+    this.setupNebulaLayer(cfg.width, cfg.height);
 
     this.starField = new StarFieldRenderer(
       this.scene,
@@ -1151,6 +1173,9 @@ export class GalaxyScene implements IGameScene {
     );
     this.starField.setVisibleStarIds(this.visibleStarIds);
     this.starField.setKnownStarIds(this.knownStarIds);
+    // Damp the halos of stars inside nebulas so their clustered glow stops washing
+    // the coloured gas white (the gas itself supplies the regional glow).
+    this.starField.setNebulaStarIds(buildNebulaStarIdSet(this.nebulae));
     if (this.options.habitedPlanetSystemIds) {
       this.hasExplicitHabitedPlanetSystemIds = true;
       this.starField.setHabitedPlanetSystemIds(this.options.habitedPlanetSystemIds);
@@ -1302,7 +1327,13 @@ export class GalaxyScene implements IGameScene {
     shape: CoreTextureShape,
     seed: number,
   ): void {
-    const hyperlanes = buildHyperlanePairs(this.stars, width, height, shape, seed);
+    // Mirror the server (state-bootstrap): weld each nebula's members into one
+    // connected region so the lanes and adjacency match the authoritative state.
+    const hyperlanes = connectNebulaeWithHyperlanes(
+      buildHyperlanePairs(this.stars, width, height, shape, seed),
+      this.nebulae,
+      this.stars,
+    );
     this.hyperlanePairs = hyperlanes;
     this.hyperlaneAdjacency = buildHyperlaneAdjacency(hyperlanes, this.stars.length);
     this.updateVisibilityFromPerspective();
@@ -1388,6 +1419,7 @@ export class GalaxyScene implements IGameScene {
     );
     this.hyperlaneMesh.isPickable = false;
     this.hyperlaneMesh.alwaysSelectAsActiveMesh = true;
+    this.hyperlaneMesh.renderingGroupId = FOREGROUND_RENDERING_GROUP;
     this.hyperlaneMesh.visibility = this.hyperlanesVisible
       ? HYPERLANE_BASE_VISIBILITY + HYPERLANE_ZOOM_VISIBILITY_BOOST
       : 0;
@@ -1430,6 +1462,8 @@ export class GalaxyScene implements IGameScene {
     overlay.position.y = OWNERSHIP_OVERLAY_Y;
     overlay.isPickable = false;
     overlay.alwaysSelectAsActiveMesh = true;
+    // Territory tint sits on the floor of the stack, beneath the gas and stars.
+    overlay.renderingGroupId = BACKGROUND_RENDERING_GROUP;
 
     const tex = this.ownershipRenderer.texture;
 
@@ -1447,6 +1481,55 @@ export class GalaxyScene implements IGameScene {
     overlay.material = mat;
     overlay.setEnabled(this.ownershipVisible);
     this.ownershipOverlayMesh = overlay;
+  }
+
+  private setupNebulaLayer(width: number, height: number): void {
+    if (this.stars.length === 0 || this.nebulae.length === 0) return;
+
+    const padding = Math.min(width, height) * OWNERSHIP_OVERLAY_PADDING_FACTOR;
+    const nebulaWidth = width + padding * 2;
+    const nebulaHeight = height + padding * 2;
+
+    this.nebulaRenderer = new NebulaFieldRenderer(this.scene, {
+      textureSize: NEBULA_TEXTURE_SIZE,
+      mapWidth: nebulaWidth,
+      mapHeight: nebulaHeight,
+      stars: this.stars,
+      nebulae: this.nebulae,
+      hyperlanePairs: this.hyperlanePairs,
+    });
+
+    const overlay = MeshBuilder.CreateGround(
+      "galaxyNebulaOverlay",
+      { width: nebulaWidth, height: nebulaHeight },
+      this.scene,
+    );
+    overlay.position.y = NEBULA_OVERLAY_Y;
+    overlay.isPickable = false;
+    overlay.alwaysSelectAsActiveMesh = true;
+    overlay.renderingGroupId = NEBULA_RENDERING_GROUP;
+
+    const tex = this.nebulaRenderer.texture;
+    // Mirror the ownership overlay's material EXACTLY — it is the proven path for
+    // showing a DynamicTexture's true colours on a galaxy-plane ground. The earlier
+    // setup (no diffuseTexture, black diffuse, a forced ALPHA_COMBINE alphaMode) made
+    // the cloud render as flat white — its painted hues were dropped and only the
+    // texture's alpha shaped a white blob. Sampling diffuse+emissive from the texture
+    // with white tint colours (and letting the opacityTexture drive Babylon's own
+    // transparency, no manual alphaMode) is what makes the colour read.
+    const mat = new StandardMaterial("galaxyNebulaOverlayMat", this.scene);
+    mat.diffuseTexture = tex;
+    mat.opacityTexture = tex;
+    mat.emissiveTexture = tex;
+    mat.diffuseColor = Color3.White();
+    mat.emissiveColor = Color3.White();
+    mat.specularColor = Color3.Black();
+    mat.disableLighting = true;
+    mat.backFaceCulling = false;
+    mat.alpha = 1;
+
+    overlay.material = mat;
+    this.nebulaOverlayMesh = overlay;
   }
 
   private setupGalacticCore(width: number, height: number): void {
@@ -1694,11 +1777,13 @@ export class GalaxyScene implements IGameScene {
       for (const neighbor of this.hyperlaneAdjacency[current] ?? []) {
         if (neighbor < 0 || neighbor >= this.hyperlaneAdjacency.length) continue;
         if (reachable.has(neighbor)) continue;
-        if (!this.isStarKnownToPerspective(neighbor)) continue;
         if (!this.canEnterStar(neighbor)) continue;
 
         reachable.add(neighbor);
-        queue.push(neighbor);
+        // Only keep expanding through known systems — undiscovered systems are
+        // reachable via their visible (fading) hyperlane but can't be used as
+        // stepping stones into further unknown space.
+        if (this.isStarKnownToPerspective(neighbor)) queue.push(neighbor);
       }
     }
 
@@ -1960,7 +2045,7 @@ export class GalaxyScene implements IGameScene {
 
   private openShipActionMenuAtPointer(ev: PointerEvent): void {
     const star = this.findNearestStarAtPointer();
-    if (!star || !this.selectedShip || !this.isStarKnownToPerspective(star.id)) {
+    if (!star || !this.selectedShip) {
       this.closeActionMenu();
       return;
     }
@@ -2019,8 +2104,6 @@ export class GalaxyScene implements IGameScene {
     let nearestDistSq = Infinity;
 
     for (const star of this.stars) {
-      if (!this.isStarKnownToPerspective(star.id)) continue;
-
       const dx = clickX - star.x;
       const dz = clickZ - star.z;
       const dSq = dx * dx + dz * dz;
@@ -2500,7 +2583,7 @@ export class GalaxyScene implements IGameScene {
       line.color = FLEET_ROUTE_LINE_COLOR;
       line.alpha = 0.92;
       line.isPickable = false;
-      line.renderingGroupId = 1;
+      line.renderingGroupId = FOREGROUND_RENDERING_GROUP;
       this.fleetRouteLines.push(line);
     }
   }
@@ -2570,6 +2653,7 @@ export class GalaxyScene implements IGameScene {
       status: starbase?.status ?? "online",
       power: this.formatStarbasePower(starbase),
       technology: this.options.technology,
+      nebulaKind: findNebulaForStar(this.nebulae, starId)?.kind ?? null,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
       onClose: (starbaseId) => this.options.onReleaseStarbaseDetails?.(starbaseId),
     });
@@ -3013,6 +3097,16 @@ export class GalaxyScene implements IGameScene {
     }
     this.ownershipRenderer?.dispose();
     this.ownershipRenderer = null;
+    if (this.nebulaOverlayMesh) {
+      const nebulaMaterial = this.nebulaOverlayMesh.material;
+      this.nebulaOverlayMesh.material = null;
+      this.nebulaOverlayMesh.dispose();
+      nebulaMaterial?.dispose(false, false);
+      this.nebulaOverlayMesh = null;
+    }
+    this.nebulaRenderer?.dispose();
+    this.nebulaRenderer = null;
+    this.nebulae = [];
     this.hyperlanePairs = [];
     this.hyperlaneAdjacency = [];
     this.starOwnership = [];

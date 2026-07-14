@@ -56,6 +56,18 @@ export type GalaxyIconClickType = "ship" | "starbase" | "habitedPlanet";
 
 const SPRITE_BLEND_ADD = 1; // ALPHA_ADD
 const STAR_TEXTURE_SIZE = 128;
+// Star sprites straddle the nebula gas (group 2, painted by GalaxyScene): the broad
+// additive *halos* render beneath it (group 1) so a dense cluster's glow can't sum
+// to white over the cloud, while the crisp *cores*, icons and labels render above it
+// (group 3) so every system stays visible and clickable through the gas.
+const STAR_GLOW_RENDERING_GROUP = 1;
+const FOREGROUND_RENDERING_GROUP = 3;
+
+// How much a nebula-member star's additive halo / core is damped so the coloured
+// gas reads instead of a stack of white star glows. The halo is the culprit (broad
+// and bright), so it is cut hard; the core is only nudged so the star point stays.
+const NEBULA_HALO_ALPHA_SCALE = 0.14;
+const NEBULA_CORE_ALPHA_SCALE = 0.8;
 
 /** Base multipliers from star luminosity to sprite world-unit size */
 const CORE_SIZE_FACTOR = 1.8;
@@ -168,10 +180,10 @@ const HABITED_PLANET_LEFT_BADGE_U = 43 / STAR_LABEL_TEXTURE_WIDTH;
 const STARBASE_BADGE_V = 0.5;
 const STARBASE_BADGE_RADIUS_U = 42 / STAR_LABEL_TEXTURE_WIDTH;
 const STARBASE_BADGE_RADIUS_V = 42 / STAR_LABEL_TEXTURE_HEIGHT;
-const FOGGED_STAR_COLOR = new Color4(0.4, 0.43, 0.48, 1);
+const FOGGED_STAR_COLOR = new Color4(0.58, 0.62, 0.68, 1);
 const STALE_STAR_LABEL_COLOR = new Color3(0.56, 0.6, 0.66);
-const FOGGED_CORE_ALPHA_SCALE = 0.36;
-const FOGGED_HALO_ALPHA_SCALE = 0.12;
+const FOGGED_CORE_ALPHA_SCALE = 0.55;
+const FOGGED_HALO_ALPHA_SCALE = 0.28;
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
@@ -265,6 +277,7 @@ function createSelectionMarkerBoxes(
     box.material = material;
     box.isPickable = false;
     box.alwaysSelectAsActiveMesh = true;
+    box.renderingGroupId = FOREGROUND_RENDERING_GROUP;
     meshes.push(box);
   }
 
@@ -308,6 +321,11 @@ export class StarFieldRenderer {
   private starHasHabitedPlanet: boolean[] = [];
   private visibleStarIds: Set<number> | null = null;
   private knownStarIds: Set<number> | null = null;
+  // Stars sitting inside a nebula: their broad additive halos are heavily damped so
+  // a dense cluster of them no longer sums to a white blob that drowns the coloured
+  // nebula gas painted over the region. The crisp core still shows so the system
+  // stays visible/clickable. Kept in sync by GalaxyScene from the nebula regions.
+  private nebulaStarIds: Set<number> = new Set();
 
   // Current per-star overrides (applied each frame via applyVisuals)
   private alphaOverrides: Float32Array;
@@ -377,6 +395,12 @@ export class StarFieldRenderer {
     this.haloManager.blendMode = SPRITE_BLEND_ADD;
     this.coreManager.blendMode = SPRITE_BLEND_ADD;
 
+    // Halos render beneath the nebula gas (so their additive glow can't wash the
+    // cloud white); cores render above it (so the star points stay crisp). See the
+    // rendering-group stack in GalaxyScene.
+    this.haloManager.renderingGroupId = STAR_GLOW_RENDERING_GROUP;
+    this.coreManager.renderingGroupId = FOREGROUND_RENDERING_GROUP;
+
     this.selectionMarkerRoot = new TransformNode("starSelectionMarker", scene);
     this.selectionMarkerMaterial = createSelectionMarkerMaterial(scene);
     this.selectionGlowLayer = new GlowLayer("starSelectionMarkerGlow", scene, {
@@ -406,6 +430,7 @@ export class StarFieldRenderer {
     );
     this.playerShipIconManager.isPickable = false;
     this.playerShipIconManager.fogEnabled = false;
+    this.playerShipIconManager.renderingGroupId = FOREGROUND_RENDERING_GROUP;
     for (let i = 0; i < stars.length; i++) {
       const sprite = new Sprite(`player_ship_icon_${i}`, this.playerShipIconManager);
       sprite.isVisible = false;
@@ -425,6 +450,7 @@ export class StarFieldRenderer {
     );
     this.starbaseIconManager.isPickable = false;
     this.starbaseIconManager.fogEnabled = false;
+    this.starbaseIconManager.renderingGroupId = FOREGROUND_RENDERING_GROUP;
     for (let i = 0; i < stars.length; i++) {
       const sprite = new Sprite(`starbase_icon_${i}`, this.starbaseIconManager);
       sprite.isVisible = false;
@@ -705,7 +731,7 @@ export class StarFieldRenderer {
     labelMesh.isVisible = false;
     labelMesh.billboardMode = AbstractMesh.BILLBOARDMODE_ALL;
     labelMesh.alwaysSelectAsActiveMesh = true;
-    labelMesh.renderingGroupId = 1;
+    labelMesh.renderingGroupId = FOREGROUND_RENDERING_GROUP;
 
     return labelMesh;
   }
@@ -934,6 +960,11 @@ export class StarFieldRenderer {
     this.knownStarIds = starIds ? new Set(starIds) : null;
   }
 
+  /** Stars inside a nebula, whose halos are damped so the gas colour reads. */
+  setNebulaStarIds(starIds: Iterable<number> | null | undefined): void {
+    this.nebulaStarIds = new Set(starIds ?? []);
+  }
+
   setPlayerShipState(starId: number, transit: GalaxyShipTransit | null = null): void {
     this.playerShipStarId = starId;
     if (starId >= 0) {
@@ -1119,8 +1150,8 @@ export class StarFieldRenderer {
       const known = this.isStarKnown(i);
       const current = this.isStarCurrentlyVisible(i);
       const renderColor = known ? base : FOGGED_STAR_COLOR;
-      const coreFogScale = current ? 1 : FOGGED_CORE_ALPHA_SCALE;
-      const haloFogScale = current ? 1 : FOGGED_HALO_ALPHA_SCALE;
+      const coreFogScale = (known || current) ? 1 : FOGGED_CORE_ALPHA_SCALE;
+      const haloFogScale = (known || current) ? 1 : FOGGED_HALO_ALPHA_SCALE;
       const a = this.alphaOverrides[i];
       const s = this.scaleOverrides[i];
       const coreSize = this.baseCoreSizes[i];
@@ -1138,6 +1169,12 @@ export class StarFieldRenderer {
       const core = this.coreSprites[i];
       const halo = this.haloSprites[i];
 
+      // Inside a nebula the gas is the regional glow, so damp the star's own halo
+      // hard (and nudge the core) to stop a cluster washing the cloud white.
+      const inNebula = this.nebulaStarIds.has(i);
+      const nebulaCoreScale = inNebula ? NEBULA_CORE_ALPHA_SCALE : 1;
+      const nebulaHaloScale = inNebula ? NEBULA_HALO_ALPHA_SCALE : 1;
+
       core.width = coreSize * s * coreScaleBoost * corePulseScale;
       core.height = coreSize * s * coreScaleBoost * corePulseScale;
       halo.width = haloSize * s * haloScaleBoost * haloPulseScale;
@@ -1153,7 +1190,8 @@ export class StarFieldRenderer {
           * coreAlphaBoost
           * alphaPulse
           * starsVisibilityAlpha
-          * coreFogScale,
+          * coreFogScale
+          * nebulaCoreScale,
         ),
       );
       halo.color.set(
@@ -1167,7 +1205,8 @@ export class StarFieldRenderer {
           * alphaPulse
           * starsVisibilityAlpha
           * bloomVisibilityAlpha
-          * haloFogScale,
+          * haloFogScale
+          * nebulaHaloScale,
         ),
       );
     }

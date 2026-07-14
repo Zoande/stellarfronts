@@ -13,34 +13,41 @@
 
 import { computeVisibleStarIds } from "../../src/data/Factions";
 import type { GalaxyPerspective } from "../../src/data/Factions";
+import { buildNebulaStarIdSet } from "../../src/data/Nebula";
 import type { ServerFleet } from "../../src/game/GameProtocol";
 import { DISCOVERY_JUMPS } from "./constants";
 import type { GameState, RuntimeContext } from "./types";
 
-export function addDiscoveryFrom(nextState: GameState, sourceStarId: number, visible: Set<number>): void {
+export function addDiscoveryFrom(
+  nextState: GameState,
+  sourceStarId: number,
+  visible: Set<number>,
+  nebulaStarIds: Set<number> = buildNebulaStarIdSet(nextState.nebulae),
+): void {
   if (sourceStarId < 0 || sourceStarId >= nextState.adjacency.length) return;
-  for (const starId of computeVisibleStarIds(nextState.adjacency, sourceStarId, DISCOVERY_JUMPS)) {
+  for (const starId of computeVisibleStarIds(nextState.adjacency, sourceStarId, DISCOVERY_JUMPS, nebulaStarIds)) {
     visible.add(starId);
   }
 }
 
 export function computeCurrentVisibleSet(nextState: GameState, factionId: number): Set<number> {
   const visible = new Set<number>();
+  const nebulaStarIds = buildNebulaStarIdSet(nextState.nebulae);
   const faction = nextState.factions.find((candidate) => candidate.id === factionId);
-  if (faction) addDiscoveryFrom(nextState, faction.homeStarId, visible);
+  if (faction) addDiscoveryFrom(nextState, faction.homeStarId, visible, nebulaStarIds);
 
   for (const starbase of nextState.starbases) {
     if (starbase.ownerId === factionId && starbase.status === "online") {
-      addDiscoveryFrom(nextState, starbase.starId, visible);
+      addDiscoveryFrom(nextState, starbase.starId, visible, nebulaStarIds);
     }
   }
 
   for (const fleet of nextState.fleets) {
     if (fleet.ownerId !== factionId) continue;
-    addDiscoveryFrom(nextState, fleet.currentStarId, visible);
+    addDiscoveryFrom(nextState, fleet.currentStarId, visible, nebulaStarIds);
     if (fleet.hyperlanePosition) {
-      addDiscoveryFrom(nextState, fleet.hyperlanePosition.fromStarId, visible);
-      addDiscoveryFrom(nextState, fleet.hyperlanePosition.toStarId, visible);
+      addDiscoveryFrom(nextState, fleet.hyperlanePosition.fromStarId, visible, nebulaStarIds);
+      addDiscoveryFrom(nextState, fleet.hyperlanePosition.toStarId, visible, nebulaStarIds);
     }
   }
 
@@ -73,14 +80,47 @@ export function refreshDiscovery(nextState: GameState): void {
     nextState.lastKnownOwnershipByFaction[String(faction.id)] = lastKnown.slice(0, nextState.stars.length);
   }
 
-  // First contact: a faction has "met" every other faction whose territory it has
-  // ever discovered. Derived from the (monotonic) discovered sets, recorded symmetrically.
+  // First contact: a faction has "met" another only once it has charted a
+  // continuous hyperlane route to it — i.e. there is a path, entirely through
+  // discovered systems, from its own territory to a system the rival owns. This
+  // deliberately excludes the long-range capitals revealed at game start, whose
+  // discovered tiles form isolated islands with no discovered lane back home, so
+  // distant rivals do not count as "met" (and cannot trade migrants) until a
+  // scout actually links the two territories. Recorded symmetrically.
   for (const faction of nextState.factions) {
-    const discovered = nextState.discoveredByFaction[String(faction.id)] ?? [];
-    for (const starId of discovered) {
-      const owner = nextState.starOwnership[starId] ?? -1;
-      if (owner >= 0 && owner !== faction.id) markFactionsMet(nextState, faction.id, owner);
-    }
+    markMetFromDiscoveredConnections(nextState, faction.id);
+  }
+}
+
+/**
+ * BFS outward from a faction's own systems across the subgraph of hyperlanes
+ * whose endpoints it has both discovered, marking first contact with the owner
+ * of any rival-held system the search reaches.
+ */
+function markMetFromDiscoveredConnections(nextState: GameState, factionId: number): void {
+  const discovered = new Set<number>(nextState.discoveredByFaction[String(factionId)] ?? []);
+  if (discovered.size === 0) return;
+
+  const visited = new Set<number>();
+  const queue: number[] = [];
+  const enqueue = (starId: number): void => {
+    if (starId < 0 || !discovered.has(starId) || visited.has(starId)) return;
+    visited.add(starId);
+    queue.push(starId);
+  };
+
+  const faction = nextState.factions.find((candidate) => candidate.id === factionId);
+  if (faction) enqueue(faction.homeStarId);
+  for (let starId = 0; starId < nextState.starOwnership.length; starId++) {
+    if (nextState.starOwnership[starId] === factionId) enqueue(starId);
+  }
+
+  let head = 0;
+  while (head < queue.length) {
+    const current = queue[head++];
+    const owner = nextState.starOwnership[current] ?? -1;
+    if (owner >= 0 && owner !== factionId) markFactionsMet(nextState, factionId, owner);
+    for (const neighbor of nextState.adjacency[current] ?? []) enqueue(neighbor);
   }
 }
 

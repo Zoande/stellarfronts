@@ -4,8 +4,9 @@ import type { ActiveEvent, EventCategory } from "./Events";
 import type { IndicatorSeverity } from "./GameEffects";
 import type { ActiveSituation } from "./Situations";
 import { getSituationDefinition } from "./Situations";
+import type { MarketTradeAlert } from "./Market";
 
-export type IndicatorKind = "event" | "situation" | "alert";
+export type IndicatorKind = "event" | "situation" | "alert" | "tradeAlert";
 
 export interface NotificationIndicator {
   id: string;
@@ -47,6 +48,7 @@ export function deriveIndicators(input: {
   events: ActiveEvent[];
   situations: ActiveSituation[];
   economy?: FactionEconomyState | null;
+  tradeAlerts?: MarketTradeAlert[];
 }): NotificationIndicator[] {
   const indicators: NotificationIndicator[] = [];
 
@@ -101,6 +103,26 @@ export function deriveIndicators(input: {
         });
       }
     }
+  }
+
+  for (const alert of input.tradeAlerts ?? []) {
+    const resourceLabel = RESOURCE_LABELS[alert.resourceId] ?? alert.resourceId;
+    const verb = alert.tradeType === "auto_sell" ? "Sale" : "Purchase";
+    const requestedFmt = Math.round(alert.requestedPerHour);
+    const executedFmt = Math.round(alert.executedPerHour);
+    const partial = alert.executedPerHour > 0;
+    const tooltip = partial
+      ? `${verb} of ${resourceLabel}: only ${executedFmt}/hr of ${requestedFmt}/hr could be filled — stockpile insufficient`
+      : `${verb} of ${resourceLabel}: none of the ${requestedFmt}/hr order could be filled — stockpile empty`;
+    indicators.push({
+      id: `tradeAlert:${alert.id}`,
+      kind: "tradeAlert",
+      icon: "⚠",
+      severity: "warn",
+      label: partial ? `${resourceLabel} ${verb.toLowerCase()} partial` : `${resourceLabel} ${verb.toLowerCase()} failed`,
+      tooltip,
+      refId: alert.id,
+    });
   }
 
   return indicators;

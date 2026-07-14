@@ -19,7 +19,13 @@ import {
 } from "../../src/data/StarMap";
 import { buildHyperlanePairs, buildHyperlaneAdjacency } from "../../src/data/Hyperlanes";
 import { getSystemStarbasePosition } from "../../src/data/SystemCoordinates";
-import { buildFactions, buildHomeSystemOwnership } from "../../src/data/Factions";
+import { buildFactions, buildHomeSystemOwnership, computeVisibleStarIds } from "../../src/data/Factions";
+import {
+  buildNebulaStarIdSet,
+  connectNebulaeWithHyperlanes,
+  generateNebulae,
+  stampNebulaIds,
+} from "../../src/data/Nebula";
 import {
   STARBASE_LEVEL_DEFINITIONS,
   STARBASE_SHIP_KINDS,
@@ -83,12 +89,20 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     cfg.minStarSpacing,
     cfg.shape,
   );
-  const hyperlanes = buildHyperlanePairs(stars, cfg.width, cfg.height, cfg.shape, cfg.seed);
-  const adjacency = buildHyperlaneAdjacency(hyperlanes, stars.length);
   const factions = buildFactions(stars, cfg);
   const species = normalizeSpeciesForFactions(factions, []);
   ensureHabitedHomePlanets(stars, factions.map((faction) => faction.homeStarId));
   const homeStarIds = factions.map((faction) => faction.homeStarId);
+  const nebulae = generateNebulae(stars, cfg.seed, { avoidStarIds: homeStarIds });
+  stampNebulaIds(stars, nebulae);
+  // Generate lanes, then weld each nebula's members into one connected region so
+  // fleets can traverse the whole cloud (matched on the client in GalaxyScene).
+  const hyperlanes = connectNebulaeWithHyperlanes(
+    buildHyperlanePairs(stars, cfg.width, cfg.height, cfg.shape, cfg.seed),
+    nebulae,
+    stars,
+  );
+  const adjacency = buildHyperlaneAdjacency(hyperlanes, stars.length);
   const planetStates = buildPlanetStatesFromStars(stars, homeStarIds);
   applyPlanetStatesToStars(stars, planetStates);
   const starOwnership = buildHomeSystemOwnership(stars, factions);
@@ -148,8 +162,9 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 20,
+    schemaVersion: 22,
     stars,
+    nebulae,
     planetStates,
     factionEconomies: factions.map((faction) => createInitialFactionEconomyState(faction.id, startMonth)),
     factionTechnologies: factions.map((faction) => normalizeFactionTechState(faction.id, undefined)),
@@ -191,6 +206,34 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   created.speciesRights = normalizeSpeciesRightsForFactions(created);
   recalculatePlanetEconomies(created);
   refreshFactionEconomyDeltas(created);
+
+  // Seed each faction's discovery with all other factions' capitals + their adjacent systems.
+  // This gives players immediate intel on where rivals started without granting ongoing vision.
+  // Nebula systems stay hidden (sensors don't reach inside even at game start).
+  const nebulaStarIds = buildNebulaStarIdSet(created.nebulae);
+  for (const faction of created.factions) {
+    const key = String(faction.id);
+    const seeded = new Set<number>(created.discoveredByFaction[key] ?? []);
+    for (const other of created.factions) {
+      if (other.id === faction.id) continue;
+      for (const starId of computeVisibleStarIds(created.adjacency, other.homeStarId, 1, nebulaStarIds)) {
+        seeded.add(starId);
+      }
+    }
+    created.discoveredByFaction[key] = Array.from(seeded).sort((a, b) => a - b);
+
+    // Record the ownership we learned for these revealed systems so their borders
+    // draw on the map. refreshDiscovery only stamps last-known ownership for the
+    // currently-visible set, which never includes these out-of-range capitals, so
+    // without this they would render as unowned (no borders) despite being shown.
+    const lastKnown = created.lastKnownOwnershipByFaction[key] ?? [];
+    while (lastKnown.length < created.stars.length) lastKnown.push(-1);
+    for (const starId of seeded) {
+      lastKnown[starId] = created.starOwnership[starId] ?? -1;
+    }
+    created.lastKnownOwnershipByFaction[key] = lastKnown;
+  }
+
   refreshDiscovery(created);
   return created;
 }
@@ -208,9 +251,26 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
         `Game ${ctx.game.id} ctx.state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
       );
     }
-    parsed.schemaVersion = 20;
+    parsed.schemaVersion = 22;
     delete (parsed as GameState & { battles?: unknown }).battles;
-    parsed.adjacency = parsed.adjacency ?? buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
+    // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
+    // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
+    // the caller) recompute visibility with nebula blocking applied.
+    if (!Array.isArray(parsed.nebulae)) {
+      parsed.nebulae = generateNebulae(parsed.stars, ctx.game.seed, {
+        avoidStarIds: parsed.factions.map((faction) => faction.homeStarId),
+      });
+    }
+    stampNebulaIds(parsed.stars, parsed.nebulae);
+    // Weld nebula members together by hyperlane (matches createInitialState and the
+    // client). Mutates the persisted lane set for existing saves, so flag dirty and
+    // always rebuild adjacency from the resulting lanes.
+    const connectedHyperlanes = connectNebulaeWithHyperlanes(parsed.hyperlanes, parsed.nebulae, parsed.stars);
+    if (connectedHyperlanes.length !== parsed.hyperlanes.length) {
+      parsed.hyperlanes = connectedHyperlanes;
+      ctx.hasDirtyState = true;
+    }
+    parsed.adjacency = buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
     parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
     parsed.metByFaction = parsed.metByFaction ?? {};
     parsed.situations = Array.isArray(parsed.situations) ? parsed.situations : [];

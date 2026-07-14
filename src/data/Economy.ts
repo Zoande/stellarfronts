@@ -24,6 +24,7 @@ export interface SpeciesPopulation {
 export type JobClass = "upper" | "middle" | "lower";
 
 export type JobKind =
+  | "ruler"
   | "administrator"
   | "researcher"
   | "artisan"
@@ -38,6 +39,7 @@ export type JobKind =
   | "unemployed";
 
 export type BuildingKind =
+  | "planetaryCapital"
   | "housingComplex"
   | "administrativeComplex"
   | "researchLabs"
@@ -137,6 +139,11 @@ export interface BuildingDefinition {
   compatibility: BuildingCompatibility[];
   housing?: number;
   jobs?: BuildingJobEffect[];
+  /**
+   * Auto-placed buildings (e.g. the Planetary Capital) are anchored to a planet
+   * slot by the simulation and cannot be queued or demolished by players.
+   */
+  autoPlaced?: boolean;
 }
 
 export interface PlanetBuildingState {
@@ -181,6 +188,7 @@ export interface UrbanSubDistrictState {
 export type DistrictBuildingSlots = Record<DistrictKind, PlanetBuildingSlot[]>;
 
 export interface JobCapacity {
+  ruler: number;
   administrator: number;
   researcher: number;
   artisan: number;
@@ -306,6 +314,7 @@ export const DISTRICT_BUILD_DAYS: Record<DistrictKind, number> = {
 export const RESOURCE_KINDS: ResourceKind[] = ["food", "minerals", "energy", "goods", "alloys", "research"];
 
 export const JOB_KINDS: JobKind[] = [
+  "ruler",
   "administrator",
   "researcher",
   "artisan",
@@ -321,6 +330,7 @@ export const JOB_KINDS: JobKind[] = [
 ];
 
 export const JOB_FILL_ORDER: JobKind[] = [
+  "ruler",
   "administrator",
   "researcher",
   "enforcer",
@@ -334,6 +344,7 @@ export const JOB_FILL_ORDER: JobKind[] = [
 ];
 
 export const JOB_CLASS_BY_KIND: Record<JobKind, JobClass> = {
+  ruler: "upper",
   administrator: "upper",
   researcher: "middle",
   artisan: "middle",
@@ -360,6 +371,15 @@ export const RESOURCE_LABELS: Record<ResourceKind, string> = {
 export { HUMAN_SPECIES_ID };
 
 export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
+  ruler: {
+    kind: "ruler",
+    label: "Rulers",
+    class: "upper",
+    description: "The planetary governing council and its household. Sets policy, upholds public order, and keeps the populace content.",
+    upkeep: { energy: 1, goods: 1.5 },
+    amenities: 6,
+    crimeReduction: 0.02,
+  },
   administrator: {
     kind: "administrator",
     label: "Administrators",
@@ -486,6 +506,21 @@ export const PLANET_FEATURE_DEFINITIONS: Record<PlanetFeatureKind, PlanetFeature
 export const PLANET_FEATURE_KINDS: PlanetFeatureKind[] = ["homePlanet"];
 
 export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
+  planetaryCapital: {
+    kind: "planetaryCapital",
+    label: "Planetary Capital",
+    initials: "CAP",
+    description: "The seat of planetary government. Always anchors the first city slot, providing baseline rulers, entertainers, and enforcers so a young colony can stay stable while you build out its economy.",
+    mineralCost: 0,
+    buildDays: 1,
+    compatibility: [{ area: "city" }],
+    autoPlaced: true,
+    jobs: [
+      { job: "ruler", amount: 200_000_000 },
+      { job: "entertainer", amount: 400_000_000 },
+      { job: "enforcer", amount: 300_000_000 },
+    ],
+  },
   housingComplex: {
     kind: "housingComplex",
     label: "Housing Complex",
@@ -717,6 +752,67 @@ export function getBuildingUpgradeBuildDays(building: BuildingKind, currentLevel
   return getBuildingBuildDays(building, currentLevel + 1);
 }
 
+/** The auto-placed governing building that anchors every habited planet's first city slot. */
+export const CAPITAL_BUILDING_KIND: BuildingKind = "planetaryCapital";
+
+/**
+ * Minimum planetary population required before the Planetary Capital can be
+ * upgraded to a given level. Higher tiers represent a larger governing
+ * apparatus that only makes sense once a world is sufficiently populous.
+ */
+export const CAPITAL_UPGRADE_POPULATION_THRESHOLDS: Record<number, number> = {
+  2: 14_000_000_000,
+  3: 28_000_000_000,
+  4: 48_000_000_000,
+  5: 72_000_000_000,
+};
+
+export function getCapitalUpgradePopulationThreshold(targetLevel: number): number {
+  return CAPITAL_UPGRADE_POPULATION_THRESHOLDS[clampBuildingLevel(targetLevel)] ?? 0;
+}
+
+/**
+ * Population gate for capital upgrades. Non-capital buildings have no population
+ * requirement, so this always returns true for them.
+ */
+export function meetsCapitalUpgradePopulation(
+  buildingKind: BuildingKind,
+  targetLevel: number,
+  population: number,
+): boolean {
+  if (buildingKind !== CAPITAL_BUILDING_KIND) return true;
+  return population >= getCapitalUpgradePopulationThreshold(targetLevel);
+}
+
+/**
+ * Guarantees the Planetary Capital occupies the first city slot on a habited
+ * planet. Existing occupants of slot 0 are relocated to the next free city slot
+ * where possible so player-built structures are preserved. Runs server-side as
+ * the migration path for planets created before the capital existed.
+ */
+export function ensureCapitalBuilding(buildings: DistrictBuildingSlots, isHabited: boolean): DistrictBuildingSlots {
+  if (!isHabited) return buildings;
+  const city = buildings.city;
+  const existingIndex = city.findIndex((slot) => getPlanetBuildingKind(slot) === CAPITAL_BUILDING_KIND);
+  if (existingIndex === 0) return buildings;
+
+  const nextCity = [...city];
+  if (existingIndex > 0) {
+    const capital = nextCity[existingIndex];
+    nextCity[existingIndex] = nextCity[0];
+    nextCity[0] = capital;
+    return { ...buildings, city: nextCity };
+  }
+
+  const occupant = nextCity[0];
+  if (occupant) {
+    const emptyIndex = nextCity.findIndex((slot, index) => index > 0 && !slot);
+    if (emptyIndex > 0) nextCity[emptyIndex] = occupant;
+  }
+  nextCity[0] = createPlanetBuildingState(CAPITAL_BUILDING_KIND, 1);
+  return { ...buildings, city: nextCity };
+}
+
 export const URBAN_SUB_DISTRICT_KINDS: UrbanSubDistrictKind[] = [
   "residential",
   "researchCampus",
@@ -736,6 +832,7 @@ export const STARTING_RESOURCE_STOCKPILES: ResourceCounts = {
 
 function emptyJobCapacity(): JobCapacity {
   return {
+    ruler: 0,
     administrator: 0,
     researcher: 0,
     artisan: 0,
@@ -1150,8 +1247,9 @@ function createStarterBuiltDistricts(limits: DistrictCounts, existing: DistrictC
 
 function createStarterBuildings(limits: DistrictCounts): DistrictBuildingSlots {
   const buildings = createEmptyDistrictBuildingSlots();
-  buildings.city[0] = createPlanetBuildingState("administrativeComplex");
-  buildings.city[1] = createPlanetBuildingState("housingComplex");
+  buildings.city[0] = createPlanetBuildingState(CAPITAL_BUILDING_KIND);
+  buildings.city[1] = createPlanetBuildingState("administrativeComplex");
+  buildings.city[2] = createPlanetBuildingState("housingComplex");
   if (limits.generator > 0) buildings.generator[0] = createPlanetBuildingState("energyGrid");
   if (limits.mining > 0) buildings.mining[0] = createPlanetBuildingState("mineralPurificationPlant");
   if (limits.agriculture > 0) buildings.agriculture[0] = createPlanetBuildingState("foodProcessingPlant");
@@ -1168,9 +1266,12 @@ export function createPlanetStateFromSeed(
   const builtDistricts = useStarterInfrastructure
     ? createStarterBuiltDistricts(seed.districtLimits, baseBuiltDistricts)
     : baseBuiltDistricts;
-  const buildings = useStarterInfrastructure
-    ? normalizeBuildings(existing?.buildings ?? createStarterBuildings(seed.districtLimits))
-    : normalizeBuildings(existing?.buildings);
+  const buildings = ensureCapitalBuilding(
+    useStarterInfrastructure
+      ? normalizeBuildings(existing?.buildings ?? createStarterBuildings(seed.districtLimits))
+      : normalizeBuildings(existing?.buildings),
+    isHabited,
+  );
   const urbanSubDistricts = isHabited
     ? normalizeUrbanSubDistricts(existing?.urbanSubDistricts)
     : normalizeUrbanSubDistricts([]);
