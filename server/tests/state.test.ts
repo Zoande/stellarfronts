@@ -148,6 +148,28 @@ test("legacy planet metadata migrates to stable IDs and clamped mutable state", 
   assert.equal(migratedPlanet.isHabited, true);
 });
 
+test("applying planet state tolerates sparse client-side planet detail caches", () => {
+  const stars = createTestStars();
+  const sourceStar = stars.find((candidate) => candidate.system.planets.length >= 2);
+  assert.ok(sourceStar, "test map should contain a system with multiple planets");
+
+  const planetIndex = sourceStar.system.planets.length - 1;
+  const planet = sourceStar.system.planets[planetIndex];
+  const planetState = buildPlanetStatesFromStars([sourceStar])
+    .find((state) => state.planetIndex === planetIndex);
+  assert.ok(planetState, "target planet should have mutable state");
+
+  const sparsePlanets: PlanetConfig[] = [];
+  sparsePlanets[planetIndex] = planet;
+  const sparseStar = {
+    ...sourceStar,
+    system: { planets: sparsePlanets },
+  };
+
+  assert.doesNotThrow(() => applyPlanetStatesToStars([sparseStar], [planetState]));
+  assert.equal(sparseStar.system.planets[planetIndex].id, planetState.id);
+});
+
 test("planet orbit phase fields are deterministic and migrate without ticking saves", () => {
   const stars = createTestStars();
   const star = stars.find((candidate) => candidate.system.planets.length > 0);

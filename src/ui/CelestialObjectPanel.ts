@@ -946,8 +946,9 @@ export class CelestialObjectPanel {
       }
       if (
         current.dataset.coBuildingSlotKey === nextChild.dataset.coBuildingSlotKey
-        && current.outerHTML === nextChild.outerHTML
+        && current.dataset.coBuildingContentKey === nextChild.dataset.coBuildingContentKey
       ) {
+        this.patchStableBuildingSlot(current, nextChild);
         return;
       }
       current.replaceWith(nextChild);
@@ -957,6 +958,17 @@ export class CelestialObjectPanel {
     });
     while (container.children.length > nextChildren.length) {
       container.lastElementChild?.remove();
+    }
+  }
+
+  private patchStableBuildingSlot(current: HTMLElement, next: HTMLElement): void {
+    this.syncAttribute(current, next, "data-co-tooltip");
+    this.syncAttribute(current, next, "title");
+    const currentDays = current.querySelector<HTMLElement>("[data-co-queued-building-days]");
+    const nextDays = next.querySelector<HTMLElement>("[data-co-queued-building-days]");
+    if (currentDays && nextDays) {
+      currentDays.textContent = nextDays.textContent;
+      this.syncAttribute(currentDays, nextDays, "data-co-queue-item");
     }
   }
 
@@ -995,11 +1007,63 @@ export class CelestialObjectPanel {
       return;
     }
 
+    if (existing.dataset.coSidePanel === "build") {
+      this.patchBuildingTray(data, existing, nextPanel);
+      return;
+    }
+
     if (existing.outerHTML !== html.trim()) {
       existing.replaceWith(nextPanel);
       this.initializeDynamicMedia(nextPanel);
       this.bindSurfaceContentEvents(data, nextPanel);
       this.bindTooltips(nextPanel);
+    }
+  }
+
+  private patchBuildingTray(
+    data: CelestialObjectPanelData,
+    currentTray: HTMLElement,
+    nextTray: HTMLElement,
+  ): void {
+    this.syncAttribute(currentTray, nextTray, "data-co-build-target");
+    const currentTarget = currentTray.querySelector<HTMLElement>(".coBuildTrayHeader span");
+    const nextTarget = nextTray.querySelector<HTMLElement>(".coBuildTrayHeader span");
+    if (currentTarget && nextTarget) currentTarget.textContent = nextTarget.textContent;
+
+    const currentList = currentTray.querySelector<HTMLElement>(".coBuildList");
+    const nextList = nextTray.querySelector<HTMLElement>(".coBuildList");
+    if (!currentList || !nextList) return;
+
+    const nextCards = Array.from(nextList.children) as HTMLButtonElement[];
+    nextCards.forEach((nextCard, index) => {
+      const currentCard = currentList.children[index] as HTMLButtonElement | undefined;
+      if (!currentCard) {
+        currentList.appendChild(nextCard);
+        this.initializeDynamicMedia(nextCard);
+        this.bindSurfaceContentEvents(data, nextCard);
+        this.bindTooltips(nextCard);
+        return;
+      }
+      if (currentCard.dataset.coPickBuilding !== nextCard.dataset.coPickBuilding) {
+        currentCard.replaceWith(nextCard);
+        this.initializeDynamicMedia(nextCard);
+        this.bindSurfaceContentEvents(data, nextCard);
+        this.bindTooltips(nextCard);
+        return;
+      }
+
+      currentCard.className = nextCard.className;
+      currentCard.disabled = nextCard.disabled;
+      this.syncAttribute(currentCard, nextCard, "data-co-tooltip");
+      const currentLabel = currentCard.querySelector<HTMLElement>(".coBuildCardCopy strong");
+      const nextLabel = nextCard.querySelector<HTMLElement>(".coBuildCardCopy strong");
+      if (currentLabel && nextLabel) currentLabel.textContent = nextLabel.textContent;
+      const currentNote = currentCard.querySelector<HTMLElement>(".coBuildCardCopy small");
+      const nextNote = nextCard.querySelector<HTMLElement>(".coBuildCardCopy small");
+      if (currentNote && nextNote) currentNote.textContent = nextNote.textContent;
+    });
+    while (currentList.children.length > nextCards.length) {
+      currentList.lastElementChild?.remove();
     }
   }
 
@@ -1043,23 +1107,55 @@ export class CelestialObjectPanel {
         : estimatedQueue.map((item) => this.renderQueueItem(item, data.canManageLeaders === true)).join("")}</div>`,
     );
     if (!nextList) return;
-    this.syncKeyedChildren(list, Array.from(nextList.children) as HTMLElement[], "coQueueItem");
+    this.syncConstructionQueueItems(list, Array.from(nextList.children) as HTMLElement[]);
     this.bindSurfaceContentEvents(data, list);
   }
 
-  private syncKeyedChildren(container: HTMLElement, nextChildren: HTMLElement[], keyName: string): void {
+  private syncConstructionQueueItems(container: HTMLElement, nextChildren: HTMLElement[]): void {
     nextChildren.forEach((nextChild, index) => {
       const current = container.children[index] as HTMLElement | undefined;
-      const nextKey = nextChild.dataset[keyName];
+      const nextKey = nextChild.dataset.coQueueItem;
       if (!current) {
         container.appendChild(nextChild);
         return;
       }
-      if (current.dataset[keyName] === nextKey && current.outerHTML === nextChild.outerHTML) return;
+      if (current.dataset.coQueueItem === nextKey) {
+        const currentCancel = current.querySelector<HTMLButtonElement>("[data-co-cancel-planet-queue]");
+        const nextCancel = nextChild.querySelector<HTMLButtonElement>("[data-co-cancel-planet-queue]");
+        if (Boolean(currentCancel) !== Boolean(nextCancel)) {
+          current.replaceWith(nextChild);
+          return;
+        }
+        const currentName = current.querySelector<HTMLElement>(".coQueueItemMain strong");
+        const nextName = nextChild.querySelector<HTMLElement>(".coQueueItemMain strong");
+        if (currentName && nextName) {
+          currentName.textContent = nextName.textContent;
+          currentName.title = nextName.title;
+        }
+        const currentDays = current.querySelector<HTMLElement>("[data-co-queue-days]");
+        const nextDays = nextChild.querySelector<HTMLElement>("[data-co-queue-days]");
+        if (currentDays && nextDays) currentDays.textContent = nextDays.textContent;
+        const currentCost = current.querySelector<HTMLElement>(":scope > small");
+        const nextCost = nextChild.querySelector<HTMLElement>(":scope > small");
+        if (currentCost && nextCost) currentCost.textContent = nextCost.textContent;
+        const currentFill = current.querySelector<HTMLElement>("[data-co-queue-progress-fill]");
+        const nextFill = nextChild.querySelector<HTMLElement>("[data-co-queue-progress-fill]");
+        if (currentFill && nextFill) currentFill.style.width = nextFill.style.width;
+        return;
+      }
       current.replaceWith(nextChild);
     });
     while (container.children.length > nextChildren.length) {
       container.lastElementChild?.remove();
+    }
+  }
+
+  private syncAttribute(current: HTMLElement, next: HTMLElement, name: string): void {
+    const value = next.getAttribute(name);
+    if (value === null) {
+      current.removeAttribute(name);
+    } else if (current.getAttribute(name) !== value) {
+      current.setAttribute(name, value);
     }
   }
 
@@ -1790,6 +1886,15 @@ export class CelestialObjectPanel {
         && this.isBuildingLevelUnlocked(data.technology, buildingKind, targetLevel)
         && meetsCapitalUpgradePopulation(buildingKind, targetLevel, data.planetState.population);
       const canUpgrade = Boolean(data.onPlanetCommand && targetLevel !== null && upgradeUnlocked && !queued);
+      const contentKey = [
+        "built",
+        buildingKind,
+        level,
+        targetLevel ?? "max",
+        upgradeUnlocked ? "unlocked" : "locked",
+        canUpgrade ? "action" : "static",
+        upgradeQueued ? queued?.id ?? "queued" : "idle",
+      ].join(":");
       const tagName = canUpgrade ? "button" : "span";
       const controlAttrs = canUpgrade
         ? `type="button" data-co-upgrade-building data-co-area="${this.escapeHtml(area)}" data-co-slot-index="${slotIndex}"${subDistrictIndex === undefined ? "" : ` data-co-sub-index="${subDistrictIndex}"`}`
@@ -1801,7 +1906,7 @@ export class CelestialObjectPanel {
         upgradeQueued ? "queuedUpgrade" : "",
       ].filter(Boolean).join(" ");
       return `
-        <${tagName} class="${classes}" ${controlAttrs} ${attributes} data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState, area, subDistrictIndex, queued, building, data.technology))}">
+        <${tagName} class="${classes}" ${controlAttrs} ${attributes} data-co-building-content-key="${this.escapeHtml(contentKey)}" data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState, area, subDistrictIndex, queued, building, data.technology))}">
           <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
           <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
           <small class="coBuildingLevel">Lv ${level}</small>
@@ -1818,8 +1923,9 @@ export class CelestialObjectPanel {
     );
       if (queued?.buildingKind) {
         const definition = BUILDING_DEFINITIONS[queued.buildingKind];
+        const contentKey = `queued:${queued.id}:${queued.buildingKind}`;
         return `
-          <span class="queued coBuildingIconSlot" ${attributes} data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState, area, subDistrictIndex, queued))}">
+          <span class="queued coBuildingIconSlot" ${attributes} data-co-building-content-key="${this.escapeHtml(contentKey)}" data-co-tooltip="${this.tooltipAttr(this.renderBuildingTooltip(definition, data.planetState, area, subDistrictIndex, queued))}">
             <img class="coBuildingIconArt" data-building-icon data-building-icon-candidates="${this.escapeHtml(this.getBuildingIconCandidateAttribute(definition))}" alt="" loading="eager" decoding="async" style="display:none;" />
             <span class="coBuildingInitials" data-building-fallback>${this.escapeHtml(definition.initials)}</span>
           <small data-co-queued-building-days data-co-queue-item="${this.escapeHtml(queued.id)}">${this.formatConstructionDays(queued.remainingDays)}</small>
@@ -1828,11 +1934,13 @@ export class CelestialObjectPanel {
       }
     const subAttribute = subDistrictIndex === undefined ? "" : ` data-co-sub-index="${subDistrictIndex}"`;
     const selected = this.isBuildingPickerTarget(area, slotIndex, subDistrictIndex) ? " selected" : "";
+    const contentKey = `empty:${selected ? "selected" : "idle"}`;
     return `
       <button
         class="coBuildingSlot${selected}"
         type="button"
         ${attributes}
+        data-co-building-content-key="${contentKey}"
         data-co-building-slot
         data-co-area="${area}"
         data-co-slot-index="${slotIndex}"
@@ -1865,7 +1973,7 @@ export class CelestialObjectPanel {
     const targetLabel = this.getBuildingTargetLabel(planetState, target);
 
     return `
-      <aside class="coBuildTray" data-co-side-panel="build">
+      <aside class="coBuildTray" data-co-side-panel="build" data-co-build-target="${this.escapeHtml(this.getBuildingSlotKey(target.area, target.slotIndex, target.subDistrictIndex))}">
         <div class="coBuildTrayHeader">
           <div>
             <strong>Construct Building</strong>
