@@ -177,6 +177,7 @@ export interface PopGroup {
   class: JobClass;
   speciesId: SpeciesId;
   speciesName: string;
+  portraitUrl?: string | null;
   habitability: number;
   happiness: number;
   population: number;
@@ -237,6 +238,7 @@ export interface PlanetPopulationGrowth {
   capacityPressure: number;
   ratePerQuarter: number;
   netPerQuarter: number;
+  speciesChanges: Array<{ speciesId: SpeciesId; deltaPerQuarter: number }>;
   factors: PlanetPopulationGrowthFactors;
 }
 
@@ -940,6 +942,7 @@ function createEmptyPopulationGrowth(): PlanetPopulationGrowth {
     capacityPressure: 0,
     ratePerQuarter: 0,
     netPerQuarter: 0,
+    speciesChanges: [],
     factors: {
       housing: 0,
       amenities: 0,
@@ -1924,12 +1927,21 @@ export function calculatePopulationGrowth(
     "populationGrowth",
   ) * getWeightedSpeciesGrowthMultiplier(state.speciesPopulations, speciesContext);
   const netPerQuarter = Math.round(state.population * ratePerQuarter);
+  const projectedPopulations = applyPopulationDeltaToSpecies(speciesPopulations, netPerQuarter, speciesContext);
+  const projectedBySpecies = new Map(projectedPopulations.map((entry) => [entry.speciesId, entry.population]));
+  const currentBySpecies = new Map(speciesPopulations.map((entry) => [entry.speciesId, entry.population]));
+  const speciesIds = new Set([...currentBySpecies.keys(), ...projectedBySpecies.keys()]);
+  const speciesChanges = [...speciesIds].map((speciesId) => ({
+    speciesId,
+    deltaPerQuarter: (projectedBySpecies.get(speciesId) ?? 0) - (currentBySpecies.get(speciesId) ?? 0),
+  }));
 
   return {
     capacity,
     capacityPressure,
     ratePerQuarter,
     netPerQuarter,
+    speciesChanges,
     factors,
   };
 }

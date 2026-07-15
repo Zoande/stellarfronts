@@ -72,6 +72,7 @@ import { formatIntelFreshness, getClientIntelField, getClientIntelYear, hasClien
 import type { IntelValue } from "../data/Intelligence";
 
 export type CelestialObjectKind = "planet" | "star";
+type EconomyDetailMode = "growth" | "decline" | "capacity";
 
 export interface CelestialObjectPanelData {
   kind: CelestialObjectKind;
@@ -99,6 +100,8 @@ const CELESTIAL_SCROLL_SELECTORS = [
   ".coBuildingWorkforceList",
   ".coJobClassList",
   ".coPopGroupList",
+  ".coEconomySpeciesBreakdown",
+  ".coCapacityBreakdown",
 ] as const;
 const PLANET_BANNER_DIR = "/textures/planet-banners";
 const BUILDING_ICON_DIR = "/textures/buildings";
@@ -151,8 +154,6 @@ const DISTRICT_ICON_BY_KIND: Record<DistrictKind, string> = {
 };
 
 const BUILDING_ICON_BY_KIND: Record<BuildingKind, string> = {
-  // Placeholder icon: the art asset does not exist yet, so the slot falls back
-  // to the building initials until a Planetary_Capital.webp is added.
   planetaryCapital: `${BUILDING_ICON_DIR}/Planetary_Capital.webp`,
   housingComplex: `${BUILDING_ICON_DIR}/Housing_Complex.webp`,
   administrativeComplex: `${BUILDING_ICON_DIR}/Administrative_Complex.webp`,
@@ -222,6 +223,7 @@ export class CelestialObjectPanel {
   private currentData: CelestialObjectPanelData | null = null;
   private activeTab: "surface" | "economy" = "surface";
   private selectedJob: JobKind | null = null;
+  private economyDetailMode: EconomyDetailMode | null = null;
   private expandedJobClasses = this.createDefaultExpandedJobClasses();
   private buildingPickerTarget: BuildingSlotTarget | null = null;
   private buildingDetailsTarget: BuildingSlotTarget | null = null;
@@ -345,6 +347,7 @@ export class CelestialObjectPanel {
       if (this.currentData) this.currentData.onClose?.(this.currentData.objectId, this.currentData.kind);
       this.activeTab = "surface";
       this.selectedJob = null;
+      this.economyDetailMode = null;
       this.expandedJobClasses = this.createDefaultExpandedJobClasses();
       this.buildingPickerTarget = null;
       this.buildingDetailsTarget = null;
@@ -467,6 +470,7 @@ export class CelestialObjectPanel {
     this.panelElement = null;
     this.currentData = null;
     this.selectedJob = null;
+    this.economyDetailMode = null;
     this.expandedJobClasses = this.createDefaultExpandedJobClasses();
     this.buildingPickerTarget = null;
     this.buildingDetailsTarget = null;
@@ -620,6 +624,14 @@ export class CelestialObjectPanel {
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-job]").forEach((button) => {
       button.addEventListener("click", () => {
         this.selectedJob = button.dataset.coJob as JobKind;
+        this.economyDetailMode = null;
+        this.show(this.getFreshData(data));
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-demographic]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.economyDetailMode = button.dataset.coDemographic as EconomyDetailMode;
         this.show(this.getFreshData(data));
       });
     });
@@ -1385,6 +1397,13 @@ export class CelestialObjectPanel {
     this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-job]").forEach((button) => {
       button.addEventListener("click", () => {
         this.selectedJob = button.dataset.coJob as JobKind;
+        this.economyDetailMode = null;
+        this.show(this.getFreshData(data));
+      });
+    });
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-demographic]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.economyDetailMode = button.dataset.coDemographic as EconomyDetailMode;
         this.show(this.getFreshData(data));
       });
     });
@@ -3395,11 +3414,14 @@ export class CelestialObjectPanel {
       { className: "middle", label: "Middle Class" },
       { className: "lower", label: "Lower Class" },
     ];
-    const selectedJob = this.resolveSelectedEconomyJob(planetState);
+    const selectedJob = this.economyDetailMode ? null : this.resolveSelectedEconomyJob(planetState);
     const growth = planetState.economy.populationGrowth;
-    const weeklyGrowth = Math.round(growth.netPerQuarter * (7 / 120));
-    const growthLabel = this.formatSignedPeople(weeklyGrowth);
-    const growthRate = `${(growth.ratePerQuarter * (7 / 120) * 100).toFixed(3)}% / week`;
+    const capacityRemaining = Math.max(0, growth.capacity - planetState.population);
+    const selectedDetail = this.economyDetailMode
+      ? this.renderEconomyDetail(planetState, this.economyDetailMode)
+      : selectedJob
+        ? this.renderSelectedJob(planetState, selectedJob)
+        : '<div class="coEmptyLine">Select a job or demographic card</div>';
 
     return `
       <section class="coBody coEconomyBody" data-co-body="economy">
@@ -3411,14 +3433,19 @@ export class CelestialObjectPanel {
         </div>
         <aside class="coDemographicsPanel">
           <div class="coBodyHeader">Demographics</div>
-          <div class="coGrowthGrid">
-            <div><strong>${growth.netPerQuarter >= 0 ? "Growing" : "Contracting"}</strong><span>${growthLabel}<small>${growthRate}</small></span></div>
-            <div><strong>Assembly</strong><span>0<small>No assembly source</small></span></div>
-            <div><strong>Capacity</strong><span>${this.formatPeople(growth.capacity)}<small>${(growth.capacityPressure * 100).toFixed(0)}% density</small></span></div>
+          <div class="coDemographicOverview">
+            <button class="coCapacityCard${this.economyDetailMode === "capacity" ? " selected" : ""}" type="button" data-co-demographic="capacity">
+              <span><strong>Planet Capacity</strong><small>${(growth.capacityPressure * 100).toFixed(0)}% occupied</small></span>
+              <span class="coCapacityCardNumbers"><strong>${this.formatPeople(planetState.population)} / ${this.formatPeople(growth.capacity)}</strong><small>${this.formatPeople(capacityRemaining)} available</small></span>
+              <i><b style="width:${Math.min(100, growth.capacityPressure * 100).toFixed(1)}%"></b></i>
+            </button>
+            <div class="coPopulationChangeGrid">
+              ${this.renderPopulationChangeCard(planetState, "growth")}
+              ${this.renderPopulationChangeCard(planetState, "decline")}
+            </div>
           </div>
-          <div class="coSpeciesOrb"></div>
           <div class="coSelectedJob">
-            ${selectedJob ? this.renderSelectedJob(planetState, selectedJob) : '<div class="coEmptyLine">No assigned jobs</div>'}
+            ${selectedDetail}
           </div>
         </aside>
       </section>
@@ -3514,7 +3541,7 @@ export class CelestialObjectPanel {
           ? '<div class="coEmptyLine">No assigned population</div>'
           : groups.map((group, index) => `
             <article class="coPopGroupCard">
-              <img class="coPopPortrait" src="${this.escapeHtml(this.getPopGroupPlaceholderImage(group, index))}" alt="" />
+              <img class="coPopPortrait" src="${this.escapeHtml(this.getSpeciesPortraitImage(group, group.speciesName, index))}" alt="" />
               <div class="coPopGroupMain">
                 <div class="coPopGroupTitle">
                   <strong>${this.escapeHtml(group.speciesName)}</strong>
@@ -3687,7 +3714,12 @@ export class CelestialObjectPanel {
     return icons[job];
   }
 
-  private getPopGroupPlaceholderImage(group: PopGroup, index: number): string {
+  private getSpeciesPortraitImage(group: Pick<PopGroup, "speciesName" | "portraitUrl"> | undefined, speciesName: string, index: number): string {
+    const portraitUrl = group?.portraitUrl?.trim();
+    return portraitUrl || this.getPopGroupPlaceholderImage({ speciesName }, index);
+  }
+
+  private getPopGroupPlaceholderImage(group: Pick<PopGroup, "speciesName">, index: number): string {
     const palettes = [
       ["#7bc8ff", "#123448", "#d9f2ff"],
       ["#7cffc3", "#123d32", "#d9fff0"],
@@ -3797,6 +3829,129 @@ export class CelestialObjectPanel {
       return;
     }
     this.show(data);
+  }
+
+  private renderPopulationChangeCard(planetState: PlanetState, mode: "growth" | "decline"): string {
+    const representative = this.getMostChangingSpecies(planetState, mode);
+    const activeChange = representative?.weeklyChange ?? 0;
+    const label = mode === "growth" ? "Growing" : "Declining";
+    const emptyLabel = mode === "growth" ? "No species growing" : "No species declining";
+    const selected = this.economyDetailMode === mode ? " selected" : "";
+    const image = representative
+      ? this.getSpeciesPortraitImage(representative.group, representative.name, representative.index)
+      : this.getPopGroupPlaceholderImage({ speciesName: "Unknown" }, 0);
+    return `
+      <button class="coPopulationChangeCard ${mode}${selected}" type="button" data-co-demographic="${mode}">
+        <img class="coDemographicPortrait" src="${this.escapeHtml(image)}" alt="" />
+        <span class="coPopulationChangeCopy">
+          <strong>${label}</strong>
+          <span>${activeChange !== 0 && representative ? this.escapeHtml(representative.name) : emptyLabel}</span>
+          <small>${activeChange !== 0 ? `${this.formatSignedPeople(activeChange)} / week` : "No projected change"}</small>
+        </span>
+      </button>
+    `;
+  }
+
+  private renderEconomyDetail(planetState: PlanetState, mode: EconomyDetailMode): string {
+    if (mode === "capacity") return this.renderCapacityDetail(planetState);
+    const growth = planetState.economy.populationGrowth;
+    const species = this.getSpeciesBreakdown(planetState)
+      .filter((entry) => mode === "growth" ? entry.weeklyChange > 0 : entry.weeklyChange < 0)
+      .sort((a, b) => mode === "growth" ? b.weeklyChange - a.weeklyChange : a.weeklyChange - b.weeklyChange);
+    const activeChange = species.reduce((sum, entry) => sum + entry.weeklyChange, 0);
+    const label = mode === "growth" ? "Population Growth" : "Population Decline";
+    const factors = [
+      ["Housing", growth.factors.housing],
+      ["Amenities", growth.factors.amenities],
+      ["Stability", growth.factors.stability],
+      ["Crime", growth.factors.crime],
+      ["Employment", growth.factors.employment],
+      ["Capacity", growth.factors.capacity],
+    ] as const;
+    return `
+      <div class="coEconomyDetailHeader">
+        <div><h4>${label}</h4><p>Projected from current planetary conditions</p></div>
+        <strong class="${activeChange < 0 ? "negative" : "positive"}">${activeChange === 0 ? "No change" : `${this.formatSignedPeople(activeChange)} / week`}</strong>
+      </div>
+      <div class="coEconomyFactorGrid">
+        ${factors.map(([factor, value]) => `<span><small>${factor}</small><strong class="${value < 0 ? "negative" : "positive"}">${this.formatSignedPercent(value * 100)}</strong></span>`).join("")}
+      </div>
+      <div class="coEconomySectionTitle">Species breakdown</div>
+      <div class="coEconomySpeciesBreakdown">
+        ${activeChange === 0 || species.length === 0
+          ? `<div class="coEmptyLine">No species currently ${mode === "growth" ? "growing" : "declining"}</div>`
+          : species.map((entry) => `
+              <article class="coEconomySpeciesRow">
+                <img src="${this.escapeHtml(this.getSpeciesPortraitImage(entry.group, entry.name, entry.index))}" alt="" />
+                <span><strong>${this.escapeHtml(entry.name)}</strong><small>${(entry.share * 100).toFixed(1)}% of residents</small></span>
+                <strong class="${entry.weeklyChange < 0 ? "negative" : "positive"}">${this.formatSignedPeople(entry.weeklyChange)} / week</strong>
+              </article>
+            `).join("")}
+      </div>
+    `;
+  }
+
+  private renderCapacityDetail(planetState: PlanetState): string {
+    const growth = planetState.economy.populationGrowth;
+    const remaining = growth.capacity - planetState.population;
+    const urbanCapacity = planetState.builtDistricts.city * 520_000_000;
+    const buildingCapacity = this.getBuildingCapacityBonus(planetState);
+    const foundationCapacity = Math.max(0, growth.capacity - urbanCapacity - buildingCapacity);
+    return `
+      <div class="coEconomyDetailHeader">
+        <div><h4>Planet Capacity</h4><p>Population space and supporting infrastructure</p></div>
+        <strong>${(growth.capacityPressure * 100).toFixed(1)}%</strong>
+      </div>
+      <div class="coCapacityMetrics">
+        <span><small>Population</small><strong>${this.formatPeople(planetState.population)}</strong></span>
+        <span><small>Total capacity</small><strong>${this.formatPeople(growth.capacity)}</strong></span>
+        <span><small>${remaining >= 0 ? "Available" : "Over capacity"}</small><strong class="${remaining < 0 ? "negative" : "positive"}">${this.formatPeople(Math.abs(remaining))}</strong></span>
+      </div>
+      <div class="coCapacityDetailBar"><i style="width:${Math.min(100, growth.capacityPressure * 100).toFixed(1)}%"></i></div>
+      <div class="coEconomySectionTitle">Capacity sources</div>
+      <div class="coCapacityBreakdown">
+        <span><small>Planet size, natural potential &amp; modifiers</small><strong>${this.formatPeople(foundationCapacity)}</strong></span>
+        <span><small>City districts</small><strong>${this.formatPeople(urbanCapacity)}</strong></span>
+        <span><small>Buildings</small><strong>${this.formatPeople(buildingCapacity)}</strong></span>
+      </div>
+    `;
+  }
+
+  private getSpeciesBreakdown(planetState: PlanetState): Array<{ name: string; population: number; share: number; weeklyChange: number; group?: PopGroup; index: number }> {
+    const total = planetState.speciesPopulations.reduce((sum, entry) => sum + entry.population, 0);
+    const changeBySpecies = new Map(planetState.economy.populationGrowth.speciesChanges.map((entry) => [entry.speciesId, entry.deltaPerQuarter]));
+    return planetState.speciesPopulations
+      .map((entry, index) => {
+        const group = planetState.economy.popGroups.find((candidate) => candidate.speciesId === entry.speciesId);
+        return {
+          name: group?.speciesName ?? String(entry.speciesId),
+          population: entry.population,
+          share: total > 0 ? entry.population / total : 0,
+          weeklyChange: Math.round((changeBySpecies.get(entry.speciesId) ?? 0) * (7 / 120)),
+          group,
+          index,
+        };
+      })
+      .sort((a, b) => b.population - a.population);
+  }
+
+  private getMostChangingSpecies(planetState: PlanetState, mode: "growth" | "decline"): ReturnType<CelestialObjectPanel["getSpeciesBreakdown"]>[number] | undefined {
+    const matching = this.getSpeciesBreakdown(planetState).filter((entry) => mode === "growth" ? entry.weeklyChange > 0 : entry.weeklyChange < 0);
+    return matching.sort((a, b) => mode === "growth" ? b.weeklyChange - a.weeklyChange : a.weeklyChange - b.weeklyChange)[0];
+  }
+
+  private getBuildingCapacityBonus(planetState: PlanetState): number {
+    let capacity = 0;
+    const add = (building: PlanetBuildingSlot): void => {
+      const kind = getPlanetBuildingKind(building);
+      if (!kind) return;
+      const multiplier = getBuildingLevelEffectMultiplier(getPlanetBuildingLevel(building));
+      if (kind === "housingComplex") capacity += 650_000_000 * multiplier;
+      else if (kind === "administrativeComplex" || kind === "commercialForum" || kind === "entertainmentForum" || kind === "securityOffice") capacity += 120_000_000 * multiplier;
+    };
+    Object.values(planetState.buildings).flat().forEach(add);
+    planetState.urbanSubDistricts.forEach((subDistrict) => subDistrict.buildings.forEach(add));
+    return capacity;
   }
 
   private openBuildingDetails(data: CelestialObjectPanelData, target: BuildingSlotTarget): void {
@@ -6040,16 +6195,7 @@ button.coBuildingIconSlot {
   opacity: 0.7;
 }
 
-.coGrowthGrid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 5px;
-  padding: 8px;
-}
-
-.coGrowthGrid div,
 .coSelectedJob {
-  min-height: 62px;
   border: 1px solid rgba(103, 255, 221, 0.32);
   background: rgba(4, 16, 18, 0.58);
   padding: 6px;
@@ -6057,33 +6203,118 @@ button.coBuildingIconSlot {
   font-size: 11px;
 }
 
-.coGrowthGrid strong,
-.coGrowthGrid span {
+.coDemographicOverview {
+  display: grid;
+  gap: 6px;
+  padding: 8px 8px 0;
+}
+
+.coCapacityCard,
+.coPopulationChangeCard {
+  min-width: 0;
+  border: 1px solid rgba(103, 255, 221, 0.3);
+  color: rgba(225, 245, 239, 0.88);
+  background: linear-gradient(135deg, rgba(8, 31, 31, 0.94), rgba(4, 16, 18, 0.88));
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.coCapacityCard:hover,
+.coPopulationChangeCard:hover,
+.coCapacityCard.selected,
+.coPopulationChangeCard.selected {
+  border-color: rgba(127, 255, 220, 0.82);
+  box-shadow: inset 0 0 18px rgba(91, 255, 214, 0.08), 0 0 10px rgba(61, 220, 187, 0.12);
+}
+
+.coCapacityCard {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 9px 12px;
+}
+
+.coCapacityCard span,
+.coCapacityCard strong,
+.coCapacityCard small {
   display: block;
 }
 
-.coGrowthGrid span {
-  margin-top: 18px;
-  color: rgba(198, 218, 213, 0.54);
-}
-
-.coGrowthGrid small {
-  display: block;
-  margin-top: 3px;
-  color: rgba(198, 218, 213, 0.62);
+.coCapacityCard small {
+  margin-top: 2px;
+  color: rgba(198, 226, 218, 0.58);
   font-size: 9px;
 }
 
-.coSpeciesOrb {
-  width: 104px;
-  height: 104px;
-  margin: 8px auto;
-  border-radius: 50%;
-  border: 1px solid rgba(151, 249, 222, 0.72);
-  background:
-    radial-gradient(circle at 35% 28%, rgba(214, 235, 255, 0.96), rgba(83, 157, 222, 0.72) 48%, rgba(14, 41, 56, 0.96) 80%);
-  box-shadow: 0 0 24px rgba(73, 177, 224, 0.28);
+.coCapacityCardNumbers {
+  text-align: right;
 }
+
+.coCapacityCard > i {
+  position: absolute;
+  right: 8px;
+  bottom: 5px;
+  left: 8px;
+  height: 3px;
+  overflow: hidden;
+  background: rgba(121, 174, 165, 0.17);
+}
+
+.coCapacityCard > i > b {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #51bfa9, #8ff8dd);
+}
+
+.coPopulationChangeGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.coPopulationChangeCard {
+  position: relative;
+  height: 112px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.coPopulationChangeCard.growth { background: linear-gradient(135deg, rgba(8, 42, 34, 0.94), rgba(4, 16, 18, 0.9)); }
+.coPopulationChangeCard.decline { background: linear-gradient(135deg, rgba(48, 18, 24, 0.92), rgba(4, 16, 18, 0.9)); }
+
+.coDemographicPortrait {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 72px;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
+  background: transparent;
+  mask-image: linear-gradient(90deg, #000 74%, transparent 100%);
+}
+
+.coPopulationChangeCopy {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 8px 7px 8px 54px;
+  text-align: right;
+}
+
+.coPopulationChangeCopy strong,
+.coPopulationChangeCopy span,
+.coPopulationChangeCopy small {
+  display: block;
+}
+
+.coPopulationChangeCopy strong { color: #f0fbf8; font-size: 13px; }
+.coPopulationChangeCopy span { margin-top: 3px; overflow: hidden; color: rgba(220, 240, 235, 0.78); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.coPopulationChangeCopy small { margin-top: 2px; color: rgba(187, 218, 210, 0.58); font-size: 9px; }
 
 .coSelectedJob {
   flex: 1 1 auto;
@@ -6093,6 +6324,119 @@ button.coBuildingIconSlot {
   flex-direction: column;
   overflow: hidden;
 }
+
+.coEconomyDetailHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.coEconomyDetailHeader > strong {
+  color: #e5faf3;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.coEconomyFactorGrid,
+.coCapacityMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 8px;
+}
+
+.coEconomyFactorGrid > span,
+.coCapacityMetrics > span {
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid rgba(103, 255, 221, 0.18);
+  background: rgba(10, 35, 33, 0.48);
+}
+
+.coEconomyFactorGrid small,
+.coEconomyFactorGrid strong,
+.coCapacityMetrics small,
+.coCapacityMetrics strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.coEconomyFactorGrid small,
+.coCapacityMetrics small { color: rgba(198, 226, 218, 0.56); font-size: 8px; }
+.coEconomyFactorGrid strong,
+.coCapacityMetrics strong { margin-top: 2px; color: #e5f5f0; font-size: 10px; white-space: nowrap; }
+.coSelectedJob .positive { color: #70e4b3; }
+.coSelectedJob .negative { color: #ff8792; }
+
+.coEconomySectionTitle {
+  margin-top: 9px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.16);
+  color: rgba(207, 236, 228, 0.66);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.coEconomySpeciesBreakdown,
+.coCapacityBreakdown {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-height: 0;
+  margin-top: 6px;
+  overflow-y: auto;
+}
+
+.coEconomySpeciesRow {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 4px;
+  border: 1px solid rgba(103, 255, 221, 0.18);
+  background: rgba(8, 27, 27, 0.5);
+}
+
+.coEconomySpeciesRow img {
+  width: 38px;
+  height: 42px;
+  object-fit: cover;
+  object-position: center top;
+  background: transparent;
+}
+
+.coEconomySpeciesRow span strong,
+.coEconomySpeciesRow span small { display: block; }
+.coEconomySpeciesRow span small { margin-top: 2px; color: rgba(198, 226, 218, 0.54); font-size: 8px; }
+.coEconomySpeciesRow > strong { font-size: 9px; white-space: nowrap; }
+
+.coCapacityDetailBar {
+  height: 6px;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(103, 255, 221, 0.18);
+  background: rgba(4, 13, 15, 0.84);
+}
+
+.coCapacityDetailBar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #3ba38e, #8df7d9);
+}
+
+.coCapacityBreakdown > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.13);
+}
+
+.coCapacityBreakdown small { color: rgba(205, 229, 223, 0.62); }
+.coCapacityBreakdown strong { color: #e3f7f1; white-space: nowrap; }
 
 .coSelectedJobHeader {
   display: grid;
