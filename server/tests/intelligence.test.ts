@@ -138,6 +138,25 @@ test("one-shot intelligence can reveal only a planet population field", () => {
   assert.deepEqual(Object.keys(view.fields), ["population"]);
 });
 
+test("system tooltip facts remain independently revealable intelligence fields", () => {
+  const state = stateFixture();
+  state.planetStates[0].buildings.city[0] = null;
+  refreshIntelligence(state);
+
+  assert.equal(grantOneShotIntelReport(state, 0, "star", 2, ["type"]), true);
+  assert.equal(grantOneShotIntelReport(state, 0, "system", 2, ["planetCount"]), true);
+
+  const starView = getIntelEntityView(state, 0, "star", 2)!;
+  assert.deepEqual(Object.keys(starView.fields), ["type"]);
+  assert.equal(starView.fields.name, undefined);
+
+  const systemView = getIntelEntityView(state, 0, "system", 2)!;
+  assert.deepEqual(Object.keys(systemView.fields), ["planetCount"]);
+  assert.equal(systemView.fields.ownerId, undefined);
+  assert.equal(systemView.fields.planetCount.status, "stale");
+  assert.equal(systemView.fields.planetCount.value, 0);
+});
+
 test("sensor suite table preserves the agreed ranges and tactical planet exclusions", () => {
   assert.equal(SENSOR_SUITE_DEFINITIONS.planetaryCapitalSensors.maxRange, 1);
   assert.equal(SENSOR_SUITE_DEFINITIONS.listeningStationSensors.maxRange, 3);
