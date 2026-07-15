@@ -95,6 +95,7 @@ import {
   weaponCanFireAtDistance,
 } from "./game/combat";
 import { GAME_START_YEAR, REAL_MS_PER_GAME_HOUR, elapsedHoursToGameYear, gameYearToHourIndex, gameYearToWeekIndex } from "../src/game/GameTime";
+import { gameHourToRealMinute } from "../src/game/ResourceRate";
 import { getFirstRequiredTechName, getMissingPrerequisites, getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel, getRequiredTechIdsForStarbaseBuilding, isTechnologyAvailable, isTechnologyCompleted, isUnlockedByAnyRequiredTech, TechId, TECHNOLOGY_BY_ID } from "../src/data/Technology";
 import { formatLeaderClass, getLeaderAssignmentClass } from "../src/data/Leaders";
 import type { LeaderAssignment, LeaderClass, LeaderFleetEffects, LeaderState } from "../src/data/Leaders";
@@ -1157,7 +1158,7 @@ function handleAddMarketAutoTrade(
   }
   const amountPerHour = Number(rawAmountPerHour);
   if (!Number.isFinite(amountPerHour) || amountPerHour <= 0) {
-    reject(socket, "Enter a positive hourly amount.");
+    reject(socket, "Enter a positive per-minute amount.");
     return;
   }
   if (amountPerHour > 1_000_000) {
@@ -1189,7 +1190,7 @@ function handleAddMarketAutoTrade(
 
   refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
-  accept(socket, `${tradeType === "auto_buy" ? "Auto-buy" : "Auto-sell"} set to ${formatEnergyAmount(amountPerHour)} ${resourceId} per ctx.game hour.`);
+  accept(socket, `${tradeType === "auto_buy" ? "Auto-buy" : "Auto-sell"} set to ${formatEnergyAmount(gameHourToRealMinute(amountPerHour))} ${resourceId}/min.`);
   broadcastUpdates(["factionEconomies", "market"]);
 }
 

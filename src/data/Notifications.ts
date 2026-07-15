@@ -5,6 +5,7 @@ import type { IndicatorSeverity } from "./GameEffects";
 import type { ActiveSituation } from "./Situations";
 import { getSituationDefinition } from "./Situations";
 import type { MarketTradeAlert } from "./Market";
+import { gameHourToRealMinute } from "../game/ResourceRate";
 
 export type IndicatorKind = "event" | "situation" | "alert" | "tradeAlert";
 
@@ -108,12 +109,12 @@ export function deriveIndicators(input: {
   for (const alert of input.tradeAlerts ?? []) {
     const resourceLabel = RESOURCE_LABELS[alert.resourceId] ?? alert.resourceId;
     const verb = alert.tradeType === "auto_sell" ? "Sale" : "Purchase";
-    const requestedFmt = Math.round(alert.requestedPerHour);
-    const executedFmt = Math.round(alert.executedPerHour);
+    const requestedFmt = Math.round(gameHourToRealMinute(alert.requestedPerHour));
+    const executedFmt = Math.round(gameHourToRealMinute(alert.executedPerHour));
     const partial = alert.executedPerHour > 0;
     const tooltip = partial
-      ? `${verb} of ${resourceLabel}: only ${executedFmt}/hr of ${requestedFmt}/hr could be filled — stockpile insufficient`
-      : `${verb} of ${resourceLabel}: none of the ${requestedFmt}/hr order could be filled — stockpile empty`;
+      ? `${verb} of ${resourceLabel}: only ${executedFmt}/min of ${requestedFmt}/min could be filled — stockpile insufficient`
+      : `${verb} of ${resourceLabel}: none of the ${requestedFmt}/min order could be filled — stockpile empty`;
     indicators.push({
       id: `tradeAlert:${alert.id}`,
       kind: "tradeAlert",

@@ -27,6 +27,12 @@ import {
 } from "../../src/data/Economy";
 import type { DistrictCounts, PlanetBuildingSlot, PlanetEconomySpeciesContext } from "../../src/data/Economy";
 import type { SpeciesState } from "../../src/data/Species";
+import {
+  gameHourToRealMinute,
+  monthlyToRealMinute,
+  quarterlyToRealMinute,
+  realMinuteToGameHour,
+} from "../../src/game/ResourceRate";
 
 const DEFAULT_LIMITS: DistrictCounts = {
   city: 12,
@@ -41,6 +47,13 @@ const ZERO_DISTRICTS: DistrictCounts = {
   mining: 0,
   agriculture: 0,
 };
+
+test("economy display rates consistently convert to real minutes", () => {
+  assert.equal(monthlyToRealMinute(120), 10);
+  assert.equal(quarterlyToRealMinute(48), 1);
+  assert.equal(gameHourToRealMinute(2), 120);
+  assert.equal(realMinuteToGameHour(120), 2);
+});
 
 function createHabitedPlanet() {
   return createPlanetStateFromSeed({

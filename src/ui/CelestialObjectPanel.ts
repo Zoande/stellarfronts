@@ -59,6 +59,7 @@ import { NEBULA_DEFINITIONS, NEBULA_KINDS } from "../data/Nebula";
 import type { ClientCommand } from "../game/GameProtocol";
 import type { LeaderState } from "../data/Leaders";
 import { GAME_DAYS_PER_YEAR } from "../game/GameTime";
+import { monthlyToRealMinute, quarterlyToRealMinute, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
 import {
   getFirstRequiredTechName,
   getRequiredTechIdsForBuilding,
@@ -2788,12 +2789,12 @@ export class CelestialObjectPanel {
     const upkeepRows = this.getResourceUpkeepContributions(planetState, resource);
     return `
       <div class="coTooltipTitle">${this.escapeHtml(RESOURCE_LABELS[resource])}</div>
-      <p>Monthly planetary ${this.escapeHtml(RESOURCE_LABELS[resource].toLowerCase())} balance from jobs and population upkeep.</p>
+      <p>Planetary ${this.escapeHtml(RESOURCE_LABELS[resource].toLowerCase())} flow per real minute at standard speed.</p>
       <div class="coTooltipGrid">
-        ${this.renderTooltipGridItem("Net", this.formatSignedCompact(economy.net[resource]))}
-        ${this.renderTooltipGridItem("Production", this.formatCompact(economy.production[resource]), this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Production`, productionRows, (value) => this.formatSignedCompact(value)))}
-        ${this.renderTooltipGridItem("Upkeep", this.formatCompact(economy.upkeep[resource]), this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Upkeep`, upkeepRows, (value) => this.formatCompact(value)))}
-        ${this.renderTooltipGridItem("Deficit", economy.deficit[resource] > 0 ? this.formatCompact(economy.deficit[resource]) : "0")}
+        ${this.renderTooltipGridItem("Net", `${this.formatSignedCompact(monthlyToRealMinute(economy.net[resource]))}${RESOURCE_RATE_LABEL}`)}
+        ${this.renderTooltipGridItem("Production", `${this.formatCompact(monthlyToRealMinute(economy.production[resource]))}${RESOURCE_RATE_LABEL}`, this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Production`, productionRows, (value) => `${this.formatSignedCompact(monthlyToRealMinute(value))}${RESOURCE_RATE_LABEL}`))}
+        ${this.renderTooltipGridItem("Upkeep", `${this.formatCompact(monthlyToRealMinute(economy.upkeep[resource]))}${RESOURCE_RATE_LABEL}`, this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Upkeep`, upkeepRows, (value) => `${this.formatCompact(monthlyToRealMinute(value))}${RESOURCE_RATE_LABEL}`))}
+        ${this.renderTooltipGridItem("Deficit", economy.deficit[resource] > 0 ? `${this.formatCompact(monthlyToRealMinute(economy.deficit[resource]))}${RESOURCE_RATE_LABEL}` : "0/min")}
       </div>
     `;
   }
@@ -2815,13 +2816,12 @@ export class CelestialObjectPanel {
 
   private renderGrowthTooltip(planetState: PlanetState): string {
     const growth = planetState.economy.populationGrowth;
-    const weeklyGrowth = Math.round(growth.netPerQuarter * (7 / 120));
+    const minuteGrowth = quarterlyToRealMinute(growth.netPerQuarter);
     return `
       <div class="coTooltipTitle">Population Growth</div>
-      <p>Growth is calculated quarterly and shown as an estimated weekly change in the overview.</p>
+      <p>Growth is calculated quarterly and displayed as its equivalent change per real minute at standard speed.</p>
       <div class="coTooltipGrid">
-        ${this.renderTooltipGridItem("Growth / Week", this.formatSignedPeople(weeklyGrowth))}
-        ${this.renderTooltipGridItem("Growth / Quarter", this.formatSignedPeople(growth.netPerQuarter))}
+        ${this.renderTooltipGridItem("Growth / min", `${this.formatSignedPeople(minuteGrowth)}${RESOURCE_RATE_LABEL}`)}
         ${this.renderTooltipGridItem("Quarter Rate", `${(growth.ratePerQuarter * 100).toFixed(3)}%`)}
         ${this.renderTooltipGridItem("Capacity", this.formatPeople(growth.capacity))}
         ${this.renderTooltipGridItem("Housing", this.formatSignedPercent(growth.factors.housing * 100))}
@@ -3266,7 +3266,7 @@ export class CelestialObjectPanel {
       ` : ""}
       <div class="coTooltipSectionTitle">Jobs And Housing</div>
       <div class="coTooltipList">${jobLines.length ? jobLines.map((line) => `<span>${line}</span>`).join("") : "<span>No direct jobs.</span>"}</div>
-      <div class="coTooltipSectionTitle">Predicted Monthly Output</div>
+      <div class="coTooltipSectionTitle">Predicted Output / min</div>
       <div class="coTooltipList">${productionLines.length ? productionLines.map((line) => `<span>${line}</span>`).join("") : "<span>No direct production.</span>"}</div>
     `;
   }
@@ -3295,13 +3295,13 @@ export class CelestialObjectPanel {
       const units = amount / 1_000_000;
       const job = JOB_DEFINITIONS[effect.job];
       for (const [resource, value] of Object.entries(job.output ?? {}) as Array<[ResourceKind, number]>) {
-        lines.push(`${this.formatSignedCompact(units * value * outputMultiplier)} ${RESOURCE_LABELS[resource]}`);
+        lines.push(`${this.formatSignedCompact(monthlyToRealMinute(units * value * outputMultiplier))}${RESOURCE_RATE_LABEL} ${RESOURCE_LABELS[resource]}`);
       }
       for (const [resource, value] of Object.entries(job.upkeep ?? {}) as Array<[ResourceKind, number]>) {
-        lines.push(`${this.formatSignedCompact(-units * value * upkeepMultiplier)} ${RESOURCE_LABELS[resource]} upkeep`);
+        lines.push(`${this.formatSignedCompact(monthlyToRealMinute(-units * value * upkeepMultiplier))}${RESOURCE_RATE_LABEL} ${RESOURCE_LABELS[resource]} upkeep`);
       }
-      if (job.amenities) lines.push(`${this.formatSignedCompact(units * job.amenities * outputMultiplier)} Amenities`);
-      if (job.crimeReduction) lines.push(`${this.formatSignedCompact(-units * job.crimeReduction * outputMultiplier)} Crime`);
+      if (job.amenities) lines.push(`${this.formatSignedCompact(monthlyToRealMinute(units * job.amenities * outputMultiplier))}${RESOURCE_RATE_LABEL} Amenities`);
+      if (job.crimeReduction) lines.push(`${this.formatSignedCompact(monthlyToRealMinute(-units * job.crimeReduction * outputMultiplier))}${RESOURCE_RATE_LABEL} Crime`);
     }
     return lines;
   }
@@ -3378,13 +3378,13 @@ export class CelestialObjectPanel {
 
   private renderProductionPanels(planetState: PlanetState): string {
     const netRows = RESOURCE_KINDS.map((resource) => {
-      const value = planetState.economy.net[resource];
+      const value = monthlyToRealMinute(planetState.economy.net[resource]);
       const className = value >= 0 ? "positive" : "negative";
-      return this.renderProductionToken(resource, RESOURCE_LABELS[resource], this.formatSignedCompact(value), className, this.renderResourceEconomyTooltip(planetState, resource));
+      return this.renderProductionToken(resource, RESOURCE_LABELS[resource], `${this.formatSignedCompact(value)}${RESOURCE_RATE_LABEL}`, className, this.renderResourceEconomyTooltip(planetState, resource));
     }).join("");
     const deficits = RESOURCE_KINDS
       .filter((resource) => planetState.economy.deficit[resource] > 0)
-      .map((resource) => this.renderProductionToken(resource, RESOURCE_LABELS[resource], `-${this.formatCompact(planetState.economy.deficit[resource])}`, "negative", this.renderResourceEconomyTooltip(planetState, resource)))
+      .map((resource) => this.renderProductionToken(resource, RESOURCE_LABELS[resource], `-${this.formatCompact(monthlyToRealMinute(planetState.economy.deficit[resource]))}${RESOURCE_RATE_LABEL}`, "negative", this.renderResourceEconomyTooltip(planetState, resource)))
       .join("");
 
     return `
@@ -3580,7 +3580,7 @@ export class CelestialObjectPanel {
   private renderJobConversion(job: JobKind, population: number, prefix?: string): string {
     const multiplier = Math.max(0, population / PEOPLE_PER_MONTHLY_UNIT);
     const flows = this.getJobFlowEntries(job)
-      .map((entry) => ({ ...entry, amount: entry.amount * multiplier }))
+      .map((entry) => ({ ...entry, amount: monthlyToRealMinute(entry.amount * multiplier) }))
       .filter((entry) => Math.abs(entry.amount) > 0.0001);
     const inputs = flows.filter((entry) => entry.direction === "input");
     const outputs = flows.filter((entry) => entry.direction === "output");
@@ -3605,7 +3605,7 @@ export class CelestialObjectPanel {
       <span class="coFlowChip ${className}">
         ${this.renderStatIcon(entry.resource)}
         <strong>${this.escapeHtml(this.formatFlowAmount(entry.amount))}</strong>
-        <small>${this.escapeHtml(this.getFlowResourceLabel(entry.resource))}</small>
+        <small>${this.escapeHtml(`${this.getFlowResourceLabel(entry.resource)}${RESOURCE_RATE_LABEL}`)}</small>
       </span>
     `;
   }
@@ -3833,7 +3833,7 @@ export class CelestialObjectPanel {
 
   private renderPopulationChangeCard(planetState: PlanetState, mode: "growth" | "decline"): string {
     const representative = this.getMostChangingSpecies(planetState, mode);
-    const activeChange = representative?.weeklyChange ?? 0;
+    const activeChange = representative?.minuteChange ?? 0;
     const label = mode === "growth" ? "Growing" : "Declining";
     const emptyLabel = mode === "growth" ? "No species growing" : "No species declining";
     const selected = this.economyDetailMode === mode ? " selected" : "";
@@ -3846,7 +3846,7 @@ export class CelestialObjectPanel {
         <span class="coPopulationChangeCopy">
           <strong>${label}</strong>
           <span>${activeChange !== 0 && representative ? this.escapeHtml(representative.name) : emptyLabel}</span>
-          <small>${activeChange !== 0 ? `${this.formatSignedPeople(activeChange)} / week` : "No projected change"}</small>
+          <small>${activeChange !== 0 ? `${this.formatSignedPeople(activeChange)}${RESOURCE_RATE_LABEL}` : "No projected change"}</small>
         </span>
       </button>
     `;
@@ -3856,9 +3856,9 @@ export class CelestialObjectPanel {
     if (mode === "capacity") return this.renderCapacityDetail(planetState);
     const growth = planetState.economy.populationGrowth;
     const species = this.getSpeciesBreakdown(planetState)
-      .filter((entry) => mode === "growth" ? entry.weeklyChange > 0 : entry.weeklyChange < 0)
-      .sort((a, b) => mode === "growth" ? b.weeklyChange - a.weeklyChange : a.weeklyChange - b.weeklyChange);
-    const activeChange = species.reduce((sum, entry) => sum + entry.weeklyChange, 0);
+      .filter((entry) => mode === "growth" ? entry.minuteChange > 0 : entry.minuteChange < 0)
+      .sort((a, b) => mode === "growth" ? b.minuteChange - a.minuteChange : a.minuteChange - b.minuteChange);
+    const activeChange = species.reduce((sum, entry) => sum + entry.minuteChange, 0);
     const label = mode === "growth" ? "Population Growth" : "Population Decline";
     const factors = [
       ["Housing", growth.factors.housing],
@@ -3871,7 +3871,7 @@ export class CelestialObjectPanel {
     return `
       <div class="coEconomyDetailHeader">
         <div><h4>${label}</h4><p>Projected from current planetary conditions</p></div>
-        <strong class="${activeChange < 0 ? "negative" : "positive"}">${activeChange === 0 ? "No change" : `${this.formatSignedPeople(activeChange)} / week`}</strong>
+        <strong class="${activeChange < 0 ? "negative" : "positive"}">${activeChange === 0 ? "No change" : `${this.formatSignedPeople(activeChange)}${RESOURCE_RATE_LABEL}`}</strong>
       </div>
       <div class="coEconomyFactorGrid">
         ${factors.map(([factor, value]) => `<span><small>${factor}</small><strong class="${value < 0 ? "negative" : "positive"}">${this.formatSignedPercent(value * 100)}</strong></span>`).join("")}
@@ -3884,7 +3884,7 @@ export class CelestialObjectPanel {
               <article class="coEconomySpeciesRow">
                 <img src="${this.escapeHtml(this.getSpeciesPortraitImage(entry.group, entry.name, entry.index))}" alt="" />
                 <span><strong>${this.escapeHtml(entry.name)}</strong><small>${(entry.share * 100).toFixed(1)}% of residents</small></span>
-                <strong class="${entry.weeklyChange < 0 ? "negative" : "positive"}">${this.formatSignedPeople(entry.weeklyChange)} / week</strong>
+                <strong class="${entry.minuteChange < 0 ? "negative" : "positive"}">${this.formatSignedPeople(entry.minuteChange)}${RESOURCE_RATE_LABEL}</strong>
               </article>
             `).join("")}
       </div>
@@ -3917,7 +3917,7 @@ export class CelestialObjectPanel {
     `;
   }
 
-  private getSpeciesBreakdown(planetState: PlanetState): Array<{ name: string; population: number; share: number; weeklyChange: number; group?: PopGroup; index: number }> {
+  private getSpeciesBreakdown(planetState: PlanetState): Array<{ name: string; population: number; share: number; minuteChange: number; group?: PopGroup; index: number }> {
     const total = planetState.speciesPopulations.reduce((sum, entry) => sum + entry.population, 0);
     const changeBySpecies = new Map(planetState.economy.populationGrowth.speciesChanges.map((entry) => [entry.speciesId, entry.deltaPerQuarter]));
     return planetState.speciesPopulations
@@ -3927,7 +3927,7 @@ export class CelestialObjectPanel {
           name: group?.speciesName ?? String(entry.speciesId),
           population: entry.population,
           share: total > 0 ? entry.population / total : 0,
-          weeklyChange: Math.round((changeBySpecies.get(entry.speciesId) ?? 0) * (7 / 120)),
+          minuteChange: quarterlyToRealMinute(changeBySpecies.get(entry.speciesId) ?? 0),
           group,
           index,
         };
@@ -3936,8 +3936,8 @@ export class CelestialObjectPanel {
   }
 
   private getMostChangingSpecies(planetState: PlanetState, mode: "growth" | "decline"): ReturnType<CelestialObjectPanel["getSpeciesBreakdown"]>[number] | undefined {
-    const matching = this.getSpeciesBreakdown(planetState).filter((entry) => mode === "growth" ? entry.weeklyChange > 0 : entry.weeklyChange < 0);
-    return matching.sort((a, b) => mode === "growth" ? b.weeklyChange - a.weeklyChange : a.weeklyChange - b.weeklyChange)[0];
+    const matching = this.getSpeciesBreakdown(planetState).filter((entry) => mode === "growth" ? entry.minuteChange > 0 : entry.minuteChange < 0);
+    return matching.sort((a, b) => mode === "growth" ? b.minuteChange - a.minuteChange : a.minuteChange - b.minuteChange)[0];
   }
 
   private getBuildingCapacityBonus(planetState: PlanetState): number {

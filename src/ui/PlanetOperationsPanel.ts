@@ -18,6 +18,7 @@ import {
   restoreScrollStateSoon,
 } from "./panelDomState";
 import { requestOpenLeadersPanel } from "./leaderEvents";
+import { monthlyToRealMinute, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
 
 export interface PlanetOperationsPanelData {
   planets: PlanetManagerPlanetEntry[];
@@ -359,12 +360,12 @@ export class PlanetOperationsPanel {
 
   private renderResourceCell(entry: PlanetManagerPlanetEntry, resource: ResourceKind, maxValue: number): string {
     const economy = entry.planetState.economy;
-    const value = economy.net[resource];
+    const value = monthlyToRealMinute(economy.net[resource]);
     const hasDeficit = economy.deficit[resource] > 0.0001 || value < -0.0001;
     const width = Math.max(9, Math.min(100, Math.abs(value) / Math.max(1, maxValue) * 100));
     return `
       <div class="poResourceCell ${hasDeficit ? "deficit" : "positive"}">
-        <strong>${this.escapeHtml(this.formatSignedCompact(value))}</strong>
+        <strong>${this.escapeHtml(`${this.formatSignedCompact(value)}${RESOURCE_RATE_LABEL}`)}</strong>
         ${hasDeficit ? `<small>${economy.deficit[resource] > 0.0001 ? "Deficit" : "Shortfall"}</small>` : "<small>&nbsp;</small>"}
         <span class="poCellBar"><i style="width: ${width.toFixed(2)}%"></i></span>
       </div>
@@ -518,7 +519,7 @@ export class PlanetOperationsPanel {
     }, {} as PlanetResourceMaxima);
     for (const entry of planets) {
       for (const resource of RESOURCE_KINDS) {
-        maxima[resource] = Math.max(maxima[resource], Math.abs(entry.planetState.economy.net[resource]));
+        maxima[resource] = Math.max(maxima[resource], Math.abs(monthlyToRealMinute(entry.planetState.economy.net[resource])));
       }
     }
     return maxima;
