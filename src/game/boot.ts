@@ -160,6 +160,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let releaseActiveSystemDetail: (() => void) | null = null;
   const releaseStarbaseDetails = new Map<string, () => void>();
   const releasePlanetDetails = new Map<string, () => void>();
+  const pendingPlanetDetailInitials = new Map<string, Promise<PlanetDetailPayload>>();
   let selectedFleetIds = new Set<string>();
 
   const visualToggles: HudVisualToggles = {
@@ -1067,12 +1068,38 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   function releasePlanetDetail(planetId: string): void {
     releasePlanetDetails.get(planetId)?.();
     releasePlanetDetails.delete(planetId);
+    pendingPlanetDetailInitials.delete(planetId);
   }
 
-  function subscribePlanetDetail(planetId: string): void {
-    if (releasePlanetDetails.has(planetId)) return;
+  function subscribePlanetDetail(planetId: string): Promise<PlanetDetailPayload> {
+    const existingPending = pendingPlanetDetailInitials.get(planetId);
+    if (existingPending) return existingPending;
+    const cached = server.getCachedDetail<PlanetDetailPayload>("planet", planetId);
+    if (releasePlanetDetails.has(planetId) && cached) return Promise.resolve(cached);
+
+    let resolveInitial!: (payload: PlanetDetailPayload) => void;
+    let rejectInitial!: (error: Error) => void;
+    const initial = new Promise<PlanetDetailPayload>((resolve, reject) => {
+      resolveInitial = resolve;
+      rejectInitial = reject;
+    });
+    pendingPlanetDetailInitials.set(planetId, initial);
+    const timeout = window.setTimeout(() => {
+      pendingPlanetDetailInitials.delete(planetId);
+      rejectInitial(new Error("Timed out waiting for planet details."));
+    }, 8_000);
+
     const release = server.subscribeDetail<PlanetDetailPayload>("planet", planetId, (event) => {
+      if (event.status === "unavailable") {
+        window.clearTimeout(timeout);
+        pendingPlanetDetailInitials.delete(planetId);
+        rejectInitial(new Error(event.message ?? "Planet details are unavailable."));
+        return;
+      }
       if (!event.payload || !("planetState" in event.payload)) return;
+      window.clearTimeout(timeout);
+      pendingPlanetDetailInitials.delete(planetId);
+      resolveInitial(event.payload);
       const star = cachePlanetDetails(event.payload.starId, event.payload.planet, event.payload.planetState);
       if (!star) return;
       if (activeSystemScene && currentSystemStar?.id === event.payload.starId) {
@@ -1080,8 +1107,9 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       }
       activeGalaxyScene?.refreshPlanetDetails(event.payload.planet, event.payload.planetState);
       updateHud();
-    });
+    }, { emitCached: false });
     releasePlanetDetails.set(planetId, release);
+    return initial;
   }
 
   function requestStarbaseDetails(starbaseId: string): Promise<ServerStarbase | null> {
@@ -1399,9 +1427,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           onSelectedFleetIdsChange: setSelectedFleetIds,
           onRequestFleetActionInGalaxy: requestFleetActionInGalaxy,
           onRequestPlanetDetails: async (planetId) => {
-            subscribePlanetDetail(planetId);
-            const planetDetails = await server.requestPlanetDetails(planetId);
-            cachePlanetDetails(planetDetails.starId, planetDetails.planet, planetDetails.planetState);
+            const planetDetails = await subscribePlanetDetail(planetId);
             return {
               planet: planetDetails.planet,
               planetState: planetDetails.planetState,
@@ -1424,16 +1450,39 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     cacheSystemDetails(systemDetails.star, systemDetails.planetStates);
     const habitedState = systemDetails.planetStates.find((planetState) => planetState.isHabited);
     if (!habitedState) return;
-    subscribePlanetDetail(habitedState.id);
-    const planetDetails = await server.requestPlanetDetails(habitedState.id);
+    const cachedPlanet = systemDetails.star.system.planets[habitedState.planetIndex];
+    if (cachedPlanet) activeGalaxyScene?.showPlanetDetails(systemDetails.star, cachedPlanet, habitedState, false);
+    const planetDetails = await subscribePlanetDetail(habitedState.id);
+    if (cachedPlanet && !activeGalaxyScene?.isShowingPlanetDetails(habitedState.id)) return;
     const star = cachePlanetDetails(planetDetails.starId, planetDetails.planet, planetDetails.planetState)
       ?? systemDetails.star;
     activeGalaxyScene?.showPlanetDetails(star, planetDetails.planet, planetDetails.planetState);
   }
 
   async function openPlanetFromManager(planetId: string): Promise<void> {
-    subscribePlanetDetail(planetId);
-    const planetDetails = await server.requestPlanetDetails(planetId);
+    const localEntry = (planetManagerDetail?.planets ?? getPlanetManagerFallbackPlanets())
+      .find((entry) => entry.planetState.id === planetId);
+    const pendingDetails = subscribePlanetDetail(planetId);
+    let showedLocal = false;
+    if (localEntry) {
+      const localStar = cachePlanetDetails(localEntry.starId, localEntry.planet, localEntry.planetState);
+      if (activeSystemScene && currentSystemStar?.id === localEntry.starId) {
+        activeSystemScene.showPlanetDetails(localEntry.planet, localEntry.planetState, false);
+        showedLocal = true;
+      } else {
+        if (!activeGalaxyScene) await openGalaxyView();
+        if (localStar) {
+          activeGalaxyScene?.showPlanetDetails(localStar, localEntry.planet, localEntry.planetState, false);
+          showedLocal = true;
+        }
+      }
+    }
+    const planetDetails = await pendingDetails;
+    if (showedLocal) {
+      const stillShowingInSystem = activeSystemScene?.isShowingPlanetDetails(planetId) === true;
+      const stillShowingInGalaxy = activeGalaxyScene?.isShowingPlanetDetails(planetId) === true;
+      if (!stillShowingInSystem && !stillShowingInGalaxy) return;
+    }
     const star = cachePlanetDetails(planetDetails.starId, planetDetails.planet, planetDetails.planetState);
     if (!star) return;
     if (activeSystemScene && currentSystemStar?.id === planetDetails.starId) {

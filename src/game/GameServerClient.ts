@@ -305,6 +305,7 @@ export class GameServerClient {
     scope: GameDetailScope,
     id: string | number | null | undefined,
     handler: DetailHandler<T>,
+    options: { emitCached?: boolean } = {},
   ): () => void {
     const normalizedId = id ?? null;
     const key = createDetailKey(scope, normalizedId);
@@ -313,7 +314,7 @@ export class GameServerClient {
     this.detailHandlers.set(key, handlers);
 
     const cached = this.detailCache.get(key);
-    if (cached) {
+    if (cached && options.emitCached !== false) {
       window.setTimeout(() => handler(cached.event as GameDetailEvent & { payload?: T }), 0);
     }
     this.send({

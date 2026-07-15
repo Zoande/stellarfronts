@@ -95,6 +95,8 @@ export interface RuntimeContext {
   pendingPlanetDetailRefreshes: Set<string>;
   hasDirtyState: boolean;
   lastSaveAt: number;
+  saveInFlight: Promise<void> | null;
+  saveQueued: boolean;
   runtimeIdCounter: number;
   eventInstanceSeq: number;
   // Method fields wired up inside createGameRuntime (hoisted declarations, so safe to reference at ctx init).

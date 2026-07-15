@@ -94,7 +94,11 @@ function addField(
   bundle: IntelBundleId,
 ): void {
   if (value === undefined) return;
-  fields[fieldId] = { value: cloneIntelValue(value), bundle };
+  // Truth is a short-lived, synchronous projection. Keep references here and
+  // clone only when persisting an observation or materializing a wire view.
+  // This preserves every independently addressable field without cloning each
+  // structured root again for all of its nested paths.
+  fields[fieldId] = { value, bundle };
 }
 
 /** Store collections at their stable root and as individually addressable leaves. */
@@ -134,6 +138,9 @@ function buildingEnabled(value: unknown): boolean {
 
 function buildTruth(state: GameState): Map<string, TruthEntity> {
   const truth = new Map<string, TruthEntity>();
+  const planetStatesByLocation = new Map(
+    state.planetStates.map((planetState) => [`${planetState.starId}:${planetState.planetIndex}`, planetState]),
+  );
   const put = (entity: TruthEntity): void => {
     truth.set(intelEntityKey(entity.kind, entity.id), entity);
   };
@@ -158,9 +165,7 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
     put({ id: String(star.id), kind: "system", starId: star.id, fields: systemFields });
 
     planets.forEach((planet, index) => {
-      const planetState = state.planetStates.find((candidate) => (
-        candidate.starId === star.id && candidate.planetIndex === index
-      ));
+      const planetState = planetStatesByLocation.get(`${star.id}:${index}`);
       const id = planetState?.id ?? `${star.id}:${index}`;
       const fields: Record<string, TruthField> = {};
       addField(fields, "existence", true, "planetPhysical");
@@ -383,6 +388,13 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
     sourceBands: [],
     nebulaBlocks: [],
   };
+  const truthByStar = new Map<number, TruthEntity[]>();
+  for (const entity of truth.values()) {
+    if (entity.starId === null) continue;
+    const entries = truthByStar.get(entity.starId) ?? [];
+    entries.push(entity);
+    truthByStar.set(entity.starId, entries);
+  }
 
   const sourceCoverage: Array<{ source: SensorSource; suiteId: SensorSuiteId; coverage: Map<number, number> }> = [];
   for (const source of collectSensorSources(state).filter((candidate) => candidate.factionId === factionId)) {
@@ -397,8 +409,8 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
         evaluation.sourceBands.push({ sourceId: source.id, suiteId, starId, distance });
         if (band.commandLink && source.authority) evaluation.commandLinkedStars.add(starId);
         const bundles = new Set(band.bundles);
-        for (const entity of truth.values()) {
-          if (entity.starId === starId) grantEntityBundles(evaluation, entity, bundles, `${source.id}:${suiteId}` , band.fields);
+        for (const entity of truthByStar.get(starId) ?? []) {
+          grantEntityBundles(evaluation, entity, bundles, `${source.id}:${suiteId}` , band.fields);
         }
       }
       // A lane is disclosed only when both endpoints belong to this same source's covered network.

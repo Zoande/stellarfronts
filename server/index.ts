@@ -227,6 +227,8 @@ const ctx: RuntimeContext = {
   pendingPlanetDetailRefreshes: new Set<string>(),
   hasDirtyState: false,
   lastSaveAt: 0,
+  saveInFlight: null,
+  saveQueued: false,
   runtimeIdCounter: 0,
   eventInstanceSeq: 0,
   setFleetPhase, // hoisted function declaration â€” safe to reference here

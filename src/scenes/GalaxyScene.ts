@@ -2989,7 +2989,7 @@ export class GalaxyScene implements IGameScene {
     )) ?? null;
   }
 
-  showPlanetDetails(star: StarData, planet: PlanetConfig, planetState: PlanetState): void {
+  showPlanetDetails(star: StarData, planet: PlanetConfig, planetState: PlanetState, interactive = true): void {
     this.objectPanel.show({
       kind: "planet",
       objectId: planet.id,
@@ -3002,9 +3002,16 @@ export class GalaxyScene implements IGameScene {
       accentColor: "rgba(102, 236, 199, 0.95)",
       technology: this.options.technology,
       assignedLeader: this.getAssignedLeader("planet", planet.id),
-      canManageLeaders: this.starOwnership[star.id] === this.playerFactionId,
-      onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+      canManageLeaders: interactive && this.starOwnership[star.id] === this.playerFactionId,
+      onPlanetCommand: interactive ? (command) => this.options.onPlanetCommand?.(command) : undefined,
+      onClose: (objectId, kind) => {
+        if (kind === "planet") this.options.onReleasePlanetDetails?.(objectId);
+      },
     });
+  }
+
+  isShowingPlanetDetails(planetId: string): boolean {
+    return this.objectPanel.isShowing(planetId, "planet");
   }
 
   refreshPlanetDetails(planet: PlanetConfig, planetState: PlanetState): void {

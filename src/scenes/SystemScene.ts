@@ -282,6 +282,7 @@ export class SystemScene implements IGameScene {
   private planetDiameters: number[] = [];
   private labelOverlay: SystemLabelOverlay | null = null;
   private objectPanel!: CelestialObjectPanel;
+  private planetPanelRequestSequence = 0;
   private selectionPanel!: SelectionPanel;
   private starbasePanel!: StarbasePanel;
   private inputController: SystemInputController | null = null;
@@ -4008,18 +4009,26 @@ export class SystemScene implements IGameScene {
   }
 
   private async showPlanetObjectPanel(planet: PlanetConfig): Promise<void> {
-    let panelPlanet = planet;
-    let planetState = this.getPlanetState(planet.id);
-    if (this.options.onRequestPlanetDetails) {
-      try {
-        const details = await this.options.onRequestPlanetDetails(planet.id);
-        panelPlanet = details.planet;
-        planetState = details.planetState;
-      } catch (error) {
-        console.info(error instanceof Error ? error.message : "Information does not exist.");
-        return;
-      }
+    const requestSequence = ++this.planetPanelRequestSequence;
+    const localState = this.getPlanetState(planet.id);
+    const needsRefresh = Boolean(this.options.onRequestPlanetDetails);
+    this.renderPlanetObjectPanel(planet, localState, !needsRefresh, requestSequence);
+    if (!this.options.onRequestPlanetDetails) return;
+    try {
+      const details = await this.options.onRequestPlanetDetails(planet.id);
+      if (requestSequence !== this.planetPanelRequestSequence) return;
+      this.renderPlanetObjectPanel(details.planet, details.planetState, true, requestSequence);
+    } catch (error) {
+      console.info(error instanceof Error ? error.message : "Information does not exist.");
     }
+  }
+
+  private renderPlanetObjectPanel(
+    panelPlanet: PlanetConfig,
+    planetState: PlanetState | undefined,
+    interactive: boolean,
+    requestSequence: number,
+  ): void {
     this.objectPanel.show({
       kind: "planet",
       objectId: panelPlanet.id,
@@ -4033,10 +4042,13 @@ export class SystemScene implements IGameScene {
       technology: this.options.technology,
       orbitFleetId: this.getOrbitCapableFleetId(),
       assignedLeader: this.getAssignedLeader("planet", panelPlanet.id),
-      canManageLeaders: this.getCurrentStarOwnerId() === this.playerFactionId,
-      onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+      canManageLeaders: interactive && this.getCurrentStarOwnerId() === this.playerFactionId,
+      onPlanetCommand: interactive ? (command) => this.options.onPlanetCommand?.(command) : undefined,
       onClose: (objectId, kind) => {
-        if (kind === "planet") this.options.onReleasePlanetDetails?.(objectId);
+        if (kind === "planet") {
+          if (requestSequence === this.planetPanelRequestSequence) this.planetPanelRequestSequence++;
+          this.options.onReleasePlanetDetails?.(objectId);
+        }
       },
     });
   }
@@ -4080,7 +4092,7 @@ export class SystemScene implements IGameScene {
     return this.planetStates.find((planetState) => planetState.id === planetId);
   }
 
-  showPlanetDetails(planet: PlanetConfig, planetState: PlanetState): void {
+  showPlanetDetails(planet: PlanetConfig, planetState: PlanetState, interactive = true): void {
     this.planetStates = this.planetStates.filter((candidate) => candidate.id !== planetState.id);
     this.planetStates.push(planetState);
     this.star.system.planets[planetState.planetIndex] = planet;
@@ -4098,12 +4110,16 @@ export class SystemScene implements IGameScene {
       technology: this.options.technology,
       orbitFleetId: this.getOrbitCapableFleetId(),
       assignedLeader: this.getAssignedLeader("planet", planet.id),
-      canManageLeaders: this.getCurrentStarOwnerId() === this.playerFactionId,
-      onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+      canManageLeaders: interactive && this.getCurrentStarOwnerId() === this.playerFactionId,
+      onPlanetCommand: interactive ? (command) => this.options.onPlanetCommand?.(command) : undefined,
       onClose: (objectId, kind) => {
         if (kind === "planet") this.options.onReleasePlanetDetails?.(objectId);
       },
     });
+  }
+
+  isShowingPlanetDetails(planetId: string): boolean {
+    return this.objectPanel.isShowing(planetId, "planet");
   }
 
   private getPlanetTextureUrl(planet: PlanetConfig): string {

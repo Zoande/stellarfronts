@@ -729,6 +729,10 @@ export class CelestialObjectPanel {
     this.applyLocalPlanetState(freshData, nextPlanetState);
   }
 
+  public isShowing(objectId: string, kind: CelestialObjectKind = "planet"): boolean {
+    return Boolean(this.panelElement && this.currentData?.objectId === objectId && this.currentData.kind === kind);
+  }
+
   private handleDowngradeBuilding(data: CelestialObjectPanelData, button: HTMLButtonElement): void {
     const freshData = this.getFreshData(data);
     const planetState = freshData.planetState;

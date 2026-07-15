@@ -11,6 +11,7 @@ import {
   getGalaxyIntelligenceView,
   getIntelEntityView,
   getKnownLanePairs,
+  grantOneShotIntelReport,
   hasCommandLink,
   refreshIntelligence,
 } from "../game/intelligence";
@@ -119,6 +120,22 @@ test("galaxy intelligence remains sparse and does not enumerate unknown truth fi
   const view = getGalaxyIntelligenceView(state, { mode: "faction", factionId: 0 });
   const target = view.entities.find((entity) => entity.kind === "planet" && entity.id === "p1");
   assert.equal(target, undefined);
+});
+
+test("one-shot intelligence can reveal only a planet population field", () => {
+  const state = stateFixture();
+  state.planetStates[0].buildings.city[0] = null;
+  refreshIntelligence(state);
+  assert.equal(grantOneShotIntelReport(state, 0, "planet", "p1", ["population"]), true);
+
+  const view = getIntelEntityView(state, 0, "planet", "p1")!;
+  const population = view.fields.population;
+  assert.notEqual(population.status, "unknown");
+  assert.equal(population.status === "unknown" ? null : population.value, state.planetStates[1].population);
+  assert.equal(view.fields.name, undefined);
+  assert.equal(view.fields.ownerId, undefined);
+  assert.equal(view.fields.economy, undefined);
+  assert.deepEqual(Object.keys(view.fields), ["population"]);
 });
 
 test("sensor suite table preserves the agreed ranges and tactical planet exclusions", () => {
