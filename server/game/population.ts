@@ -14,7 +14,7 @@ import {
   getActiveTreatyPartnersForArticle,
   MIGRATION_PACT_ARTICLE_ID,
 } from "../../src/data/Diplomacy";
-import { calculateLeaderLevel, LEADER_POOL_PER_CLASS, refreshLeaderPool } from "../../src/data/Leaders";
+import { calculateLeaderLevel, getLeaderArchetypesByFaction, LEADER_POOL_PER_CLASS, refreshLeaderPool } from "../../src/data/Leaders";
 import { GAME_DAYS_PER_WEEK, GAME_DAYS_PER_QUARTER, GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
 import { clamp, computeJumpDistances, getMigrationDistanceMultiplier } from "./pure-helpers";
 import {
@@ -337,12 +337,13 @@ export function processLeaderDays(ctx: RuntimeContext, targetDay: number): {
   const previousDay = ctx.state.clock.lastProcessedLeaderDay ?? targetDay;
   const days = Math.max(0, targetDay - previousDay);
   const factionIds = ctx.state.factions.map((faction) => faction.id);
+  const archetypesByFaction = getLeaderArchetypesByFaction(ctx.state.factions, ctx.state.species);
   if (days <= 0) {
     const expectedPoolCount = factionIds.length * LEADER_POOL_PER_CLASS * 2;
     if (ctx.state.leaders.filter((leader) => leader.status === "pool").length >= expectedPoolCount) {
       return { leadersChanged: false, planetEconomiesChanged: false, fleetEffectsChanged: false, governmentEffectsChanged: false };
     }
-    ctx.state.leaders = refreshLeaderPool(ctx.state.leaders, factionIds, targetDay, ctx.state.clock.year);
+    ctx.state.leaders = refreshLeaderPool(ctx.state.leaders, factionIds, targetDay, ctx.state.clock.year, archetypesByFaction);
     ctx.state.clock.lastProcessedLeaderDay = targetDay;
     ctx.hasDirtyState = true;
     return { leadersChanged: true, planetEconomiesChanged: false, fleetEffectsChanged: false, governmentEffectsChanged: false };
@@ -380,7 +381,7 @@ export function processLeaderDays(ctx: RuntimeContext, targetDay: number): {
     if (oldAssignment?.kind === "government") governmentEffectsChanged = true;
   }
 
-  ctx.state.leaders = refreshLeaderPool(ctx.state.leaders, factionIds, targetDay, ctx.state.clock.year);
+  ctx.state.leaders = refreshLeaderPool(ctx.state.leaders, factionIds, targetDay, ctx.state.clock.year, archetypesByFaction);
   ctx.state.clock.lastProcessedLeaderDay = targetDay;
   leadersChanged = true;
   ctx.hasDirtyState = true;

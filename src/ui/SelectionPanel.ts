@@ -494,7 +494,8 @@ export class SelectionPanel {
   border-radius: 50%;
   background: linear-gradient(160deg, #516b71, #1a2529 60%, #111);
   background-size: cover;
-  background-position: center;
+  background-position: center top;
+  background-repeat: no-repeat;
   border: 1px solid rgba(179, 255, 229, 0.42);
   display: grid;
   place-items: center;
@@ -636,6 +637,14 @@ export class SelectionPanel {
   color: #ff8a93;
   border-color: rgba(230, 67, 88, 0.64);
   background: linear-gradient(180deg, rgba(78, 25, 35, 0.72), rgba(38, 12, 20, 0.78));
+}
+
+.fleetSelectionLeaderPortrait.hasPortrait {
+  background-color: transparent;
+}
+
+.fleetSelectionLeaderPortrait.hasPortrait span {
+  display: none;
 }
 
 .fleetSelectionPrimaryBtn.build {
@@ -1449,7 +1458,7 @@ export class SelectionPanel {
         ${assignable ? "data-open-fleet-leaders" : "disabled"}
         title="Add fleet leader"
         aria-label="Add fleet leader">
-        <div class="fleetSelectionLeaderPortrait" aria-hidden="true"${portraitStyle}>
+        <div class="fleetSelectionLeaderPortrait${leader?.portraitUrl ? " hasPortrait" : ""}" aria-hidden="true"${portraitStyle}>
           ${leader ? `<span>${this.escapeHtml(initials)}</span>` : '<i>+</i>'}
         </div>
         <div class="fleetSelectionLeaderText">

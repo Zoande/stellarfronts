@@ -368,7 +368,7 @@ export class LeadersPanel {
       .join("")
       .slice(0, 2)
       .toUpperCase();
-    return `<div class="${className} leaderPortrait ${leader.class}"${image}><span>${this.escapeHtml(initials)}</span></div>`;
+    return `<div class="${className} leaderPortrait ${leader.class}${leader.portraitUrl ? " hasPortrait" : ""}"${image}><span>${this.escapeHtml(initials)}</span></div>`;
   }
 
   private getVisibleLeaders(data: LeadersPanelData): LeaderState[] {
@@ -597,7 +597,17 @@ export class LeadersPanel {
   border-radius: 4px;
   border: 1px solid rgba(131, 255, 217, 0.36);
   background-size: cover;
-  background-position: center;
+  background-position: center top;
+  background-repeat: no-repeat;
+}
+
+.leaderPortrait.hasPortrait {
+  background-color: transparent;
+}
+
+.leaderPortrait.hasPortrait::before,
+.leaderPortrait.hasPortrait span {
+  display: none;
 }
 
 .leaderPortrait::before {

@@ -1801,7 +1801,7 @@ export class CelestialObjectPanel {
         type="button"
         ${canManage ? "data-co-open-leaders" : "disabled"}
         aria-label="Assign sector official">
-        <div class="coLeaderPortrait"${portraitStyle}>${leader ? `<span>${this.escapeHtml(initials)}</span>` : "<i>+</i>"}</div>
+        <div class="coLeaderPortrait${leader?.portraitUrl ? " hasPortrait" : ""}"${portraitStyle}>${leader ? `<span>${this.escapeHtml(initials)}</span>` : "<i>+</i>"}</div>
         <div>
           <strong>${this.escapeHtml(leaderName)}</strong>
           <span>${this.escapeHtml(leaderLabel)}</span>
@@ -4280,13 +4280,22 @@ export class CelestialObjectPanel {
   border-radius: 50%;
   background: linear-gradient(160deg, #516b71, #1a2529 60%, #111);
   background-size: cover;
-  background-position: center;
+  background-position: center top;
+  background-repeat: no-repeat;
   border: 1px solid rgba(179, 255, 229, 0.42);
   display: grid;
   place-items: center;
   color: rgba(230, 255, 246, 0.9);
   font-size: 13px;
   font-weight: 900;
+}
+
+.coLeaderPortrait.hasPortrait {
+  background-color: transparent;
+}
+
+.coLeaderPortrait.hasPortrait span {
+  display: none;
 }
 
 .coLeaderPortrait i {

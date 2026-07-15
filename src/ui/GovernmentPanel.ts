@@ -328,7 +328,7 @@ export class GovernmentPanel {
 
     return `
       <article class="governmentLeaderCard ${leader ? "filled" : "empty"}">
-        <div class="governmentLeaderPortrait ${leader?.class ?? "civilian"}"${leader?.portraitUrl ? ` style="background-image: url('${this.escapeAttribute(leader.portraitUrl)}')"` : ""}>
+        <div class="governmentLeaderPortrait ${leader?.class ?? "civilian"}${leader?.portraitUrl ? " hasPortrait" : ""}"${leader?.portraitUrl ? ` style="background-image: url('${this.escapeAttribute(leader.portraitUrl)}')"` : ""}>
           <span>${leader ? this.escapeHtml(this.getInitials(leader.name)) : "+"}</span>
         </div>
         <div class="governmentLeaderMain">
@@ -920,7 +920,8 @@ export class GovernmentPanel {
     radial-gradient(circle at 50% 28%, rgba(214, 250, 255, 0.18), transparent 32%),
     linear-gradient(150deg, rgba(22, 70, 86, 0.95), rgba(9, 20, 28, 0.96));
   background-size: cover;
-  background-position: center;
+  background-position: center top;
+  background-repeat: no-repeat;
   overflow: hidden;
 }
 
@@ -1649,13 +1650,23 @@ export class GovernmentPanel {
     radial-gradient(circle at 50% 23%, rgba(240, 255, 252, 0.2), transparent 26%),
     linear-gradient(145deg, rgba(64, 118, 106, 0.9), rgba(17, 31, 35, 0.95));
   background-size: cover;
-  background-position: center;
+  background-position: center top;
+  background-repeat: no-repeat;
 }
 
 .governmentLeaderPortrait.military {
   background:
     radial-gradient(circle at 50% 23%, rgba(255, 230, 190, 0.22), transparent 26%),
     linear-gradient(145deg, rgba(104, 83, 70, 0.95), rgba(22, 27, 34, 0.94));
+}
+
+.governmentLeaderPortrait.hasPortrait,
+.governmentLeaderPortrait.military.hasPortrait {
+  background-color: transparent;
+}
+
+.governmentLeaderPortrait.hasPortrait span {
+  display: none;
 }
 
 .governmentLeaderPortrait span {

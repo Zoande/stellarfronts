@@ -39,7 +39,7 @@ import { createInitialGovernmentStates, normalizeGovernmentStatesForFactions } f
 import { createDefaultSpeciesRightsState } from "../../src/data/Species";
 import { createInitialDiplomacyState, normalizeDiplomacyState } from "../../src/data/Diplomacy";
 import { createInitialMarketState, normalizeMarketState } from "../../src/data/Market";
-import { createInitialLeaders, normalizeLeadersForFactions } from "../../src/data/Leaders";
+import { createInitialLeaders, getLeaderArchetypesByFaction, normalizeLeadersForFactions } from "../../src/data/Leaders";
 import {
   GAME_START_YEAR,
   gameYearToMonthIndex,
@@ -178,7 +178,12 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     speciesRights: factions.map((faction) => createDefaultSpeciesRightsState(faction.id, species.map((entry) => entry.id))),
     diplomacy: createInitialDiplomacyState(factions.map((faction) => faction.id)),
     market: createInitialMarketState(factions.map((faction) => faction.id), startHour, GAME_START_YEAR),
-    leaders: createInitialLeaders(factions.map((faction) => faction.id), startLeaderDay, GAME_START_YEAR),
+    leaders: createInitialLeaders(
+      factions.map((faction) => faction.id),
+      startLeaderDay,
+      GAME_START_YEAR,
+      getLeaderArchetypesByFaction(factions, species),
+    ),
     situations: [],
     events: [],
     factionModifiers: [],
@@ -339,6 +344,7 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       parsed.leaders,
       getLeaderDayIndex(parsed.clock.year),
       parsed.clock.year,
+      getLeaderArchetypesByFaction(parsed.factions, parsed.species),
     );
     const leadersChanged = JSON.stringify(parsed.leaders ?? []) !== JSON.stringify(normalizedLeaders);
     parsed.leaders = normalizedLeaders;

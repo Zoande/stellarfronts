@@ -379,7 +379,7 @@ export class PlanetOperationsPanel {
     const portraitStyle = leader?.portraitUrl ? ` style="background-image: url('${this.escapeAttribute(leader.portraitUrl)}')"` : "";
     return `
       <button class="poLeaderButton ${leader ? "assigned" : "empty"}" type="button" data-po-open-leaders="${this.escapeAttribute(targetId)}">
-        <span class="poLeaderPortrait ${leader ? "hasImage" : ""}"${portraitStyle}>${leader ? `<i>${this.escapeHtml(initials)}</i>` : "<i>+</i>"}</span>
+        <span class="poLeaderPortrait ${leader?.portraitUrl ? "hasImage" : ""}"${portraitStyle}>${leader ? `<i>${this.escapeHtml(initials)}</i>` : "<i>+</i>"}</span>
         <span class="poLeaderCopy">
           <small>${this.escapeHtml(label)}</small>
           <strong>${this.escapeHtml(name)}</strong>
@@ -1303,7 +1303,8 @@ export class PlanetOperationsPanel {
   overflow: hidden;
   border: 1px solid rgba(97, 255, 229, 0.46);
   background-size: cover;
-  background-position: center;
+  background-position: center top;
+  background-repeat: no-repeat;
 }
 
 .poLeaderPortrait::before {
@@ -1316,7 +1317,11 @@ export class PlanetOperationsPanel {
 }
 
 .poLeaderPortrait.hasImage::before {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.18));
+  display: none;
+}
+
+.poLeaderPortrait.hasImage i {
+  display: none;
 }
 
 .poLeaderPortrait i {

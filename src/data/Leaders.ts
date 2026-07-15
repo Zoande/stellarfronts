@@ -1,7 +1,9 @@
 import type { PlanetModifierOperation, PlanetModifierTarget } from "./Economy";
 import type { GovernmentLeaderTraitEffect } from "./Government";
+import type { SpeciesArchetypeId, SpeciesState } from "./Species";
 
 export type LeaderClass = "civilian" | "military";
+export type LeaderGender = "female" | "male";
 export type LeaderStatus = "pool" | "recruited" | "dead";
 export type LeaderAssignmentKind = "planet" | "fleet" | "government";
 
@@ -62,6 +64,8 @@ export interface LeaderState {
   id: string;
   factionId: number;
   class: LeaderClass;
+  gender: LeaderGender;
+  speciesArchetypeId: SpeciesArchetypeId;
   name: string;
   level: number;
   xp: number;
@@ -307,43 +311,46 @@ export function getLegendaryClassTraits(leaderClass: LeaderClass): LeaderTraitId
   return leaderClass === "military" ? LEGENDARY_MILITARY_TRAITS : LEGENDARY_CIVILIAN_TRAITS;
 }
 
-const FIRST_NAMES = [
+const FEMALE_FIRST_NAMES = [
   "Amina",
-  "Dario",
   "Elena",
-  "Farid",
   "Hana",
-  "Ilya",
   "Juno",
-  "Kaito",
   "Leona",
   "Mira",
-  "Niko",
   "Orla",
-  "Rafi",
   "Sana",
-  "Tomas",
   "Vera",
   "Anwen",
-  "Bastian",
   "Cyra",
-  "Dmitri",
   "Esme",
-  "Goran",
   "Imara",
-  "Joaquin",
   "Keziah",
   "Lucia",
-  "Mateo",
   "Nadia",
-  "Osei",
   "Priya",
   "Quinn",
-  "Reza",
   "Soraya",
-  "Theo",
   "Una",
   "Yara",
+];
+
+const MALE_FIRST_NAMES = [
+  "Dario",
+  "Farid",
+  "Ilya",
+  "Kaito",
+  "Niko",
+  "Rafi",
+  "Tomas",
+  "Bastian",
+  "Dmitri",
+  "Goran",
+  "Joaquin",
+  "Mateo",
+  "Osei",
+  "Reza",
+  "Theo",
   "Zane",
 ];
 
@@ -387,19 +394,22 @@ const LAST_NAMES = [
 
 // Distinctive given names + earned epithets, used only for rare legendary leaders
 // so a once-in-an-era figure reads as special.
-const LEGENDARY_FIRST_NAMES = [
-  "Cassius",
+const LEGENDARY_FEMALE_FIRST_NAMES = [
   "Seraphina",
-  "Augustin",
   "Valeria",
-  "Lorcan",
   "Anastasia",
-  "Magnus",
   "Isolde",
-  "Cyrus",
   "Ravenna",
-  "Octavian",
   "Lyra",
+];
+
+const LEGENDARY_MALE_FIRST_NAMES = [
+  "Cassius",
+  "Augustin",
+  "Lorcan",
+  "Magnus",
+  "Cyrus",
+  "Octavian",
 ];
 
 const LEGENDARY_EPITHETS = [
@@ -438,6 +448,49 @@ function pick<T>(items: T[], rng: () => number): T {
   return items[Math.floor(rng() * items.length)] ?? items[0];
 }
 
+const PORTRAIT_ARCHETYPE_SLUG: Record<SpeciesArchetypeId, string> = {
+  humanoid: "human",
+  avian: "avian",
+  reptilian: "reptilian",
+  aquatic: "aquatic",
+  fungoid: "fungoid",
+};
+
+function getLeaderPortraitUrl(gender: LeaderGender, archetypeId: SpeciesArchetypeId, key: string): string {
+  const index = (hashString(`portrait:${key}`) % 5) + 1;
+  return `/textures/leaders/${gender}_${PORTRAIT_ARCHETYPE_SLUG[archetypeId]}_leader_${index}.webp`;
+}
+
+function isManagedLeaderPortrait(url: string): boolean {
+  return /^\/textures\/leaders\/(?:female|male)_(?:human|avian|reptilian|aquatic|fungoid)_leader_[1-5]\.webp$/.test(url);
+}
+
+export function getLeaderArchetypesByFaction(
+  factions: ReadonlyArray<{ id: number; foundingSpeciesId?: string | null }>,
+  species: readonly SpeciesState[],
+): Map<number, SpeciesArchetypeId> {
+  return new Map(factions.map((faction) => {
+    const foundingSpecies = species.find((candidate) => (
+      candidate.id === faction.foundingSpeciesId || candidate.originFactionId === faction.id
+    ));
+    return [faction.id, foundingSpecies?.archetypeId ?? "humanoid"];
+  }));
+}
+
+function inferLeaderGender(raw: Partial<LeaderState>, fallback: LeaderState): LeaderGender {
+  if (raw.gender === "female" || raw.gender === "male") return raw.gender;
+  const firstName = raw.name?.split(/\s+/)[0];
+  if (firstName && [...FEMALE_FIRST_NAMES, ...LEGENDARY_FEMALE_FIRST_NAMES].includes(firstName)) return "female";
+  if (firstName && [...MALE_FIRST_NAMES, ...LEGENDARY_MALE_FIRST_NAMES].includes(firstName)) return "male";
+  return hashString(raw.id ?? fallback.id) % 2 === 0 ? "female" : "male";
+}
+
+function isLegendaryLeader(id: string, traits: LeaderTraitId[]): boolean {
+  return id.includes("-legendary-") || traits.some((trait) => (
+    trait === "legendaryStatesman" || trait === "legendaryAdmiral"
+  ));
+}
+
 export function getLeaderTraitDefinition(traitId: LeaderTraitId): LeaderTraitDefinition {
   return LEADER_TRAIT_DEFINITIONS[traitId];
 }
@@ -470,6 +523,7 @@ export function createLeaderCandidate(
   slotIndex: number,
   year: number,
   status: LeaderStatus = "pool",
+  speciesArchetypeId: SpeciesArchetypeId = "humanoid",
 ): LeaderState {
   const seed = hashString(`${factionId}:${leaderClass}:${dayIndex}:${slotIndex}:${status}`);
   const rng = mulberry32(seed);
@@ -481,12 +535,16 @@ export function createLeaderCandidate(
   const xp = status === "recruited" ? Math.floor(rng() * 260) : Math.floor(rng() * 80);
   const age = Math.round((leaderClass === "military" ? 30 : 32) + rng() * 24);
   const lifespan = Math.round(72 + rng() * 22);
+  const gender: LeaderGender = rng() < 0.5 ? "female" : "male";
+  const id = `leader-${factionId}-${status}-${dayIndex}-${leaderClass}-${slotIndex}-${seed.toString(36)}`;
 
   return {
-    id: `leader-${factionId}-${status}-${dayIndex}-${leaderClass}-${slotIndex}-${seed.toString(36)}`,
+    id,
     factionId,
     class: leaderClass,
-    name: `${pick(FIRST_NAMES, rng)} ${pick(LAST_NAMES, rng)}`,
+    gender,
+    speciesArchetypeId,
+    name: `${pick(gender === "female" ? FEMALE_FIRST_NAMES : MALE_FIRST_NAMES, rng)} ${pick(LAST_NAMES, rng)}`,
     level: calculateLeaderLevel(xp),
     xp,
     age,
@@ -494,7 +552,7 @@ export function createLeaderCandidate(
     status,
     traits: secondTrait ? [firstTrait, secondTrait] : [firstTrait],
     assignment: null,
-    portraitUrl: null,
+    portraitUrl: getLeaderPortraitUrl(gender, speciesArchetypeId, id),
     createdAtYear: year,
     recruitedAtYear: status === "recruited" ? year : null,
     diedAtYear: null,
@@ -513,6 +571,7 @@ export function createLegendaryLeaderCandidate(
   dayIndex: number,
   slotIndex: number,
   year: number,
+  speciesArchetypeId: SpeciesArchetypeId = "humanoid",
 ): LeaderState {
   const seed = hashString(`legendary:${factionId}:${leaderClass}:${dayIndex}:${slotIndex}`);
   const rng = mulberry32(seed);
@@ -529,7 +588,9 @@ export function createLegendaryLeaderCandidate(
   const traits = Array.from(new Set<LeaderTraitId>([legendaryTrait, first, second]));
 
   const epithet = pick(LEGENDARY_EPITHETS, rng);
-  const name = `${pick(LEGENDARY_FIRST_NAMES, rng)} ${pick(LAST_NAMES, rng)} ${epithet}`;
+  const gender: LeaderGender = rng() < 0.5 ? "female" : "male";
+  const legendaryNames = gender === "female" ? LEGENDARY_FEMALE_FIRST_NAMES : LEGENDARY_MALE_FIRST_NAMES;
+  const name = `${pick(legendaryNames, rng)} ${pick(LAST_NAMES, rng)} ${epithet}`;
   const age = Math.round((leaderClass === "military" ? 34 : 36) + rng() * 18);
   const lifespan = Math.round(88 + rng() * 24);
 
@@ -537,6 +598,8 @@ export function createLegendaryLeaderCandidate(
     id: `leader-${factionId}-legendary-${dayIndex}-${leaderClass}-${slotIndex}-${seed.toString(36)}`,
     factionId,
     class: leaderClass,
+    gender,
+    speciesArchetypeId,
     name,
     level: calculateLeaderLevel(xp),
     xp,
@@ -552,13 +615,19 @@ export function createLegendaryLeaderCandidate(
   };
 }
 
-export function createInitialLeaders(factionIds: number[], dayIndex: number, year: number): LeaderState[] {
+export function createInitialLeaders(
+  factionIds: number[],
+  dayIndex: number,
+  year: number,
+  archetypesByFaction: ReadonlyMap<number, SpeciesArchetypeId> = new Map(),
+): LeaderState[] {
   const leaders: LeaderState[] = [];
   for (const factionId of factionIds) {
-    leaders.push(createLeaderCandidate(factionId, "civilian", dayIndex - 1, 0, year, "recruited"));
-    leaders.push(createLeaderCandidate(factionId, "military", dayIndex - 1, 1, year, "recruited"));
+    const archetypeId = archetypesByFaction.get(factionId) ?? "humanoid";
+    leaders.push(createLeaderCandidate(factionId, "civilian", dayIndex - 1, 0, year, "recruited", archetypeId));
+    leaders.push(createLeaderCandidate(factionId, "military", dayIndex - 1, 1, year, "recruited", archetypeId));
   }
-  return refreshLeaderPool(leaders, factionIds, dayIndex, year);
+  return refreshLeaderPool(leaders, factionIds, dayIndex, year, archetypesByFaction);
 }
 
 export function refreshLeaderPool(
@@ -566,13 +635,15 @@ export function refreshLeaderPool(
   factionIds: number[],
   dayIndex: number,
   year: number,
+  archetypesByFaction: ReadonlyMap<number, SpeciesArchetypeId> = new Map(),
 ): LeaderState[] {
   const retained = leaders.filter((leader) => leader.status !== "pool");
   const next = retained.slice();
   for (const factionId of factionIds) {
+    const archetypeId = archetypesByFaction.get(factionId) ?? "humanoid";
     for (let index = 0; index < LEADER_POOL_PER_CLASS; index += 1) {
-      next.push(createLeaderCandidate(factionId, "civilian", dayIndex, index, year, "pool"));
-      next.push(createLeaderCandidate(factionId, "military", dayIndex, index, year, "pool"));
+      next.push(createLeaderCandidate(factionId, "civilian", dayIndex, index, year, "pool", archetypeId));
+      next.push(createLeaderCandidate(factionId, "military", dayIndex, index, year, "pool", archetypeId));
     }
   }
   return next;
@@ -592,11 +663,17 @@ export function normalizeLeaderState(raw: Partial<LeaderState> | undefined, fall
     && typeof raw.assignment.targetId === "string"
       ? { kind: raw.assignment.kind, targetId: raw.assignment.targetId }
       : null;
+  const id = raw?.id || fallback.id;
+  const gender = inferLeaderGender(raw ?? {}, fallback);
+  const speciesArchetypeId = fallback.speciesArchetypeId;
+  const rawPortrait = typeof raw?.portraitUrl === "string" ? raw.portraitUrl : null;
 
   return {
-    id: raw?.id || fallback.id,
+    id,
     factionId: Number.isInteger(raw?.factionId) ? Number(raw?.factionId) : fallback.factionId,
     class: leaderClass,
+    gender,
+    speciesArchetypeId,
     name: raw?.name || fallback.name,
     level: calculateLeaderLevel(xp),
     xp,
@@ -605,7 +682,11 @@ export function normalizeLeaderState(raw: Partial<LeaderState> | undefined, fall
     status,
     traits: traits.length > 0 ? traits : fallback.traits,
     assignment: status === "dead" ? null : assignment,
-    portraitUrl: typeof raw?.portraitUrl === "string" ? raw.portraitUrl : null,
+    portraitUrl: isLegendaryLeader(id, traits)
+      ? null
+      : (rawPortrait && !isManagedLeaderPortrait(rawPortrait)
+          ? rawPortrait
+          : getLeaderPortraitUrl(gender, speciesArchetypeId, id)),
     createdAtYear: Number(raw?.createdAtYear ?? fallback.createdAtYear) || fallback.createdAtYear,
     recruitedAtYear: raw?.recruitedAtYear === null || raw?.recruitedAtYear === undefined
       ? null
@@ -621,9 +702,10 @@ export function normalizeLeadersForFactions(
   rawLeaders: unknown,
   dayIndex: number,
   year: number,
+  archetypesByFaction: ReadonlyMap<number, SpeciesArchetypeId> = new Map(),
 ): LeaderState[] {
   if (!Array.isArray(rawLeaders) || rawLeaders.length === 0) {
-    return createInitialLeaders(factionIds, dayIndex, year);
+    return createInitialLeaders(factionIds, dayIndex, year, archetypesByFaction);
   }
 
   const factionIdSet = new Set(factionIds);
@@ -638,6 +720,7 @@ export function normalizeLeadersForFactions(
       index,
       year,
       raw?.status === "recruited" || raw?.status === "dead" ? raw.status : "pool",
+      archetypesByFaction.get(Number(raw?.factionId)) ?? "humanoid",
     );
     const leader = normalizeLeaderState(raw, fallback);
     if (!factionIdSet.has(leader.factionId)) continue;
@@ -656,9 +739,17 @@ export function normalizeLeadersForFactions(
   for (const factionId of factionIds) {
     for (const leaderClass of ["civilian", "military"] as const) {
       if (factionHasRecruited.has(`${factionId}:${leaderClass}`)) continue;
-      normalized.push(createLeaderCandidate(factionId, leaderClass, dayIndex - 1, normalized.length, year, "recruited"));
+      normalized.push(createLeaderCandidate(
+        factionId,
+        leaderClass,
+        dayIndex - 1,
+        normalized.length,
+        year,
+        "recruited",
+        archetypesByFaction.get(factionId) ?? "humanoid",
+      ));
     }
   }
 
-  return refreshLeaderPool(normalized, factionIds, dayIndex, year);
+  return refreshLeaderPool(normalized, factionIds, dayIndex, year, archetypesByFaction);
 }
