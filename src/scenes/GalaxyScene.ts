@@ -1769,6 +1769,7 @@ export class GalaxyScene implements IGameScene {
   }
 
   private getFleetActions(fleet: ServerFleet | null | undefined): ShipAction[] {
+    if (fleet?.stationaryStarbaseId) return [];
     const actions: ShipAction[] = ["move"];
     if (this.fleetCanBuildStarbase(fleet)) actions.push("build");
     if (this.fleetCanColonize(fleet)) actions.push("colonize");
@@ -2319,7 +2320,7 @@ export class GalaxyScene implements IGameScene {
 
   private createFleetSelectionData(fleet: ServerFleet): SelectionData {
     const owner = this.factions.find((faction) => faction.id === fleet.ownerId) ?? null;
-    const canCommand = this.isOwnShipOwner(owner?.id ?? null);
+    const canCommand = this.isOwnShipOwner(owner?.id ?? null) && !fleet.stationaryStarbaseId;
     const fleetShips = this.getShipsForFleet(fleet.id);
     const fleetSize = fleet.shipIds.length || fleetShips.length || 1;
     const defense = this.getFleetDefense(fleet.id);
@@ -2329,7 +2330,9 @@ export class GalaxyScene implements IGameScene {
       type: "fleet",
       id: fleet.id,
       readoutId: this.formatFleetReadoutId(fleet),
-      name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+      name: fleet.stationaryStarbaseId
+        ? `${owner?.name ?? "Unidentified"} Defense Platforms`
+        : owner ? `${owner.name} Fleet` : "Unidentified Fleet",
       hp: defense.hull,
       maxHp: defense.maxHull,
       shield: defense.shield,
@@ -2340,7 +2343,7 @@ export class GalaxyScene implements IGameScene {
       maxHull: defense.maxHull,
       shipCount: fleetSize,
       ships: this.createSelectionShipRows(fleet, owner),
-      class: fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
+      class: fleet.stationaryStarbaseId ? `${fleetSize} Stationary Platform${fleetSize === 1 ? "" : "s"}` : fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
       status: engaged ? fleet.combatStatus : this.formatSelectionFleetStatus(fleet),
       detail: canCommand
         ? this.formatFleetNavigationDetail(fleet)
@@ -2523,7 +2526,7 @@ export class GalaxyScene implements IGameScene {
       ? this.factions.find((faction) => faction.id === serverFleet.ownerId) ?? null
       : this.getShipOwnerForStarId(shipStarId);
     const ownerId = owner?.id ?? null;
-    const canCommand = this.isOwnShipOwner(ownerId);
+    const canCommand = this.isOwnShipOwner(ownerId) && !serverFleet?.stationaryStarbaseId;
     const fleetShips = this.getShipsForFleet(serverFleet?.id ?? null);
     const fleetSize = serverFleet?.shipIds.length ?? (fleetShips.length || 1);
     const defense = this.getFleetDefense(serverFleet?.id ?? null);
@@ -2550,7 +2553,9 @@ export class GalaxyScene implements IGameScene {
         type: "fleet",
         id: serverFleet?.id ?? String(shipStarId),
         readoutId: serverFleet ? this.formatFleetReadoutId(serverFleet) : `SYS-${String(shipStarId).padStart(3, "0")}`,
-        name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+        name: serverFleet?.stationaryStarbaseId
+          ? `${owner?.name ?? "Unidentified"} Defense Platforms`
+          : owner ? `${owner.name} Fleet` : "Unidentified Fleet",
         hp: defense.hull,
         maxHp: defense.maxHull,
         shield: defense.shield,
@@ -2561,13 +2566,15 @@ export class GalaxyScene implements IGameScene {
         maxHull: defense.maxHull,
         shipCount: fleetSize,
         ships: serverFleet ? this.createSelectionShipRows(serverFleet, owner) : [],
-        class: fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
+        class: serverFleet?.stationaryStarbaseId ? `${fleetSize} Stationary Platform${fleetSize === 1 ? "" : "s"}` : fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
         status: engaged
           ? serverFleet?.combatStatus ?? "engaged"
           : serverFleet
             ? this.formatSelectionFleetStatus(serverFleet)
             : this.playerShipTransit && shipStarId === this.playerShipStarId ? "Moving" : "Operational",
-        detail: canCommand
+        detail: serverFleet?.stationaryStarbaseId
+          ? "Anchored starbase defense group. Platforms engage hostile contacts automatically."
+          : canCommand
           ? this.formatFleetNavigationDetail(serverFleet)
           : "Foreign fleet. Command controls unavailable.",
         movement: this.createFleetMovementSelectionData(serverFleet),
@@ -2803,6 +2810,9 @@ export class GalaxyScene implements IGameScene {
       ownerColor: owner?.color,
       status: starbase?.status ?? "online",
       power: this.formatStarbasePower(starbase),
+      fleets: this.serverFleets,
+      ships: this.serverShips,
+      shipDesigns: this.shipDesigns,
       technology: this.options.technology,
       nebulaKind: findNebulaForStar(this.nebulae, starId)?.kind ?? null,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
@@ -2959,12 +2969,14 @@ export class GalaxyScene implements IGameScene {
 
   setServerShips(ships: ServerShip[]): void {
     this.serverShips = ships;
+    this.starbasePanel?.refreshMilitaryContext(this.serverFleets, this.serverShips, this.shipDesigns);
     this.starField?.setShipIconStyles(this.getShipIconStyles());
     if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
   setShipDesigns(shipDesigns: ShipDesign[]): void {
     this.shipDesigns = shipDesigns;
+    this.starbasePanel?.refreshMilitaryContext(this.serverFleets, this.serverShips, this.shipDesigns);
     if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
@@ -2976,6 +2988,7 @@ export class GalaxyScene implements IGameScene {
 
   setServerFleets(fleets: ServerFleet[]): void {
     this.serverFleets = fleets;
+    this.starbasePanel?.refreshMilitaryContext(this.serverFleets, this.serverShips, this.shipDesigns);
     this.playerShipSystemIds = new Set(
       fleets
         .map((fleet) => fleet.currentStarId)

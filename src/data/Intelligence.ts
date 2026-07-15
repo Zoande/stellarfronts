@@ -85,12 +85,18 @@ export type IntelBundleId =
 export type SensorSuiteId =
   | "planetaryCapitalSensors"
   | "listeningStationSensors"
+  | "starbaseSensors"
+  | "militaryShipSensors"
+  | "scienceShipSensors"
+  | "civilianShipSensors"
   | "surveyArraySensors"
   | "tacticalArraySensors";
 
 export interface SensorBandDefinition {
   bundles: IntelBundleId[];
   fields?: IntelFieldId[];
+  fieldsByKind?: Partial<Record<IntelEntityKind, IntelFieldId[]>>;
+  fleetDetection?: "all" | "militaryOnly";
   commandLink?: boolean;
 }
 
@@ -135,8 +141,14 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
     label: "Listening Station Sensors",
     maxRange: 3,
     bands: {
-      0: FULL_BAND,
-      1: FULL_BAND,
+      0: {
+        bundles: ALL_SPATIAL_BUNDLES.filter((bundle) => bundle !== "planetCivilian"),
+        commandLink: true,
+      },
+      1: {
+        bundles: ALL_SPATIAL_BUNDLES.filter((bundle) => bundle !== "planetCivilian"),
+        commandLink: true,
+      },
       2: {
         bundles: [
           "stellar",
@@ -149,7 +161,85 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
         ],
         commandLink: true,
       },
-      3: { bundles: ["stellar", "topology"], commandLink: true },
+      3: { bundles: ["stellar", "topology", "fleetContact"], commandLink: true },
+    },
+  },
+  starbaseSensors: {
+    id: "starbaseSensors",
+    label: "Starbase Sensor Network",
+    maxRange: 1,
+    bands: {
+      0: {
+        bundles: ALL_SPATIAL_BUNDLES.filter((bundle) => bundle !== "planetCivilian"),
+        commandLink: true,
+      },
+      1: {
+        bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "fleetContact", "fleetClassification"],
+        commandLink: true,
+      },
+    },
+  },
+  militaryShipSensors: {
+    id: "militaryShipSensors",
+    label: "Military Sensor",
+    maxRange: 3,
+    bands: {
+      0: {
+        bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "starbaseOperations", "starbaseDefense", "fleetContact", "fleetClassification", "fleetTelemetry"],
+        fleetDetection: "militaryOnly",
+        commandLink: true,
+      },
+      1: {
+        bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "fleetContact", "fleetClassification"],
+        fleetDetection: "militaryOnly",
+        commandLink: true,
+      },
+      2: {
+        bundles: ["stellar", "topology", "planetPhysical", "fleetContact", "fleetClassification"],
+        fleetDetection: "militaryOnly",
+        commandLink: true,
+      },
+      3: {
+        bundles: ["fleetContact"],
+        fleetDetection: "militaryOnly",
+        commandLink: true,
+      },
+    },
+  },
+  scienceShipSensors: {
+    id: "scienceShipSensors",
+    label: "Science Sensor",
+    maxRange: 3,
+    bands: {
+      0: {
+        bundles: ALL_SPATIAL_BUNDLES.filter((bundle) => bundle !== "planetCivilian"),
+        commandLink: true,
+      },
+      1: { bundles: [], fieldsByKind: { star: ["existence", "type"] }, commandLink: true },
+      2: { bundles: [], fieldsByKind: { star: ["existence", "type"] }, commandLink: true },
+      3: { bundles: [], fieldsByKind: { star: ["existence", "type"] }, commandLink: true },
+    },
+  },
+  civilianShipSensors: {
+    id: "civilianShipSensors",
+    label: "Civilian Sensor",
+    maxRange: 1,
+    bands: {
+      0: {
+        bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "fleetContact", "fleetClassification"],
+        commandLink: true,
+      },
+      1: {
+        bundles: [],
+        fieldsByKind: {
+          star: ["existence", "type"],
+          system: ["starId", "planetCount"],
+          planet: ["existence", "starId", "planetIndex", "type", "orbitRadius", "diameter"],
+          fleet: ["existence", "currentStarId", "hyperlanePosition"],
+          ship: ["existence"],
+        },
+        commandLink: true,
+      },
     },
   },
   surveyArraySensors: {

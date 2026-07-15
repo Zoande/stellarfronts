@@ -112,7 +112,7 @@ function materializeIntelFleet(source: ServerFleet, view: IntelEntityView): Serv
   const shipCountField = view.fields.shipCount as IntelValue<number> | undefined;
   const placeholderShipCount = shipCountField && shipCountField.status !== "unknown" ? Math.max(0, Number(shipCountField.value) || 0) : 1;
   return {
-    id: source.id, ownerId: readIntel(view, "ownerId", -1), shipIds: Array.from({ length: placeholderShipCount }, (_, index) => `unknown:${source.id}:${index}`), formation: readIntel(view, "formation", "line"),
+    id: source.id, ownerId: readIntel(view, "ownerId", -1), stationaryStarbaseId: readIntel(view, "stationaryStarbaseId", null), shipIds: Array.from({ length: placeholderShipCount }, (_, index) => `unknown:${source.id}:${index}`), formation: readIntel(view, "formation", "line"),
     currentStarId: readIntel(view, "currentStarId", -1), targetStarId: null, phase: "idle", phaseStartedAtYear: 0,
     phaseDurationDays: 0, route: [], routeIndex: 0, phaseProgress: 0, orderType: null, speed: 0,
     combatStance: "passive", retreatState: null, systemPosition: { x: 0, y: 0, z: 0 },
@@ -161,7 +161,27 @@ export function createVisibleStars(ctx: RuntimeContext, perspective: GalaxyPersp
   if (perspective.mode === "observer" || knownSet === null) {
     return ctx.state.stars.map((star) => createMapStar(star));
   }
-  return ctx.state.stars.map((star) => (knownSet.has(star.id) ? createMapStar(star) : createRedactedStar(star)));
+  return ctx.state.stars.map((star) => {
+    const redacted = createRedactedStar(star);
+    const view = getIntelEntityView(ctx.state, perspective.factionId, "star", star.id);
+    if (!view) return redacted;
+    const nebulaId = readIntel<number | undefined>(view, "nebulaId", undefined);
+    const materialized: StarData = {
+      ...redacted,
+      name: readIntel(view, "name", redacted.name),
+      type: readIntel(view, "type", redacted.type),
+      // Coordinates are structural map positions already exposed by unknown
+      // signals; every descriptive stellar property remains field-gated.
+      x: star.x,
+      z: star.z,
+      luminosity: readIntel(view, "luminosity", redacted.luminosity),
+      color: readIntel(view, "color", redacted.color),
+      galaxyPulseAmplitude: readIntel(view, "galaxyPulseAmplitude", redacted.galaxyPulseAmplitude),
+      galaxyPulseFrequency: readIntel(view, "galaxyPulseFrequency", redacted.galaxyPulseFrequency),
+    };
+    if (nebulaId !== undefined) materialized.nebulaId = nebulaId;
+    return materialized;
+  });
 }
 
 export function createVisiblePlanetStates(ctx: RuntimeContext, knownSet: Set<number> | null, includeDetails: boolean): PlanetState[] {

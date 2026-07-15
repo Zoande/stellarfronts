@@ -18,6 +18,9 @@ export type StarbaseShipKind =
   | "destroyer"
   | "cruiser"
   | "battleship"
+  | "defensePlatform"
+  | "scienceShip"
+  | "armyShip"
   | "constructionShip"
   | "colonizationShip";
 
@@ -109,6 +112,7 @@ export interface StarbaseLevelDefinition {
   label: string;
   description: string;
   buildingSlots: number;
+  defensePlatformCapacity: number;
   production: ResourceCounts;
   upkeep: ResourceCounts;
   combat: CombatStats;
@@ -245,6 +249,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     label: "Outpost",
     description: "A minimal orbital foothold with basic command, docking, and claim projection.",
     buildingSlots: 2,
+    defensePlatformCapacity: 2,
     production: resources({}),
     upkeep: resources({ energy: 12, food: 1, goods: 1, alloys: 2 }),
     combat: {
@@ -262,6 +267,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     label: "Starbase",
     description: "A permanent orbital base with expanded logistics and defensive operations.",
     buildingSlots: 4,
+    defensePlatformCapacity: 4,
     production: resources({}),
     upkeep: resources({ energy: 28, food: 6, goods: 6, alloys: 8 }),
     combat: {
@@ -279,6 +285,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     label: "Starhold",
     description: "A hardened system command node with heavy docking and fleet support infrastructure.",
     buildingSlots: 6,
+    defensePlatformCapacity: 8,
     production: resources({}),
     upkeep: resources({ energy: 55, food: 14, goods: 14, alloys: 18, minerals: 6 }),
     combat: {
@@ -296,6 +303,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     label: "Star Fortress",
     description: "A major military installation with deep reserves and large-scale defensive systems.",
     buildingSlots: 9,
+    defensePlatformCapacity: 12,
     production: resources({}),
     upkeep: resources({ energy: 95, food: 24, goods: 24, alloys: 34, minerals: 18 }),
     combat: {
@@ -491,6 +499,32 @@ export const SHIP_MODEL_DEFINITIONS: Record<StarbaseShipKind, ShipModelDefinitio
     previewTargetSize: 4.35,
     trailOffsetY: -0.2,
   },
+  defensePlatform: {
+    modelPath: "/ships/defense_platform/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    systemTargetSize: 1.3,
+    tacticalTargetSize: 1.08,
+    previewTargetSize: 4.1,
+  },
+  scienceShip: {
+    modelPath: "/ships/science_ship/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    systemTargetSize: 1.08,
+    tacticalTargetSize: 0.86,
+    previewTargetSize: 3.9,
+    trailOffsetY: -0.14,
+  },
+  armyShip: {
+    modelPath: "/ships/army_ship/",
+    modelFile: "model.glb",
+    modelFormat: "glb",
+    systemTargetSize: 1.18,
+    tacticalTargetSize: 0.94,
+    previewTargetSize: 4,
+    trailOffsetY: -0.16,
+  },
 };
 
 export const STARBASE_MODEL_DEFINITIONS: Record<StarbaseLevel, StarbaseModelDefinition> = {
@@ -529,6 +563,9 @@ export const STARBASE_SHIP_KINDS: StarbaseShipKind[] = [
   "destroyer",
   "cruiser",
   "battleship",
+  "defensePlatform",
+  "scienceShip",
+  "armyShip",
   "constructionShip",
   "colonizationShip",
 ];
@@ -646,6 +683,63 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
       evasion: 0.045,
       sensorRange: 4,
       weaponMounts: repeatMount(createLaserMount({ damage: 32, barrels: 4, accuracy: 0.76 }), 6),
+    },
+  },
+  defensePlatform: {
+    kind: "defensePlatform",
+    label: "Defense Platform",
+    className: "Sentinel-class",
+    description: "Stationary starbase defense hull with heavy batteries and no strategic drive.",
+    speed: 0,
+    buildDays: 12,
+    alloyUpkeepPerDay: 28,
+    crewDemand: 1_800,
+    upkeep: resources({ energy: 1.8, alloys: 0.3 }),
+    combat: {
+      maxShield: 280,
+      maxArmor: 260,
+      maxHull: 420,
+      evasion: 0,
+      sensorRange: 3,
+      weaponMounts: repeatMount(createLaserMount({ damage: 20, barrels: 3, accuracy: 0.84 }), 2),
+    },
+  },
+  scienceShip: {
+    kind: "scienceShip",
+    label: "Science Ship",
+    className: "Pathfinder-class",
+    description: "Dedicated survey vessel carrying high-resolution stellar and planetary instruments.",
+    speed: 1.08,
+    buildDays: 8,
+    alloyUpkeepPerDay: 12,
+    crewDemand: 850,
+    upkeep: resources({ energy: 1.1, alloys: 0.1, goods: 0.08 }),
+    combat: {
+      maxShield: 75,
+      maxArmor: 45,
+      maxHull: 140,
+      evasion: 0.14,
+      sensorRange: 3,
+      weaponMounts: [],
+    },
+  },
+  armyShip: {
+    kind: "armyShip",
+    label: "Army Ship",
+    className: "Legion-class",
+    description: "Placeholder troop transport hull for the future ground-army system.",
+    speed: 0.88,
+    buildDays: 11,
+    alloyUpkeepPerDay: 18,
+    crewDemand: 2_400,
+    upkeep: resources({ energy: 1.4, alloys: 0.16, goods: 0.1 }),
+    combat: {
+      maxShield: 110,
+      maxArmor: 100,
+      maxHull: 260,
+      evasion: 0.08,
+      sensorRange: 3,
+      weaponMounts: [],
     },
   },
 };

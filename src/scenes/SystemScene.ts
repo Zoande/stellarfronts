@@ -1999,6 +1999,7 @@ export class SystemScene implements IGameScene {
   }
 
   private getFleetActions(fleet: ServerFleet): ShipAction[] {
+    if (fleet.stationaryStarbaseId) return [];
     const actions: ShipAction[] = ["move"];
     if (this.fleetCanBuildStarbase(fleet)) actions.push("build");
     if (this.fleetCanColonize(fleet)) actions.push("colonize");
@@ -2019,7 +2020,9 @@ export class SystemScene implements IGameScene {
       type: "fleet",
       id: fleet.id,
       readoutId: this.formatFleetReadoutId(fleet),
-      name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+      name: fleet.stationaryStarbaseId
+        ? `${owner?.name ?? "Unidentified"} Defense Platforms`
+        : owner ? `${owner.name} Fleet` : "Unidentified Fleet",
       hp: defense.hull,
       maxHp: defense.maxHull,
       shield: defense.shield,
@@ -2030,7 +2033,7 @@ export class SystemScene implements IGameScene {
       maxHull: defense.maxHull,
       shipCount,
       ships: this.createSelectionShipRows(fleet, owner),
-      class: shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
+      class: fleet.stationaryStarbaseId ? `${shipCount} Stationary Platform${shipCount === 1 ? "" : "s"}` : shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`,
       status: fleet.combatStatus && fleet.combatStatus !== "idle" ? fleet.combatStatus : this.formatFleetStatus(fleet),
       detail: fleet.ownerId === this.playerFactionId
         ? doctrine
@@ -2038,8 +2041,8 @@ export class SystemScene implements IGameScene {
       movement: this.createFleetMovementSelectionData(fleet),
       ownerName: owner?.name ?? "Unknown",
       ownerColor: owner?.color,
-      canCommand: fleet.ownerId === this.playerFactionId,
-      actions: fleet.ownerId === this.playerFactionId ? actions : undefined,
+      canCommand: fleet.ownerId === this.playerFactionId && !fleet.stationaryStarbaseId,
+      actions: fleet.ownerId === this.playerFactionId && !fleet.stationaryStarbaseId ? actions : undefined,
       combatStance: fleet.combatStance,
       combatBehavior: fleet.combatSettings.behavior,
       chasePolicy: fleet.combatSettings.chasePolicy,
@@ -2182,6 +2185,9 @@ export class SystemScene implements IGameScene {
       ownerColor: owner?.color,
       status: starbase.status,
       power: this.formatStarbasePower(starbase),
+      fleets: this.serverFleets,
+      ships: this.serverShips,
+      shipDesigns: this.shipDesigns,
       technology: this.options.technology,
       nebulaKind: this.options.nebula?.kind ?? null,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
@@ -4301,6 +4307,7 @@ export class SystemScene implements IGameScene {
 
   setServerFleets(fleets: ServerFleet[]): void {
     this.serverFleets = fleets;
+    this.starbasePanel?.refreshMilitaryContext(this.serverFleets, this.serverShips, this.shipDesigns);
     let selectionChanged = false;
     for (const fleetId of Array.from(this.selectedFleetIds)) {
       if (!fleets.some((fleet) => fleet.id === fleetId)) {
@@ -4355,6 +4362,7 @@ export class SystemScene implements IGameScene {
 
   setServerShips(ships: ServerShip[]): void {
     this.serverShips = ships;
+    this.starbasePanel?.refreshMilitaryContext(this.serverFleets, this.serverShips, this.shipDesigns);
     this.refreshShipVisuals();
     this.refreshSystemEntityCards();
   }
@@ -4367,6 +4375,7 @@ export class SystemScene implements IGameScene {
 
   setShipDesigns(shipDesigns: ShipDesign[]): void {
     this.shipDesigns = shipDesigns;
+    this.starbasePanel?.refreshMilitaryContext(this.serverFleets, this.serverShips, this.shipDesigns);
     this.refreshShipVisuals();
     this.refreshSystemEntityCards();
   }

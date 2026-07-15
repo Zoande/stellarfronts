@@ -28,6 +28,7 @@ import {
 import type { DistrictCounts, PlanetBuildingSlot, PlanetEconomySpeciesContext } from "../../src/data/Economy";
 import type { SpeciesState } from "../../src/data/Species";
 import {
+  dailyToRealMinute,
   gameHourToRealMinute,
   monthlyToRealMinute,
   quarterlyToRealMinute,
@@ -49,6 +50,7 @@ const ZERO_DISTRICTS: DistrictCounts = {
 };
 
 test("economy display rates consistently convert to real minutes", () => {
+  assert.equal(dailyToRealMinute(24), 60);
   assert.equal(monthlyToRealMinute(120), 10);
   assert.equal(quarterlyToRealMinute(48), 1);
   assert.equal(gameHourToRealMinute(2), 120);

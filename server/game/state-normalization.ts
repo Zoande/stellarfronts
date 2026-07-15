@@ -226,9 +226,11 @@ export function normalizeFleet(
   const shipIds = Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [];
   const combatSettings = createDefaultFleetCombatSettings(fleet.combatSettings);
   const systemPosition = fleet.systemPosition ?? systemCenterPosition();
+  const stationaryStarbaseId = typeof fleet.stationaryStarbaseId === "string" ? fleet.stationaryStarbaseId : null;
   return {
     id: fleet.id,
     ownerId: Number.isInteger(fleet.ownerId) ? fleet.ownerId : 0,
+    stationaryStarbaseId,
     shipIds,
     formation,
     currentStarId,
@@ -241,7 +243,7 @@ export function normalizeFleet(
     phaseProgress: Math.max(0, Math.min(1, Number(fleet.phaseProgress) || 0)),
     phaseElapsedMs: fleet.phaseElapsedMs ?? Math.round((fleet.phaseProgress ?? 0) * phaseDuration(ctx, phase)),
     orderType,
-    speed: Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
+    speed: stationaryStarbaseId ? 0 : Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
     combatStance: normalizeCombatStance(fleet.combatStance),
     retreatState: normalizeFleetRetreatState(fleet.retreatState),
     systemPosition,
@@ -344,7 +346,9 @@ export function syncFleetMembership(ctx: RuntimeContext, nextState: GameState): 
       fleet.shipIds = shipIds;
       changed = true;
     }
-    const nextSpeed = Math.min(...ships.map((ship) => Math.max(0.05, ship.speed)));
+    const nextSpeed = fleet.stationaryStarbaseId
+      ? 0
+      : Math.min(...ships.map((ship) => Math.max(0.05, ship.speed)));
     if (Math.abs(fleet.speed - nextSpeed) > 0.0001) {
       fleet.speed = nextSpeed;
       changed = true;

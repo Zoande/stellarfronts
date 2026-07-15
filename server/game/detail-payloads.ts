@@ -165,6 +165,7 @@ function createPartialFleet(source: ServerFleet, view: IntelEntityView): ServerF
   return {
     id: source.id,
     ownerId: intelValue(view, "ownerId", -1),
+    stationaryStarbaseId: intelValue(view, "stationaryStarbaseId", null),
     shipIds: Array.from({ length: placeholderShipCount }, (_, index) => `unknown:${source.id}:${index}`),
     formation: intelValue(view, "formation", "line"),
     currentStarId: intelValue(view, "currentStarId", -1),

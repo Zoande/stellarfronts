@@ -164,6 +164,14 @@ test("sensor suite table preserves the agreed ranges and tactical planet exclusi
   assert.equal(SENSOR_SUITE_DEFINITIONS.tacticalArraySensors.maxRange, 2);
   assert.equal(SENSOR_SUITE_DEFINITIONS.tacticalArraySensors.bands[0].bundles.includes("planetCivilian"), false);
   assert.equal(SENSOR_SUITE_DEFINITIONS.tacticalArraySensors.bands[0].bundles.includes("fleetTelemetry"), true);
+  assert.equal(SENSOR_SUITE_DEFINITIONS.starbaseSensors.maxRange, 1);
+  assert.equal(SENSOR_SUITE_DEFINITIONS.starbaseSensors.bands[0].bundles.includes("planetCivilian"), false);
+  assert.equal(SENSOR_SUITE_DEFINITIONS.militaryShipSensors.maxRange, 3);
+  assert.equal(SENSOR_SUITE_DEFINITIONS.militaryShipSensors.bands[3].fleetDetection, "militaryOnly");
+  assert.deepEqual(SENSOR_SUITE_DEFINITIONS.scienceShipSensors.bands[3].fieldsByKind?.star, ["existence", "type"]);
+  assert.deepEqual(SENSOR_SUITE_DEFINITIONS.scienceShipSensors.bands[3].bundles, []);
+  assert.deepEqual(SENSOR_SUITE_DEFINITIONS.civilianShipSensors.bands[1].fieldsByKind?.fleet, ["existence", "currentStarId", "hyperlanePosition"]);
+  assert.equal(SENSOR_SUITE_DEFINITIONS.civilianShipSensors.bands[1].fieldsByKind?.fleet?.includes("shipCount"), false);
 });
 
 test("rival starting intelligence contains identity but no economy or defenses", () => {
@@ -270,4 +278,19 @@ test("faction snapshot serialization does not bypass the intelligence materializ
   const serialized = JSON.stringify(snapshot);
   assert.equal(serialized.includes("987654321"), false);
   assert.equal(snapshot.planetStates.length, 0);
+});
+
+test("a type-only stellar report does not disclose the star name or other stellar fields", () => {
+  const state = stateFixture();
+  state.stars[2].type = StarType.M;
+  state.stars[2].luminosity = 2.75;
+  state.planetStates[0].buildings.city[0] = null;
+  refreshIntelligence(state);
+  assert.equal(grantOneShotIntelReport(state, 0, "star", 2, ["type"]), true);
+
+  const snapshot = createSnapshot({ state } as RuntimeContext, { mode: "faction", factionId: 0 });
+  const materialized = snapshot.stars.find((candidate) => candidate.id === 2)!;
+  assert.equal(materialized.type, StarType.M);
+  assert.equal(materialized.name, "Unknown Signal");
+  assert.equal(materialized.luminosity, 0.6);
 });

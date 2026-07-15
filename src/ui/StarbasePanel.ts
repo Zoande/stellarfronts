@@ -11,9 +11,10 @@ import {
 } from "../data/Starbase";
 import type { ResourceCounts } from "../data/Economy";
 import type { StarbaseBuildingKind } from "../data/Starbase";
+import type { ShipDesign } from "../data/ShipDesigns";
 import { NEBULA_DEFINITIONS, getNebulaGatedBuildingKinds } from "../data/Nebula";
 import type { NebulaKind } from "../data/Nebula";
-import type { ClientCommand, ServerStarbase } from "../game/GameProtocol";
+import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 import {
   getFirstRequiredTechName,
   getRequiredTechIdsForShipHull,
@@ -21,6 +22,7 @@ import {
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { dailyToRealMinute, monthlyToRealMinute, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
 
 export interface StarbasePanelData {
   id: string;
@@ -31,6 +33,9 @@ export interface StarbasePanelData {
   status?: string;
   power?: string;
   starbase?: ServerStarbase;
+  fleets?: ServerFleet[];
+  ships?: ServerShip[];
+  shipDesigns?: ShipDesign[];
   technology?: FactionTechnologyView | null;
   /** Kind of nebula the starbase's system sits in, if any (gates some buildings). */
   nebulaKind?: NebulaKind | null;
@@ -45,6 +50,8 @@ const STARBASE_SCROLL_SELECTORS = [
   ".sbOrbitList",
   ".sbShipQueueList",
   ".sbAvailableShipList",
+  ".sbDefensePlatformList",
+  ".sbDefenseDesignList",
 ] as const;
 
 type StarbaseTab = "starbase" | "defenses" | "shipyard";
@@ -58,6 +65,7 @@ export class StarbasePanel {
   private dragOffset = { x: 0, y: 0 };
   private isDragging = false;
   private buildingPickerSlotIndex: number | null = null;
+  private defensePlatformPickerOpen = false;
   private pendingRefreshData: StarbasePanelData | null = null;
   private pendingRefreshTimer: number | null = null;
   private readonly interactionGate = new PanelInteractionGate();
@@ -92,6 +100,7 @@ export class StarbasePanel {
       if (this.currentData) this.currentData.onClose?.(this.currentData.id);
       this.activeTab = "starbase";
       this.buildingPickerSlotIndex = null;
+      this.defensePlatformPickerOpen = false;
     }
     this.currentData = data;
     const scrollState = captureScrollState(this.panelElement, STARBASE_SCROLL_SELECTORS);
@@ -122,6 +131,7 @@ export class StarbasePanel {
     this.panelElement = null;
     this.currentData = null;
     this.activeTab = "starbase";
+    this.defensePlatformPickerOpen = false;
     if (closingId) onClose?.(closingId);
   }
 
@@ -129,6 +139,19 @@ export class StarbasePanel {
     if (!this.currentData || this.currentData.id !== starbase.id) return;
     const nextData = { ...this.currentData, starbase };
     this.currentData = nextData;
+    if (this.shouldDeferRefresh()) {
+      this.pendingRefreshData = nextData;
+      this.schedulePendingRefresh();
+      return;
+    }
+    this.show(nextData);
+  }
+
+  public refreshMilitaryContext(fleets: ServerFleet[], ships: ServerShip[], shipDesigns: ShipDesign[]): void {
+    if (!this.currentData) return;
+    const nextData = { ...this.currentData, fleets, ships, shipDesigns };
+    this.currentData = nextData;
+    if (this.activeTab !== "defenses" && this.activeTab !== "shipyard") return;
     if (this.shouldDeferRefresh()) {
       this.pendingRefreshData = nextData;
       this.schedulePendingRefresh();
@@ -196,6 +219,26 @@ export class StarbasePanel {
           type: "buildStarbaseShip",
           starbaseId: data.id,
           shipKind,
+        });
+      });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-sb-open-defense-designs]")?.addEventListener("click", () => {
+      this.defensePlatformPickerOpen = true;
+      this.show(data);
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-sb-close-defense-designs]")?.addEventListener("click", () => {
+      this.defensePlatformPickerOpen = false;
+      this.show(data);
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-build-defense-design]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const designId = button.dataset.sbBuildDefenseDesign;
+        if (!designId) return;
+        data.onStarbaseCommand?.({
+          type: "buildStarbaseShip",
+          starbaseId: data.id,
+          shipKind: "defensePlatform",
+          designId,
         });
       });
     });
@@ -346,22 +389,56 @@ export class StarbasePanel {
   }
 
   private renderDefenses(data: StarbasePanelData): string {
+    const starbase = data.starbase;
+    const definition = STARBASE_LEVEL_DEFINITIONS[starbase?.level ?? "outpost"] ?? STARBASE_LEVEL_DEFINITIONS.outpost;
+    const platformFleetIds = new Set((data.fleets ?? [])
+      .filter((fleet) => fleet.stationaryStarbaseId === data.id)
+      .map((fleet) => fleet.id));
+    const platforms = (data.ships ?? []).filter((ship) => (
+      ship.shipKind === "defensePlatform" && platformFleetIds.has(ship.fleetId)
+    ));
+    const queue = starbase?.shipQueue ?? [];
+    const queuedPlatforms = queue.filter((item) => item.kind === "build" && item.shipKind === "defensePlatform").length;
+    const reservedCapacity = platforms.length + queuedPlatforms;
+    const shipyardCount = starbase ? countStarbaseShipyards(starbase.buildingSlots) : 0;
+    const atCapacity = reservedCapacity >= definition.defensePlatformCapacity;
+    const designs = (data.shipDesigns ?? []).filter((design) => (
+      design.shipKind === "defensePlatform" && design.status === "active"
+    ));
     return `
-      <section class="sbBody sbDetailBody">
-        <article class="sbDefenseCard">
-          <span>Defense Platforms</span>
-          <strong>4 / 12</strong>
-          <p>Placeholder platform capacity and defense aura summary for ${this.escapeHtml(data.name)}.</p>
+      <section class="sbBody sbDefenseBody">
+        <article class="sbDefenseColumn">
+          <div class="sbDefenseHeader">
+            <div><span>Defense Platforms</span><strong>${platforms.length} deployed${queuedPlatforms > 0 ? ` + ${queuedPlatforms} queued` : ""}</strong></div>
+            <div class="sbDefenseCapacity"><span>${reservedCapacity} / ${definition.defensePlatformCapacity}</span><button type="button" data-sb-open-defense-designs ${shipyardCount > 0 && !atCapacity ? "" : "disabled"} aria-label="Add defense platform">+</button></div>
+          </div>
+          <div class="sbDefensePlatformList">
+            ${platforms.length === 0 ? '<div class="sbQueueEmpty">No defense platforms deployed.</div>' : platforms.map((platform) => {
+              const design = (data.shipDesigns ?? []).find((candidate) => candidate.id === platform.designId);
+              const hullPercent = platform.maxHull > 0 ? Math.round((platform.hull / platform.maxHull) * 100) : 0;
+              return `<div class="sbDefensePlatformCard"><span class="sbShipIcon">DP</span><span><strong>${this.escapeHtml(design?.name ?? "Defense Platform")}</strong><small>Hull ${hullPercent}% | Shield ${Math.round(platform.shield)} / ${Math.round(platform.maxShield)}</small></span></div>`;
+            }).join("")}
+          </div>
         </article>
-        <article class="sbDefenseCard">
-          <span>Shield Matrix</span>
-          <strong>Online</strong>
-          <p>Projected system shields, point defense, and interception modules will live here.</p>
+        <article class="sbDefenseColumn">
+          ${this.defensePlatformPickerOpen ? `
+            <div class="sbDefenseHeader"><div><span>Platform Designs</span><strong>Select to queue</strong></div><button class="sbDefenseBack" type="button" data-sb-close-defense-designs>Queue</button></div>
+            <div class="sbDefenseDesignList">
+              ${designs.length === 0 ? '<div class="sbQueueEmpty">Create an active defense-platform design in the Ship Designer first.</div>' : designs.map((design) => `
+                <button class="sbDefenseDesignCard" type="button" data-sb-build-defense-design="${this.escapeHtml(design.id)}" ${atCapacity ? "disabled" : ""}>
+                  <span class="sbShipIcon">DP</span><span><strong>${this.escapeHtml(design.name)}</strong><small>Queue platform; picker remains open</small></span>
+                </button>
+              `).join("")}
+            </div>
+          ` : `
+            <div class="sbSectionTitle">Shipyard Queue</div>
+            <div class="sbShipQueueList">${this.renderShipQueueItems(starbase, shipyardCount)}</div>
+          `}
         </article>
-        <article class="sbDefenseCard">
-          <span>Threat Coverage</span>
-          <strong>Medium</strong>
-          <p>Future UI: enemy approach lanes, weapon arcs, garrison ships, and repair reserves.</p>
+        <article class="sbDefenseColumn sbGroundArmyPlaceholder">
+          <span>Ground Army Overview</span>
+          <strong>Operational view pending</strong>
+          <p>Planetary garrisons, embarked armies, reinforcement readiness, and invasion posture will be shown here.</p>
         </article>
       </section>
     `;
@@ -398,40 +475,19 @@ export class StarbasePanel {
           </div>
           <div class="sbSectionTitle">Shipyard Queue</div>
           <div class="sbShipQueueList">
-            ${shipQueue.length === 0
-              ? '<div class="sbQueueEmpty">No ships queued.</div>'
-              : shipQueue.map((item, index) => {
-                const totalDays = Math.max(1, item.totalDays);
-                const progress = Math.max(0, Math.min(100, ((totalDays - item.remainingDays) / totalDays) * 100));
-                const isActive = index < shipyardCount;
-                const verb = item.kind === "upgrade" ? "Upgrading" : "Building";
-                const waitingVerb = item.kind === "upgrade" ? "Upgrade queued" : "Waiting";
-                return `
-                  <div class="sbShipQueueItem ${isActive ? "active" : ""}">
-                    <div class="sbShipQueueMain">
-                      <strong title="${this.escapeHtml(item.label)}">${this.escapeHtml(item.label)}</strong>
-                      <span>${isActive ? verb : waitingVerb} | ${Math.ceil(item.remainingDays)}d</span>
-                    </div>
-                    <div class="sbShipQueueCosts">
-                      <small><span>Demand</span><strong>${this.renderDailyDemand(item.resourceUpkeepPerDay)} / day</strong></small>
-                      <small><span>Cost</span><strong>${this.renderInlineCost(item.cost)}</strong></small>
-                    </div>
-                    <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
-                  </div>
-                `;
-              }).join("")}
+            ${this.renderShipQueueItems(starbase, shipyardCount)}
           </div>
         </article>
         <article class="sbShipyardColumn">
           <div class="sbSectionTitle">Shipbuilding Demand</div>
           <div class="sbDemandPanel">
-            <span>Active shipyard demand: ${this.renderDailyDemand(this.getActiveShipyardDemand(starbase))} / day</span>
+            <span>Active shipyard demand: ${this.renderDailyDemand(this.getActiveShipyardDemand(starbase))}</span>
             <span>Queued crew demand: ${this.formatCompact(shipQueue.reduce((total, item) => total + item.crewDemand, 0))}</span>
             <span>Completed ships: spawn as new fleets in orbit</span>
           </div>
           <div class="sbSectionTitle">Available Ships</div>
           <div class="sbAvailableShipList">
-            ${STARBASE_SHIP_KINDS.map((kind) => {
+            ${STARBASE_SHIP_KINDS.filter((kind) => kind !== "defensePlatform").map((kind) => {
               const definition = STARBASE_SHIP_DEFINITIONS[kind];
               const predictedAlloys = definition.alloyUpkeepPerDay * definition.buildDays;
               const lockedByTechnology = !this.isShipHullUnlocked(data.technology, kind);
@@ -454,6 +510,31 @@ export class StarbasePanel {
         </article>
       </section>
     `;
+  }
+
+  private renderShipQueueItems(starbase: ServerStarbase | undefined, shipyardCount: number): string {
+    const shipQueue = starbase?.shipQueue ?? [];
+    if (shipQueue.length === 0) return '<div class="sbQueueEmpty">No ships queued.</div>';
+    return shipQueue.map((item, index) => {
+      const totalDays = Math.max(1, item.totalDays);
+      const progress = Math.max(0, Math.min(100, ((totalDays - item.remainingDays) / totalDays) * 100));
+      const isActive = index < shipyardCount;
+      const verb = item.kind === "upgrade" ? "Upgrading" : "Building";
+      const waitingVerb = item.kind === "upgrade" ? "Upgrade queued" : "Waiting";
+      return `
+        <div class="sbShipQueueItem ${isActive ? "active" : ""}">
+          <div class="sbShipQueueMain">
+            <strong title="${this.escapeHtml(item.label)}">${this.escapeHtml(item.label)}</strong>
+            <span>${isActive ? verb : waitingVerb} | ${Math.ceil(item.remainingDays)}d</span>
+          </div>
+          <div class="sbShipQueueCosts">
+            <small><span>Demand</span><strong>${this.renderDailyDemand(item.resourceUpkeepPerDay)}</strong></small>
+            <small><span>Cost</span><strong>${this.renderInlineCost(item.cost)}</strong></small>
+          </div>
+          <div class="sbQueueBar"><span style="width: ${progress}%"></span></div>
+        </div>
+      `;
+    }).join("");
   }
 
   private getActiveShipyardDemand(starbase?: ServerStarbase): ResourceCounts {
@@ -558,7 +639,7 @@ export class StarbasePanel {
   private renderResourceTokens(counts: ResourceCounts, className: "positive" | "negative"): string {
     const rows = RESOURCE_KINDS
       .filter((resource) => Math.abs(counts[resource]) > 0.0001)
-      .map((resource) => `<span class="${className}">${this.escapeHtml(RESOURCE_LABELS[resource])} ${className === "negative" ? "-" : "+"}${this.formatCompact(counts[resource])}</span>`);
+      .map((resource) => `<span class="${className}">${this.escapeHtml(RESOURCE_LABELS[resource])} ${className === "negative" ? "-" : "+"}${this.formatCompact(monthlyToRealMinute(counts[resource]))}${RESOURCE_RATE_LABEL}</span>`);
     return rows.length > 0 ? rows.join("") : '<span class="muted">None</span>';
   }
 
@@ -579,7 +660,7 @@ export class StarbasePanel {
   private renderDailyDemand(counts: ResourceCounts): string {
     const parts = RESOURCE_KINDS
       .filter((resource) => Math.abs(counts[resource]) > 0.0001)
-      .map((resource) => `${this.formatCompact(counts[resource])} ${RESOURCE_LABELS[resource]}`);
+      .map((resource) => `${this.formatCompact(dailyToRealMinute(counts[resource]))} ${RESOURCE_LABELS[resource]}${RESOURCE_RATE_LABEL}`);
     return parts.length > 0 ? parts.join(", ") : "None";
   }
 
@@ -1117,6 +1198,161 @@ export class StarbasePanel {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+
+.sbDefenseBody {
+  display: grid;
+  grid-template-columns: 1fr 1.08fr 0.92fr;
+  gap: 8px;
+}
+
+.sbDefenseColumn {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(103, 255, 221, 0.26);
+  background: rgba(5, 24, 25, 0.72);
+  padding: 8px;
+}
+
+.sbDefenseHeader {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.18);
+}
+
+.sbDefenseHeader > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.sbDefenseHeader span,
+.sbGroundArmyPlaceholder > span {
+  color: rgba(206, 232, 226, 0.62);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+
+.sbDefenseHeader strong {
+  font-size: 12px;
+}
+
+.sbDefenseCapacity {
+  margin-left: auto;
+  display: flex !important;
+  grid-auto-flow: column;
+  align-items: center;
+  gap: 6px !important;
+  white-space: nowrap;
+}
+
+.sbDefenseCapacity span {
+  color: #eafff8;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.sbDefenseCapacity button,
+.sbDefenseBack {
+  min-width: 30px;
+  height: 30px;
+  border: 1px solid rgba(103, 255, 221, 0.52);
+  background: rgba(6, 42, 38, 0.8);
+  color: #d8fff6;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sbDefenseCapacity button:disabled,
+.sbDefenseDesignCard:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.sbDefenseBack {
+  margin-left: auto;
+  padding: 0 8px;
+  font-size: 10px;
+}
+
+.sbDefensePlatformList,
+.sbDefenseDesignList {
+  min-height: 0;
+  max-height: 250px;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding-right: 3px;
+  scrollbar-width: thin;
+}
+
+.sbDefensePlatformCard,
+.sbDefenseDesignCard {
+  min-width: 0;
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 6px;
+  border: 1px solid rgba(103, 255, 221, 0.24);
+  background: linear-gradient(135deg, rgba(16, 57, 52, 0.68), rgba(4, 17, 21, 0.92));
+  color: #e9fff8;
+  font: inherit;
+  text-align: left;
+}
+
+.sbDefenseDesignCard:not(:disabled) {
+  cursor: pointer;
+}
+
+.sbDefenseDesignCard:not(:disabled):hover {
+  border-color: rgba(103, 255, 221, 0.72);
+}
+
+.sbDefensePlatformCard strong,
+.sbDefensePlatformCard small,
+.sbDefenseDesignCard strong,
+.sbDefenseDesignCard small {
+  display: block;
+  min-width: 0;
+}
+
+.sbDefensePlatformCard strong,
+.sbDefenseDesignCard strong {
+  overflow: hidden;
+  color: #eafff8;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sbDefensePlatformCard small,
+.sbDefenseDesignCard small {
+  margin-top: 3px;
+  color: rgba(206, 232, 226, 0.58);
+  font-size: 9px;
+  line-height: 1.3;
+}
+
+.sbGroundArmyPlaceholder strong {
+  display: block;
+  margin-top: 7px;
+  font-size: 15px;
+}
+
+.sbGroundArmyPlaceholder p {
+  color: rgba(216, 238, 232, 0.64);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .sbShipyardBody {

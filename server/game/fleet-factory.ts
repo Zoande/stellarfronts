@@ -135,6 +135,7 @@ export function createFleet(
   return {
     id,
     ownerId,
+    stationaryStarbaseId: null,
     shipIds,
     formation: "line",
     currentStarId,

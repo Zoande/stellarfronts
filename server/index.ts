@@ -341,7 +341,8 @@ function hasFleetCommandLink(fleet: GameFleet): boolean {
 }
 
 function canFleetAcceptReplacementOrder(fleet: GameFleet): boolean {
-  return fleet.phase !== "missingInAction"
+  return !fleet.stationaryStarbaseId
+    && fleet.phase !== "missingInAction"
     && fleet.combatStatus !== "destroyed"
     && fleet.shipIds.length > 0
     && hasFleetCommandLink(fleet);
@@ -1348,6 +1349,14 @@ function handleBuildStarbaseShip(
   if (!isStarbaseShipKind(shipKind)) return reject(socket, "Invalid ship design.");
   const shipyardCount = countStarbaseShipyards(starbase.buildingSlots);
   if (shipyardCount <= 0) return reject(socket, "Starbase has no completed shipyards.");
+  if (shipKind === "defensePlatform") {
+    const capacity = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.defensePlatformCapacity ?? 0;
+    const built = ctx.state.fleets
+      .filter((fleet) => fleet.stationaryStarbaseId === starbase.id && fleet.ownerId === starbase.ownerId)
+      .reduce((total, fleet) => total + fleet.shipIds.length, 0);
+    const queued = starbase.shipQueue.filter((item) => item.kind === "build" && item.shipKind === "defensePlatform").length;
+    if (built + queued >= capacity) return reject(socket, "Defense platform capacity reached.");
+  }
   const design = findShipDesign(ctx.state.shipDesigns, starbase.ownerId, shipKind, designId, false);
   if (!design) return reject(socket, "Ship design is unavailable.");
   if (!isShipDesignUnlockedForFaction(ctx, starbase.ownerId, design)) {

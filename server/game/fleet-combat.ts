@@ -436,7 +436,10 @@ export function isFleetAvailableForOrders(fleet: GameFleet): boolean {
 }
 
 export function canFleetAcceptReplacementOrder(fleet: GameFleet): boolean {
-  return fleet.phase !== "missingInAction" && fleet.combatStatus !== "destroyed" && fleet.shipIds.length > 0;
+  return !fleet.stationaryStarbaseId
+    && fleet.phase !== "missingInAction"
+    && fleet.combatStatus !== "destroyed"
+    && fleet.shipIds.length > 0;
 }
 
 export function isMergeSourceEligible(fleet: GameFleet): boolean {
@@ -1584,6 +1587,16 @@ export function captureStarbase(ctx: RuntimeContext, starbase: ServerStarbase, o
   starbase.hull = Math.max(1, Math.round(starbase.maxHull * 0.25));
   starbase.lastShieldDamageAtYear = null;
   starbase.weaponCooldowns = {};
+  for (const platformFleet of ctx.state.fleets.filter((fleet) => fleet.stationaryStarbaseId === starbase.id)) {
+    platformFleet.ownerId = ownerId;
+    platformFleet.currentTargetId = null;
+    platformFleet.currentTargetKind = null;
+    platformFleet.combatStatus = "idle";
+    for (const shipId of platformFleet.shipIds) {
+      const platform = ctx.state.ships.find((ship) => ship.id === shipId);
+      if (platform) platform.ownerId = ownerId;
+    }
+  }
   ctx.state.starOwnership[starbase.starId] = ownerId;
   ctx.syncSystemOwnershipFromStarbases();
   ctx.recalculatePlanetEconomies();
@@ -1599,6 +1612,11 @@ export function updateFleetCombatMovement(
   shipsById: Map<string, GameShip>,
 ): boolean {
   const fleet = actor.fleet;
+  if (fleet.stationaryStarbaseId) {
+    fleet.currentTacticalOrder = null;
+    fleet.combatStatus = target && actorIsInFleetWeaponRange(actor, target) ? "firing" : "idle";
+    return false;
+  }
   const threshold = FLEET_RETREAT_THRESHOLDS[fleet.combatSettings.retreatPolicy] ?? 0;
   if (threshold > 0 && getFleetHealthRatio(fleet, shipsById) <= threshold) {
     return retreatFleetByDoctrine(ctx, fleet);
@@ -1659,11 +1677,18 @@ export function applyFleetSoftSeparation(
       const distance = Math.hypot(dx, dz);
       const minimum = (left.tacticalRadius + right.tacticalRadius) * 0.78;
       if (distance <= 0.001 || distance >= minimum) continue;
-      const push = ((minimum - distance) * FLEET_SOFT_SEPARATION_FACTOR) / 2;
+      if (left.stationaryStarbaseId && right.stationaryStarbaseId) continue;
+      const push = (minimum - distance) * FLEET_SOFT_SEPARATION_FACTOR;
       const ux = dx / distance;
       const uz = dz / distance;
-      left.systemPosition = { x: left.systemPosition.x - ux * push, y: SYSTEM_FLEET_Y, z: left.systemPosition.z - uz * push };
-      right.systemPosition = { x: right.systemPosition.x + ux * push, y: SYSTEM_FLEET_Y, z: right.systemPosition.z + uz * push };
+      if (!left.stationaryStarbaseId) {
+        const amount = right.stationaryStarbaseId ? push : push / 2;
+        left.systemPosition = { x: left.systemPosition.x - ux * amount, y: SYSTEM_FLEET_Y, z: left.systemPosition.z - uz * amount };
+      }
+      if (!right.stationaryStarbaseId) {
+        const amount = left.stationaryStarbaseId ? push : push / 2;
+        right.systemPosition = { x: right.systemPosition.x + ux * amount, y: SYSTEM_FLEET_Y, z: right.systemPosition.z + uz * amount };
+      }
       changed = true;
     }
   }

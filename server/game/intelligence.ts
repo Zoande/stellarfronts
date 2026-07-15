@@ -155,6 +155,9 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
     addField(starFields, "z", star.z, "stellar");
     addField(starFields, "luminosity", star.luminosity, "stellar");
     addField(starFields, "color", star.color, "stellar");
+    addField(starFields, "galaxyPulseAmplitude", star.galaxyPulseAmplitude, "stellar");
+    addField(starFields, "galaxyPulseFrequency", star.galaxyPulseFrequency, "stellar");
+    addField(starFields, "nebulaId", star.nebulaId, "stellar");
     addStructuredFields(starFields, "objectDetails", star.objectDetails, "stellar");
     put({ id: String(star.id), kind: "star", starId: star.id, fields: starFields });
 
@@ -237,6 +240,7 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
     addStructuredFields(fields, "hyperlanePosition", fleet.hyperlanePosition, "fleetContact");
     addField(fields, "formation", fleet.formation, "fleetClassification");
     addField(fields, "shipCount", fleet.shipIds.length, "fleetClassification");
+    addField(fields, "stationaryStarbaseId", fleet.stationaryStarbaseId ?? null, "fleetClassification");
     addStructuredFields(fields, "shipIds", fleet.shipIds, "fleetTelemetry");
     addStructuredFields(fields, "telemetry", fleet, "fleetTelemetry");
     put({ id: fleet.id, kind: "fleet", starId: fleet.hyperlanePosition ? null : fleet.currentStarId, fields });
@@ -302,7 +306,7 @@ function collectSensorSources(state: GameState): SensorSource[] {
   }
   for (const starbase of state.starbases) {
     if (starbase.status !== "online") continue;
-    const suites = new Set<SensorSuiteId>();
+    const suites = new Set<SensorSuiteId>(["starbaseSensors"]);
     for (const kind of starbase.buildingSlots) {
       if (!kind) continue;
       for (const suiteId of STARBASE_BUILDING_DEFINITIONS[kind].sensorSuiteIds ?? []) suites.add(suiteId);
@@ -318,6 +322,30 @@ function collectSensorSources(state: GameState): SensorSource[] {
     if (suites.size > 0) sources.push({ id: `fleet:${fleet.id}`, factionId: fleet.ownerId, starId: fleet.currentStarId, suites: Array.from(suites), authority: false });
   }
   return sources;
+}
+
+const MILITARY_SENSOR_TARGET_KINDS = new Set([
+  "corvette",
+  "destroyer",
+  "cruiser",
+  "battleship",
+  "defensePlatform",
+  "armyShip",
+]);
+
+function isMilitarySensorTarget(state: GameState, entity: TruthEntity): boolean {
+  if (entity.kind === "ship") {
+    const ship = state.ships.find((candidate) => candidate.id === entity.id);
+    return Boolean(ship && MILITARY_SENSOR_TARGET_KINDS.has(ship.shipKind));
+  }
+  if (entity.kind === "fleet") {
+    const fleet = state.fleets.find((candidate) => candidate.id === entity.id);
+    return Boolean(fleet?.shipIds.some((shipId) => {
+      const ship = state.ships.find((candidate) => candidate.id === shipId);
+      return Boolean(ship && ship.hull > 0 && MILITARY_SENSOR_TARGET_KINDS.has(ship.shipKind));
+    }));
+  }
+  return true;
 }
 
 function computeCoverage(
@@ -410,7 +438,14 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
         if (band.commandLink && source.authority) evaluation.commandLinkedStars.add(starId);
         const bundles = new Set(band.bundles);
         for (const entity of truthByStar.get(starId) ?? []) {
-          grantEntityBundles(evaluation, entity, bundles, `${source.id}:${suiteId}` , band.fields);
+          if (band.fleetDetection === "militaryOnly" && !isMilitarySensorTarget(state, entity)) continue;
+          grantEntityBundles(
+            evaluation,
+            entity,
+            bundles,
+            `${source.id}:${suiteId}`,
+            [...(band.fields ?? []), ...(band.fieldsByKind?.[entity.kind] ?? [])],
+          );
         }
       }
       // A lane is disclosed only when both endpoints belong to this same source's covered network.

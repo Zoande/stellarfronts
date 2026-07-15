@@ -489,6 +489,8 @@ export interface ServerShip {
 export interface ServerFleet {
   id: string;
   ownerId: number;
+  /** Non-null for a defense-platform group permanently anchored to a starbase. */
+  stationaryStarbaseId?: string | null;
   shipIds: string[];
   formation: FleetFormation;
   currentStarId: number;

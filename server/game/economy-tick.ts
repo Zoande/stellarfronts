@@ -392,6 +392,39 @@ export function processStarbaseRepairs(ctx: RuntimeContext, elapsedDays: number)
 }
 
 function spawnCompletedShip(ctx: RuntimeContext, starbase: ServerStarbase, item: { shipKind: StarbaseShipKind; designId?: string | null }): void {
+  if (item.shipKind === "defensePlatform") {
+    let fleet = ctx.state.fleets.find((candidate) => (
+      candidate.stationaryStarbaseId === starbase.id
+      && candidate.ownerId === starbase.ownerId
+      && candidate.combatStatus !== "destroyed"
+    ));
+    if (!fleet) {
+      fleet = createFleet(
+        ctx,
+        starbase.ownerId,
+        starbase.starId,
+        [],
+        ctx.createRuntimeId("defense-fleet", [starbase.ownerId, starbase.id]),
+      );
+      fleet.stationaryStarbaseId = starbase.id;
+      fleet.speed = 0;
+      fleet.phaseStartedAtYear = ctx.state.clock.year;
+      fleet.systemPosition = getSystemStarbaseOrbitPosition(starbase.systemPosition);
+      ctx.state.fleets.push(fleet);
+    }
+    const ship = createShip(
+      ctx,
+      starbase.ownerId,
+      fleet.id,
+      item.shipKind,
+      ctx.createRuntimeId("ship", [starbase.ownerId, item.shipKind]),
+      item.designId,
+    );
+    fleet.shipIds.push(ship.id);
+    ctx.state.ships.push(ship);
+    ctx.syncFleetMembership();
+    return;
+  }
   const fleetId = ctx.createRuntimeId("fleet", [starbase.ownerId, starbase.starId]);
   const ship = createShip(
     ctx,
