@@ -1818,15 +1818,19 @@ export class CelestialObjectPanel {
         .slice(0, 2)
         .toUpperCase()
       : "";
-    const portraitStyle = leader?.portraitUrl ? ` style="background-image: url('${this.escapeHtml(leader.portraitUrl)}')"` : "";
+    const portrait = leader?.portraitUrl
+      ? `<img src="${this.escapeHtml(leader.portraitUrl)}" alt="" />`
+      : leader
+        ? `<span>${this.escapeHtml(initials)}</span>`
+        : "<i>+</i>";
     return `
       <button
         class="coLeaderCard ${canManage ? "assignable" : ""}"
         type="button"
         ${canManage ? "data-co-open-leaders" : "disabled"}
         aria-label="Assign sector official">
-        <div class="coLeaderPortrait${leader?.portraitUrl ? " hasPortrait" : ""}"${portraitStyle}>${leader ? `<span>${this.escapeHtml(initials)}</span>` : "<i>+</i>"}</div>
-        <div>
+        <div class="coLeaderPortrait${leader?.portraitUrl ? " hasPortrait" : ""}" aria-hidden="true">${portrait}</div>
+        <div class="coLeaderIdentity">
           <strong>${this.escapeHtml(leaderName)}</strong>
           <span>${this.escapeHtml(leaderLabel)}</span>
         </div>
@@ -4398,14 +4402,15 @@ export class CelestialObjectPanel {
 
 .coLeaderCard {
   position: absolute;
-  left: 14px;
-  top: 14px;
+  left: 10px;
+  bottom: 40px;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  background: rgba(4, 17, 17, 0.68);
-  border: 1px solid rgba(92, 221, 184, 0.38);
+  align-items: flex-end;
+  gap: 3px;
+  height: 118px;
+  padding: 0;
+  background: transparent;
+  border: 0;
   color: rgba(236, 248, 244, 0.9);
   font: inherit;
   text-align: left;
@@ -4418,15 +4423,28 @@ export class CelestialObjectPanel {
 }
 
 .coLeaderCard.assignable:hover {
-  border-color: rgba(130, 255, 218, 0.72);
-  box-shadow: 0 0 16px rgba(92, 221, 184, 0.2);
+  color: #dffff5;
 }
 
 .coLeaderCard:disabled {
   opacity: 1;
 }
 
-.coLeaderCard span {
+.coLeaderIdentity {
+  min-width: 0;
+  max-width: 158px;
+  padding-bottom: 11px;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.96));
+}
+
+.coLeaderIdentity strong {
+  display: block;
+  font-size: 11px;
+  line-height: 1.12;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
+}
+
+.coLeaderIdentity span {
   display: block;
   margin-top: 3px;
   color: rgba(218, 236, 229, 0.72);
@@ -4434,14 +4452,12 @@ export class CelestialObjectPanel {
 }
 
 .coLeaderPortrait {
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
-  background: linear-gradient(160deg, #516b71, #1a2529 60%, #111);
-  background-size: cover;
-  background-position: center top;
-  background-repeat: no-repeat;
-  border: 1px solid rgba(179, 255, 229, 0.42);
+  flex: 0 0 auto;
+  width: 86px;
+  height: 118px;
+  overflow: hidden;
+  background: transparent;
+  border: 0;
   display: grid;
   place-items: center;
   color: rgba(230, 255, 246, 0.9);
@@ -4449,25 +4465,37 @@ export class CelestialObjectPanel {
   font-weight: 900;
 }
 
-.coLeaderPortrait.hasPortrait {
-  background-color: transparent;
+.coLeaderPortrait img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  object-position: center top;
+  transform: scale(2.08);
+  transform-origin: 50% 6%;
+  filter: drop-shadow(0 5px 5px rgba(0, 0, 0, 0.72));
+  pointer-events: none;
 }
 
-.coLeaderPortrait.hasPortrait span {
-  display: none;
+.coLeaderCard.assignable:hover .coLeaderPortrait img {
+  filter: drop-shadow(0 5px 6px rgba(70, 238, 191, 0.42)) drop-shadow(0 5px 5px rgba(0, 0, 0, 0.72));
+}
+
+.coLeaderPortrait span {
+  margin: 0;
+  color: rgba(230, 255, 246, 0.86);
+  font-size: 15px;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.95);
 }
 
 .coLeaderPortrait i {
-  width: 18px;
-  height: 18px;
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  border: 1px solid rgba(179, 255, 229, 0.56);
   color: rgba(179, 255, 229, 0.95);
   font-style: normal;
-  font-size: 15px;
+  font-size: 24px;
   line-height: 1;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.95);
 }
 
 .coSummary {

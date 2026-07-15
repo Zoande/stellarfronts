@@ -442,16 +442,16 @@ export class SelectionPanel {
   min-width: 0;
   height: 62px;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
-  border: 1px solid rgba(92, 221, 184, 0.38);
-  background: rgba(4, 17, 17, 0.68);
+  align-items: flex-end;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: rgba(236, 248, 244, 0.9);
   font: inherit;
   text-align: left;
   cursor: default;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .fleetSelectionLeaderCard.assignable {
@@ -459,8 +459,7 @@ export class SelectionPanel {
 }
 
 .fleetSelectionLeaderCard.assignable:hover {
-  border-color: rgba(130, 255, 218, 0.72);
-  box-shadow: 0 0 16px rgba(92, 221, 184, 0.18);
+  color: #dffff5;
 }
 
 .fleetSelectionLeaderCard strong {
@@ -475,7 +474,7 @@ export class SelectionPanel {
   max-width: 100%;
 }
 
-.fleetSelectionLeaderCard span {
+.fleetSelectionLeaderText span {
   display: block;
   margin-top: 3px;
   color: rgba(218, 236, 229, 0.72);
@@ -489,14 +488,11 @@ export class SelectionPanel {
 
 .fleetSelectionLeaderPortrait {
   flex: 0 0 auto;
-  width: 42px;
-  height: 42px;
-  border-radius: 50%;
-  background: linear-gradient(160deg, #516b71, #1a2529 60%, #111);
-  background-size: cover;
-  background-position: center top;
-  background-repeat: no-repeat;
-  border: 1px solid rgba(179, 255, 229, 0.42);
+  width: 52px;
+  height: 62px;
+  overflow: hidden;
+  background: transparent;
+  border: 0;
   display: grid;
   place-items: center;
   color: rgba(230, 255, 246, 0.88);
@@ -504,23 +500,45 @@ export class SelectionPanel {
   font-weight: 900;
 }
 
+.fleetSelectionLeaderPortrait img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  object-position: center top;
+  transform: scale(2.08);
+  transform-origin: 50% 6%;
+  filter: drop-shadow(0 4px 4px rgba(0, 0, 0, 0.78));
+  pointer-events: none;
+}
+
+.fleetSelectionLeaderCard.assignable:hover .fleetSelectionLeaderPortrait img {
+  filter: drop-shadow(0 4px 5px rgba(70, 238, 191, 0.4)) drop-shadow(0 4px 4px rgba(0, 0, 0, 0.78));
+}
+
+.fleetSelectionLeaderPortrait span {
+  margin: 0;
+  color: rgba(230, 255, 246, 0.86);
+  font-size: 13px;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.95);
+}
+
 .fleetSelectionLeaderPortrait i {
-  width: 18px;
-  height: 18px;
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  border: 1px solid rgba(179, 255, 229, 0.56);
   color: rgba(179, 255, 229, 0.95);
   font-style: normal;
-  font-size: 15px;
+  font-size: 21px;
   line-height: 1;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.95);
 }
 
 .fleetSelectionLeaderText {
   min-width: 0;
   flex: 1 1 auto;
   overflow: hidden;
+  padding-bottom: 7px;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.92));
 }
 
 .fleetSelectionMetaRows {
@@ -637,14 +655,6 @@ export class SelectionPanel {
   color: #ff8a93;
   border-color: rgba(230, 67, 88, 0.64);
   background: linear-gradient(180deg, rgba(78, 25, 35, 0.72), rgba(38, 12, 20, 0.78));
-}
-
-.fleetSelectionLeaderPortrait.hasPortrait {
-  background-color: transparent;
-}
-
-.fleetSelectionLeaderPortrait.hasPortrait span {
-  display: none;
 }
 
 .fleetSelectionPrimaryBtn.build {
@@ -1450,7 +1460,11 @@ export class SelectionPanel {
         .slice(0, 2)
         .toUpperCase()
       : "";
-    const portraitStyle = leader?.portraitUrl ? ` style="background-image: url('${this.escapeHtml(leader.portraitUrl)}')"` : "";
+    const portrait = leader?.portraitUrl
+      ? `<img src="${this.escapeHtml(leader.portraitUrl)}" alt="" />`
+      : leader
+        ? `<span>${this.escapeHtml(initials)}</span>`
+        : "<i>+</i>";
     return `
       <button
         class="fleetSelectionLeaderCard ${assignable ? "assignable" : ""}"
@@ -1458,8 +1472,8 @@ export class SelectionPanel {
         ${assignable ? "data-open-fleet-leaders" : "disabled"}
         title="Add fleet leader"
         aria-label="Add fleet leader">
-        <div class="fleetSelectionLeaderPortrait${leader?.portraitUrl ? " hasPortrait" : ""}" aria-hidden="true"${portraitStyle}>
-          ${leader ? `<span>${this.escapeHtml(initials)}</span>` : '<i>+</i>'}
+        <div class="fleetSelectionLeaderPortrait${leader?.portraitUrl ? " hasPortrait" : ""}" aria-hidden="true">
+          ${portrait}
         </div>
         <div class="fleetSelectionLeaderText">
           <strong>${this.escapeHtml(leaderName)}</strong>
