@@ -3,6 +3,7 @@ import type { PlanetState } from "../data/Economy";
 import type { StarData } from "../data/StarMap";
 import {
   formatLeaderClass,
+  getLeaderBackgroundUrl,
   getLeaderTraitDefinition,
   leaderXpForLevel,
 } from "../data/Leaders";
@@ -361,7 +362,9 @@ export class LeadersPanel {
   }
 
   private renderPortrait(leader: LeaderState, className: string): string {
-    const image = leader.portraitUrl ? ` style="background-image: url('${this.escapeAttribute(leader.portraitUrl)}')"` : "";
+    const image = leader.portraitUrl
+      ? ` style="background-image: url('${this.escapeAttribute(leader.portraitUrl)}'), url('${this.escapeAttribute(getLeaderBackgroundUrl(leader))}')"`
+      : "";
     const initials = leader.name
       .split(/\s+/)
       .map((part) => part[0])
@@ -596,9 +599,9 @@ export class LeadersPanel {
   overflow: hidden;
   border-radius: 4px;
   border: 1px solid rgba(131, 255, 217, 0.36);
-  background-size: cover;
-  background-position: center top;
-  background-repeat: no-repeat;
+  background-size: cover, cover;
+  background-position: center top, center;
+  background-repeat: no-repeat, no-repeat;
 }
 
 .leaderPortrait.hasPortrait {

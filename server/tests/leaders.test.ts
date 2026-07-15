@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createLeaderCandidate,
   createLegendaryLeaderCandidate,
+  getLeaderBackgroundUrl,
   getLeaderArchetypesByFaction,
   normalizeLeaderState,
 } from "../../src/data/Leaders";
@@ -20,6 +21,10 @@ test("normal leaders receive gender and founding-species portraits", () => {
       assert.match(
         leader.portraitUrl ?? "",
         new RegExp(`^/textures/leaders/${leader.gender}_${slug}_leader_[1-5]\\.webp$`),
+      );
+      assert.match(
+        getLeaderBackgroundUrl(leader),
+        /^\/textures\/leader-backgrounds\/[a-z_]+\.webp$/,
       );
     }
   }

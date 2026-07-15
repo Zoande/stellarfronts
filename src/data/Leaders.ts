@@ -465,6 +465,30 @@ function isManagedLeaderPortrait(url: string): boolean {
   return /^\/textures\/leaders\/(?:female|male)_(?:human|avian|reptilian|aquatic|fungoid)_leader_[1-5]\.webp$/.test(url);
 }
 
+const CIVILIAN_LEADER_BACKGROUNDS = [
+  "aquatic_city",
+  "fungoid_chamber",
+  "large_throne",
+  "library_office",
+  "luxury_shrine",
+  "science_throne_space",
+] as const;
+
+const MILITARY_LEADER_BACKGROUNDS = [
+  "aquatic_city",
+  "fungoid_chamber",
+  "large_throne",
+  "military_throne",
+  "science_throne_space",
+  "tactical_room",
+] as const;
+
+export function getLeaderBackgroundUrl(leader: Pick<LeaderState, "id" | "class">): string {
+  const backgrounds = leader.class === "military" ? MILITARY_LEADER_BACKGROUNDS : CIVILIAN_LEADER_BACKGROUNDS;
+  const background = backgrounds[hashString(`background:${leader.id}`) % backgrounds.length];
+  return `/textures/leader-backgrounds/${background}.webp`;
+}
+
 export function getLeaderArchetypesByFaction(
   factions: ReadonlyArray<{ id: number; foundingSpeciesId?: string | null }>,
   species: readonly SpeciesState[],
