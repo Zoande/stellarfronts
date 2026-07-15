@@ -51,7 +51,7 @@ function withClientClockSync<T extends { clock?: GameSnapshot["clock"] }>(event:
  * server reports a protocol not listed here, the client refuses to connect with
  * a clear message rather than misbehaving.
  */
-export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [3];
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [4];
 
 export class ClientServerVersionError extends Error {}
 
@@ -160,6 +160,8 @@ export class GameServerClient {
             governments: parsed.governments ?? this.latestSnapshot.governments,
             species: parsed.species ?? this.latestSnapshot.species,
             recentCombatContacts: parsed.recentCombatContacts ?? this.latestSnapshot.recentCombatContacts,
+            combatProjectiles: parsed.combatProjectiles ?? this.latestSnapshot.combatProjectiles,
+            combatReports: parsed.combatReports ?? this.latestSnapshot.combatReports,
             diplomacy: parsed.diplomacy ?? this.latestSnapshot.diplomacy,
             intelligence: parsed.intelligence ?? this.latestSnapshot.intelligence,
             situations: parsed.situations ?? this.latestSnapshot.situations,

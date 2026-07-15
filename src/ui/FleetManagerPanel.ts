@@ -47,7 +47,7 @@ import type {
   ShipSectionSlotType,
 } from "../data/ShipDesigns";
 import type { StarData } from "../data/StarMap";
-import type { ClientCommand, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
+import type { ClientCommand, CombatAfterActionReport, ServerFleet, ServerShip, ServerStarbase } from "../game/GameProtocol";
 import {
   getFirstRequiredTechName,
   getRequiredTechIdsForShipHull,
@@ -60,9 +60,12 @@ import type {
   FleetBehavior,
   FleetChasePolicy,
   FleetRetreatPolicy,
+  FleetEngagementRule,
+  FleetDoctrine,
+  FleetRetreatPreset,
 } from "../game/CombatTypes";
 import { GAME_DAYS_PER_YEAR, REAL_MS_PER_GAME_DAY } from "../game/GameTime";
-import { computeCombatPowerFromStats, computeFleetPower, computeShipPower } from "../game/combatPower";
+import { computeCombatPowerFromStats, computeFleetPower, computeShipPower, computeWeaponSustainedOutput } from "../game/combatPower";
 import { getFleetTacticalRadius } from "../game/tacticalFormation";
 import {
   captureScrollState,
@@ -79,6 +82,7 @@ export interface FleetManagerPanelData {
   factions: FactionInfo[];
   playerFactionId: number | null;
   clockYear: number;
+  combatReports?: CombatAfterActionReport[];
   technology?: FactionTechnologyView | null;
   onFleetCommand?: (command: ClientCommand) => void;
   onClose?: () => void;
@@ -526,8 +530,7 @@ export class FleetManagerPanel {
         data.onFleetCommand?.({
           type: "setFleetCombatSettings",
           fleetId: fleet.id,
-          combatStance: select.value as CombatStance,
-          combatSettings: {},
+          combatSettings: { engagementRule: select.value as FleetEngagementRule },
         });
       });
     });
@@ -538,18 +541,7 @@ export class FleetManagerPanel {
         data.onFleetCommand?.({
           type: "setFleetCombatSettings",
           fleetId: fleet.id,
-          combatSettings: { behavior: select.value as FleetBehavior },
-        });
-      });
-    });
-    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-fleet-chase]").forEach((select) => {
-      select.addEventListener("change", () => {
-        const fleet = this.getSelectedFleet(data);
-        if (!fleet) return;
-        data.onFleetCommand?.({
-          type: "setFleetCombatSettings",
-          fleetId: fleet.id,
-          combatSettings: { chasePolicy: select.value as FleetChasePolicy },
+          combatSettings: { doctrine: select.value as FleetDoctrine },
         });
       });
     });
@@ -560,7 +552,7 @@ export class FleetManagerPanel {
         data.onFleetCommand?.({
           type: "setFleetCombatSettings",
           fleetId: fleet.id,
-          combatSettings: { retreatPolicy: select.value as FleetRetreatPolicy },
+          combatSettings: { retreatPreset: select.value as FleetRetreatPreset },
         });
       });
     });
@@ -688,6 +680,13 @@ export class FleetManagerPanel {
         this.adjustShipPreviewZoom(button.dataset.fmPreviewZoom ?? "reset");
       });
     });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-repair-fleet]")?.addEventListener("click", () => {
+      const constructionFleet = this.getSelectedFleet(data);
+      const select = this.panelElement?.querySelector<HTMLSelectElement>("[data-fm-repair-target]");
+      const targetFleetId = select?.value;
+      if (!constructionFleet || !targetFleetId) return;
+      data.onFleetCommand?.({ type: "repairFleet", constructionFleetId: constructionFleet.id, targetFleetId });
+    });
   }
 
   private adjustShipPreviewZoom(action: string): void {
@@ -736,7 +735,7 @@ export class FleetManagerPanel {
               <span class="fmPanelIcon fmPanelIcon-fleet" aria-hidden="true"></span>
               <strong>Fleet Manager</strong>
             </div>
-            <span class="fmCapacityChip"><small>Naval Capacity</small><strong>${this.escapeHtml(String(navalUsed))} / 100</strong></span>
+            <span class="fmCapacityChip"><small>Total Ships</small><strong>${this.escapeHtml(String(navalUsed))}</strong></span>
           </div>
           <label class="fmFleetSearch">
             <input type="search" placeholder="Search fleets..." aria-label="Search fleets">
@@ -785,7 +784,8 @@ export class FleetManagerPanel {
     const index = Math.max(0, data.fleets.findIndex((candidate) => candidate.id === fleet.id));
     const shipCount = this.getFleetShipCount(data, fleet);
     const defense = this.getFleetDefense(data, fleet);
-    const commandUsed = Math.max(shipCount, ships.length);
+    const commandUsed = fleet.commandUsed ?? Math.max(shipCount, ships.length);
+    const commandCapacity = fleet.commandCapacity ?? 20;
     return `
       <div class="fmSelectedHeader">
         <div>
@@ -794,7 +794,7 @@ export class FleetManagerPanel {
           <span>${this.escapeHtml(this.getStarName(data, fleet.currentStarId))} System</span>
         </div>
         <div class="fmSelectedHeaderChips">
-          <span class="fmCommandChip"><small>Command Limit</small><strong>${this.escapeHtml(String(commandUsed))} / 100</strong></span>
+          <span class="fmCommandChip"><small>Command Limit</small><strong>${this.escapeHtml(String(commandUsed))} / ${this.escapeHtml(String(commandCapacity))}</strong></span>
           <div class="fmPowerBadge"><strong>${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</strong><small>Fleet Power</small></div>
         </div>
       </div>
@@ -837,6 +837,18 @@ export class FleetManagerPanel {
     const tacticalRadius = fleet.tacticalRadius ?? getFleetTacticalRadius(Math.max(ships.length, fleet.shipIds.length));
     const range = fleet.maxWeaponRange ?? 0;
     const status = fleet.combatStatus ?? "idle";
+    const isConstructionFleet = ships.some((ship) => ship.shipKind === "constructionShip");
+    const repairTargets = isConstructionFleet ? data.fleets.filter((candidate) => {
+      if (candidate.id === fleet.id || candidate.currentStarId !== fleet.currentStarId) return false;
+      const candidateShips = this.getShipsForFleet(data, candidate.id);
+      return candidateShips.some((ship) => (
+        ship.hull < ship.maxHull
+        || ship.armor < ship.maxArmor
+        || ship.shield < ship.maxShield
+        || ship.subsystemState?.engineDisabled
+        || (ship.subsystemState?.disabledWeaponKeys.length ?? 0) > 0
+      ));
+    }) : [];
     return `
       <div class="fmDoctrinePanel">
         <div class="fmDoctrineHeader">
@@ -844,15 +856,22 @@ export class FleetManagerPanel {
             <span class="fmPanelIcon fmPanelIcon-doctrine" aria-hidden="true"></span>
             <strong>Fleet Doctrine</strong>
           </div>
-          <span>${this.escapeHtml(this.formatCombatStatus(status))} | footprint ${this.formatCompact(tacticalRadius)} | max range ${this.formatCompact(range)}</span>
+          <span>${this.escapeHtml(this.formatCombatStatus(status))} | command ${this.formatCompact(fleet.commandUsed ?? ships.length)} / ${this.formatCompact(fleet.commandCapacity ?? 20)} | max range ${this.formatCompact(range)}</span>
         </div>
+        ${(fleet.commandUsed ?? 0) > (fleet.commandCapacity ?? 20) ? `<div class="fmDoctrineWarning">Over command capacity: accuracy ${Math.round((fleet.commandAccuracyMultiplier ?? 1) * 100)}%, cooldown ${Math.round((fleet.commandCooldownMultiplier ?? 1) * 100)}%, coordination ${Math.round((fleet.commandCoordinationMultiplier ?? 1) * 100)}%</div>` : ""}
         <div class="fmDoctrineGrid">
-          <label>Stance ${this.renderFleetStanceSelect(fleet, canCommand)}</label>
-          <label>Behavior ${this.renderFleetBehaviorSelect(fleet, canCommand)}</label>
-          <label>Chase ${this.renderFleetChaseSelect(fleet, canCommand)}</label>
-          <label>Auto-retreat ${this.renderFleetRetreatSelect(fleet, canCommand)}</label>
+          <label>Engagement ${this.renderFleetStanceSelect(fleet, canCommand)}</label>
+          <label>Doctrine ${this.renderFleetBehaviorSelect(fleet, canCommand)}</label>
+          <label>Retreat ${this.renderFleetRetreatSelect(fleet, canCommand)}</label>
           <label class="wide">Retreat to ${this.renderFleetRetreatDestinationSelect(data, fleet, canCommand)}</label>
         </div>
+        ${isConstructionFleet ? `<div class="fmDoctrineGrid"><label class="wide">Field repair
+          <select data-fm-repair-target ${canCommand && repairTargets.length > 0 ? "" : "disabled"}>
+            ${repairTargets.length === 0 ? '<option value="">No damaged fleet in system</option>' : repairTargets.map((target) => `<option value="${this.escapeAttribute(target.id)}" ${fleet.repairOrder?.targetFleetId === target.id ? "selected" : ""}>${this.escapeHtml(target.id)}</option>`).join("")}
+          </select>
+          <button type="button" data-fm-repair-fleet ${canCommand && repairTargets.length > 0 ? "" : "disabled"}>${fleet.repairOrder ? "Retarget repair" : "Begin repair"}</button>
+          ${fleet.repairOrder ? `<small>Active: ${this.escapeHtml(fleet.repairOrder.stage)}${fleet.combatStatus !== "idle" ? " (paused by combat)" : ""}</small>` : ""}
+        </label></div>` : ""}
       </div>
     `;
   }
@@ -872,19 +891,21 @@ export class FleetManagerPanel {
   }
 
   private renderFleetStanceSelect(fleet: ServerFleet, canCommand: boolean): string {
-    const options: CombatStance[] = ["passive", "evade", "holdPosition", "guardArea", "defendSystem", "aggressive", "hunt"];
+    const options: FleetEngagementRule[] = ["avoid", "defendSystem", "engageSystem"];
+    const selected = fleet.combatSettings.engagementRule ?? "defendSystem";
     return `
       <select data-fm-fleet-stance ${canCommand ? "" : "disabled"}>
-        ${options.map((option) => `<option value="${option}" ${fleet.combatStance === option ? "selected" : ""}>${this.escapeHtml(this.formatCombatStance(option))}</option>`).join("")}
+        ${options.map((option) => `<option value="${option}" ${selected === option ? "selected" : ""}>${this.escapeHtml(option === "avoid" ? "Avoid" : option === "defendSystem" ? "Defend System" : "Engage System")}</option>`).join("")}
       </select>
     `;
   }
 
   private renderFleetBehaviorSelect(fleet: ServerFleet, canCommand: boolean): string {
-    const options: FleetBehavior[] = ["artillery", "line", "brawler", "swarm", "defender"];
+    const options: FleetDoctrine[] = ["artillery", "line", "assault", "escort"];
+    const selected = fleet.combatSettings.doctrine ?? "line";
     return `
       <select data-fm-fleet-behavior ${canCommand ? "" : "disabled"}>
-        ${options.map((option) => `<option value="${option}" ${fleet.combatSettings.behavior === option ? "selected" : ""}>${this.escapeHtml(this.formatFleetBehavior(option))}</option>`).join("")}
+        ${options.map((option) => `<option value="${option}" ${selected === option ? "selected" : ""}>${this.escapeHtml(option[0].toUpperCase() + option.slice(1))}</option>`).join("")}
       </select>
     `;
   }
@@ -899,10 +920,11 @@ export class FleetManagerPanel {
   }
 
   private renderFleetRetreatSelect(fleet: ServerFleet, canCommand: boolean): string {
-    const options: FleetRetreatPolicy[] = ["none", "low", "medium", "high"];
+    const options: FleetRetreatPreset[] = ["fightOn", "balanced", "preserveFleet", "avoidLosses"];
+    const selected = fleet.combatSettings.retreatPreset ?? "preserveFleet";
     return `
       <select data-fm-fleet-retreat ${canCommand ? "" : "disabled"}>
-        ${options.map((option) => `<option value="${option}" ${fleet.combatSettings.retreatPolicy === option ? "selected" : ""}>${this.escapeHtml(this.formatFleetRetreatPolicy(option))}</option>`).join("")}
+        ${options.map((option) => `<option value="${option}" ${selected === option ? "selected" : ""}>${this.escapeHtml(option === "fightOn" ? "Fight On" : option === "preserveFleet" ? "Preserve Fleet" : option === "avoidLosses" ? "Avoid Losses" : "Balanced")}</option>`).join("")}
       </select>
     `;
   }
@@ -1054,6 +1076,8 @@ export class FleetManagerPanel {
     const totalFleetPower = data.fleets.reduce((total, fleet, index) => (
       total + this.getFleetPowerValue(data, fleet, index)
     ), 0);
+    const totalCommandUsed = data.fleets.reduce((sum, fleet) => sum + (fleet.commandUsed ?? fleet.shipIds.length), 0);
+    const totalCommandCapacity = data.fleets.reduce((sum, fleet) => sum + (fleet.commandCapacity ?? 20), 0);
     return `
       <div class="fmStatsHeader">
         <div>
@@ -1066,8 +1090,8 @@ export class FleetManagerPanel {
         ${this.renderStat("Total Ships", String(this.getTotalShipCount(data)))}
         ${this.renderStat("Fleet Power", this.formatPowerValue(totalFleetPower))}
         ${this.renderStat("Reinforcements", "Placeholder")}
-        ${this.renderStat("Naval Capacity", "Placeholder")}
-        ${this.renderStat("Command Limit", "Placeholder")}
+        ${this.renderStat("Command Use", `${totalCommandUsed} / ${totalCommandCapacity}`)}
+        ${this.renderStat("Crew Demand", "Informational")}
         ${this.renderStat("Upkeep", "Placeholder")}
         ${this.renderStat("Readiness", "Placeholder")}
       </div>
@@ -1144,6 +1168,7 @@ export class FleetManagerPanel {
             <input type="text" value="${this.escapeAttribute(draft.name)}" maxlength="40" data-fm-design-name aria-label="Design name">
             <button class="fmNameSaveButton" type="button" data-fm-save-design-name>Save Name</button>
           </div>
+          ${this.renderCombatReports(data)}
           <div class="fmDesignViewport" data-fm-ship-preview aria-label="Ship preview">
             <div class="fmPreviewOverlay">
               <div class="fmPreviewZoomControls" aria-label="Ship preview zoom">
@@ -1203,6 +1228,7 @@ export class FleetManagerPanel {
           </div>
           ${this.renderResourceBreakdown("Cost", stats.cost)}
           ${this.renderResourceBreakdown("Upkeep", stats.upkeep)}
+          ${this.renderDesignCombatDetails(draft, stats)}
           <div class="fmControlStack">
             <button type="button" data-fm-clear-design>Auto-complete</button>
             <button type="button" data-fm-save-design>Save</button>
@@ -1364,6 +1390,15 @@ export class FleetManagerPanel {
     const design = selectedIsUnlocked ? selected : available[0] ?? null;
     this.selectedDesignId = design?.id ?? null;
     this.designerDraft = design ? this.cloneDesign(design) : null;
+  }
+
+  private renderCombatReports(data: FleetManagerPanelData): string {
+    const reports = [...(data.combatReports ?? [])].sort((a, b) => b.endedAtYear - a.endedAtYear).slice(0, 5);
+    if (reports.length === 0) return "";
+    return `<div class="fmStatsNote"><strong>After-action reports</strong>${reports.map((report) => {
+      const spending = Object.entries(report.repairSpending ?? {}).filter(([, amount]) => Number(amount) > 0.001).map(([resource, amount]) => `${Number(amount).toFixed(1)} ${resource}`).join(", ");
+      return `<span><b>${this.escapeHtml(this.getStarName(data, report.starId))}</b> · ${report.participantFleetIds.length} fleet${report.participantFleetIds.length === 1 ? "" : "s"} · ${report.shipsLost.length} lost · ${report.retreatedFleetIds?.length ?? 0} retreated · ${report.projectilesIntercepted} intercepted · ${report.strayHits} stray · ${report.subsystemCriticals} critical${report.capturedStarbaseIds.length ? ` · ${report.capturedStarbaseIds.length} captured` : ""}${spending ? ` · repair ${this.escapeHtml(spending)}` : ""}</span>`;
+    }).join("")}</div>`;
   }
 
   private getDesignerDraft(data: FleetManagerPanelData): ShipDesign | null {
@@ -1688,6 +1723,26 @@ export class FleetManagerPanel {
         <span class="fmResourceRows">${rows.length > 0 ? rows.join("") : "None"}</span>
       </div>
     `;
+  }
+
+  private renderDesignCombatDetails(design: ShipDesign, stats: ShipDesignStats): string {
+    const commandCost = design.shipKind === "defensePlatform" ? 0 : design.shipKind === "battleship" ? 8 : design.shipKind === "cruiser" ? 4 : design.shipKind === "destroyer" ? 2 : 1;
+    const repairCapabilities = [
+      design.utilityModuleIds.filter((id) => id === "utility_repair_drones").length > 0 ? "Repair Drones (out of combat)" : null,
+      design.utilityModuleIds.filter((id) => id === "utility_armor_nanites").length > 0 ? "Armor Nanites (combat capable)" : null,
+    ].filter((value): value is string => value !== null);
+    const weaponRows = stats.combat.weaponMounts.map((mount) => {
+      const cooldown = Number.isFinite(mount.cooldownHours) && Number(mount.cooldownHours) > 0
+        ? Number(mount.cooldownHours)
+        : (mount.kind === "pointDefense" ? 0.5 : mount.kind === "laser" ? 18 : mount.kind === "railgun" ? 24 : 18) * Math.max(1, mount.cooldownRounds ?? 1);
+      const attackClass = mount.attackClass ?? (mount.kind === "pointDefense" ? "pointDefense" : mount.kind);
+      const interceptable = mount.interceptableBy?.length ? mount.interceptableBy.join(", ") : "none currently";
+      const rangeDistance = ({ pointBlank: 6, close: 16, medium: 30, long: 46, extreme: 64, outOfRange: 64 } as const)[mount.optimalRangeBand ?? "close"];
+      const travelHours = rangeDistance / Math.max(0.01, mount.travelSpeed ?? 1);
+      const interception = mount.intercepts?.length ? ` | intercepts ${mount.intercepts.join(", ")}` : "";
+      return `<span><strong>${this.escapeHtml(mount.label ?? mount.kind)}</strong><small>${this.escapeHtml(attackClass)} | ${mount.barrels} barrel${mount.barrels === 1 ? "" : "s"} | ${cooldown.toFixed(1)}h cooldown | ${travelHours.toFixed(2)}h travel at optimal range<br>layers S ${(mount.shieldDamageMultiplier ?? 1).toFixed(2)}x / A ${(mount.armorDamageMultiplier ?? 1).toFixed(2)}x / H ${(mount.hullDamageMultiplier ?? 1).toFixed(2)}x | penetration S ${Math.round(mount.shieldPenetration * 100)}% / A ${Math.round(mount.armorPenetration * 100)}% | countered by ${this.escapeHtml(interceptable)}${this.escapeHtml(interception)}</small></span>`;
+    });
+    return `<div class="fmStatsNote"><strong>Combat model</strong><span>Command cost ${commandCost} | sustained expected output ${computeWeaponSustainedOutput(stats.combat.weaponMounts).toFixed(2)} / game hour</span>${repairCapabilities.length ? `<span>Repair: ${this.escapeHtml(repairCapabilities.join(" + "))}</span>` : ""}${weaponRows.join("")}</div>`;
   }
 
   private formatResourceList(resources: Record<string, number>): string {

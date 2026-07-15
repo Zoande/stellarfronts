@@ -183,6 +183,8 @@ import {
   processPlanetConstruction,
   processStarbaseConstruction,
   processStarbaseRepairs,
+  processShipRepairs,
+  processConstructionRepairs,
   processStarbaseShipQueues,
 } from "./game/economy-tick";
 import { normalizeResourceCounts, normalizeStarbase, syncFleetMembership, syncSystemOwnershipFromStarbases, fleetHasConstructionShip, getFleetColonizationShip, syncShipsForDesign, normalizeSpeciesRightsForFactions, assignFoundingSpeciesToOwnedPops, getFactionFoundingSpeciesId } from "./game/state-normalization";
@@ -852,6 +854,35 @@ function handleIssueFleetTacticalOrder(
   broadcastUpdates(["fleets"]);
 }
 
+function handleRepairFleet(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  command: Extract<ClientCommand, { type: "repairFleet" }>,
+): void {
+  const repairFleet = getOwnedFleetForCombatCommand(socket, perspective, command.constructionFleetId);
+  if (!repairFleet) return;
+  if (!fleetHasConstructionShip(ctx, repairFleet)) return reject(socket, "Selected fleet has no construction ship.");
+  const targetFleet = ctx.state.fleets.find((fleet) => fleet.id === command.targetFleetId);
+  if (!targetFleet) return reject(socket, "Repair target fleet not found.");
+  if (targetFleet.currentStarId !== repairFleet.currentStarId) return reject(socket, "Construction ship and target must be in the same system.");
+  const alliedAccess = targetFleet.ownerId === repairFleet.ownerId || (
+    getBorderPolicy(ctx.state.diplomacy, targetFleet.ownerId, repairFleet.ownerId) === "open"
+    && getActiveTreatiesBetween(ctx.state.diplomacy, targetFleet.ownerId, repairFleet.ownerId).length > 0
+  );
+  if (!alliedAccess) return reject(socket, "Target fleet has not granted allied repair access.");
+  repairFleet.repairOrder = {
+    targetFleetId: targetFleet.id,
+    targetShipId: null,
+    stage: "emergencyMobility",
+    progressHours: 0,
+    startedAtYear: ctx.state.clock.year,
+  };
+  prepareFleetForReplacementOrder(ctx, repairFleet);
+  ctx.hasDirtyState = true;
+  accept(socket, "Construction fleet repair operation started.");
+  broadcastUpdates(["fleets", "ships"]);
+}
+
 function sendPlanetDetails(socket: WebSocket, perspective: GalaxyPerspective, planetId: string): void {
   const planetState = getPlanetState(ctx, planetId);
   if (!planetState || !canAccessPlanet(ctx, perspective, planetState)) {
@@ -1417,15 +1448,26 @@ function handleUpgradeShip(
   if (!isShipDesignUnlockedForFaction(ctx, factionId, targetDesign)) {
     return reject(socket, `Requires ${getShipDesignMissingTechnologyName(ctx, factionId, targetDesign) ?? "required technology"}.`);
   }
-  if (targetDesign.id === currentDesign.id) return reject(socket, "Ship is already using the newest available design.");
+  const isPlatformReactivation = ship.shipKind === "defensePlatform" && ship.disabled === true;
+  if (targetDesign.id === currentDesign.id && !isPlatformReactivation) {
+    return reject(socket, "Ship is already using the newest available design.");
+  }
 
-  const upgrade = calculateShipUpgradePlan(currentDesign, targetDesign);
+  const upgrade = isPlatformReactivation
+    ? (() => {
+      const stats = calculateShipDesignStats(currentDesign);
+      const cost = createEmptyResourceCounts();
+      for (const resource of RESOURCE_KINDS) cost[resource] = stats.cost[resource] * 0.15;
+      const totalDays = Math.max(1, Math.ceil(stats.buildDays * 0.25));
+      return { cost, totalDays, alloyUpkeepPerDay: cost.alloys / totalDays };
+    })()
+    : calculateShipUpgradePlan(currentDesign, targetDesign);
   const item = createStarbaseShipQueueItem(ship.shipKind, {
     kind: "upgrade",
     shipId: ship.id,
     designId: currentDesign.id,
     targetDesignId: targetDesign.id,
-    label: `Upgrade to ${targetDesign.name}`,
+    label: isPlatformReactivation ? `Reactivate ${targetDesign.name}` : `Upgrade to ${targetDesign.name}`,
     cost: upgrade.cost,
     totalDays: upgrade.totalDays,
     remainingDays: upgrade.totalDays,
@@ -1446,7 +1488,7 @@ function handleUpgradeShip(
   syncFleetMembership(ctx, ctx.state);
   refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
-  accept(socket, "Ship upgrade queued.");
+  accept(socket, isPlatformReactivation ? "Defense-platform reactivation queued." : "Ship upgrade queued.");
   broadcastUpdates(["clock", "starbases", "ships", "fleets", "factionEconomies"]);
 }
 
@@ -2059,9 +2101,17 @@ function advanceState(now: number): Set<ServerUpdateField> {
     refreshDiscovery();
   }
   const combatResult = processContinuousFleetCombat(ctx, elapsedGameHours, elapsedGameDays);
-  if (combatResult.combatContactsChanged) changed.add("combatContacts");
+  if (combatResult.combatContactsChanged) {
+    ctx.hasDirtyState = true;
+    changed.add("combatContacts");
+    changed.add("combatProjectiles");
+  }
   if (combatResult.shipsChanged) changed.add("ships");
-  if (combatResult.fleetsChanged) changed.add("fleets");
+  if (combatResult.fleetsChanged) {
+    ctx.hasDirtyState = true;
+    changed.add("fleets");
+    changed.add("combatReports");
+  }
   if (combatResult.starbasesChanged) changed.add("starbases");
   if (combatResult.factionEconomiesChanged) {
     refreshDiscovery();
@@ -2111,6 +2161,16 @@ function advanceState(now: number): Set<ServerUpdateField> {
     changed.add("starbases");
     changed.add("factionEconomies");
   }
+  if (processShipRepairs(ctx, elapsedGameDays)) {
+    changed.add("ships");
+    changed.add("fleets");
+    changed.add("factionEconomies");
+  }
+  if (processConstructionRepairs(ctx, elapsedGameDays)) {
+    changed.add("ships");
+    changed.add("fleets");
+    changed.add("factionEconomies");
+  }
 
   const shipQueueResult = processStarbaseShipQueues(ctx, elapsedGameDays);
   if (shipQueueResult.starbasesChanged || shipQueueResult.fleetsChanged) {
@@ -2143,7 +2203,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
   if (marketResult.economyChanged || (marketResult.marketChanged && ctx.state.market.autoTrades.length > 0)) {
     changed.add("factionEconomies");
   }
-  const shortageShipEffects = processShipShortageEffects(ctx);
+  const shortageShipEffects = processShipShortageEffects(ctx, elapsedGameDays);
   if (shortageShipEffects.shipsChanged) {
     changed.add("ships");
     changed.add("fleets");
@@ -2809,6 +2869,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "issueFleetTacticalOrder") {
     handleIssueFleetTacticalOrder(session.socket, session.perspective, command);
+    return;
+  }
+  if (command.type === "repairFleet") {
+    handleRepairFleet(session.socket, session.perspective, command);
     return;
   }
   if (command.type === "setSpeedMultiplier") {

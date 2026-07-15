@@ -9,6 +9,7 @@ import type {
   FactionEconomyState,
   PlanetState,
   ResourceKind,
+  ResourceCounts,
   UrbanSubDistrictKind,
 } from "../data/Economy";
 import type {
@@ -115,6 +116,8 @@ export type ServerUpdateField =
   | "diplomacy"
   | "market"
   | "combatContacts"
+  | "combatProjectiles"
+  | "combatReports"
   | "situations"
   | "events"
   | "tradeAlerts";
@@ -139,6 +142,7 @@ export interface ServerStarbase {
   hull: number;
   maxHull: number;
   weaponCooldowns?: Record<string, number>;
+  weaponReadyAtYears?: Record<string, number>;
   lastShieldDamageAtYear?: number | null;
   level: StarbaseLevel;
   economy: StarbaseEconomy;
@@ -177,6 +181,8 @@ export interface SystemDetailPayload {
   ships: ServerShip[];
   starbases: ServerStarbaseSummary[];
   recentCombatContacts: ServerCombatContact[];
+  combatProjectiles?: ServerCombatProjectile[];
+  combatReports?: CombatAfterActionReport[];
   hyperlaneExits: SystemHyperlaneExitPoint[];
   factions: FactionState[];
   shipDesigns: ShipDesign[];
@@ -221,6 +227,7 @@ export interface FleetManagerDetailPayload {
   technologies: FactionTechnologyView[];
   leaders: LeaderState[];
   factionEconomies: FactionEconomyState[];
+  combatReports: CombatAfterActionReport[];
 }
 
 export interface PlanetManagerPlanetEntry {
@@ -454,6 +461,36 @@ export interface FleetCombatSettings {
   chasePolicy: FleetChasePolicy;
   retreatPolicy: FleetRetreatPolicy;
   retreatDestination?: FleetRetreatDestination | null;
+  engagementRule?: import("./CombatTypes").FleetEngagementRule;
+  doctrine?: import("./CombatTypes").FleetDoctrine;
+  retreatPreset?: import("./CombatTypes").FleetRetreatPreset;
+}
+
+export interface ShipSubsystemState {
+  disabledWeaponKeys: string[];
+  engineDisabled: boolean;
+  emergencyMobility: boolean;
+}
+
+export interface FleetBattleSnapshot {
+  battleId: string;
+  startedAtYear: number;
+  initialDurability: number;
+  initialShipIds: string[];
+  projectilesIntercepted?: number;
+  strayHits?: number;
+  subsystemCriticals?: number;
+  capturedStarbaseIds?: string[];
+  retreated?: boolean;
+  repairSpending?: Partial<ResourceCounts>;
+}
+
+export interface ConstructionRepairOrder {
+  targetFleetId: string;
+  targetShipId?: string | null;
+  stage: "emergencyMobility" | "subsystems" | "hull" | "armor" | "shield";
+  progressHours: number;
+  startedAtYear: number;
 }
 
 export interface FleetTacticalOrder {
@@ -484,6 +521,10 @@ export interface ServerShip {
   hull: number;
   maxHull: number;
   weaponCooldowns?: Record<string, number>;
+  weaponReadyAtYears?: Record<string, number>;
+  lastShieldDamageAtYear?: number | null;
+  subsystemState?: ShipSubsystemState;
+  disabled?: boolean;
 }
 
 export interface ServerFleet {
@@ -517,10 +558,69 @@ export interface ServerFleet {
   tacticalRadius: number;
   maxWeaponRange: number;
   minWeaponRange: number;
+  weightedWeaponRange?: number;
   currentTargetId?: string | null;
   currentTargetKind?: CombatTargetKind | null;
   combatStatus: FleetCombatStatus;
   lastCombatAtYear?: number | null;
+  battleSnapshot?: FleetBattleSnapshot | null;
+  repairOrder?: ConstructionRepairOrder | null;
+  commandUsed?: number;
+  commandCapacity?: number;
+  commandAccuracyMultiplier?: number;
+  commandCooldownMultiplier?: number;
+  commandCoordinationMultiplier?: number;
+}
+
+export interface ServerCombatProjectile {
+  id: string;
+  ownerId: number;
+  sourceActorId: string;
+  sourceActorKind: CombatTargetKind;
+  sourceShipId?: string | null;
+  sourceMountKey: string;
+  targetActorId: string;
+  targetActorKind: CombatTargetKind;
+  targetShipId?: string | null;
+  targetProjectileId?: string | null;
+  starId: number;
+  attackClass: import("./CombatTypes").CombatAttackClass;
+  interceptableBy: import("./CombatTypes").CombatCounterClass[];
+  launchYear: number;
+  impactYear: number;
+  sourcePosition: ShipSystemPosition;
+  targetPosition: ShipSystemPosition;
+  damage: number;
+  shieldPenetration: number;
+  armorPenetration: number;
+  shieldDamageMultiplier: number;
+  armorDamageMultiplier: number;
+  hullDamageMultiplier: number;
+  lockedHit: boolean;
+  accuracyMiss: boolean;
+  dodged: boolean;
+  guided: boolean;
+  reacquired: boolean;
+  hp: number;
+  maxHp: number;
+  evasion: number;
+  status: import("./CombatTypes").CombatProjectileStatus;
+}
+
+export interface CombatAfterActionReport {
+  id: string;
+  ownerId: number;
+  starId: number;
+  startedAtYear: number;
+  endedAtYear: number;
+  participantFleetIds: string[];
+  shipsLost: string[];
+  projectilesIntercepted: number;
+  strayHits: number;
+  subsystemCriticals: number;
+  capturedStarbaseIds: string[];
+  retreatedFleetIds: string[];
+  repairSpending: Partial<ResourceCounts>;
 }
 
 export interface ServerCombatContact {
@@ -769,6 +869,12 @@ export interface IssueFleetTacticalOrderCommand {
   order: FleetTacticalOrder;
 }
 
+export interface RepairFleetCommand {
+  type: "repairFleet";
+  constructionFleetId: string;
+  targetFleetId: string;
+}
+
 export interface MarketTradeCommand {
   type: "marketTrade";
   resourceId: ResourceKind;
@@ -916,11 +1022,12 @@ export type ClientCommand =
   | AttackTargetCommand
   | AttackSystemCommand
   | SetFleetCombatSettingsCommand
-  | IssueFleetTacticalOrderCommand;
+  | IssueFleetTacticalOrderCommand
+  | RepairFleetCommand;
 
 export interface GameSnapshot {
   type: "snapshot";
-  protocolVersion?: 3;
+  protocolVersion?: 4;
   perspective: GalaxyPerspective;
   intelligence: GalaxyIntelligenceView;
   clock: GameClock;
@@ -945,6 +1052,8 @@ export interface GameSnapshot {
   governments: FactionGovernmentState[];
   species: SpeciesState[];
   recentCombatContacts: ServerCombatContact[];
+  combatProjectiles: ServerCombatProjectile[];
+  combatReports: CombatAfterActionReport[];
   diplomacy: DiplomacyMovementPayload;
   situations: ActiveSituation[];
   events: ActiveEvent[];
@@ -953,7 +1062,7 @@ export interface GameSnapshot {
 
 export interface GameUpdate {
   type: "update";
-  protocolVersion?: 3;
+  protocolVersion?: 4;
   perspective: GalaxyPerspective;
   intelligence?: GalaxyIntelligenceView;
   changed: ServerUpdateField[];
@@ -977,6 +1086,8 @@ export interface GameUpdate {
   governments?: FactionGovernmentState[];
   species?: SpeciesState[];
   recentCombatContacts?: ServerCombatContact[];
+  combatProjectiles?: ServerCombatProjectile[];
+  combatReports?: CombatAfterActionReport[];
   diplomacy?: DiplomacyMovementPayload;
   situations?: ActiveSituation[];
   events?: ActiveEvent[];

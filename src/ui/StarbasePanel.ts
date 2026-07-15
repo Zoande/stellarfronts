@@ -242,6 +242,13 @@ export class StarbasePanel {
         });
       });
     });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-reactivate-platform]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const shipId = button.dataset.sbReactivatePlatform;
+        if (!shipId) return;
+        data.onStarbaseCommand?.({ type: "upgradeShip", starbaseId: data.id, shipId });
+      });
+    });
   }
 
   private applyPosition(): void {
@@ -416,7 +423,9 @@ export class StarbasePanel {
             ${platforms.length === 0 ? '<div class="sbQueueEmpty">No defense platforms deployed.</div>' : platforms.map((platform) => {
               const design = (data.shipDesigns ?? []).find((candidate) => candidate.id === platform.designId);
               const hullPercent = platform.maxHull > 0 ? Math.round((platform.hull / platform.maxHull) * 100) : 0;
-              return `<div class="sbDefensePlatformCard"><span class="sbShipIcon">DP</span><span><strong>${this.escapeHtml(design?.name ?? "Defense Platform")}</strong><small>Hull ${hullPercent}% | Shield ${Math.round(platform.shield)} / ${Math.round(platform.maxShield)}</small></span></div>`;
+              const queued = queue.some((item) => item.kind === "upgrade" && item.shipId === platform.id);
+              const status = platform.disabled ? (queued ? "Reactivation queued" : "Captured - disabled") : "Online";
+              return `<div class="sbDefensePlatformCard"><span class="sbShipIcon">DP</span><span><strong>${this.escapeHtml(design?.name ?? "Defense Platform")}</strong><small>${status} | Hull ${hullPercent}% | Shield ${Math.round(platform.shield)} / ${Math.round(platform.maxShield)}</small></span>${platform.disabled && !queued ? `<button type="button" data-sb-reactivate-platform="${this.escapeHtml(platform.id)}" ${shipyardCount > 0 ? "" : "disabled"}>Reactivate</button>` : ""}</div>`;
             }).join("")}
           </div>
         </article>
@@ -449,6 +458,10 @@ export class StarbasePanel {
     const shipyardCount = starbase ? countStarbaseShipyards(starbase.buildingSlots) : 0;
     const shipQueue = starbase?.shipQueue ?? [];
     const activeCount = Math.min(shipyardCount, shipQueue.length);
+    const orbitingFleetIds = new Set((data.fleets ?? [])
+      .filter((fleet) => fleet.orbitTarget?.kind === "starbase" && fleet.orbitTarget.starbaseId === starbase?.id)
+      .map((fleet) => fleet.id));
+    const orbitingShips = (data.ships ?? []).filter((ship) => orbitingFleetIds.has(ship.fleetId));
     return `
       <section class="sbBody sbShipyardBody">
         <article class="sbShipyardColumn sbOrbitColumn">
@@ -462,8 +475,27 @@ export class StarbasePanel {
           </div>
           <div class="sbSectionTitle">Orbiting Ships</div>
           <div class="sbOrbitList">
-            <div class="sbQueueEmpty">No orbiting ships tracked yet.</div>
-            ${Array.from({ length: 7 }, (_, index) => `<div class="sbOrbitPlaceholder"><span>--${index + 1}</span><small>Future orbit slot</small></div>`).join("")}
+            ${orbitingShips.length === 0 ? '<div class="sbQueueEmpty">No ships are orbiting this starbase.</div>' : orbitingShips.map((ship) => {
+              const design = (data.shipDesigns ?? []).find((candidate) => candidate.id === ship.designId);
+              const shield = ship.maxShield > 0 ? Math.round(100 * ship.shield / ship.maxShield) : 100;
+              const armor = ship.maxArmor > 0 ? Math.round(100 * ship.armor / ship.maxArmor) : 100;
+              const hull = ship.maxHull > 0 ? Math.round(100 * ship.hull / ship.maxHull) : 0;
+              const criticals = [
+                ship.subsystemState?.engineDisabled ? (ship.subsystemState.emergencyMobility ? "engine stabilized" : "engine disabled") : "",
+                (ship.subsystemState?.disabledWeaponKeys.length ?? 0) > 0 ? `${ship.subsystemState!.disabledWeaponKeys.length} weapon disabled` : "",
+              ].filter(Boolean).join(", ");
+              const service = hull < 100
+                ? (shipyardCount > 0 ? "Hull reconstruction active" : "Hull repair requires shipyard")
+                : armor < 100 ? "Armor repair active" : shield < 100 ? "Shield recharge active" : "Ready";
+              const serviceDetail = hull < 100 && shipyardCount > 0
+                ? (() => { const rate = ship.maxHull / 1_440; return `ETA ${Math.ceil((ship.maxHull - ship.hull) / Math.max(0.001, rate))} min | -${(rate * 0.04).toFixed(2)} minerals/min, -${(rate * 0.06).toFixed(2)} alloys/min`; })()
+                : armor < 100
+                  ? (() => { const rate = ship.maxArmor / 480; return `ETA ${Math.ceil((ship.maxArmor - ship.armor) / Math.max(0.001, rate))} min | -${(rate * 0.02).toFixed(2)} minerals/min, -${(rate * 0.035).toFixed(2)} alloys/min`; })()
+                  : shield < 100
+                    ? (() => { const rate = ship.maxShield / 60; return `ETA ${Math.ceil((ship.maxShield - ship.shield) / Math.max(0.001, rate))} min | -${(rate * 0.015).toFixed(2)} energy/min`; })()
+                    : "";
+              return `<div class="sbDefensePlatformCard"><span class="sbShipIcon">${this.escapeHtml(ship.shipKind.slice(0, 2).toUpperCase())}</span><span><strong>${this.escapeHtml(design?.name ?? ship.shipKind)}</strong><small>S ${shield}% | A ${armor}% | H ${hull}% · ${this.escapeHtml(service)}${criticals ? ` · ${this.escapeHtml(criticals)}` : ""}${serviceDetail ? `<br>${this.escapeHtml(serviceDetail)}` : ""}</small></span></div>`;
+            }).join("")}
           </div>
         </article>
         <article class="sbShipyardColumn">

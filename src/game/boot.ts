@@ -380,6 +380,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     stars: snapshot.stars,
     factions: snapshot.factions,
     clockYear: getRenderClockYear(),
+    combatReports: fleetManagerDetail?.combatReports ?? snapshot.combatReports,
     playerFactionId: getPlayerFactionId(),
     technology: fleetManagerDetail?.technologies.find((technology) => technology.factionId === getPlayerFactionId())
       ?? getCurrentFactionTechnology(),

@@ -21,6 +21,7 @@ import type {
   ServerStarbaseSummary,
   ServerFleet,
   ServerShip,
+  ServerCombatProjectile,
   ServerUpdateField,
 } from "../../src/game/GameProtocol";
 import { getVisibleTechnologyViews } from "./research";
@@ -316,6 +317,35 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
       return (sourceStarId !== undefined && visibleSet.has(sourceStarId)) || (targetStarId !== undefined && visibleSet.has(targetStarId));
     })
     : ctx.state.recentCombatContacts;
+  const redactProjectile = (projectile: ServerCombatProjectile): ServerCombatProjectile => {
+    const hiddenResult = { lockedHit: false, accuracyMiss: false, dodged: false };
+    if (perspective.mode === "observer") return { ...projectile, ...hiddenResult };
+    if (projectile.ownerId === perspective.factionId) return { ...projectile, ...hiddenResult };
+    const sourceView = getIntelEntityView(ctx.state, perspective.factionId, projectile.sourceActorKind, projectile.sourceActorId);
+    const sourceKnown = sourceView?.fields.existence?.status !== undefined && sourceView.fields.existence.status !== "unknown";
+    const knownOwner = sourceView?.fields.ownerId;
+    const ownerId = knownOwner && knownOwner.status !== "unknown" ? Number(knownOwner.value) : -1;
+    return {
+      ...projectile,
+      ...hiddenResult,
+      ownerId: Number.isInteger(ownerId) ? ownerId : -1,
+      sourceActorId: sourceKnown ? projectile.sourceActorId : `track:${projectile.id}`,
+      sourceShipId: null,
+      sourceMountKey: projectile.attackClass,
+      damage: 0,
+      shieldPenetration: 0,
+      armorPenetration: 0,
+      shieldDamageMultiplier: 1,
+      armorDamageMultiplier: 1,
+      hullDamageMultiplier: 1,
+    };
+  };
+  const combatProjectiles = ctx.state.combatProjectiles
+    .filter((projectile) => perspective.mode === "observer" || projectile.ownerId === perspective.factionId || visibleSet?.has(projectile.starId))
+    .map(redactProjectile);
+  const combatReports = perspective.mode === "observer"
+    ? ctx.state.combatReports
+    : ctx.state.combatReports.filter((report) => report.ownerId === perspective.factionId);
 
   return {
     intelligence: getGalaxyIntelligenceView(ctx.state, perspective),
@@ -342,6 +372,8 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
     governments,
     species,
     recentCombatContacts,
+    combatProjectiles,
+    combatReports,
     diplomacy: createDiplomacyMovementPayload(ctx, perspective),
     planetStates: createVisiblePlanetStates(ctx, knownSet, perspective.mode === "observer"),
     factionEconomies,
@@ -358,7 +390,7 @@ export function createSnapshot(ctx: RuntimeContext, perspective: GalaxyPerspecti
 
   return {
     type: "snapshot",
-    protocolVersion: 3,
+    protocolVersion: 4,
     perspective,
     ...visibleState,
     stars: createVisibleStars(ctx, perspective, knownSet),
@@ -370,7 +402,7 @@ export function createUpdate(ctx: RuntimeContext, perspective: GalaxyPerspective
   const knownSet = getKnownSet(ctx, perspective);
   const update: GameUpdate = {
     type: "update",
-    protocolVersion: 3,
+    protocolVersion: 4,
     perspective,
     changed,
     intelligence: getGalaxyIntelligenceView(ctx.state, perspective),
@@ -426,6 +458,12 @@ export function createUpdate(ctx: RuntimeContext, perspective: GalaxyPerspective
   }
   if (changed.includes("combatContacts") || changed.includes("visibility")) {
     update.recentCombatContacts = visibleState.recentCombatContacts;
+  }
+  if (changed.includes("combatProjectiles") || changed.includes("visibility")) {
+    update.combatProjectiles = visibleState.combatProjectiles;
+  }
+  if (changed.includes("combatReports") || changed.includes("visibility")) {
+    update.combatReports = visibleState.combatReports;
   }
   if (changed.includes("situations")) {
     update.situations = visibleState.situations;

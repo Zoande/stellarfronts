@@ -73,7 +73,7 @@ function stateFixture(): GameState {
     leaders: [], situations: [], events: [], factionModifiers: [],
     hyperlanes: [[0, 1], [1, 2]], adjacency: [[1], [0, 2], [1]],
     factions: [{ id: 0, name: "Player", color: [0.2, 0.7, 1], homeStarId: 0 }],
-    starOwnership: [0, -1, -1], starbases: [], shipDesigns: [], ships: [], fleets: [], recentCombatContacts: [],
+    starOwnership: [0, -1, -1], starbases: [], shipDesigns: [], ships: [], fleets: [], recentCombatContacts: [], combatProjectiles: [], combatReports: [],
     intelligenceByFaction: {}, startingIntelligenceSeeded: false,
     clock: {
       year: 2100, tickSizeDays: 1, tickSpeedSeconds: 1, paused: false, speedMultiplier: 1,
@@ -278,6 +278,25 @@ test("faction snapshot serialization does not bypass the intelligence materializ
   const serialized = JSON.stringify(snapshot);
   assert.equal(serialized.includes("987654321"), false);
   assert.equal(snapshot.planetStates.length, 0);
+});
+
+test("active projectile snapshots hide launch-time hit locks and unrelated attacker fields", () => {
+  const state = stateFixture();
+  state.combatProjectiles.push({
+    id: "projectile-1", ownerId: 1, sourceActorId: "secret-fleet", sourceActorKind: "fleet", sourceShipId: "secret-ship",
+    sourceMountKey: "secret-weapon", targetActorId: "player-fleet", targetActorKind: "fleet", targetShipId: "player-ship", targetProjectileId: null,
+    starId: 0, attackClass: "missile", interceptableBy: ["pointDefense"], launchYear: 2100, impactYear: 2100.01,
+    sourcePosition: { x: 20, y: 0, z: 0 }, targetPosition: { x: 0, y: 0, z: 0 }, damage: 99,
+    shieldPenetration: 0.8, armorPenetration: 0.7, shieldDamageMultiplier: 1.5, armorDamageMultiplier: 1.6, hullDamageMultiplier: 1.7,
+    lockedHit: true, accuracyMiss: false, dodged: false, guided: true, reacquired: false, hp: 2, maxHp: 2, evasion: 0.8, status: "inFlight",
+  });
+  refreshIntelligence(state);
+  const projectile = createSnapshot({ state } as RuntimeContext, { mode: "faction", factionId: 0 }).combatProjectiles[0];
+  assert.equal(projectile.lockedHit, false);
+  assert.equal(projectile.damage, 0);
+  assert.equal(projectile.ownerId, -1);
+  assert.equal(projectile.sourceActorId.startsWith("track:"), true);
+  assert.equal(projectile.attackClass, "missile");
 });
 
 test("a type-only stellar report does not disclose the star name or other stellar fields", () => {

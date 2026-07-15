@@ -24,7 +24,7 @@ import type {
 import { GAME_START_YEAR } from "../../src/game/GameTime";
 import { DEFAULT_SHIP_SPEED } from "./constants";
 import { clamp, systemCenterPosition, cloneSystemPosition } from "./pure-helpers";
-import { isFleetBehavior, isFleetChasePolicy, isFleetRetreatPolicy, isFleetTacticalOrderType } from "./validators";
+import { isFleetBehavior, isFleetChasePolicy, isFleetRetreatPolicy, isFleetTacticalOrderType, isFleetEngagementRule, isFleetDoctrine, isFleetRetreatPreset } from "./validators";
 import { resolveShipDesign } from "./ship-designs";
 import type { GameFleet, GameShip, RuntimeContext } from "./types";
 
@@ -106,6 +106,10 @@ export function createShipFromDesign(
     hull: combat.maxHull,
     maxHull: combat.maxHull,
     weaponCooldowns: {},
+    weaponReadyAtYears: {},
+    lastShieldDamageAtYear: null,
+    subsystemState: { disabledWeaponKeys: [], engineDisabled: false, emergencyMobility: false },
+    disabled: false,
   };
 }
 
@@ -163,10 +167,18 @@ export function createFleet(
     tacticalRadius: getFleetTacticalRadius(shipIds.length),
     maxWeaponRange: 0,
     minWeaponRange: 0,
+    weightedWeaponRange: 0,
     currentTargetId: null,
     currentTargetKind: null,
     combatStatus: "idle",
     lastCombatAtYear: null,
+    battleSnapshot: null,
+    repairOrder: null,
+    commandUsed: 0,
+    commandCapacity: 20,
+    commandAccuracyMultiplier: 1,
+    commandCooldownMultiplier: 1,
+    commandCoordinationMultiplier: 1,
   };
 }
 
@@ -248,6 +260,18 @@ export function createDefaultFleetCombatSettings(
     chasePolicy: isFleetChasePolicy(overrides?.chasePolicy) ? overrides!.chasePolicy! : "system",
     retreatPolicy: isFleetRetreatPolicy(overrides?.retreatPolicy) ? overrides!.retreatPolicy! : "medium",
     retreatDestination: normalizeFleetRetreatDestination(overrides?.retreatDestination),
+    engagementRule: isFleetEngagementRule(overrides?.engagementRule) ? overrides!.engagementRule : "defendSystem",
+    doctrine: isFleetDoctrine(overrides?.doctrine)
+      ? overrides!.doctrine
+      : overrides?.behavior === "artillery" || overrides?.behavior === "brawler" || overrides?.behavior === "swarm" || overrides?.behavior === "defender"
+        ? ({ artillery: "artillery", brawler: "assault", swarm: "assault", defender: "escort" } as const)[overrides.behavior]
+        : "line",
+    retreatPreset: isFleetRetreatPreset(overrides?.retreatPreset)
+      ? overrides!.retreatPreset
+      : overrides?.retreatPolicy === "none" ? "fightOn"
+        : overrides?.retreatPolicy === "low" ? "balanced"
+          : overrides?.retreatPolicy === "high" ? "avoidLosses"
+            : "preserveFleet",
   };
 }
 

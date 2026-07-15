@@ -282,6 +282,8 @@ export function createSystemDetailPayload(
     ships: getVisibleFullShips(ctx, perspective, visibleFleets),
     starbases: getVisibleFullStarbases(ctx, perspective),
     recentCombatContacts: visibleState.recentCombatContacts,
+    combatProjectiles: visibleState.combatProjectiles,
+    combatReports: visibleState.combatReports,
     factions: visibleState.factions,
     shipDesigns: visibleState.shipDesigns,
     technologies: visibleState.technologies,
@@ -609,6 +611,7 @@ export function createDetailPayload(
       technologies: detailState.technologies,
       leaders: detailState.leaders,
       factionEconomies: detailState.factionEconomies,
+      combatReports: detailState.combatReports,
     };
     return { payload, revision: createRevision(payload), normalizedId: null };
   }

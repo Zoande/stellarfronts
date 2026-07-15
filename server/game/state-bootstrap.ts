@@ -47,7 +47,7 @@ import {
   gameYearToWeekIndex,
 } from "../../src/game/GameTime";
 import type { ServerShip, ServerStarbase } from "../../src/game/GameProtocol";
-import { VERSION_MANIFEST } from "../versionManifest";
+import { VERSION_MANIFEST, canMigrateFromSchema } from "../versionManifest";
 import {
   DEFAULT_TICK_SIZE_DAYS,
   DEFAULT_TICK_SPEED_SECONDS,
@@ -157,6 +157,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     const constructionFleet = createFleet(ctx, faction.id, faction.homeStarId, [constructionShip.id], constructionFleetId);
     constructionFleet.phaseStartedAtYear = GAME_START_YEAR;
     constructionFleet.speed = constructionShip.speed;
+    constructionFleet.combatSettings.engagementRule = "avoid";
 
     return [combatFleet, constructionFleet];
   });
@@ -167,7 +168,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 23,
+    schemaVersion: 24,
     stars,
     nebulae,
     planetStates,
@@ -196,6 +197,8 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     ships,
     fleets,
     recentCombatContacts: [],
+    combatProjectiles: [],
+    combatReports: [],
     intelligenceByFaction: {},
     startingIntelligenceSeeded: false,
     clock: {
@@ -228,12 +231,12 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     // opened by an older version). The orchestrator gates updates so this is a
     // last-line guard against save corruption.
     const onDiskSchema = Number(parsed.schemaVersion);
-    if (onDiskSchema !== VERSION_MANIFEST.schemaVersion) {
+    if (!canMigrateFromSchema(VERSION_MANIFEST, onDiskSchema)) {
       throw new Error(
         `Game ${ctx.game.id} ctx.state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
       );
     }
-    parsed.schemaVersion = 23;
+    parsed.schemaVersion = 24;
     delete (parsed as GameState & { battles?: unknown }).battles;
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
@@ -259,6 +262,14 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     parsed.events = Array.isArray(parsed.events) ? parsed.events : [];
     parsed.factionModifiers = Array.isArray(parsed.factionModifiers) ? parsed.factionModifiers : [];
     parsed.recentCombatContacts = [];
+    parsed.combatProjectiles = Array.isArray(parsed.combatProjectiles) ? parsed.combatProjectiles : [];
+    parsed.combatReports = Array.isArray(parsed.combatReports)
+      ? parsed.combatReports.map((report) => ({
+        ...report,
+        retreatedFleetIds: Array.isArray(report.retreatedFleetIds) ? report.retreatedFleetIds : [],
+        repairSpending: report.repairSpending && typeof report.repairSpending === "object" ? report.repairSpending : {},
+      }))
+      : [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
     parsed.clock = normalizeClock(parsed.clock);
     const factionsBeforeSpecies = JSON.stringify(parsed.factions ?? []);
@@ -304,6 +315,14 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     }
     if (syncFleetMembership(ctx, parsed)) {
       ctx.hasDirtyState = true;
+    }
+    const rawFleetById = new Map(rawFleets.map((fleet) => [fleet.id, fleet]));
+    for (const fleet of parsed.fleets) {
+      if (rawFleetById.get(fleet.id)?.combatSettings?.engagementRule) continue;
+      const members = fleet.shipIds.map((id) => parsed.ships.find((ship) => ship.id === id)).filter((ship): ship is NonNullable<typeof ship> => !!ship);
+      if (members.length > 0 && members.every((ship) => ["scienceShip", "constructionShip", "colonizationShip", "armyShip"].includes(ship.shipKind))) {
+        fleet.combatSettings.engagementRule = "avoid";
+      }
     }
     const ownershipChanged = syncSystemOwnershipFromStarbases(parsed);
     const metadataChanged = normalizeCelestialObjectDetails(parsed.stars);

@@ -1,6 +1,6 @@
 import { createEmptyResourceCounts, RESOURCE_KINDS } from "./Economy";
 import type { ResourceCounts } from "./Economy";
-import type { RangeBand } from "../game/CombatTypes";
+import type { CombatAttackClass, CombatCounterClass, RangeBand } from "../game/CombatTypes";
 
 export type StarbaseLevel = "outpost" | "starbase" | "starhold" | "starFortress";
 export type StarbaseBuildingKind =
@@ -35,10 +35,24 @@ export interface WeaponMountDefinition {
   shieldPenetration: number;
   armorPenetration: number;
   accuracy: number;
+  tracking?: number;
   minRangeBand?: RangeBand;
   maxRangeBand?: RangeBand;
   optimalRangeBand?: RangeBand;
   cooldownRounds?: number;
+  /** Sustained cooldown in game hours. Falls back to cooldownRounds for legacy mounts. */
+  cooldownHours?: number;
+  attackClass?: CombatAttackClass;
+  travelSpeed?: number;
+  shieldDamageMultiplier?: number;
+  armorDamageMultiplier?: number;
+  hullDamageMultiplier?: number;
+  interceptableBy?: CombatCounterClass[];
+  counterClass?: CombatCounterClass;
+  intercepts?: CombatAttackClass[];
+  projectileHp?: number;
+  projectileEvasion?: number;
+  guided?: boolean;
 }
 
 export interface CombatStats {

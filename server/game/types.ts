@@ -19,6 +19,8 @@ import type {
   GameClock,
   GameDetailScope,
   ServerCombatContact,
+  ServerCombatProjectile,
+  CombatAfterActionReport,
   ServerFleet,
   ServerShip,
   ServerStarbase,
@@ -34,7 +36,7 @@ export interface GameFleet extends ServerFleet {
 export interface GameShip extends ServerShip {}
 
 export interface GameState {
-  schemaVersion: 23;
+  schemaVersion: 23 | 24;
   stars: StarData[];
   nebulae: NebulaRegion[];
   planetStates: PlanetState[];
@@ -58,6 +60,8 @@ export interface GameState {
   ships: GameShip[];
   fleets: GameFleet[];
   recentCombatContacts: ServerCombatContact[];
+  combatProjectiles: ServerCombatProjectile[];
+  combatReports: CombatAfterActionReport[];
   intelligenceByFaction: IntelligenceByFaction;
   startingIntelligenceSeeded: boolean;
   clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number; lastProcessedLeaderDay: number };

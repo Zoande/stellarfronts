@@ -149,7 +149,20 @@ function createMount(
   mount: Omit<WeaponMountDefinition, "kind" | "minRangeBand" | "maxRangeBand" | "optimalRangeBand" | "cooldownRounds">,
 ): WeaponMountDefinition {
   const range = WEAPON_KIND_DEFINITIONS[kind];
+  const mountId = mount.id ?? "";
+  const ordnanceSize = mountId.includes("large") ? 2 : mountId.includes("medium") ? 1 : 0;
+  const torpedo = mountId.includes("torpedo");
+  const attackDefaults: Partial<WeaponMountDefinition> = kind === "laser"
+    ? { attackClass: "beam", travelSpeed: 640, tracking: 0.15, shieldDamageMultiplier: 0.9, armorDamageMultiplier: 1.4, hullDamageMultiplier: 1 }
+    : kind === "railgun"
+      ? { attackClass: "kinetic", travelSpeed: 48, tracking: 0.05, shieldDamageMultiplier: 1.4, armorDamageMultiplier: 0.9, hullDamageMultiplier: 0.95 }
+      : kind === "plasma"
+        ? { attackClass: "plasma", travelSpeed: 16, tracking: 0.05, shieldDamageMultiplier: 0.9, armorDamageMultiplier: 1.45, hullDamageMultiplier: 1.2 }
+        : kind === "missile"
+          ? { attackClass: torpedo ? "torpedo" : "missile", travelSpeed: torpedo ? 6 : 9, tracking: 0.35, shieldDamageMultiplier: 1, armorDamageMultiplier: 1, hullDamageMultiplier: 1.1, interceptableBy: ["pointDefense"], projectileHp: torpedo ? 5 + ordnanceSize * 2 : 2 + ordnanceSize, projectileEvasion: (torpedo ? 0.62 : 0.78) - ordnanceSize * 0.04, guided: true }
+          : { attackClass: "pointDefense", travelSpeed: 720, tracking: 0.7, shieldDamageMultiplier: 0.25, armorDamageMultiplier: 0.25, hullDamageMultiplier: 0.2, counterClass: "pointDefense", intercepts: ["missile", "torpedo"] };
   return {
+    ...attackDefaults,
     ...mount,
     kind,
     minRangeBand: range.minRangeBand,
@@ -814,7 +827,7 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
       id: "point-defense-small",
       label: "S Point Defense",
       barrels: 3,
-      damage: 4,
+      damage: 0.8,
       shieldPenetration: 0.05,
       armorPenetration: 0.22,
       accuracy: 0.92,
@@ -834,7 +847,7 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
       id: "point-defense-medium",
       label: "M Flak Battery",
       barrels: 5,
-      damage: 5,
+      damage: 1,
       shieldPenetration: 0.05,
       armorPenetration: 0.24,
       accuracy: 0.9,
@@ -854,7 +867,7 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
       id: "point-defense-large",
       label: "L Flak Array",
       barrels: 8,
-      damage: 6,
+      damage: 1.2,
       shieldPenetration: 0.05,
       armorPenetration: 0.26,
       accuracy: 0.88,
@@ -1349,10 +1362,9 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
       maxHull: 24,
       buildDays: 1,
       cost: { alloys: 24, goods: 8 },
-      upkeep: { energy: 0.08, goods: 0.02 },
     },
     cost: resources({ alloys: 24, goods: 8 }),
-    upkeep: resources({ energy: 0.08, goods: 0.02 }),
+    upkeep: resources({}),
   },
   utility_shield_capacitor: {
     id: "utility_shield_capacitor",
@@ -1388,19 +1400,17 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
   utility_armor_nanites: {
     id: "utility_armor_nanites",
     label: "Armor Nanites",
-    description: "Automated repair mesh for heavy hulls that improves armor and hull resilience.",
+    description: "Automated repair mesh that raises maximum armor and repairs it even during combat.",
     slotType: "utility",
     iconKind: "repair",
     shipKinds: ["cruiser", "battleship"],
     modifiers: {
       maxArmor: 48,
-      maxHull: 28,
       buildDays: 2,
       cost: { alloys: 38, goods: 18 },
-      upkeep: { energy: 0.12, goods: 0.04 },
     },
     cost: resources({ alloys: 38, goods: 18 }),
-    upkeep: resources({ energy: 0.12, goods: 0.04 }),
+    upkeep: resources({}),
   },
   utility_gravitic_drive: {
     id: "utility_gravitic_drive",
@@ -1542,6 +1552,12 @@ const DEFAULT_WEAPON_BY_SIZE: Record<WeaponSlotSize, string> = {
   small: "weapon_laser_cannon",
   medium: "weapon_missile_rack",
   large: "weapon_missile_rack_large",
+};
+
+const DEFAULT_WEAPON_MODULES_BY_KIND: Partial<Record<StarbaseShipKind, string[]>> = {
+  // The baseline destroyer is deliberately an escort: useful direct kinetic
+  // output plus one high-throughput flak battery for missile screening.
+  destroyer: ["weapon_railgun_medium", "weapon_point_defense_medium", "weapon_phase_laser_small"],
 };
 
 const DEFAULT_DEFENSE_MODULES = [
@@ -1742,7 +1758,7 @@ export function createDefaultShipDesign(
   );
   return {
     ...draftForLayout,
-    weaponModuleIds: normalizeComponentModuleIds([], hull.kind, layout.weaponSlots),
+    weaponModuleIds: normalizeComponentModuleIds(DEFAULT_WEAPON_MODULES_BY_KIND[hull.kind], hull.kind, layout.weaponSlots),
     defenseModuleIds: normalizeComponentModuleIds([], hull.kind, layout.defenseSlots),
     utilityModuleIds,
     utilityModuleId: utilityModuleIds[0] ?? null,
@@ -1816,7 +1832,9 @@ export function normalizeShipDesign(
 
 function adjustRangeBand(rangeBand: RangeBand | undefined, bonus: number): RangeBand | undefined {
   if (!rangeBand || bonus === 0) return rangeBand;
-  return rangeBandFromIndex(RANGE_BAND_INDEX[rangeBand] + bonus);
+  // outOfRange is a sentinel, never an attainable weapon band. Stacking range
+  // sections therefore tops out at extreme instead of producing Infinity.
+  return rangeBandFromIndex(Math.min(RANGE_BAND_INDEX.extreme, RANGE_BAND_INDEX[rangeBand] + bonus));
 }
 
 function applyWeaponModifiers(mount: WeaponMountDefinition, modifiers: ShipStatModifiers): WeaponMountDefinition {
