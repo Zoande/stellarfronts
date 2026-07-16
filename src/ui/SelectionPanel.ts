@@ -4,10 +4,9 @@
  */
 
 import type {
-  CombatStance,
-  FleetBehavior,
-  FleetChasePolicy,
-  FleetRetreatPolicy,
+  FleetDoctrine,
+  FleetEngagementRule,
+  FleetRetreatPreset,
 } from "../game/CombatTypes";
 import type { LeaderState } from "../data/Leaders";
 import { GAME_DAYS_PER_YEAR, gameYearToDateTime } from "../game/GameTime";
@@ -15,8 +14,13 @@ import type { ShipAction } from "../game/GameplayTypes";
 import { requestOpenLeadersPanel } from "./leaderEvents";
 
 export type SelectionType = "ship" | "fleet" | "starbase";
-export type FleetPolicyControl = "chase" | "stance" | "behavior" | "retreatPolicy";
-export type FleetPolicyValue = CombatStance | FleetBehavior | FleetChasePolicy | FleetRetreatPolicy;
+export type FleetPolicyControl = "engagementRule" | "doctrine" | "retreatPreset";
+export type FleetPolicyValue = FleetEngagementRule | FleetDoctrine | FleetRetreatPreset;
+
+export interface SelectionRepairTarget {
+  fleetId: string;
+  label: string;
+}
 
 export interface SelectionShipData {
   id: string;
@@ -61,16 +65,19 @@ export interface SelectionData {
   ships?: SelectionShipData[];
   shipCount?: number;
   movement?: SelectionMovementData;
-  combatStance?: CombatStance;
-  combatBehavior?: FleetBehavior;
-  chasePolicy?: FleetChasePolicy;
-  retreatPolicy?: FleetRetreatPolicy;
+  engagementRule?: FleetEngagementRule;
+  doctrine?: FleetDoctrine;
+  retreatPreset?: FleetRetreatPreset;
+  repairTargets?: SelectionRepairTarget[];
+  activeRepairTargetFleetId?: string | null;
+  repairStatus?: string | null;
   leader?: LeaderState | null;
 }
 
 export interface SelectionPanelCallbacks {
   onShipAction?: (action: ShipAction, selection?: SelectionData) => void;
   onFleetPolicyChange?: (control: FleetPolicyControl, value: FleetPolicyValue, selection?: SelectionData) => void;
+  onRepairFleet?: (constructionFleetId: string, targetFleetId: string) => void;
 }
 
 export class SelectionPanel {
@@ -623,7 +630,7 @@ export class SelectionPanel {
 .fleetSelectionCommandStack {
   min-width: 0;
   display: grid;
-  grid-template-rows: 39px 30px;
+  grid-template-rows: 39px 30px auto;
   gap: 8px;
   align-content: start;
 }
@@ -656,6 +663,28 @@ export class SelectionPanel {
   border-color: rgba(230, 67, 88, 0.64);
   background: linear-gradient(180deg, rgba(78, 25, 35, 0.72), rgba(38, 12, 20, 0.78));
 }
+
+.fleetSelectionRepairRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+  align-items: center;
+}
+
+.fleetSelectionRepairRow select,
+.fleetSelectionRepairRow button {
+  min-width: 0;
+  height: 26px;
+  border: 1px solid rgba(82, 221, 171, 0.48);
+  border-radius: 3px;
+  background: rgba(5, 28, 24, 0.88);
+  color: #a9f4d4;
+  font: 800 8px "Orbitron", sans-serif;
+}
+
+.fleetSelectionRepairRow button { padding: 0 8px; cursor: pointer; }
+.fleetSelectionRepairRow button:disabled { opacity: 0.45; cursor: default; }
+.fleetSelectionRepairRow small { grid-column: 1 / -1; color: rgba(169, 244, 212, 0.7); font-size: 7px; }
 
 .fleetSelectionPrimaryBtn.build {
   color: #8cf2c4;
@@ -1269,10 +1298,6 @@ export class SelectionPanel {
         ${this.renderFleetActionButton(data, "stop", "fleetSelectionToolBtn stop", "Stop fleet", "stop")}
         ${this.renderFleetActionButton(data, "retreat", "fleetSelectionToolBtn retreatText", "Retreat fleet", undefined, "RETREAT")}
         ${this.renderFleetActionButton(data, "retreatTo", "fleetSelectionToolBtn", "Set retreat target", "retreatTarget")}
-        ${this.renderFleetPolicyButton(data, selectionKey, "retreatPolicy", "fleetSelectionToolBtn", "Retreat conditions")}
-        <button class="fleetSelectionToolBtn" type="button" disabled title="Advanced fleet settings menu is not wired yet" aria-label="Advanced fleet settings">
-          ${this.renderIcon("sliders")}
-        </button>
         <div class="fleetSelectionTopMeta">ID: ${this.escapeHtml(data.readoutId ?? data.id ?? "--")}</div>
       </div>
       <div class="fleetSelectionBody">
@@ -1294,10 +1319,11 @@ export class SelectionPanel {
             ${this.renderFleetActionButton(data, secondaryAction, secondaryClass, secondaryLabel, secondaryIcon, secondaryText)}
           </div>
           <div class="fleetSelectionPolicyRow">
-            ${this.renderFleetPolicyButton(data, selectionKey, "chase", "fleetSelectionPolicyBtn chase", "Chase policy")}
-            ${this.renderFleetPolicyButton(data, selectionKey, "stance", "fleetSelectionPolicyBtn stance", "Fleet stance")}
-            ${this.renderFleetPolicyButton(data, selectionKey, "behavior", "fleetSelectionPolicyBtn behavior", "Fleet behavior")}
+            ${this.renderFleetPolicyButton(data, selectionKey, "engagementRule", "fleetSelectionPolicyBtn stance", "Engagement rule")}
+            ${this.renderFleetPolicyButton(data, selectionKey, "doctrine", "fleetSelectionPolicyBtn behavior", "Tactical doctrine")}
+            ${this.renderFleetPolicyButton(data, selectionKey, "retreatPreset", "fleetSelectionPolicyBtn chase", "Retreat preset")}
           </div>
+          ${this.renderFleetRepairControl(data)}
         </section>
         <section class="fleetSelectionHealth">
           <div class="fleetSelectionHealthRows">
@@ -1356,6 +1382,14 @@ export class SelectionPanel {
         this.callbacks.onFleetPolicyChange?.(control, value, data);
       });
     }
+
+    panel.querySelector<HTMLButtonElement>("[data-field-repair]")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const constructionFleetId = data.id;
+      const targetFleetId = panel.querySelector<HTMLSelectElement>("[data-field-repair-target]")?.value;
+      if (!constructionFleetId || !targetFleetId) return;
+      this.callbacks.onRepairFleet?.(constructionFleetId, targetFleetId);
+    });
 
     panel.querySelector<HTMLButtonElement>("[data-open-fleet-leaders]")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
@@ -1424,6 +1458,22 @@ export class SelectionPanel {
         </button>
         ${open ? this.renderFleetPolicyMenu(control, value) : ""}
       </span>
+    `;
+  }
+
+  private renderFleetRepairControl(data: SelectionData): string {
+    if (!data.repairTargets) return "";
+    const targets = data.repairTargets;
+    return `
+      <div class="fleetSelectionRepairRow">
+        <select data-field-repair-target aria-label="Field repair target" ${targets.length > 0 ? "" : "disabled"}>
+          ${targets.length > 0
+            ? targets.map((target) => `<option value="${this.escapeHtml(target.fleetId)}" ${data.activeRepairTargetFleetId === target.fleetId ? "selected" : ""}>${this.escapeHtml(target.label)}</option>`).join("")
+            : '<option value="">No damaged fleet in system</option>'}
+        </select>
+        <button type="button" data-field-repair ${data.canCommand && targets.length > 0 ? "" : "disabled"}>${data.activeRepairTargetFleetId ? "Retarget Repair" : "Field Repair"}</button>
+        ${data.repairStatus ? `<small>${this.escapeHtml(data.repairStatus)}</small>` : ""}
+      </div>
     `;
   }
 
@@ -1557,39 +1607,26 @@ export class SelectionPanel {
     color: string;
   }> {
     switch (control) {
-      case "stance":
+      case "engagementRule":
         return [
-          { value: "passive", label: "Passive", icon: "stancePassive", color: "#8fb0c8" },
-          { value: "evade", label: "Evade", icon: "stanceEvade", color: "#62d7ff" },
-          { value: "holdPosition", label: "Hold Position", icon: "stanceHold", color: "#f0d263" },
-          { value: "guardArea", label: "Guard Area", icon: "stanceGuard", color: "#55efa0" },
+          { value: "avoid", label: "Avoid", icon: "stanceEvade", color: "#62d7ff" },
           { value: "defendSystem", label: "Defend System", icon: "stanceDefend", color: "#50e68a" },
-          { value: "aggressive", label: "Aggressive", icon: "stanceAggressive", color: "#ff707a" },
-          { value: "hunt", label: "Hunt", icon: "stanceHunt", color: "#ff9b45" },
+          { value: "engageSystem", label: "Engage System", icon: "stanceAggressive", color: "#ff707a" },
         ];
-      case "behavior":
+      case "doctrine":
         return [
           { value: "artillery", label: "Artillery", icon: "behaviorArtillery", color: "#ffd166" },
           { value: "line", label: "Line", icon: "behaviorLine", color: "#d8e6f5" },
-          { value: "brawler", label: "Brawler", icon: "behaviorBrawler", color: "#ff7f6e" },
-          { value: "swarm", label: "Swarm", icon: "behaviorSwarm", color: "#c5ff5d" },
-          { value: "defender", label: "Defender", icon: "behaviorDefender", color: "#60ef98" },
+          { value: "assault", label: "Assault", icon: "behaviorBrawler", color: "#ff7f6e" },
+          { value: "escort", label: "Escort", icon: "behaviorDefender", color: "#60ef98" },
         ];
-      case "chase":
-        return [
-          { value: "none", label: "No Chase", icon: "chaseNone", color: "#8fa0ad" },
-          { value: "system", label: "System Chase", icon: "chaseSystem", color: "#49cfff" },
-          { value: "friendlySystems", label: "Friendly Systems", icon: "chaseFriendly", color: "#45ed89" },
-          { value: "neutralSystems", label: "Neutral Systems", icon: "chaseNeutral", color: "#f5d257" },
-          { value: "enemySystems", label: "Enemy Systems", icon: "chaseEnemy", color: "#ff6472" },
-        ];
-      case "retreatPolicy":
+      case "retreatPreset":
       default:
         return [
-          { value: "none", label: "No Auto-Retreat", icon: "retreatNone", color: "#8fa0ad" },
-          { value: "low", label: "Retreat Low", icon: "retreatLow", color: "#58e394" },
-          { value: "medium", label: "Retreat Medium", icon: "retreatMedium", color: "#ffd35a" },
-          { value: "high", label: "Retreat High", icon: "retreatHigh", color: "#ff6d78" },
+          { value: "fightOn", label: "Fight On", icon: "retreatNone", color: "#8fa0ad" },
+          { value: "balanced", label: "Balanced", icon: "retreatLow", color: "#58e394" },
+          { value: "preserveFleet", label: "Preserve Fleet", icon: "retreatMedium", color: "#ffd35a" },
+          { value: "avoidLosses", label: "Avoid Losses", icon: "retreatHigh", color: "#ff6d78" },
         ];
     }
   }
@@ -1601,14 +1638,9 @@ export class SelectionPanel {
 
   private getFleetPolicyValue(data: SelectionData, control: FleetPolicyControl): string | undefined {
     switch (control) {
-      case "chase":
-        return data.chasePolicy;
-      case "stance":
-        return data.combatStance;
-      case "behavior":
-        return data.combatBehavior;
-      case "retreatPolicy":
-        return data.retreatPolicy;
+      case "engagementRule": return data.engagementRule;
+      case "doctrine": return data.doctrine;
+      case "retreatPreset": return data.retreatPreset;
       default:
         return undefined;
     }

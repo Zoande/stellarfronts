@@ -56,10 +56,6 @@ import {
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import type {
-  CombatStance,
-  FleetBehavior,
-  FleetChasePolicy,
-  FleetRetreatPolicy,
   FleetEngagementRule,
   FleetDoctrine,
   FleetRetreatPreset,
@@ -523,7 +519,7 @@ export class FleetManagerPanel {
       this.addShipsOpen = true;
       this.show(data);
     });
-    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-fleet-stance]").forEach((select) => {
+    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-engagement-rule]").forEach((select) => {
       select.addEventListener("change", () => {
         const fleet = this.getSelectedFleet(data);
         if (!fleet) return;
@@ -534,7 +530,7 @@ export class FleetManagerPanel {
         });
       });
     });
-    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-fleet-behavior]").forEach((select) => {
+    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-doctrine]").forEach((select) => {
       select.addEventListener("change", () => {
         const fleet = this.getSelectedFleet(data);
         if (!fleet) return;
@@ -545,7 +541,7 @@ export class FleetManagerPanel {
         });
       });
     });
-    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-fleet-retreat]").forEach((select) => {
+    this.panelElement.querySelectorAll<HTMLSelectElement>("[data-fm-retreat-preset]").forEach((select) => {
       select.addEventListener("change", () => {
         const fleet = this.getSelectedFleet(data);
         if (!fleet) return;
@@ -608,6 +604,13 @@ export class FleetManagerPanel {
           targetDesignId: targetDesign.id,
         });
       });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-repair-fleet]")?.addEventListener("click", () => {
+      const constructionFleet = this.getSelectedFleet(data);
+      const select = this.panelElement?.querySelector<HTMLSelectElement>("[data-fm-repair-target]");
+      const targetFleetId = select?.value;
+      if (!constructionFleet || !targetFleetId) return;
+      data.onFleetCommand?.({ type: "repairFleet", constructionFleetId: constructionFleet.id, targetFleetId });
     });
     this.bindDesignerEvents(data);
   }
@@ -679,13 +682,6 @@ export class FleetManagerPanel {
       button.addEventListener("click", () => {
         this.adjustShipPreviewZoom(button.dataset.fmPreviewZoom ?? "reset");
       });
-    });
-    this.panelElement.querySelector<HTMLButtonElement>("[data-fm-repair-fleet]")?.addEventListener("click", () => {
-      const constructionFleet = this.getSelectedFleet(data);
-      const select = this.panelElement?.querySelector<HTMLSelectElement>("[data-fm-repair-target]");
-      const targetFleetId = select?.value;
-      if (!constructionFleet || !targetFleetId) return;
-      data.onFleetCommand?.({ type: "repairFleet", constructionFleetId: constructionFleet.id, targetFleetId });
     });
   }
 
@@ -860,8 +856,8 @@ export class FleetManagerPanel {
         </div>
         ${(fleet.commandUsed ?? 0) > (fleet.commandCapacity ?? 20) ? `<div class="fmDoctrineWarning">Over command capacity: accuracy ${Math.round((fleet.commandAccuracyMultiplier ?? 1) * 100)}%, cooldown ${Math.round((fleet.commandCooldownMultiplier ?? 1) * 100)}%, coordination ${Math.round((fleet.commandCoordinationMultiplier ?? 1) * 100)}%</div>` : ""}
         <div class="fmDoctrineGrid">
-          <label>Engagement ${this.renderFleetStanceSelect(fleet, canCommand)}</label>
-          <label>Doctrine ${this.renderFleetBehaviorSelect(fleet, canCommand)}</label>
+          <label>Engagement ${this.renderFleetEngagementRuleSelect(fleet, canCommand)}</label>
+          <label>Doctrine ${this.renderFleetDoctrineSelect(fleet, canCommand)}</label>
           <label>Retreat ${this.renderFleetRetreatSelect(fleet, canCommand)}</label>
           <label class="wide">Retreat to ${this.renderFleetRetreatDestinationSelect(data, fleet, canCommand)}</label>
         </div>
@@ -890,31 +886,22 @@ export class FleetManagerPanel {
     `;
   }
 
-  private renderFleetStanceSelect(fleet: ServerFleet, canCommand: boolean): string {
+  private renderFleetEngagementRuleSelect(fleet: ServerFleet, canCommand: boolean): string {
     const options: FleetEngagementRule[] = ["avoid", "defendSystem", "engageSystem"];
     const selected = fleet.combatSettings.engagementRule ?? "defendSystem";
     return `
-      <select data-fm-fleet-stance ${canCommand ? "" : "disabled"}>
+      <select data-fm-engagement-rule ${canCommand ? "" : "disabled"}>
         ${options.map((option) => `<option value="${option}" ${selected === option ? "selected" : ""}>${this.escapeHtml(option === "avoid" ? "Avoid" : option === "defendSystem" ? "Defend System" : "Engage System")}</option>`).join("")}
       </select>
     `;
   }
 
-  private renderFleetBehaviorSelect(fleet: ServerFleet, canCommand: boolean): string {
+  private renderFleetDoctrineSelect(fleet: ServerFleet, canCommand: boolean): string {
     const options: FleetDoctrine[] = ["artillery", "line", "assault", "escort"];
     const selected = fleet.combatSettings.doctrine ?? "line";
     return `
-      <select data-fm-fleet-behavior ${canCommand ? "" : "disabled"}>
+      <select data-fm-doctrine ${canCommand ? "" : "disabled"}>
         ${options.map((option) => `<option value="${option}" ${selected === option ? "selected" : ""}>${this.escapeHtml(option[0].toUpperCase() + option.slice(1))}</option>`).join("")}
-      </select>
-    `;
-  }
-
-  private renderFleetChaseSelect(fleet: ServerFleet, canCommand: boolean): string {
-    const options: FleetChasePolicy[] = ["none", "system", "friendlySystems", "neutralSystems", "enemySystems"];
-    return `
-      <select data-fm-fleet-chase ${canCommand ? "" : "disabled"}>
-        ${options.map((option) => `<option value="${option}" ${fleet.combatSettings.chasePolicy === option ? "selected" : ""}>${this.escapeHtml(this.formatFleetChasePolicy(option))}</option>`).join("")}
       </select>
     `;
   }
@@ -923,7 +910,7 @@ export class FleetManagerPanel {
     const options: FleetRetreatPreset[] = ["fightOn", "balanced", "preserveFleet", "avoidLosses"];
     const selected = fleet.combatSettings.retreatPreset ?? "preserveFleet";
     return `
-      <select data-fm-fleet-retreat ${canCommand ? "" : "disabled"}>
+      <select data-fm-retreat-preset ${canCommand ? "" : "disabled"}>
         ${options.map((option) => `<option value="${option}" ${selected === option ? "selected" : ""}>${this.escapeHtml(option === "fightOn" ? "Fight On" : option === "preserveFleet" ? "Preserve Fleet" : option === "avoidLosses" ? "Avoid Losses" : "Balanced")}</option>`).join("")}
       </select>
     `;
@@ -1845,51 +1832,6 @@ export class FleetManagerPanel {
     );
   }
 
-  private formatCombatStance(stance: CombatStance): string {
-    const labels: Record<CombatStance, string> = {
-      passive: "Passive",
-      evade: "Evade",
-      holdPosition: "Hold Position",
-      guardArea: "Guard Area",
-      defendSystem: "Defend System",
-      aggressive: "Aggressive",
-      hunt: "Hunt",
-    };
-    return labels[stance] ?? stance;
-  }
-
-  private formatFleetBehavior(behavior: FleetBehavior): string {
-    const labels: Record<FleetBehavior, string> = {
-      artillery: "Artillery",
-      line: "Line",
-      brawler: "Brawler",
-      swarm: "Swarm",
-      defender: "Defender",
-    };
-    return labels[behavior] ?? behavior;
-  }
-
-  private formatFleetChasePolicy(chase: FleetChasePolicy): string {
-    const labels: Record<FleetChasePolicy, string> = {
-      none: "No chase",
-      system: "In system",
-      friendlySystems: "Friendly systems",
-      neutralSystems: "Neutral systems",
-      enemySystems: "Enemy systems",
-    };
-    return labels[chase] ?? chase;
-  }
-
-  private formatFleetRetreatPolicy(policy: FleetRetreatPolicy): string {
-    const labels: Record<FleetRetreatPolicy, string> = {
-      none: "No auto-retreat",
-      low: "Low HP 25%",
-      medium: "Medium HP 50%",
-      high: "High HP 75%",
-    };
-    return labels[policy] ?? policy;
-  }
-
   private formatCombatStatus(status: ServerFleet["combatStatus"]): string {
     const labels: Record<NonNullable<ServerFleet["combatStatus"]>, string> = {
       idle: "Idle",
@@ -1901,26 +1843,6 @@ export class FleetManagerPanel {
       destroyed: "Destroyed",
     };
     return labels[status ?? "idle"] ?? status ?? "Idle";
-  }
-
-  private getDoctrineDescription(stance: CombatStance, behavior: FleetBehavior): string {
-    const stanceCopy: Record<CombatStance, string> = {
-      passive: "Won't initiate unless ordered to attack.",
-      evade: "Avoids threats and fires only while escaping.",
-      holdPosition: "Keeps its current position and fires in range.",
-      guardArea: "Intercepts nearby threats, then returns to guard.",
-      defendSystem: "Moves to engage hostiles in this system.",
-      aggressive: "Seeks in-system targets and pursues by chase policy.",
-      hunt: "Prioritizes damaged or retreating hostiles.",
-    };
-    const behaviorCopy: Record<FleetBehavior, string> = {
-      artillery: "Artillery prefers long range and kites close enemies.",
-      line: "Line closes until most weapons can fire, then holds spacing.",
-      brawler: "Brawler closes to short range and sticks to the target.",
-      swarm: "Swarm charges directly and fights at point blank.",
-      defender: "Defender favors guarded objectives and local intercepts.",
-    };
-    return `${stanceCopy[stance] ?? ""} ${behaviorCopy[behavior] ?? ""}`.trim();
   }
 
   private getFleetName(data: FleetManagerPanelData, fleet: ServerFleet, index: number): string {

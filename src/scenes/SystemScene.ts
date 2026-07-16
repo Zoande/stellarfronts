@@ -83,7 +83,7 @@ import { SelectionPanel } from "../ui/SelectionPanel";
 import type { FleetPolicyControl, FleetPolicyValue, SelectionData, SelectionShipData } from "../ui/SelectionPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
 import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
-import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
+import type { FleetDoctrine, FleetEngagementRule, FleetRetreatPreset } from "../game/CombatTypes";
 import { getClientIntelField } from "../game/ClientIntelligence";
 import { SystemAssetRegistry } from "./system/SystemAssetRegistry";
 import type { SystemAssetDefinition } from "./system/SystemAssetRegistry";
@@ -733,6 +733,7 @@ export class SystemScene implements IGameScene {
     this.selectionPanel = new SelectionPanel(canvas, {
       onShipAction: (action, selection) => this.handleSelectedFleetAction(action, selection),
       onFleetPolicyChange: (control, value, selection) => this.setFleetPolicy(control, value, selection),
+      onRepairFleet: (constructionFleetId, targetFleetId) => this.options.onFleetCommand?.({ type: "repairFleet", constructionFleetId, targetFleetId }),
     });
     this.labelOverlay = new SystemLabelOverlay();
     this.renderSelectedFleetPanels();
@@ -1358,46 +1359,34 @@ export class SystemScene implements IGameScene {
     const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
     if (!fleet || fleet.ownerId !== this.playerFactionId) return;
 
-    if (control === "stance") {
-      const options: CombatStance[] = ["passive", "evade", "holdPosition", "guardArea", "defendSystem", "aggressive", "hunt"];
-      if (!options.includes(value as CombatStance)) return;
+    if (control === "engagementRule") {
+      const options: FleetEngagementRule[] = ["avoid", "defendSystem", "engageSystem"];
+      if (!options.includes(value as FleetEngagementRule)) return;
       this.options.onFleetCommand?.({
         type: "setFleetCombatSettings",
         fleetId,
-        combatSettings: {},
-        combatStance: value as CombatStance,
+        combatSettings: { engagementRule: value as FleetEngagementRule },
       });
       return;
     }
 
-    if (control === "behavior") {
-      const options: FleetBehavior[] = ["artillery", "line", "brawler", "swarm", "defender"];
-      if (!options.includes(value as FleetBehavior)) return;
+    if (control === "doctrine") {
+      const options: FleetDoctrine[] = ["artillery", "line", "assault", "escort"];
+      if (!options.includes(value as FleetDoctrine)) return;
       this.options.onFleetCommand?.({
         type: "setFleetCombatSettings",
         fleetId,
-        combatSettings: { behavior: value as FleetBehavior },
+        combatSettings: { doctrine: value as FleetDoctrine },
       });
       return;
     }
 
-    if (control === "chase") {
-      const options: FleetChasePolicy[] = ["none", "system", "friendlySystems", "neutralSystems", "enemySystems"];
-      if (!options.includes(value as FleetChasePolicy)) return;
-      this.options.onFleetCommand?.({
-        type: "setFleetCombatSettings",
-        fleetId,
-        combatSettings: { chasePolicy: value as FleetChasePolicy },
-      });
-      return;
-    }
-
-    const options: FleetRetreatPolicy[] = ["none", "low", "medium", "high"];
-    if (!options.includes(value as FleetRetreatPolicy)) return;
+    const options: FleetRetreatPreset[] = ["fightOn", "balanced", "preserveFleet", "avoidLosses"];
+    if (!options.includes(value as FleetRetreatPreset)) return;
     this.options.onFleetCommand?.({
       type: "setFleetCombatSettings",
       fleetId,
-      combatSettings: { retreatPolicy: value as FleetRetreatPolicy },
+      combatSettings: { retreatPreset: value as FleetRetreatPreset },
     });
   }
 
@@ -2014,7 +2003,7 @@ export class SystemScene implements IGameScene {
     const defense = this.getFleetDefense(fleet.id);
     const actions = this.getFleetActions(fleet);
     const doctrine = fleet.combatSettings
-      ? `${fleet.combatStance} | ${fleet.combatSettings.behavior} | retreat ${fleet.combatSettings.retreatPolicy}`
+      ? `${fleet.combatSettings.engagementRule ?? "defendSystem"} | ${fleet.combatSettings.doctrine ?? "line"} | ${fleet.combatSettings.retreatPreset ?? "preserveFleet"}`
       : this.formatFleetNavigationDetail(fleet);
     return {
       type: "fleet",
@@ -2043,10 +2032,12 @@ export class SystemScene implements IGameScene {
       ownerColor: owner?.color,
       canCommand: fleet.ownerId === this.playerFactionId && !fleet.stationaryStarbaseId,
       actions: fleet.ownerId === this.playerFactionId && !fleet.stationaryStarbaseId ? actions : undefined,
-      combatStance: fleet.combatStance,
-      combatBehavior: fleet.combatSettings.behavior,
-      chasePolicy: fleet.combatSettings.chasePolicy,
-      retreatPolicy: fleet.combatSettings.retreatPolicy,
+      engagementRule: fleet.combatSettings.engagementRule ?? "defendSystem",
+      doctrine: fleet.combatSettings.doctrine ?? "line",
+      retreatPreset: fleet.combatSettings.retreatPreset ?? "preserveFleet",
+      repairTargets: ships.some((ship) => ship.shipKind === "constructionShip") ? this.getFieldRepairTargets(fleet) : undefined,
+      activeRepairTargetFleetId: fleet.repairOrder?.targetFleetId ?? null,
+      repairStatus: fleet.repairOrder ? `${fleet.repairOrder.stage}${fleet.combatStatus !== "idle" ? " (paused during combat)" : ""}` : null,
       leader: this.getAssignedLeader("fleet", fleet.id),
     };
   }
@@ -4027,6 +4018,13 @@ export class SystemScene implements IGameScene {
     } catch (error) {
       console.info(error instanceof Error ? error.message : "Information does not exist.");
     }
+  }
+
+  private getFieldRepairTargets(constructionFleet: ServerFleet): Array<{ fleetId: string; label: string }> {
+    return this.serverFleets
+      .filter((fleet) => fleet.id !== constructionFleet.id && fleet.currentStarId === constructionFleet.currentStarId)
+      .filter((fleet) => this.getShipsForFleet(fleet.id).some((ship) => ship.hull < ship.maxHull || ship.armor < ship.maxArmor || ship.shield < ship.maxShield || ship.subsystemState?.engineDisabled || (ship.subsystemState?.disabledWeaponKeys.length ?? 0) > 0))
+      .map((fleet) => ({ fleetId: fleet.id, label: `${this.getFaction(fleet.ownerId)?.name ?? "Unknown"} · ${fleet.id}` }));
   }
 
   private renderPlanetObjectPanel(

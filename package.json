@@ -10,6 +10,7 @@
     "orchestrator:dev": "tsx server/orchestrator.ts",
     "control": "tsx scripts/control.ts",
     "server:test": "node --import tsx --test server/tests/*.test.ts",
+    "combat:balance": "node --import tsx server/game/combat-balance-matrix.ts",
     "dev:all": "concurrently \"npm run server:dev\" \"npm run auth:dev\" \"npm run dev\"",
     "server:typecheck": "tsc -p tsconfig.server.json --noEmit",
     "build": "tsc && vite build",
