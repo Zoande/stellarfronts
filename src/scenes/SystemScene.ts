@@ -69,6 +69,7 @@ import type {
   FleetMovementSegment,
   FleetOrbitTarget,
   ServerCombatContact,
+  ServerCombatProjectile,
   ServerFleet,
   ServerShip,
   ServerStarbase,
@@ -128,6 +129,7 @@ export interface SystemSceneOptions {
   serverShips?: ServerShip[];
   shipDesigns?: ShipDesign[];
   recentCombatContacts?: ServerCombatContact[];
+  combatProjectiles?: ServerCombatProjectile[];
   starbaseSystemIds?: number[];
   starbases?: ServerStarbaseSummary[];
   factions?: FactionInfo[];
@@ -186,7 +188,6 @@ const SHIP_ENTRY_START_PROGRESS = 0.72;
 const STAR_BANNER_DIR = "/textures/planet-banners";
 
 const TACTICAL_SHIP_TARGET_SIZE = 0.65;
-const TACTICAL_BEAM_TTL = 0.45;
 const TACTICAL_RING_SEGMENTS = 144;
 
 const STAR_BANNER_TEXTURES: Record<StarType, string> = {
@@ -214,6 +215,7 @@ export class SystemScene implements IGameScene {
   private serverShips: ServerShip[];
   private shipDesigns: ShipDesign[];
   private recentCombatContacts: ServerCombatContact[];
+  private combatProjectiles: ServerCombatProjectile[];
   private starbaseSystemIds: Set<number>;
   private starbases: ServerStarbaseSummary[];
   private factions: FactionInfo[];
@@ -380,6 +382,7 @@ export class SystemScene implements IGameScene {
     this.serverShips = this.systemStore?.getShips() ?? options.serverShips ?? [];
     this.shipDesigns = this.systemStore?.getShipDesigns() ?? options.shipDesigns ?? [];
     this.recentCombatContacts = this.systemStore?.getRecentCombatContacts() ?? options.recentCombatContacts ?? [];
+    this.combatProjectiles = this.systemStore?.getCombatProjectiles() ?? options.combatProjectiles ?? [];
     this.starbases = this.systemStore?.getStarbases() ?? options.starbases ?? [];
     this.starbaseSystemIds = new Set(
       this.systemStore
@@ -818,6 +821,11 @@ export class SystemScene implements IGameScene {
 
     this.objectRenderer.update(dt, 3.8);
     this.effectsRenderer?.update(dt);
+    const cameraImpulse = this.effectsRenderer?.consumeCameraImpulse() ?? 0;
+    if (cameraImpulse > 0.001 && this.camera) {
+      this.camera.inertialAlphaOffset += (Math.random() - 0.5) * cameraImpulse * 0.012;
+      this.camera.inertialBetaOffset += (Math.random() - 0.5) * cameraImpulse * 0.007;
+    }
     this.nebulaEnvironment?.update(dt);
 
     if (this.starKind === "pulsar") {
@@ -2672,6 +2680,8 @@ export class SystemScene implements IGameScene {
     this.effectsRenderer = new SystemEffectsRenderer(this.scene, this.glowLayer, {
       maxBeams: 96,
       maxProjectiles: 180,
+      maxPulses: 96,
+      maxParticles: 56,
     });
     this.actionTargetRenderer = new SystemActionTargetRenderer(this.scene, this.glowLayer, {
       color: SYSTEM_ACTION_MARKER_COLOR,
@@ -3339,24 +3349,7 @@ export class SystemScene implements IGameScene {
         ?? new Vector3(contact.sourcePosition.x, SYSTEM_FLEET_Y + 0.4, contact.sourcePosition.z);
       const to = this.getCombatEntityPosition(contact.targetId)
         ?? new Vector3(contact.targetPosition.x, SYSTEM_FLEET_Y + 0.4, contact.targetPosition.z);
-      const weaponId = contact.weaponId?.toLowerCase() ?? "";
-      if (weaponId.includes("missile") || weaponId.includes("torpedo")) {
-        this.effectsRenderer?.queueProjectile(`fleetMissile-${contact.id}`, from, to, new Color3(1, 0.52, 0.12), 0.8, 0.24);
-      } else if (weaponId.includes("point") || weaponId.includes("pd") || weaponId.includes("flak")) {
-        for (let i = 0; i < 3; i += 1) {
-          const offset = new Vector3((i - 1) * 0.12, i * 0.04, 0);
-          this.effectsRenderer?.queueProjectile(`fleetPd-${contact.id}-${i}`, from.add(offset), to, new Color3(0.5, 0.9, 1), 0.32, 0.1);
-        }
-      } else {
-        this.effectsRenderer?.queueBeam(
-          `fleetBeam-${contact.id}`,
-          from,
-          to,
-          contact.hit ? new Color3(0.3, 0.84, 1) : new Color3(0.7, 0.72, 0.78),
-          TACTICAL_BEAM_TTL,
-          contact.hit ? 0.85 : 0.38,
-        );
-      }
+      this.effectsRenderer?.queueCombatContact(contact, from, to);
       effectsQueued += 1;
     }
     if (this.combatContactSeen.size > 320) {
@@ -4336,6 +4329,7 @@ export class SystemScene implements IGameScene {
     }
     this.selectionPanel?.setClockYear(year);
     this.objectPanel?.setClockYear(year);
+    this.syncCombatProjectileVisuals();
   }
 
   selectFleetById(fleetId: string): boolean {
@@ -4383,6 +4377,19 @@ export class SystemScene implements IGameScene {
     this.queueRecentCombatContactEffects();
   }
 
+  setCombatProjectiles(projectiles: ServerCombatProjectile[]): void {
+    this.combatProjectiles = projectiles;
+    this.syncCombatProjectileVisuals();
+  }
+
+  private syncCombatProjectileVisuals(): void {
+    this.effectsRenderer?.syncCombatProjectiles(
+      this.combatProjectiles,
+      this.clockYear,
+      (entityId) => entityId ? this.getCombatEntityPosition(entityId) : null,
+    );
+  }
+
   setTechnology(technology: FactionTechnologyView | null): void {
     this.options.technology = technology;
   }
@@ -4407,6 +4414,7 @@ export class SystemScene implements IGameScene {
     this.serverShips = this.systemStore.getShips();
     this.shipDesigns = this.systemStore.getShipDesigns();
     this.recentCombatContacts = this.systemStore.getRecentCombatContacts();
+    this.combatProjectiles = this.systemStore.getCombatProjectiles();
     this.starbases = this.systemStore.getStarbases();
     this.starbaseSystemIds = new Set(this.starbases.map((starbase) => starbase.starId));
     this.factions = this.systemStore.getFactions();
@@ -4431,6 +4439,8 @@ export class SystemScene implements IGameScene {
     this.clockYear = clockYear;
     this.selectionPanel?.setClockYear(clockYear);
     this.objectPanel?.setClockYear(clockYear);
+    this.queueRecentCombatContactEffects();
+    this.syncCombatProjectileVisuals();
 
     const nextSelection = Array.from(this.selectedFleetIds).join("\0");
     if (previousSelection !== nextSelection) {

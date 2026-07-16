@@ -1404,6 +1404,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           serverShips: systemPayload.ships,
           shipDesigns: systemPayload.shipDesigns,
           recentCombatContacts: systemPayload.recentCombatContacts,
+          combatProjectiles: systemPayload.combatProjectiles ?? [],
           starbaseSystemIds: systemPayload.starbases.map((starbase) => starbase.starId),
           starbases: systemPayload.starbases,
           factions: systemPayload.factions,
