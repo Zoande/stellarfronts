@@ -82,7 +82,7 @@ export function calculateFactionResourceFlow(nextState: GameState, factionId: nu
 
   for (const planetState of nextState.planetStates) {
     if (!planetState.isHabited) continue;
-    if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    if (planetState.ownerId !== factionId) continue;
     for (const resource of RESOURCE_KINDS) {
       production[resource] += Math.max(0, planetState.economy.production[resource]);
       consumption[resource] += Math.max(0, planetState.economy.upkeep[resource]);
@@ -118,7 +118,7 @@ export function calculateFactionMonthlyDelta(nextState: GameState, factionId: nu
   let delta = createEmptyResourceCounts();
   for (const planetState of nextState.planetStates) {
     if (!planetState.isHabited) continue;
-    if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    if (planetState.ownerId !== factionId) continue;
     delta = addResourceCounts(delta, planetState.economy.net);
   }
   for (const starbase of nextState.starbases) {

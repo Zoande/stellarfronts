@@ -4,6 +4,7 @@ import {
 } from "../data/Economy";
 import type { ResourceKind } from "../data/Economy";
 import { GAME_DAYS_PER_YEAR } from "../game/GameTime";
+import { gameHourToRealMinute, realMinuteToGameHour, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
 import type {
   ClientCommand,
   MarketDetailPayload,
@@ -388,12 +389,12 @@ export class MarketPanel {
     return `
       <div class="marketPanelHeading">
         <strong>Automatic Trades</strong>
-        <span>Amount per game hour</span>
+        <span>Amount per real minute</span>
       </div>
       <div class="marketAutoTradeComposer">
         <label class="marketAmountField">
-          <span>Amount / h</span>
-          <input type="number" min="1" step="1" value="${this.escapeAttribute(this.autoTradeAmount)}" data-market-auto-amount title="Runs once per game hour. At normal speed, one game hour is one real second." ${disabled ? "disabled" : ""}>
+          <span>Amount ${RESOURCE_RATE_LABEL}</span>
+          <input type="number" min="1" step="1" value="${this.escapeAttribute(this.autoTradeAmount)}" data-market-auto-amount title="Automatic trade amount per real minute at standard speed." ${disabled ? "disabled" : ""}>
         </label>
         <button type="button" data-market-auto-add="auto_buy" title="Add or update an automatic buy order for this resource." ${disabled ? "disabled" : ""}>Add Buy</button>
         <button type="button" data-market-auto-add="auto_sell" title="Add or update an automatic sell order for this resource." ${disabled ? "disabled" : ""}>Add Sell</button>
@@ -404,7 +405,7 @@ export class MarketPanel {
             <div class="marketAutoTradeRow ${order.type === "auto_buy" ? "buy" : "sell"}">
               <span>
                 <strong>${order.type === "auto_buy" ? "Buy" : "Sell"}</strong>
-                <small>${this.escapeHtml(this.formatCompact(order.amountPerHour))} ${this.escapeHtml(RESOURCE_LABELS[order.resourceId])} / game hour</small>
+                <small>${this.escapeHtml(this.formatCompact(gameHourToRealMinute(order.amountPerHour)))} ${this.escapeHtml(RESOURCE_LABELS[order.resourceId])}${RESOURCE_RATE_LABEL}</small>
               </span>
               <button type="button" data-market-auto-remove="${this.escapeAttribute(order.id)}" title="Remove this automatic trade.">Remove</button>
             </div>
@@ -517,13 +518,13 @@ export class MarketPanel {
         if (!selected || !data.onMarketCommand || !selected.marketEnabled) return;
         const tradeType = button.dataset.marketAutoAdd === "auto_sell" ? "auto_sell" : "auto_buy";
         const input = this.panelElement?.querySelector<HTMLInputElement>("[data-market-auto-amount]");
-        const amountPerHour = this.normalizeAmount(input?.value, this.autoTradeAmount);
-        this.autoTradeAmount = amountPerHour;
+        const amountPerMinute = this.normalizeAmount(input?.value, this.autoTradeAmount);
+        this.autoTradeAmount = amountPerMinute;
         data.onMarketCommand({
           type: "addMarketAutoTrade",
           resourceId: selected.resourceId,
           tradeType,
-          amountPerHour,
+          amountPerHour: realMinuteToGameHour(amountPerMinute),
         });
       });
     });

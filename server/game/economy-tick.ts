@@ -25,13 +25,16 @@ import type { MarketAutoTradeOrder } from "../../src/data/Market";
 import {
   progressStarbaseConstructionQueue,
   progressStarbaseShipQueue,
+  countStarbaseShipyards,
 } from "../../src/data/Starbase";
 import type { StarbaseShipKind, StarbaseShipQueueItem } from "../../src/data/Starbase";
 import { NEBULA_DEFINITIONS, buildNebulaByStarId } from "../../src/data/Nebula";
 import { applyPlanetStatesToStars } from "../../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../../src/data/SystemCoordinates";
-import { GAME_HOURS_PER_MONTH, gameYearToMonthIndex, elapsedHoursToGameYear } from "../../src/game/GameTime";
+import { GAME_HOURS_PER_MONTH, GAME_HOURS_PER_YEAR, gameYearToMonthIndex, elapsedHoursToGameYear } from "../../src/game/GameTime";
 import type { ServerStarbase } from "../../src/game/GameProtocol";
+import { getActiveTreatiesBetween, getBorderPolicy } from "../../src/data/Diplomacy";
+import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
 import {
   STARBASE_REPAIR_ENERGY_COST_PER_POINT,
   STARBASE_ARMOR_REPAIR_FRACTION_PER_DAY,
@@ -60,10 +63,10 @@ import {
   appendMarketPriceSnapshot,
 } from "./economy-market";
 import { getFactionResearchPerHour, applyTechnologyResearchForFaction } from "./research";
-import { findShipDesignById } from "./ship-designs";
+import { findShipDesignById, getShipDesignForShip } from "./ship-designs";
 import { createShip, createFleet, applyShipDesignToShip, syncStarbaseCombatHealth } from "./fleet-factory";
 import { applyFleetOrbitTarget, createStarbaseOrbitTarget } from "./fleet-combat";
-import type { RuntimeContext } from "./types";
+import type { GameFleet, GameShip, RuntimeContext } from "./types";
 
 function getPlanetDetailSignature(planetState: PlanetState): string {
   return JSON.stringify(planetState);
@@ -256,7 +259,7 @@ function recordTradeAlert(ctx: RuntimeContext, order: MarketAutoTradeOrder, elap
   }
 }
 
-export function processShipShortageEffects(ctx: RuntimeContext): { shipsChanged: boolean; starbasesChanged: boolean } {
+export function processShipShortageEffects(ctx: RuntimeContext, elapsedDays = 0): { shipsChanged: boolean; starbasesChanged: boolean } {
   let shipsChanged = false;
   let starbasesChanged = false;
   const nebulaByStar = buildNebulaByStarId(ctx.state.nebulae);
@@ -269,8 +272,8 @@ export function processShipShortageEffects(ctx: RuntimeContext): { shipsChanged:
 
     // Radiation nebulas corrode hull/armor each tick (floored at 1 so they harass
     // rather than annihilate). Applies even once shields are already down.
-    if (nebulaDef?.hullDamagePerTick && ship.maxHull > 0 && ship.hull > 1) {
-      let remaining = nebulaDef.hullDamagePerTick;
+    if (nebulaDef?.hullDamagePerTick && elapsedDays > 0 && ship.maxHull > 0 && ship.hull > 1) {
+      let remaining = nebulaDef.hullDamagePerTick * elapsedDays;
       const armorAbsorbed = Math.min(ship.armor, remaining);
       ship.armor = Math.max(0, ship.armor - armorAbsorbed);
       remaining -= armorAbsorbed;
@@ -304,6 +307,279 @@ export function processShipShortageEffects(ctx: RuntimeContext): { shipsChanged:
   }
   if (shipsChanged || starbasesChanged) ctx.hasDirtyState = true;
   return { shipsChanged, starbasesChanged };
+}
+
+type ShipRepairLayer = "shield" | "armor" | "hull";
+interface ShipRepairRequest {
+  ship: GameShip;
+  layer: ShipRepairLayer;
+  points: number;
+  costs: { energy: number; minerals: number; alloys: number };
+}
+
+const SHIELD_FULL_REPAIR_DAYS = 150; // one real hour at normal speed
+const STARBASE_ARMOR_FULL_REPAIR_DAYS = 1_200; // eight real hours
+const SHIPYARD_HULL_FULL_REPAIR_DAYS = 3_600; // one real day
+const REPAIR_DRONE_FULL_REPAIR_DAYS = 1_800; // twelve real hours
+const ARMOR_NANITE_FULL_REPAIR_DAYS = 300; // roughly 3-8% in a normal battle
+const SHIELD_DAMAGE_DELAY_HOURS = 60;
+
+function canFactionUseRepairStarbase(ctx: RuntimeContext, ownerId: number, starbase: ServerStarbase): boolean {
+  if (starbase.status !== "online") return false;
+  if (starbase.ownerId === ownerId) return true;
+  return getBorderPolicy(ctx.state.diplomacy, starbase.ownerId, ownerId) === "open"
+    && getActiveTreatiesBetween(ctx.state.diplomacy, ownerId, starbase.ownerId).length > 0;
+}
+
+function fleetIsActivelyFighting(ctx: RuntimeContext, fleet: GameFleet): boolean {
+  if (ctx.state.combatProjectiles.some((projectile) => projectile.status === "inFlight" && (projectile.sourceActorId === fleet.id || projectile.targetActorId === fleet.id))) return true;
+  if (!Number.isFinite(fleet.lastCombatAtYear)) return false;
+  return (ctx.state.clock.year - Number(fleet.lastCombatAtYear)) * GAME_HOURS_PER_YEAR < SHIELD_DAMAGE_DELAY_HOURS;
+}
+
+function diminishingModuleRate(count: number): number {
+  let total = 0;
+  for (let index = 0; index < count; index += 1) total += 0.6 ** index;
+  return total;
+}
+
+function addRepairRequest(
+  requests: ShipRepairRequest[],
+  ship: GameShip,
+  layer: ShipRepairLayer,
+  points: number,
+  perPoint: { energy?: number; minerals?: number; alloys?: number },
+): void {
+  const current = ship[layer];
+  const maximum = ship[`max${layer[0].toUpperCase()}${layer.slice(1)}` as "maxShield" | "maxArmor" | "maxHull"];
+  const bounded = Math.max(0, Math.min(maximum - current, points));
+  if (bounded <= 0) return;
+  requests.push({
+    ship,
+    layer,
+    points: bounded,
+    costs: {
+      energy: bounded * (perPoint.energy ?? 0),
+      minerals: bounded * (perPoint.minerals ?? 0),
+      alloys: bounded * (perPoint.alloys ?? 0),
+    },
+  });
+}
+
+export function processShipRepairs(ctx: RuntimeContext, elapsedDays: number): boolean {
+  if (elapsedDays <= 0) return false;
+  const requestsByOwner = new Map<number, ShipRepairRequest[]>();
+  const fleetsById = new Map((ctx.state.fleets as GameFleet[]).map((fleet) => [fleet.id, fleet]));
+  for (const ship of ctx.state.ships) {
+    if (ship.hull <= 0 || ship.disabled) continue;
+    const fleet = fleetsById.get(ship.fleetId);
+    if (!fleet || fleet.phase === "jumpingHyperlane" || fleet.phase === "missingInAction") continue;
+    const requests = requestsByOwner.get(ship.ownerId) ?? [];
+    requestsByOwner.set(ship.ownerId, requests);
+    const fighting = fleetIsActivelyFighting(ctx, fleet);
+    const systemStarbases = ctx.state.starbases.filter((starbase) => starbase.starId === fleet.currentStarId && canFactionUseRepairStarbase(ctx, ship.ownerId, starbase));
+    const shieldSupport = systemStarbases.length > 0;
+    const shieldDelaySatisfied = !Number.isFinite(ship.lastShieldDamageAtYear)
+      || (ctx.state.clock.year - Number(ship.lastShieldDamageAtYear)) * GAME_HOURS_PER_YEAR >= SHIELD_DAMAGE_DELAY_HOURS;
+    if (shieldSupport && shieldDelaySatisfied && ship.maxShield > 0) {
+      const shieldCap = ship.maxShield * getFleetShieldMultiplier(ctx.state, fleet);
+      addRepairRequest(requests, ship, "shield", Math.min(shieldCap - ship.shield, shieldCap * elapsedDays / SHIELD_FULL_REPAIR_DAYS), { energy: 0.015 });
+    }
+
+    const orbitingStarbase = fleet.orbitTarget?.kind === "starbase"
+      ? systemStarbases.find((starbase) => starbase.id === fleet.orbitTarget?.starbaseId) ?? null
+      : null;
+    if (!fighting && orbitingStarbase) {
+      addRepairRequest(requests, ship, "armor", ship.maxArmor * elapsedDays / STARBASE_ARMOR_FULL_REPAIR_DAYS, { minerals: 0.02, alloys: 0.035 });
+      if (countStarbaseShipyards(orbitingStarbase.buildingSlots) > 0) {
+        addRepairRequest(requests, ship, "hull", ship.maxHull * elapsedDays / SHIPYARD_HULL_FULL_REPAIR_DAYS, { minerals: 0.04, alloys: 0.06 });
+        if (ship.subsystemState && (ship.subsystemState.engineDisabled || ship.subsystemState.disabledWeaponKeys.length > 0) && ship.hull >= ship.maxHull - 0.001) {
+          ship.subsystemState = { disabledWeaponKeys: [], engineDisabled: false, emergencyMobility: false };
+        }
+      }
+    }
+
+    const design = getShipDesignForShip(ctx, ship);
+    const droneRate = diminishingModuleRate(design.utilityModuleIds.filter((id) => id === "utility_repair_drones").length);
+    const naniteRate = diminishingModuleRate(design.utilityModuleIds.filter((id) => id === "utility_armor_nanites").length);
+    if (!fighting && droneRate > 0) {
+      addRepairRequest(requests, ship, "armor", ship.maxArmor * elapsedDays * droneRate / REPAIR_DRONE_FULL_REPAIR_DAYS, { energy: 0.015, minerals: 0.02, alloys: 0.035 });
+    }
+    if (naniteRate > 0) {
+      addRepairRequest(requests, ship, "armor", ship.maxArmor * elapsedDays * naniteRate / ARMOR_NANITE_FULL_REPAIR_DAYS, { minerals: 0.03, alloys: 0.05 });
+    }
+  }
+
+  let changed = false;
+  for (const [ownerId, requests] of requestsByOwner) {
+    const economy = getFactionEconomy(ctx.state, ownerId);
+    if (!economy || requests.length === 0) continue;
+    const grouped = new Map<string, ShipRepairRequest[]>();
+    for (const request of requests) {
+      const key = `${request.ship.id}:${request.layer}`;
+      const group = grouped.get(key) ?? [];
+      group.push(request);
+      grouped.set(key, group);
+    }
+    for (const group of grouped.values()) {
+      const first = group[0];
+      const maximum = first.ship[`max${first.layer[0].toUpperCase()}${first.layer.slice(1)}` as "maxShield" | "maxArmor" | "maxHull"];
+      const missing = Math.max(0, maximum - first.ship[first.layer]);
+      const requested = group.reduce((sum, request) => sum + request.points, 0);
+      const overlapScale = requested > missing && requested > 0 ? missing / requested : 1;
+      if (overlapScale >= 1) continue;
+      for (const request of group) {
+        request.points *= overlapScale;
+        request.costs.energy *= overlapScale;
+        request.costs.minerals *= overlapScale;
+        request.costs.alloys *= overlapScale;
+      }
+    }
+    const total = requests.reduce((sum, request) => ({
+      energy: sum.energy + request.costs.energy,
+      minerals: sum.minerals + request.costs.minerals,
+      alloys: sum.alloys + request.costs.alloys,
+    }), { energy: 0, minerals: 0, alloys: 0 });
+    const factor = Math.min(1,
+      total.energy > 0 ? economy.stockpiles.energy / total.energy : 1,
+      total.minerals > 0 ? economy.stockpiles.minerals / total.minerals : 1,
+      total.alloys > 0 ? economy.stockpiles.alloys / total.alloys : 1,
+    );
+    if (factor <= 0) continue;
+    for (const request of requests) {
+      request.ship[request.layer] = Math.min(request.ship[`max${request.layer[0].toUpperCase()}${request.layer.slice(1)}` as "maxShield" | "maxArmor" | "maxHull"], request.ship[request.layer] + request.points * factor);
+      if (request.layer === "hull") request.ship.hp = request.ship.hull;
+      const snapshot = fleetsById.get(request.ship.fleetId)?.battleSnapshot;
+      if (snapshot) {
+        const spending = (snapshot.repairSpending ??= {});
+        spending.energy = (spending.energy ?? 0) + request.costs.energy * factor;
+        spending.minerals = (spending.minerals ?? 0) + request.costs.minerals * factor;
+        spending.alloys = (spending.alloys ?? 0) + request.costs.alloys * factor;
+      }
+      changed = true;
+    }
+    economy.stockpiles.energy -= total.energy * factor;
+    economy.stockpiles.minerals -= total.minerals * factor;
+    economy.stockpiles.alloys -= total.alloys * factor;
+  }
+  if (changed) {
+    ctx.refreshFactionEconomyDeltas();
+    ctx.hasDirtyState = true;
+  }
+  return changed;
+}
+
+function constructionEmergencyHours(ship: GameShip): number {
+  return ship.shipKind === "battleship" ? 600 : ship.shipKind === "cruiser" ? 360 : ship.shipKind === "destroyer" ? 240 : 120;
+}
+
+function spendFieldRepair(
+  ctx: RuntimeContext,
+  ownerId: number,
+  desiredPoints: number,
+  costs: { energy?: number; minerals?: number; alloys?: number },
+): number {
+  const economy = getFactionEconomy(ctx.state, ownerId);
+  if (!economy || desiredPoints <= 0) return 0;
+  const factor = Math.min(1,
+    costs.energy ? economy.stockpiles.energy / (desiredPoints * costs.energy) : 1,
+    costs.minerals ? economy.stockpiles.minerals / (desiredPoints * costs.minerals) : 1,
+    costs.alloys ? economy.stockpiles.alloys / (desiredPoints * costs.alloys) : 1,
+  );
+  const points = desiredPoints * Math.max(0, factor);
+  economy.stockpiles.energy -= points * (costs.energy ?? 0);
+  economy.stockpiles.minerals -= points * (costs.minerals ?? 0);
+  economy.stockpiles.alloys -= points * (costs.alloys ?? 0);
+  return points;
+}
+
+function canConstructionAssist(ctx: RuntimeContext, constructionOwnerId: number, targetOwnerId: number): boolean {
+  if (constructionOwnerId === targetOwnerId) return true;
+  return getBorderPolicy(ctx.state.diplomacy, targetOwnerId, constructionOwnerId) === "open"
+    && getActiveTreatiesBetween(ctx.state.diplomacy, constructionOwnerId, targetOwnerId).length > 0;
+}
+
+export function processConstructionRepairs(ctx: RuntimeContext, elapsedDays: number): boolean {
+  if (elapsedDays <= 0) return false;
+  let changed = false;
+  const shipsById = new Map(ctx.state.ships.map((ship) => [ship.id, ship]));
+  for (const repairFleet of ctx.state.fleets as GameFleet[]) {
+    const order = repairFleet.repairOrder;
+    if (!order) continue;
+    const constructionShip = repairFleet.shipIds.map((id) => shipsById.get(id)).find((ship) => ship?.shipKind === "constructionShip" && ship.hull > 0);
+    const targetFleet = (ctx.state.fleets as GameFleet[]).find((fleet) => fleet.id === order.targetFleetId);
+    if (!constructionShip || !targetFleet || targetFleet.currentStarId !== repairFleet.currentStarId || !canConstructionAssist(ctx, repairFleet.ownerId, targetFleet.ownerId)) {
+      repairFleet.repairOrder = null;
+      changed = true;
+      continue;
+    }
+    if (fleetIsActivelyFighting(ctx, repairFleet) || fleetIsActivelyFighting(ctx, targetFleet)) continue;
+    const targets = targetFleet.shipIds.map((id) => shipsById.get(id)).filter((ship): ship is GameShip => !!ship && ship.hull > 0 && ship.shipKind !== "defensePlatform");
+    const stranded = targets.find((ship) => ship.subsystemState?.engineDisabled && !ship.subsystemState.emergencyMobility);
+    if (stranded) {
+      if (order.targetShipId !== stranded.id || order.stage !== "emergencyMobility") {
+        order.targetShipId = stranded.id;
+        order.stage = "emergencyMobility";
+        order.progressHours = 0;
+      }
+      order.progressHours += elapsedDays * 24;
+      if (order.progressHours >= constructionEmergencyHours(stranded)) {
+        stranded.subsystemState!.emergencyMobility = true;
+        order.progressHours = 0;
+        order.targetShipId = null;
+      }
+      changed = true;
+      continue;
+    }
+    const subsystemTarget = targets.find((ship) => ship.subsystemState?.engineDisabled || (ship.subsystemState?.disabledWeaponKeys.length ?? 0) > 0);
+    if (subsystemTarget) {
+      if (order.targetShipId !== subsystemTarget.id || order.stage !== "subsystems") {
+        order.targetShipId = subsystemTarget.id;
+        order.stage = "subsystems";
+        order.progressHours = 0;
+      }
+      order.progressHours += elapsedDays * 24;
+      if (order.progressHours >= constructionEmergencyHours(subsystemTarget) * 2) {
+        subsystemTarget.subsystemState = { disabledWeaponKeys: [], engineDisabled: false, emergencyMobility: false };
+        order.progressHours = 0;
+        order.targetShipId = null;
+      }
+      changed = true;
+      continue;
+    }
+    const layerTarget = targets.find((ship) => ship.hull < ship.maxHull || ship.armor < ship.maxArmor || ship.shield < ship.maxShield);
+    if (!layerTarget) {
+      repairFleet.repairOrder = null;
+      changed = true;
+      continue;
+    }
+    order.targetShipId = layerTarget.id;
+    if (layerTarget.hull < layerTarget.maxHull) {
+      order.stage = "hull";
+      const desired = Math.min(layerTarget.maxHull - layerTarget.hull, layerTarget.maxHull * elapsedDays / (SHIPYARD_HULL_FULL_REPAIR_DAYS * 2));
+      const restored = spendFieldRepair(ctx, targetFleet.ownerId, desired, { minerals: 0.06, alloys: 0.09 });
+      layerTarget.hull += restored;
+      layerTarget.hp = layerTarget.hull;
+      changed ||= restored > 0;
+    } else if (layerTarget.armor < layerTarget.maxArmor) {
+      order.stage = "armor";
+      const desired = Math.min(layerTarget.maxArmor - layerTarget.armor, layerTarget.maxArmor * elapsedDays / (STARBASE_ARMOR_FULL_REPAIR_DAYS * 2));
+      const restored = spendFieldRepair(ctx, targetFleet.ownerId, desired, { minerals: 0.03, alloys: 0.0525 });
+      layerTarget.armor += restored;
+      changed ||= restored > 0;
+    } else if (layerTarget.shield < layerTarget.maxShield) {
+      order.stage = "shield";
+      const desired = Math.min(layerTarget.maxShield - layerTarget.shield, layerTarget.maxShield * elapsedDays / (SHIELD_FULL_REPAIR_DAYS * 2));
+      const restored = spendFieldRepair(ctx, targetFleet.ownerId, desired, { energy: 0.0225 });
+      layerTarget.shield += restored;
+      changed ||= restored > 0;
+    }
+  }
+  if (changed) {
+    ctx.refreshFactionEconomyDeltas();
+    ctx.hasDirtyState = true;
+  }
+  return changed;
 }
 
 export function processPlanetConstruction(ctx: RuntimeContext, elapsedDays: number): boolean {
@@ -348,15 +624,17 @@ export function processStarbaseConstruction(ctx: RuntimeContext, elapsedDays: nu
   return true;
 }
 
-function trySpendStarbaseRepairResources(ctx: RuntimeContext, ownerId: number, repairPoints: number, alloyCostPerPoint: number): boolean {
+function trySpendStarbaseRepairResources(ctx: RuntimeContext, ownerId: number, repairPoints: number, alloyCostPerPoint: number, mineralCostPerPoint: number, energyCostPerPoint = 0): boolean {
   const economy = getFactionEconomy(ctx.state, ownerId);
   if (!economy || repairPoints <= 0) return false;
   const alloys = repairPoints * alloyCostPerPoint;
-  const energy = repairPoints * STARBASE_REPAIR_ENERGY_COST_PER_POINT;
-  if (economy.stockpiles.alloys < alloys || economy.stockpiles.energy < energy) return false;
+  const minerals = repairPoints * mineralCostPerPoint;
+  const energy = repairPoints * energyCostPerPoint;
+  if (economy.stockpiles.alloys < alloys || economy.stockpiles.minerals < minerals || economy.stockpiles.energy < energy) return false;
   economy.stockpiles = addResourceCounts(economy.stockpiles, {
     ...createEmptyResourceCounts(),
     alloys: -alloys,
+    minerals: -minerals,
     energy: -energy,
   });
   return true;
@@ -368,16 +646,28 @@ export function processStarbaseRepairs(ctx: RuntimeContext, elapsedDays: number)
   ctx.state.starbases = ctx.state.starbases.map((starbase) => {
     if (starbase.status !== "online") return starbase;
     let next = starbase;
+    const recentlyHit = Number.isFinite(next.lastShieldDamageAtYear)
+      && (ctx.state.clock.year - Number(next.lastShieldDamageAtYear)) * GAME_HOURS_PER_YEAR < SHIELD_DAMAGE_DELAY_HOURS;
+    const activelyTargeted = ctx.state.combatProjectiles.some((projectile) => projectile.status === "inFlight" && (projectile.targetActorId === next.id || projectile.sourceActorId === next.id));
+    const usableShield = next.maxShield * getFactionFleetShortageEffects(ctx.state, next.ownerId).shieldMultiplier;
+    if (next.shield < usableShield && !recentlyHit) {
+      const repair = Math.min(usableShield - next.shield, usableShield * elapsedDays / SHIELD_FULL_REPAIR_DAYS);
+      if (trySpendStarbaseRepairResources(ctx, next.ownerId, repair, 0, 0, STARBASE_REPAIR_ENERGY_COST_PER_POINT)) {
+        next = { ...next, shield: next.shield + repair };
+        changed = true;
+      }
+    }
+    if (activelyTargeted) return next;
     if (next.armor < next.maxArmor) {
       const repair = Math.min(next.maxArmor - next.armor, next.maxArmor * STARBASE_ARMOR_REPAIR_FRACTION_PER_DAY * elapsedDays);
-      if (trySpendStarbaseRepairResources(ctx, next.ownerId, repair, STARBASE_ARMOR_REPAIR_ALLOY_COST_PER_POINT)) {
+      if (trySpendStarbaseRepairResources(ctx, next.ownerId, repair, STARBASE_ARMOR_REPAIR_ALLOY_COST_PER_POINT, 0.02)) {
         next = { ...next, armor: next.armor + repair };
         changed = true;
       }
     }
     if (next.hull < next.maxHull) {
       const repair = Math.min(next.maxHull - next.hull, next.maxHull * STARBASE_HULL_REPAIR_FRACTION_PER_DAY * elapsedDays);
-      if (trySpendStarbaseRepairResources(ctx, next.ownerId, repair, STARBASE_HULL_REPAIR_ALLOY_COST_PER_POINT)) {
+      if (trySpendStarbaseRepairResources(ctx, next.ownerId, repair, STARBASE_HULL_REPAIR_ALLOY_COST_PER_POINT, 0.04)) {
         next = { ...next, hull: next.hull + repair };
         changed = true;
       }
@@ -392,6 +682,39 @@ export function processStarbaseRepairs(ctx: RuntimeContext, elapsedDays: number)
 }
 
 function spawnCompletedShip(ctx: RuntimeContext, starbase: ServerStarbase, item: { shipKind: StarbaseShipKind; designId?: string | null }): void {
+  if (item.shipKind === "defensePlatform") {
+    let fleet = ctx.state.fleets.find((candidate) => (
+      candidate.stationaryStarbaseId === starbase.id
+      && candidate.ownerId === starbase.ownerId
+      && candidate.combatStatus !== "destroyed"
+    ));
+    if (!fleet) {
+      fleet = createFleet(
+        ctx,
+        starbase.ownerId,
+        starbase.starId,
+        [],
+        ctx.createRuntimeId("defense-fleet", [starbase.ownerId, starbase.id]),
+      );
+      fleet.stationaryStarbaseId = starbase.id;
+      fleet.speed = 0;
+      fleet.phaseStartedAtYear = ctx.state.clock.year;
+      fleet.systemPosition = getSystemStarbaseOrbitPosition(starbase.systemPosition);
+      ctx.state.fleets.push(fleet);
+    }
+    const ship = createShip(
+      ctx,
+      starbase.ownerId,
+      fleet.id,
+      item.shipKind,
+      ctx.createRuntimeId("ship", [starbase.ownerId, item.shipKind]),
+      item.designId,
+    );
+    fleet.shipIds.push(ship.id);
+    ctx.state.ships.push(ship);
+    ctx.syncFleetMembership();
+    return;
+  }
   const fleetId = ctx.createRuntimeId("fleet", [starbase.ownerId, starbase.starId]);
   const ship = createShip(
     ctx,
@@ -402,6 +725,9 @@ function spawnCompletedShip(ctx: RuntimeContext, starbase: ServerStarbase, item:
     item.designId,
   );
   const fleet = createFleet(ctx, starbase.ownerId, starbase.starId, [ship.id], fleetId);
+  if (["scienceShip", "constructionShip", "colonizationShip", "armyShip"].includes(item.shipKind)) {
+    fleet.combatSettings.engagementRule = "avoid";
+  }
   fleet.phaseStartedAtYear = ctx.state.clock.year;
   fleet.speed = ship.speed;
   fleet.systemPosition = getSystemStarbaseOrbitPosition(starbase.systemPosition);
@@ -424,6 +750,7 @@ function completeQueuedShipUpgrade(ctx: RuntimeContext, item: StarbaseShipQueueI
   );
   if (!targetDesign) return false;
   applyShipDesignToShip(ship, targetDesign);
+  ship.disabled = false;
   ctx.syncFleetMembership();
   return true;
 }

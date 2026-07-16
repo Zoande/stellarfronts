@@ -19,9 +19,8 @@ import {
 } from "../../src/data/StarMap";
 import { buildHyperlanePairs, buildHyperlaneAdjacency } from "../../src/data/Hyperlanes";
 import { getSystemStarbasePosition } from "../../src/data/SystemCoordinates";
-import { buildFactions, buildHomeSystemOwnership, computeVisibleStarIds } from "../../src/data/Factions";
+import { buildFactions, buildHomeSystemOwnership } from "../../src/data/Factions";
 import {
-  buildNebulaStarIdSet,
   connectNebulaeWithHyperlanes,
   generateNebulae,
   stampNebulaIds,
@@ -40,7 +39,7 @@ import { createInitialGovernmentStates, normalizeGovernmentStatesForFactions } f
 import { createDefaultSpeciesRightsState } from "../../src/data/Species";
 import { createInitialDiplomacyState, normalizeDiplomacyState } from "../../src/data/Diplomacy";
 import { createInitialMarketState, normalizeMarketState } from "../../src/data/Market";
-import { createInitialLeaders, normalizeLeadersForFactions } from "../../src/data/Leaders";
+import { createInitialLeaders, getLeaderArchetypesByFaction, normalizeLeadersForFactions } from "../../src/data/Leaders";
 import {
   GAME_START_YEAR,
   gameYearToMonthIndex,
@@ -104,8 +103,14 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   );
   const adjacency = buildHyperlaneAdjacency(hyperlanes, stars.length);
   const planetStates = buildPlanetStatesFromStars(stars, homeStarIds);
-  applyPlanetStatesToStars(stars, planetStates);
   const starOwnership = buildHomeSystemOwnership(stars, factions);
+  for (const faction of factions) {
+    const homePlanet = planetStates.find((planetState) => (
+      planetState.starId === faction.homeStarId && planetState.isHabited
+    ));
+    if (homePlanet) homePlanet.ownerId = faction.id;
+  }
+  applyPlanetStatesToStars(stars, planetStates);
   const starbaseCombat = STARBASE_LEVEL_DEFINITIONS.starbase.combat;
   const starbases = factions.map<ServerStarbase>((faction) => ({
     id: `starbase-${faction.id}`,
@@ -152,6 +157,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     const constructionFleet = createFleet(ctx, faction.id, faction.homeStarId, [constructionShip.id], constructionFleetId);
     constructionFleet.phaseStartedAtYear = GAME_START_YEAR;
     constructionFleet.speed = constructionShip.speed;
+    constructionFleet.combatSettings.engagementRule = "avoid";
 
     return [combatFleet, constructionFleet];
   });
@@ -162,7 +168,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 22,
+    schemaVersion: 24,
     stars,
     nebulae,
     planetStates,
@@ -173,7 +179,12 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     speciesRights: factions.map((faction) => createDefaultSpeciesRightsState(faction.id, species.map((entry) => entry.id))),
     diplomacy: createInitialDiplomacyState(factions.map((faction) => faction.id)),
     market: createInitialMarketState(factions.map((faction) => faction.id), startHour, GAME_START_YEAR),
-    leaders: createInitialLeaders(factions.map((faction) => faction.id), startLeaderDay, GAME_START_YEAR),
+    leaders: createInitialLeaders(
+      factions.map((faction) => faction.id),
+      startLeaderDay,
+      GAME_START_YEAR,
+      getLeaderArchetypesByFaction(factions, species),
+    ),
     situations: [],
     events: [],
     factionModifiers: [],
@@ -186,9 +197,10 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     ships,
     fleets,
     recentCombatContacts: [],
-    discoveredByFaction: {},
-    metByFaction: {},
-    lastKnownOwnershipByFaction: {},
+    combatProjectiles: [],
+    combatReports: [],
+    intelligenceByFaction: {},
+    startingIntelligenceSeeded: false,
     clock: {
       year: GAME_START_YEAR,
       tickSizeDays: DEFAULT_TICK_SIZE_DAYS,
@@ -207,33 +219,6 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   recalculatePlanetEconomies(created);
   refreshFactionEconomyDeltas(created);
 
-  // Seed each faction's discovery with all other factions' capitals + their adjacent systems.
-  // This gives players immediate intel on where rivals started without granting ongoing vision.
-  // Nebula systems stay hidden (sensors don't reach inside even at game start).
-  const nebulaStarIds = buildNebulaStarIdSet(created.nebulae);
-  for (const faction of created.factions) {
-    const key = String(faction.id);
-    const seeded = new Set<number>(created.discoveredByFaction[key] ?? []);
-    for (const other of created.factions) {
-      if (other.id === faction.id) continue;
-      for (const starId of computeVisibleStarIds(created.adjacency, other.homeStarId, 1, nebulaStarIds)) {
-        seeded.add(starId);
-      }
-    }
-    created.discoveredByFaction[key] = Array.from(seeded).sort((a, b) => a - b);
-
-    // Record the ownership we learned for these revealed systems so their borders
-    // draw on the map. refreshDiscovery only stamps last-known ownership for the
-    // currently-visible set, which never includes these out-of-range capitals, so
-    // without this they would render as unowned (no borders) despite being shown.
-    const lastKnown = created.lastKnownOwnershipByFaction[key] ?? [];
-    while (lastKnown.length < created.stars.length) lastKnown.push(-1);
-    for (const starId of seeded) {
-      lastKnown[starId] = created.starOwnership[starId] ?? -1;
-    }
-    created.lastKnownOwnershipByFaction[key] = lastKnown;
-  }
-
   refreshDiscovery(created);
   return created;
 }
@@ -246,12 +231,12 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     // opened by an older version). The orchestrator gates updates so this is a
     // last-line guard against save corruption.
     const onDiskSchema = Number(parsed.schemaVersion);
-    if (Number.isFinite(onDiskSchema) && !canMigrateFromSchema(VERSION_MANIFEST, onDiskSchema)) {
+    if (!canMigrateFromSchema(VERSION_MANIFEST, onDiskSchema)) {
       throw new Error(
         `Game ${ctx.game.id} ctx.state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
       );
     }
-    parsed.schemaVersion = 22;
+    parsed.schemaVersion = 24;
     delete (parsed as GameState & { battles?: unknown }).battles;
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
@@ -271,13 +256,20 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       ctx.hasDirtyState = true;
     }
     parsed.adjacency = buildHyperlaneAdjacency(parsed.hyperlanes, parsed.stars.length);
-    parsed.discoveredByFaction = parsed.discoveredByFaction ?? {};
-    parsed.metByFaction = parsed.metByFaction ?? {};
+    parsed.intelligenceByFaction = parsed.intelligenceByFaction ?? {};
+    parsed.startingIntelligenceSeeded = parsed.startingIntelligenceSeeded === true;
     parsed.situations = Array.isArray(parsed.situations) ? parsed.situations : [];
     parsed.events = Array.isArray(parsed.events) ? parsed.events : [];
     parsed.factionModifiers = Array.isArray(parsed.factionModifiers) ? parsed.factionModifiers : [];
-    parsed.lastKnownOwnershipByFaction = parsed.lastKnownOwnershipByFaction ?? {};
     parsed.recentCombatContacts = [];
+    parsed.combatProjectiles = Array.isArray(parsed.combatProjectiles) ? parsed.combatProjectiles : [];
+    parsed.combatReports = Array.isArray(parsed.combatReports)
+      ? parsed.combatReports.map((report) => ({
+        ...report,
+        retreatedFleetIds: Array.isArray(report.retreatedFleetIds) ? report.retreatedFleetIds : [],
+        repairSpending: report.repairSpending && typeof report.repairSpending === "object" ? report.repairSpending : {},
+      }))
+      : [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
     parsed.clock = normalizeClock(parsed.clock);
     const factionsBeforeSpecies = JSON.stringify(parsed.factions ?? []);
@@ -324,6 +316,14 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     if (syncFleetMembership(ctx, parsed)) {
       ctx.hasDirtyState = true;
     }
+    const rawFleetById = new Map(rawFleets.map((fleet) => [fleet.id, fleet]));
+    for (const fleet of parsed.fleets) {
+      if (rawFleetById.get(fleet.id)?.combatSettings?.engagementRule) continue;
+      const members = fleet.shipIds.map((id) => parsed.ships.find((ship) => ship.id === id)).filter((ship): ship is NonNullable<typeof ship> => !!ship);
+      if (members.length > 0 && members.every((ship) => ["scienceShip", "constructionShip", "colonizationShip", "armyShip"].includes(ship.shipKind))) {
+        fleet.combatSettings.engagementRule = "avoid";
+      }
+    }
     const ownershipChanged = syncSystemOwnershipFromStarbases(parsed);
     const metadataChanged = normalizeCelestialObjectDetails(parsed.stars);
     const habitationChanged = ensureHabitedHomePlanets(
@@ -363,6 +363,7 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       parsed.leaders,
       getLeaderDayIndex(parsed.clock.year),
       parsed.clock.year,
+      getLeaderArchetypesByFaction(parsed.factions, parsed.species),
     );
     const leadersChanged = JSON.stringify(parsed.leaders ?? []) !== JSON.stringify(normalizedLeaders);
     parsed.leaders = normalizedLeaders;

@@ -53,6 +53,21 @@ test("default colonization ship design has utility systems and no weapons", () =
   assert.ok(stats.cost.goods > 0);
 });
 
+test("new specialist hulls receive their dedicated sensors and platform sections", () => {
+  const platform = createDefaultShipDesign(1, "defensePlatform", 2100);
+  const science = createDefaultShipDesign(1, "scienceShip", 2100);
+  const army = createDefaultShipDesign(1, "armyShip", 2100);
+
+  assert.deepEqual(platform.weaponSectionModuleIds, ["weapon_section_defense_platform_battery"]);
+  assert.deepEqual(platform.defenseSectionModuleIds, ["defense_section_defense_platform_bastion"]);
+  assert.equal(calculateShipDesignStats(platform).speed, 0);
+  assert.equal(platform.utilityModuleIds.includes("utility_optical_array"), true);
+  assert.equal(science.utilityModuleIds.includes("utility_survey_array"), true);
+  assert.equal(science.utilityModuleIds.includes("utility_optical_array"), false);
+  assert.equal(army.weaponSectionModuleIds.length, 0);
+  assert.equal(calculateShipDesignStats(army).combat.weaponMounts.length, 0);
+});
+
 test("default larger combat hulls produce valid scaled layouts", () => {
   const cases = [
     { kind: "destroyer" as const, weaponSections: 1, defenseSections: 1, utilities: 6, weapons: 3, defenses: 4 },

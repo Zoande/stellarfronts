@@ -48,7 +48,6 @@ import {
 import type { TechId } from "../../src/data/Technology";
 import { SHORTAGE_SITUATION_ID, situationInstanceId } from "../../src/data/Situations";
 import { getEventDefinition, LEADER_OFFER_EVENT_ID } from "../../src/data/Events";
-import { computeVisibleStarIds } from "../../src/data/Factions";
 import type { GalaxyPerspective } from "../../src/data/Factions";
 import { HUMAN_SPECIES_ID } from "../../src/data/Species";
 import { getFleetTacticalRadius } from "../../src/game/tacticalFormation";
@@ -62,7 +61,7 @@ import type { AdminCommandContext, AdminCommandResult, AdminCommandRow, ParsedAd
 import type { ClientCommand, ServerStarbase, ServerUpdateField } from "../../src/game/GameProtocol";
 import { getWeaponId } from "./combat";
 import { saveState } from "./persistence";
-import { RECENT_COMBAT_CONTACT_HISTORY, DISCOVERY_JUMPS } from "./constants";
+import { RECENT_COMBAT_CONTACT_HISTORY } from "./constants";
 import { clamp, systemCenterPosition, cloneSystemPosition } from "./pure-helpers";
 import { normalizeCombatStance, isFleetBehavior, isFleetChasePolicy, isFleetRetreatPolicy, isDistrictKind, isValidSlotIndex } from "./validators";
 import {
@@ -78,6 +77,8 @@ import { createFleet, createShipFromDesign, createDefaultFleetCombatSettings, sy
 import { clearFleetMovementNow, getDefaultMoveDestination, startMoveOrder, removeDestroyedShips, getStarbaseWeaponMounts } from "./fleet-combat";
 import { normalizeStarbase, syncFleetMembership, syncSystemOwnershipFromStarbases, syncShipsForDesign } from "./state-normalization";
 import { queueFactionEvent, buildLeaderOfferContext, sendFleetMissing } from "./leaders-events";
+import { getSensorDebugView, grantOneShotIntelReport, revokeIntelReport } from "./intelligence";
+import type { IntelEntityKind } from "../../src/data/Intelligence";
 import type { GameFleet, GameShip, RuntimeContext } from "./types";
 
 const SPEED_PRESETS: Record<string, { tickSizeDays: number; tickSpeedSeconds: number }> = {
@@ -623,7 +624,7 @@ export async function executeAdminCommand(
       const token = parsed.args[0] ?? "selected";
       const owner = resolvePerspectiveOwner(context, perspective);
       const planets = token === "all_owned"
-        ? ctx.state.planetStates.filter((planet) => ctx.state.starOwnership[planet.starId] === owner)
+        ? ctx.state.planetStates.filter((planet) => planet.ownerId === owner)
         : [resolvePlanetToken(ctx, token, context)];
       for (const planet of planets) planet.constructionQueue = [];
       ctx.refreshFactionEconomyDeltas();
@@ -642,50 +643,47 @@ export async function executeAdminCommand(
       ctx.refreshFactionEconomyDeltas();
       return changedResult(ctx, `Cleared ${starbases.length} starbase queue(s).`, ["starbases", "factionEconomies"]);
     }
-    case "discover": {
+    case "intel_inspect": {
       const owner = resolveOwnerToken(ctx, parsed.args[0], context, perspective);
-      const target = parsed.args[1] ?? "current";
-      const jumps = integerArg(commandOption(parsed, "jumps") ?? parsed.args[2] ?? "0", "jumps", 0, ctx.state.stars.length);
-      const current = new Set(ctx.state.discoveredByFaction[String(owner)] ?? []);
-      const addSystem = (starId: number) => {
-        current.add(starId);
-        if (jumps > 0) {
-          for (const visible of computeVisibleStarIds(ctx.state.adjacency, starId, jumps)) current.add(visible);
-        }
+      const kind = parsed.args[1];
+      const id = parsed.args[2];
+      const store = ctx.state.intelligenceByFaction[String(owner)];
+      const rows = Object.entries(store?.entities ?? {})
+        .filter(([key]) => !kind || key.startsWith(`${kind}:`))
+        .filter(([key]) => !id || key === `${kind}:${id}`)
+        .map(([key, entity]) => ({ entity: key, fields: Object.keys(entity.fields).length }));
+      return { message: `Intelligence for faction ${owner}.`, rows };
+    }
+    case "intel_report": {
+      const owner = resolveOwnerToken(ctx, parsed.args[0], context, perspective);
+      const kind = parsed.args[1] as IntelEntityKind;
+      const id = parsed.args[2];
+      if (!id || !["star", "system", "planet", "starbase", "fleet", "ship", "faction"].includes(kind)) throw new Error("Invalid intelligence entity.");
+      const fields = typeof commandOption(parsed, "fields") === "string" ? String(commandOption(parsed, "fields")).split(",").filter(Boolean) : undefined;
+      if (!grantOneShotIntelReport(ctx.state, owner, kind, id, fields)) throw new Error("Intelligence entity not found.");
+      ctx.refreshDiscovery();
+      return changedResult(ctx, "Intelligence report added.", ["visibility"]);
+    }
+    case "intel_revoke": {
+      const owner = resolveOwnerToken(ctx, parsed.args[0], context, perspective);
+      const kind = parsed.args[1] as IntelEntityKind | undefined;
+      const id = parsed.args[2];
+      const count = revokeIntelReport(ctx.state, owner, kind, id);
+      ctx.refreshDiscovery();
+      return changedResult(ctx, `${count} intelligence record(s) revoked.`, ["visibility"]);
+    }
+    case "sensor_debug": {
+      const owner = resolveOwnerToken(ctx, parsed.args[0], context, perspective);
+      ctx.refreshDiscovery();
+      const debug = getSensorDebugView(ctx.state, owner);
+      return {
+        message: `Sensor coverage for faction ${owner}.`,
+        rows: [
+          ...debug.sourceBands.map((band) => ({ type: "band", source: band.sourceId, suite: band.suiteId, starId: band.starId, distance: band.distance })),
+          ...debug.nebulaBlocks.map((block) => ({ type: "nebulaBlock", source: block.sourceId, from: block.fromStarId, to: block.toStarId })),
+          { type: "summary", covered: debug.coveredStarIds.length, commandLinks: debug.commandLinkedStarIds.length, knownLanes: debug.knownLanes.length },
+        ],
       };
-      if (target === "all") {
-        ctx.state.stars.forEach((_, starId) => current.add(starId));
-      } else {
-        addSystem(resolveSystemToken(ctx, target, context));
-      }
-      ctx.state.discoveredByFaction[String(owner)] = Array.from(current).sort((a, b) => a - b);
-      ctx.refreshDiscovery();
-      return changedResult(ctx, "Discovery updated.", ["visibility"]);
-    }
-    case "forget": {
-      const owner = resolveOwnerToken(ctx, parsed.args[0], context, perspective);
-      const target = parsed.args[1] ?? "current";
-      if (target === "all") {
-        ctx.state.discoveredByFaction[String(owner)] = [];
-      } else {
-        const starId = resolveSystemToken(ctx, target, context);
-        ctx.state.discoveredByFaction[String(owner)] = (ctx.state.discoveredByFaction[String(owner)] ?? []).filter((id) => id !== starId);
-      }
-      ctx.refreshDiscovery();
-      return changedResult(ctx, "Discovery removed.", ["visibility"]);
-    }
-    case "reveal_all": {
-      const owner = resolveOwnerToken(ctx, parsed.args[0], context, perspective);
-      ctx.state.discoveredByFaction[String(owner)] = ctx.state.stars.map((_, index) => index);
-      ctx.refreshDiscovery();
-      return changedResult(ctx, "All systems revealed.", ["visibility"]);
-    }
-    case "reset_visibility": {
-      const owner = resolveOwnerToken(ctx, parsed.args[0], context, perspective);
-      const faction = ctx.state.factions.find((candidate) => candidate.id === owner);
-      ctx.state.discoveredByFaction[String(owner)] = faction ? Array.from(computeVisibleStarIds(ctx.state.adjacency, faction.homeStarId, DISCOVERY_JUMPS)) : [];
-      ctx.refreshDiscovery();
-      return changedResult(ctx, "Visibility reset.", ["visibility"]);
     }
     case "own_system": {
       const starId = resolveSystemToken(ctx, parsed.args[0], context);
@@ -763,7 +761,7 @@ export async function executeAdminCommand(
     case "complete_planet_queue": {
       const token = parsed.args[0] ?? "selected";
       const owner = resolvePerspectiveOwner(context, perspective);
-      const planets = token === "all_owned" ? ctx.state.planetStates.filter((planet) => ctx.state.starOwnership[planet.starId] === owner) : [resolvePlanetToken(ctx, token, context)];
+      const planets = token === "all_owned" ? ctx.state.planetStates.filter((planet) => planet.ownerId === owner) : [resolvePlanetToken(ctx, token, context)];
       for (const planet of planets) {
         const result = progressPlanetConstructionQueue(
           planet,
@@ -795,7 +793,7 @@ export async function executeAdminCommand(
       const planet = resolvePlanetToken(ctx, parsed.args[0], context);
       const amount = numberArg(parsed.args[1], "population", name === "set_population" ? 0 : Number.NEGATIVE_INFINITY);
       planet.population = name === "add_population" ? Math.max(0, planet.population + amount) : amount;
-      const ownerId = ctx.state.starOwnership[planet.starId] ?? -1;
+      const ownerId = planet.ownerId ?? -1;
       const foundingSpeciesId = ctx.state.factions.find((faction) => faction.id === ownerId)?.foundingSpeciesId ?? HUMAN_SPECIES_ID;
       planet.speciesPopulations = [{ speciesId: foundingSpeciesId, population: planet.population }];
       const recalculated = recalculatePlanetStateEconomy(

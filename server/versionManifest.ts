@@ -10,8 +10,8 @@
  */
 
 // Bump these in lockstep with GameState.schemaVersion and the snapshot protocol.
-export const CURRENT_SCHEMA_VERSION = 22;
-export const CURRENT_PROTOCOL_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 24;
+export const CURRENT_PROTOCOL_VERSION = 4;
 
 export interface VersionManifest {
   versionId: string;
@@ -21,19 +21,12 @@ export interface VersionManifest {
   migratesFromSchema: number[];
 }
 
-function rangeInclusive(from: number, to: number): number[] {
-  const out: number[] = [];
-  for (let value = from; value <= to; value += 1) out.push(value);
-  return out;
-}
-
 export const VERSION_MANIFEST: VersionManifest = {
   versionId: process.env.SF_VERSION_ID ?? "dev",
   protocolVersion: CURRENT_PROTOCOL_VERSION,
   schemaVersion: CURRENT_SCHEMA_VERSION,
-  // The loader normalizes any prior schema, so this build accepts every schema
-  // up to its own. Narrow this in a future build that drops backward support.
-  migratesFromSchema: rangeInclusive(1, CURRENT_SCHEMA_VERSION),
+  // Intelligence v3 deliberately starts new games; legacy saves are not migrated.
+  migratesFromSchema: [23, CURRENT_SCHEMA_VERSION],
 };
 
 export function canMigrateFromSchema(manifest: VersionManifest, fromSchema: number): boolean {

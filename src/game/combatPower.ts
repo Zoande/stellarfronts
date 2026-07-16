@@ -6,8 +6,22 @@ import type { ServerShip, ServerStarbaseSummary } from "./GameProtocol";
 
 export const DEFAULT_ROUNDS_TO_KILL_ESTIMATE = 4;
 
-export function computeWeaponDamage(mounts: WeaponMountDefinition[]): number {
-  return mounts.reduce((total, mount) => total + mount.damage * mount.barrels, 0);
+function getCooldownHours(mount: WeaponMountDefinition): number {
+  if (Number.isFinite(mount.cooldownHours) && Number(mount.cooldownHours) > 0) return Number(mount.cooldownHours);
+  const cycles = Math.max(1, mount.cooldownRounds ?? 1);
+  const base = mount.kind === "pointDefense" ? 0.5 : mount.kind === "laser" ? 18 : mount.kind === "railgun" ? 24 : 18;
+  return base * cycles;
+}
+
+export function computeWeaponSustainedOutput(mounts: WeaponMountDefinition[]): number {
+  return mounts.reduce((total, mount) => {
+    const averageLayerEffect = (
+      (mount.shieldDamageMultiplier ?? 1)
+      + (mount.armorDamageMultiplier ?? 1)
+      + (mount.hullDamageMultiplier ?? 1)
+    ) / 3;
+    return total + (mount.damage * mount.barrels * Math.max(0, mount.accuracy) * averageLayerEffect) / getCooldownHours(mount);
+  }, 0);
 }
 
 export function computeCombatPowerFromStats(
@@ -15,10 +29,10 @@ export function computeCombatPowerFromStats(
   roundsToKillEstimate = DEFAULT_ROUNDS_TO_KILL_ESTIMATE,
 ): number {
   return (
-    stats.maxShield * 0.5
-    + stats.maxArmor * 0.8
-    + stats.maxHull * 1.0
-    + computeWeaponDamage(stats.weaponMounts) * roundsToKillEstimate
+    stats.maxShield * 0.85
+    + stats.maxArmor * 0.95
+    + stats.maxHull
+    + computeWeaponSustainedOutput(stats.weaponMounts) * roundsToKillEstimate * 24
   );
 }
 
@@ -33,11 +47,13 @@ export function computeShipPower(
   const weaponMounts = design
     ? calculateShipDesignStats(design).combat.weaponMounts
     : (STARBASE_SHIP_DEFINITIONS[ship.shipKind] ?? STARBASE_SHIP_DEFINITIONS.corvette).combat.weaponMounts;
+  const functioningMounts = weaponMounts.filter((_, index) => !ship.subsystemState?.disabledWeaponKeys.includes(String(index)));
+  const currentDurabilityRatio = (
+    ship.shield + ship.armor + ship.hull
+  ) / Math.max(1, ship.maxShield + ship.maxArmor + ship.maxHull);
   return (
-    ship.maxShield * 0.5
-    + ship.maxArmor * 0.8
-    + ship.maxHull * 1.0
-    + computeWeaponDamage(weaponMounts) * roundsToKillEstimate
+    (ship.maxShield * 0.85 + ship.maxArmor * 0.95 + ship.maxHull) * (0.5 + 0.5 * currentDurabilityRatio)
+    + computeWeaponSustainedOutput(functioningMounts) * roundsToKillEstimate * 24
   );
 }
 

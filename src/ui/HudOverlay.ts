@@ -2,10 +2,10 @@ import type { GameClock } from "../game/GameProtocol";
 import { RESOURCE_KINDS, RESOURCE_LABELS } from "../data/Economy";
 import type { FactionEconomyState, ResourceCounts, ResourceKind } from "../data/Economy";
 import {
-  GAME_HOURS_PER_MONTH,
   gameYearToDateTime,
   estimateClockYear,
 } from "../game/GameTime";
+import { monthlyToRealMinute, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
 import { createFlagDesign } from "../flags/flagGenerator";
 import { renderFlagSvg } from "../flags/renderFlagSvg";
 import type { FlagDesign } from "../flags/flagTypes";
@@ -931,7 +931,7 @@ function formatPeople(value: number): string {
 
 function formatDelta(value: number): string {
   const sign = value >= 0 ? "+" : "";
-  return `${sign}${formatCompactNumber(value)}/hr`;
+  return `${sign}${formatCompactNumber(value)}${RESOURCE_RATE_LABEL}`;
 }
 
 function escapeHtml(value: string): string {
@@ -1118,7 +1118,7 @@ export class HudOverlay {
         const resources = RESOURCE_KINDS.map((resource) => {
           const stockpile = state.economy?.stockpiles[resource] ?? 0;
           const monthlyDelta = state.economy?.monthlyDelta[resource] ?? 0;
-          const delta = monthlyDelta / GAME_HOURS_PER_MONTH;
+          const delta = monthlyToRealMinute(monthlyDelta);
           return `
             <div class="spaceHudResourceItem" data-hud-tooltip="${escapeHtml(this.renderResourceTooltip(resource, stockpile, monthlyDelta, state.economy?.marketMonthlyDelta?.[resource] ?? 0, state.resourcePlanets ?? []))}">
               <span class="spaceHudResourceIcon has-image" aria-hidden="true"><img src="${RESOURCE_ICON_URLS[resource]}" alt="" loading="eager" decoding="async" /></span>
@@ -1234,7 +1234,7 @@ export class HudOverlay {
     marketMonthlyDelta: number,
     planets: HudResourcePlanetSummary[],
   ): string {
-    const hourlyDelta = monthlyDelta / GAME_HOURS_PER_MONTH;
+    const minuteDelta = monthlyToRealMinute(monthlyDelta);
     const hasMarketDelta = Math.abs(marketMonthlyDelta) > 0.0001;
     const planetRows = planets
       .filter((planet) => Math.abs(planet.net[resource]) > 0.0001 || Math.abs(planet.production[resource]) > 0.0001 || Math.abs(planet.upkeep[resource]) > 0.0001)
@@ -1244,9 +1244,8 @@ export class HudOverlay {
       <p>Faction stockpile and projected income from owned planets${hasMarketDelta ? " plus automatic market trades" : ""}.</p>
       <div class="spaceHudTooltipGrid">
         ${this.renderTooltipGridItem("Stockpile", formatCompactNumber(stockpile))}
-        ${this.renderTooltipGridItem("Monthly Net", formatSignedCompactNumber(monthlyDelta))}
-        ${this.renderTooltipGridItem("Hourly Net", formatDelta(hourlyDelta))}
-        ${hasMarketDelta ? this.renderTooltipGridItem("Market Auto", `${formatSignedCompactNumber(marketMonthlyDelta)}/mo`) : ""}
+        ${this.renderTooltipGridItem("Net", formatDelta(minuteDelta))}
+        ${hasMarketDelta ? this.renderTooltipGridItem("Market Auto", formatDelta(monthlyToRealMinute(marketMonthlyDelta))) : ""}
         ${this.renderTooltipGridItem("Planets", String(planetRows.length))}
       </div>
       <div class="spaceHudTooltipSectionTitle">Planet Net</div>
@@ -1254,7 +1253,7 @@ export class HudOverlay {
         ${planetRows.length
           ? planetRows.map((planet) => this.renderTooltipListRow(
             `${planet.name} (${planet.starName})`,
-            `${formatSignedCompactNumber(planet.net[resource])}/mo`,
+            `${formatSignedCompactNumber(monthlyToRealMinute(planet.net[resource]))}${RESOURCE_RATE_LABEL}`,
             this.renderPlanetResourceTooltip(resource, planet),
           )).join("")
           : '<span>No known planet contribution</span>'}
@@ -1268,10 +1267,10 @@ export class HudOverlay {
       <p>${escapeHtml(planet.starName)} system resource breakdown.</p>
       <div class="spaceHudTooltipGrid">
         ${this.renderTooltipGridItem("Population", formatPeople(planet.population))}
-        ${this.renderTooltipGridItem("Net", `${formatSignedCompactNumber(planet.net[resource])}/mo`)}
-        ${this.renderTooltipGridItem("Production", `${formatCompactNumber(planet.production[resource])}/mo`)}
-        ${this.renderTooltipGridItem("Upkeep", `${formatCompactNumber(planet.upkeep[resource])}/mo`)}
-        ${this.renderTooltipGridItem("Deficit", planet.deficit[resource] > 0 ? `${formatCompactNumber(planet.deficit[resource])}/mo` : "0")}
+        ${this.renderTooltipGridItem("Net", `${formatSignedCompactNumber(monthlyToRealMinute(planet.net[resource]))}${RESOURCE_RATE_LABEL}`)}
+        ${this.renderTooltipGridItem("Production", `${formatCompactNumber(monthlyToRealMinute(planet.production[resource]))}${RESOURCE_RATE_LABEL}`)}
+        ${this.renderTooltipGridItem("Upkeep", `${formatCompactNumber(monthlyToRealMinute(planet.upkeep[resource]))}${RESOURCE_RATE_LABEL}`)}
+        ${this.renderTooltipGridItem("Deficit", planet.deficit[resource] > 0 ? `${formatCompactNumber(monthlyToRealMinute(planet.deficit[resource]))}${RESOURCE_RATE_LABEL}` : "0/min")}
       </div>
     `;
   }

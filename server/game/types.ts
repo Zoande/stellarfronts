@@ -14,10 +14,13 @@ import type { ActiveSituation } from "../../src/data/Situations";
 import type { ActiveEvent } from "../../src/data/Events";
 import type { FactionModifierState } from "../../src/data/GameEffects";
 import type { ShipDesign } from "../../src/data/ShipDesigns";
+import type { IntelligenceByFaction } from "../../src/data/Intelligence";
 import type {
   GameClock,
   GameDetailScope,
   ServerCombatContact,
+  ServerCombatProjectile,
+  CombatAfterActionReport,
   ServerFleet,
   ServerShip,
   ServerStarbase,
@@ -33,7 +36,7 @@ export interface GameFleet extends ServerFleet {
 export interface GameShip extends ServerShip {}
 
 export interface GameState {
-  schemaVersion: 22;
+  schemaVersion: 23 | 24;
   stars: StarData[];
   nebulae: NebulaRegion[];
   planetStates: PlanetState[];
@@ -57,11 +60,10 @@ export interface GameState {
   ships: GameShip[];
   fleets: GameFleet[];
   recentCombatContacts: ServerCombatContact[];
-  discoveredByFaction: Record<string, number[]>;
-  // Symmetric first-contact record: metByFaction[a] lists every faction id that
-  // faction a has discovered (and that has therefore discovered a). Monotonic.
-  metByFaction: Record<string, number[]>;
-  lastKnownOwnershipByFaction: Record<string, number[]>;
+  combatProjectiles: ServerCombatProjectile[];
+  combatReports: CombatAfterActionReport[];
+  intelligenceByFaction: IntelligenceByFaction;
+  startingIntelligenceSeeded: boolean;
   clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number; lastProcessedLeaderDay: number };
 }
 
@@ -97,6 +99,8 @@ export interface RuntimeContext {
   pendingPlanetDetailRefreshes: Set<string>;
   hasDirtyState: boolean;
   lastSaveAt: number;
+  saveInFlight: Promise<void> | null;
+  saveQueued: boolean;
   runtimeIdCounter: number;
   eventInstanceSeq: number;
   // Method fields wired up inside createGameRuntime (hoisted declarations, so safe to reference at ctx init).
@@ -107,6 +111,7 @@ export interface RuntimeContext {
   refreshFactionEconomyDeltas: () => void;
   queuePlanetDetailRefresh: (planetId: string) => void;
   refreshDiscovery: () => void;
+  refreshIntelligence: () => void;
   syncSystemOwnershipFromStarbases: () => boolean;
   syncFleetMembership: () => boolean;
   createRuntimeId: (prefix: string, parts?: Array<string | number | undefined>) => string;

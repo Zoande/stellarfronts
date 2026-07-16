@@ -2,6 +2,8 @@ import {
   RANGE_BAND_INDEX,
   rangeBandFromIndex,
   type RangeBand,
+  type CombatAttackClass,
+  type CombatCounterClass,
 } from "../../src/game/CombatTypes";
 import { WEAPON_KIND_DEFINITIONS } from "../../src/data/Starbase";
 import type { WeaponMountDefinition } from "../../src/data/Starbase";
@@ -49,16 +51,64 @@ export function getWeaponCooldownRounds(mount: WeaponMountDefinition): number {
   return Math.max(1, Math.round(mount.cooldownRounds ?? WEAPON_KIND_DEFINITIONS[mount.kind]?.cooldownRounds ?? 1));
 }
 
+export function getWeaponCooldownHours(mount: WeaponMountDefinition): number {
+  if (Number.isFinite(mount.cooldownHours) && Number(mount.cooldownHours) > 0) return Number(mount.cooldownHours);
+  const cycles = Math.max(1, Number(mount.cooldownRounds ?? WEAPON_KIND_DEFINITIONS[mount.kind]?.cooldownRounds ?? 1));
+  const base = mount.kind === "pointDefense" ? 0.5
+    : mount.kind === "laser" ? 18
+      : mount.kind === "railgun" ? 24
+        : 18;
+  return base * cycles;
+}
+
+export function getWeaponAttackClass(mount: WeaponMountDefinition): CombatAttackClass {
+  if (mount.attackClass) return mount.attackClass;
+  if (mount.kind === "laser") return "beam";
+  if (mount.kind === "railgun") return "kinetic";
+  if (mount.kind === "plasma") return "plasma";
+  if (mount.kind === "pointDefense") return "pointDefense";
+  return (mount.id ?? "").includes("torpedo") ? "torpedo" : "missile";
+}
+
+export function getWeaponTravelSpeed(mount: WeaponMountDefinition): number {
+  if (Number.isFinite(mount.travelSpeed) && Number(mount.travelSpeed) > 0) return Number(mount.travelSpeed);
+  switch (getWeaponAttackClass(mount)) {
+    case "beam": return 640;
+    case "pointDefense": return 720;
+    case "kinetic": return 48;
+    case "plasma": return 16;
+    case "torpedo": return 6;
+    case "missile": return 9;
+  }
+}
+
+export function getWeaponInterceptableBy(mount: WeaponMountDefinition): CombatCounterClass[] {
+  if (mount.interceptableBy) return [...mount.interceptableBy];
+  const attackClass = getWeaponAttackClass(mount);
+  if (attackClass === "missile" || attackClass === "torpedo") return ["pointDefense"];
+  if (attackClass === "beam") return ["beamDiffraction"];
+  if (attackClass === "kinetic") return ["kineticDeflection"];
+  if (attackClass === "plasma") return ["plasmaDispersion"];
+  if (attackClass === "pointDefense") return ["closeDefenseSuppression"];
+  return [];
+}
+
+export function getWeaponCounterClass(mount: WeaponMountDefinition): CombatCounterClass | null {
+  return mount.counterClass ?? (mount.kind === "pointDefense" ? "pointDefense" : null);
+}
+
 export function getWeaponMinRangeBand(mount: WeaponMountDefinition): RangeBand {
   return mount.minRangeBand ?? WEAPON_KIND_DEFINITIONS[mount.kind]?.minRangeBand ?? "pointBlank";
 }
 
 export function getWeaponMaxRangeBand(mount: WeaponMountDefinition): RangeBand {
-  return mount.maxRangeBand ?? WEAPON_KIND_DEFINITIONS[mount.kind]?.maxRangeBand ?? "close";
+  const band = mount.maxRangeBand ?? WEAPON_KIND_DEFINITIONS[mount.kind]?.maxRangeBand ?? "close";
+  return band === "outOfRange" ? "extreme" : band;
 }
 
 export function getWeaponOptimalRangeBand(mount: WeaponMountDefinition): RangeBand {
-  return mount.optimalRangeBand ?? WEAPON_KIND_DEFINITIONS[mount.kind]?.optimalRangeBand ?? getWeaponMaxRangeBand(mount);
+  const band = mount.optimalRangeBand ?? WEAPON_KIND_DEFINITIONS[mount.kind]?.optimalRangeBand ?? getWeaponMaxRangeBand(mount);
+  return band === "outOfRange" ? "extreme" : band;
 }
 
 export function weaponCanFireAtRange(mount: WeaponMountDefinition, rangeBand: RangeBand): boolean {
@@ -128,7 +178,9 @@ export function getLegacyWeaponRange(mount: WeaponMountDefinition): number {
 
 export function getPreferredRangeBand(mounts: WeaponMountDefinition[]): RangeBand {
   if (mounts.length === 0) return "close";
-  const average = mounts.reduce((total, mount) => total + RANGE_BAND_INDEX[getWeaponOptimalRangeBand(mount)], 0) / mounts.length;
+  const weights = mounts.map((mount) => Math.max(0.001, mount.damage * mount.barrels * clamp(mount.accuracy, 0, 1) / getWeaponCooldownHours(mount)));
+  const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+  const average = mounts.reduce((total, mount, index) => total + RANGE_BAND_INDEX[getWeaponOptimalRangeBand(mount)] * weights[index], 0) / weightTotal;
   return rangeBandFromIndex(average);
 }
 
@@ -141,7 +193,7 @@ export function rollWeaponShot(
   if (rng() >= accuracy) {
     return { hit: false, accuracyMiss: true, dodged: false };
   }
-  if (rng() < clamp(targetEvasion, 0, 0.95)) {
+  if (rng() < clamp(targetEvasion - (mount.tracking ?? 0), 0, 0.95)) {
     return { hit: false, accuracyMiss: false, dodged: true };
   }
   return { hit: true, accuracyMiss: false, dodged: false };
@@ -154,20 +206,27 @@ export function applyWeaponDamage(
   const shieldPen = clamp(mount.shieldPenetration, 0, 1);
   const armorPen = clamp(mount.armorPenetration, 0, 1);
   const damage = Math.max(0, mount.damage * mount.barrels);
+  const shieldMultiplier = Math.max(0.01, mount.shieldDamageMultiplier ?? 1);
+  const armorMultiplier = Math.max(0.01, mount.armorDamageMultiplier ?? 1);
+  const hullMultiplier = Math.max(0.01, mount.hullDamageMultiplier ?? 1);
 
-  const shieldComponent = damage * (1 - shieldPen);
-  const shieldDamage = Math.min(target.shield, shieldComponent);
+  const shieldComponentBase = damage * (1 - shieldPen);
+  const shieldPotential = shieldComponentBase * shieldMultiplier;
+  const shieldDamage = Math.min(target.shield, shieldPotential);
   target.shield = Math.max(0, target.shield - shieldDamage);
-  const shieldOverflow = Math.max(0, shieldComponent - shieldDamage);
-  const afterShield = damage * shieldPen + shieldOverflow;
+  const shieldConsumedBase = shieldDamage / shieldMultiplier;
+  const shieldOverflowBase = Math.max(0, shieldComponentBase - shieldConsumedBase);
+  const afterShieldBase = damage * shieldPen + shieldOverflowBase;
 
-  const armorComponent = afterShield * (1 - armorPen);
-  const armorDamage = Math.min(target.armor, armorComponent);
+  const armorComponentBase = afterShieldBase * (1 - armorPen);
+  const armorPotential = armorComponentBase * armorMultiplier;
+  const armorDamage = Math.min(target.armor, armorPotential);
   target.armor = Math.max(0, target.armor - armorDamage);
-  const armorOverflow = Math.max(0, armorComponent - armorDamage);
-  const afterArmor = afterShield * armorPen + armorOverflow;
+  const armorConsumedBase = armorDamage / armorMultiplier;
+  const armorOverflowBase = Math.max(0, armorComponentBase - armorConsumedBase);
+  const afterArmorBase = afterShieldBase * armorPen + armorOverflowBase;
 
-  const hullDamage = Math.min(target.hull, afterArmor);
+  const hullDamage = Math.min(target.hull, afterArmorBase * hullMultiplier);
   target.hull = Math.max(0, target.hull - hullDamage);
 
   return {

@@ -18,6 +18,7 @@ import {
   restoreScrollStateSoon,
 } from "./panelDomState";
 import { requestOpenLeadersPanel } from "./leaderEvents";
+import { monthlyToRealMinute, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
 
 export interface PlanetOperationsPanelData {
   planets: PlanetManagerPlanetEntry[];
@@ -359,12 +360,12 @@ export class PlanetOperationsPanel {
 
   private renderResourceCell(entry: PlanetManagerPlanetEntry, resource: ResourceKind, maxValue: number): string {
     const economy = entry.planetState.economy;
-    const value = economy.net[resource];
+    const value = monthlyToRealMinute(economy.net[resource]);
     const hasDeficit = economy.deficit[resource] > 0.0001 || value < -0.0001;
     const width = Math.max(9, Math.min(100, Math.abs(value) / Math.max(1, maxValue) * 100));
     return `
       <div class="poResourceCell ${hasDeficit ? "deficit" : "positive"}">
-        <strong>${this.escapeHtml(this.formatSignedCompact(value))}</strong>
+        <strong>${this.escapeHtml(`${this.formatSignedCompact(value)}${RESOURCE_RATE_LABEL}`)}</strong>
         ${hasDeficit ? `<small>${economy.deficit[resource] > 0.0001 ? "Deficit" : "Shortfall"}</small>` : "<small>&nbsp;</small>"}
         <span class="poCellBar"><i style="width: ${width.toFixed(2)}%"></i></span>
       </div>
@@ -379,7 +380,7 @@ export class PlanetOperationsPanel {
     const portraitStyle = leader?.portraitUrl ? ` style="background-image: url('${this.escapeAttribute(leader.portraitUrl)}')"` : "";
     return `
       <button class="poLeaderButton ${leader ? "assigned" : "empty"}" type="button" data-po-open-leaders="${this.escapeAttribute(targetId)}">
-        <span class="poLeaderPortrait ${leader ? "hasImage" : ""}"${portraitStyle}>${leader ? `<i>${this.escapeHtml(initials)}</i>` : "<i>+</i>"}</span>
+        <span class="poLeaderPortrait ${leader?.portraitUrl ? "hasImage" : ""}"${portraitStyle}>${leader ? `<i>${this.escapeHtml(initials)}</i>` : "<i>+</i>"}</span>
         <span class="poLeaderCopy">
           <small>${this.escapeHtml(label)}</small>
           <strong>${this.escapeHtml(name)}</strong>
@@ -518,7 +519,7 @@ export class PlanetOperationsPanel {
     }, {} as PlanetResourceMaxima);
     for (const entry of planets) {
       for (const resource of RESOURCE_KINDS) {
-        maxima[resource] = Math.max(maxima[resource], Math.abs(entry.planetState.economy.net[resource]));
+        maxima[resource] = Math.max(maxima[resource], Math.abs(monthlyToRealMinute(entry.planetState.economy.net[resource])));
       }
     }
     return maxima;
@@ -1303,7 +1304,8 @@ export class PlanetOperationsPanel {
   overflow: hidden;
   border: 1px solid rgba(97, 255, 229, 0.46);
   background-size: cover;
-  background-position: center;
+  background-position: center top;
+  background-repeat: no-repeat;
 }
 
 .poLeaderPortrait::before {
@@ -1316,7 +1318,11 @@ export class PlanetOperationsPanel {
 }
 
 .poLeaderPortrait.hasImage::before {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.18));
+  display: none;
+}
+
+.poLeaderPortrait.hasImage i {
+  display: none;
 }
 
 .poLeaderPortrait i {

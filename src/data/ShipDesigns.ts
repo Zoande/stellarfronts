@@ -75,6 +75,7 @@ export interface ShipModuleDefinition {
   shipKinds?: StarbaseShipKind[];
   iconKind?: string;
   availableInDesigner?: boolean;
+  sensorSuiteIds?: import("./Intelligence").SensorSuiteId[];
 }
 
 export interface ShipSectionModuleDefinition {
@@ -148,7 +149,20 @@ function createMount(
   mount: Omit<WeaponMountDefinition, "kind" | "minRangeBand" | "maxRangeBand" | "optimalRangeBand" | "cooldownRounds">,
 ): WeaponMountDefinition {
   const range = WEAPON_KIND_DEFINITIONS[kind];
+  const mountId = mount.id ?? "";
+  const ordnanceSize = mountId.includes("large") ? 2 : mountId.includes("medium") ? 1 : 0;
+  const torpedo = mountId.includes("torpedo");
+  const attackDefaults: Partial<WeaponMountDefinition> = kind === "laser"
+    ? { attackClass: "beam", travelSpeed: 640, tracking: 0.15, shieldDamageMultiplier: 0.9, armorDamageMultiplier: 1.4, hullDamageMultiplier: 1 }
+    : kind === "railgun"
+      ? { attackClass: "kinetic", travelSpeed: 48, tracking: 0.05, shieldDamageMultiplier: 1.4, armorDamageMultiplier: 0.9, hullDamageMultiplier: 0.95 }
+      : kind === "plasma"
+        ? { attackClass: "plasma", travelSpeed: 16, tracking: 0.05, shieldDamageMultiplier: 0.9, armorDamageMultiplier: 1.45, hullDamageMultiplier: 1.2 }
+        : kind === "missile"
+          ? { attackClass: torpedo ? "torpedo" : "missile", travelSpeed: torpedo ? 6 : 9, tracking: 0.35, shieldDamageMultiplier: 1, armorDamageMultiplier: 1, hullDamageMultiplier: 1.1, interceptableBy: ["pointDefense"], projectileHp: torpedo ? 5 + ordnanceSize * 2 : 2 + ordnanceSize, projectileEvasion: (torpedo ? 0.62 : 0.78) - ordnanceSize * 0.04, guided: true }
+          : { attackClass: "pointDefense", travelSpeed: 720, tracking: 0.7, shieldDamageMultiplier: 0.25, armorDamageMultiplier: 0.25, hullDamageMultiplier: 0.2, counterClass: "pointDefense", intercepts: ["missile", "torpedo"] };
   return {
+    ...attackDefaults,
     ...mount,
     kind,
     minRangeBand: range.minRangeBand,
@@ -254,6 +268,75 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
       maxHull: 1700,
       evasion: 0.055,
       sensorRange: 4,
+      weaponMounts: [],
+    },
+  },
+  defensePlatform: {
+    kind: "defensePlatform",
+    label: "Defense Platform",
+    baseClassName: "Sentinel",
+    description: "Stationary defensive installation designed and armed through the standard ship designer.",
+    weaponSectionSlots: 1,
+    defenseSectionSlots: 1,
+    utilitySlots: 5,
+    speed: 0,
+    buildDays: 12,
+    alloyUpkeepPerDay: 24,
+    crewDemand: 1_600,
+    cost: resources({ minerals: 360, alloys: 300, goods: 40 }),
+    upkeep: resources({ energy: 1.7, alloys: 0.26 }),
+    combat: {
+      maxShield: 220,
+      maxArmor: 210,
+      maxHull: 380,
+      evasion: 0,
+      sensorRange: 3,
+      weaponMounts: [],
+    },
+  },
+  scienceShip: {
+    kind: "scienceShip",
+    label: "Science Ship",
+    baseClassName: "Pathfinder",
+    description: "Dedicated research and survey hull with exclusive access to science-grade sensor arrays.",
+    weaponSectionSlots: 0,
+    defenseSectionSlots: 0,
+    utilitySlots: 4,
+    speed: 1.08,
+    buildDays: 8,
+    alloyUpkeepPerDay: 9,
+    crewDemand: 800,
+    cost: resources({ minerals: 180, alloys: 125, goods: 80, research: 20 }),
+    upkeep: resources({ energy: 1, alloys: 0.09, goods: 0.07 }),
+    combat: {
+      maxShield: 55,
+      maxArmor: 35,
+      maxHull: 125,
+      evasion: 0.15,
+      sensorRange: 3,
+      weaponMounts: [],
+    },
+  },
+  armyShip: {
+    kind: "armyShip",
+    label: "Army Ship",
+    baseClassName: "Legion",
+    description: "Placeholder troop carrier awaiting the ground-army combat system.",
+    weaponSectionSlots: 0,
+    defenseSectionSlots: 0,
+    utilitySlots: 3,
+    speed: 0.88,
+    buildDays: 11,
+    alloyUpkeepPerDay: 15,
+    crewDemand: 2_200,
+    cost: resources({ minerals: 260, alloys: 210, goods: 120, food: 80 }),
+    upkeep: resources({ energy: 1.25, alloys: 0.14, goods: 0.09 }),
+    combat: {
+      maxShield: 90,
+      maxArmor: 80,
+      maxHull: 230,
+      evasion: 0.09,
+      sensorRange: 3,
       weaponMounts: [],
     },
   },
@@ -370,6 +453,41 @@ export const SHIP_SECTION_MODULE_DEFINITIONS: Record<string, ShipSectionModuleDe
     cost: resources({ alloys: 22, minerals: 24 }),
     upkeep: resources({ alloys: 0.01 }),
     iconKind: "bulwark",
+  },
+  weapon_section_defense_platform_battery: {
+    id: "weapon_section_defense_platform_battery",
+    label: "Platform Battery Core",
+    description: "Stationary heavy battery with one large and two medium hardpoints.",
+    slotType: "weaponSection",
+    shipKinds: ["defensePlatform"],
+    pairedDefenseSectionModuleId: "defense_section_defense_platform_bastion",
+    slots: [
+      { kind: "weapon", size: "large", label: "L Weapon" },
+      { kind: "weapon", size: "medium", label: "M Weapon" },
+      { kind: "weapon", size: "medium", label: "M Weapon" },
+    ],
+    modifiers: { weaponAccuracyBonus: 0.03, cost: { alloys: 52, minerals: 48 }, upkeep: { energy: 0.1 } },
+    cost: resources({ alloys: 52, minerals: 48 }),
+    upkeep: resources({ energy: 0.1 }),
+    iconKind: "platform",
+  },
+  defense_section_defense_platform_bastion: {
+    id: "defense_section_defense_platform_bastion",
+    label: "Bastion Frame",
+    description: "Fixed armored frame with five defense slots and reinforced structure.",
+    slotType: "defenseSection",
+    shipKinds: ["defensePlatform"],
+    slots: [
+      { kind: "defense", label: "Defense" },
+      { kind: "defense", label: "Defense" },
+      { kind: "defense", label: "Defense" },
+      { kind: "defense", label: "Defense" },
+      { kind: "defense", label: "Defense" },
+    ],
+    modifiers: { maxHull: 60, maxArmor: 40, cost: { alloys: 48, minerals: 54 }, upkeep: { alloys: 0.03 } },
+    cost: resources({ alloys: 48, minerals: 54 }),
+    upkeep: resources({ alloys: 0.03 }),
+    iconKind: "bastion",
   },
   weapon_section_destroyer_line: {
     id: "weapon_section_destroyer_line",
@@ -709,7 +827,7 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
       id: "point-defense-small",
       label: "S Point Defense",
       barrels: 3,
-      damage: 4,
+      damage: 0.8,
       shieldPenetration: 0.05,
       armorPenetration: 0.22,
       accuracy: 0.92,
@@ -729,7 +847,7 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
       id: "point-defense-medium",
       label: "M Flak Battery",
       barrels: 5,
-      damage: 5,
+      damage: 1,
       shieldPenetration: 0.05,
       armorPenetration: 0.24,
       accuracy: 0.9,
@@ -749,7 +867,7 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
       id: "point-defense-large",
       label: "L Flak Array",
       barrels: 8,
-      damage: 6,
+      damage: 1.2,
       shieldPenetration: 0.05,
       armorPenetration: 0.26,
       accuracy: 0.88,
@@ -1161,10 +1279,11 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
   },
   utility_optical_array: {
     id: "utility_optical_array",
-    label: "Optical Array",
-    description: "Extends weapon engagement profiles and sensor reach.",
+    label: "Military Sensor",
+    description: "Combat-grade array for military contacts, targeting telemetry, and basic planetary surveys.",
     slotType: "utility",
     iconKind: "sensor",
+    shipKinds: ["corvette", "destroyer", "cruiser", "battleship", "defensePlatform", "armyShip"],
     modifiers: {
       sensorRange: 1,
       weaponRangeBonusBands: 1,
@@ -1173,6 +1292,36 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
     },
     cost: resources({ alloys: 24, goods: 10 }),
     upkeep: resources({ energy: 0.1 }),
+    sensorSuiteIds: ["militaryShipSensors"],
+  },
+  utility_survey_array: {
+    id: "utility_survey_array",
+    label: "Science Sensor",
+    description: "Science-ship-only array with precise local surveys and long-range stellar classification.",
+    slotType: "utility",
+    iconKind: "sensor",
+    shipKinds: ["scienceShip"],
+    modifiers: {
+      cost: { alloys: 28, goods: 14, research: 4 },
+      upkeep: { energy: 0.14 },
+    },
+    cost: resources({ alloys: 28, goods: 14, research: 4 }),
+    upkeep: resources({ energy: 0.14 }),
+    sensorSuiteIds: ["scienceShipSensors"],
+  },
+  utility_civilian_sensor: {
+    id: "utility_civilian_sensor",
+    label: "Civilian Sensor",
+    description: "General navigation array that identifies stars, planets, and nearby traffic without military-grade classification.",
+    slotType: "utility",
+    iconKind: "sensor",
+    modifiers: {
+      cost: { alloys: 16, goods: 8 },
+      upkeep: { energy: 0.07 },
+    },
+    cost: resources({ alloys: 16, goods: 8 }),
+    upkeep: resources({ energy: 0.07 }),
+    sensorSuiteIds: ["civilianShipSensors"],
   },
   utility_fire_control: {
     id: "utility_fire_control",
@@ -1213,10 +1362,9 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
       maxHull: 24,
       buildDays: 1,
       cost: { alloys: 24, goods: 8 },
-      upkeep: { energy: 0.08, goods: 0.02 },
     },
     cost: resources({ alloys: 24, goods: 8 }),
-    upkeep: resources({ energy: 0.08, goods: 0.02 }),
+    upkeep: resources({}),
   },
   utility_shield_capacitor: {
     id: "utility_shield_capacitor",
@@ -1252,19 +1400,17 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
   utility_armor_nanites: {
     id: "utility_armor_nanites",
     label: "Armor Nanites",
-    description: "Automated repair mesh for heavy hulls that improves armor and hull resilience.",
+    description: "Automated repair mesh that raises maximum armor and repairs it even during combat.",
     slotType: "utility",
     iconKind: "repair",
     shipKinds: ["cruiser", "battleship"],
     modifiers: {
       maxArmor: 48,
-      maxHull: 28,
       buildDays: 2,
       cost: { alloys: 38, goods: 18 },
-      upkeep: { energy: 0.12, goods: 0.04 },
     },
     cost: resources({ alloys: 38, goods: 18 }),
-    upkeep: resources({ energy: 0.12, goods: 0.04 }),
+    upkeep: resources({}),
   },
   utility_gravitic_drive: {
     id: "utility_gravitic_drive",
@@ -1318,6 +1464,9 @@ const DEFAULT_WEAPON_SECTIONS: Record<StarbaseShipKind, string[]> = {
   destroyer: ["weapon_section_destroyer_line"],
   cruiser: ["weapon_section_cruiser_line", "weapon_section_cruiser_line"],
   battleship: ["weapon_section_battleship_line", "weapon_section_battleship_line", "weapon_section_battleship_line"],
+  defensePlatform: ["weapon_section_defense_platform_battery"],
+  scienceShip: [],
+  armyShip: [],
   constructionShip: [],
   colonizationShip: [],
 };
@@ -1327,6 +1476,9 @@ const DEFAULT_DEFENSE_SECTIONS: Record<StarbaseShipKind, string[]> = {
   destroyer: ["defense_section_destroyer_line"],
   cruiser: ["defense_section_cruiser_line", "defense_section_cruiser_line"],
   battleship: ["defense_section_battleship_line", "defense_section_battleship_line", "defense_section_battleship_line"],
+  defensePlatform: ["defense_section_defense_platform_bastion"],
+  scienceShip: [],
+  armyShip: [],
   constructionShip: [],
   colonizationShip: [],
 };
@@ -1366,13 +1518,31 @@ const DEFAULT_UTILITY_MODULES: Record<StarbaseShipKind, string[]> = {
     "utility_fire_control",
     "utility_repair_drones",
   ],
-  constructionShip: [
+  defensePlatform: [
+    "utility_fire_control",
+    "utility_optical_array",
+    "utility_reactor_capacitor",
+    "utility_repair_drones",
+    "utility_shield_capacitor",
+  ],
+  scienceShip: [
+    "utility_survey_array",
+    "utility_civilian_sensor",
+    "utility_repair_drones",
+    "utility_shield_capacitor",
+  ],
+  armyShip: [
     "utility_optical_array",
     "utility_repair_drones",
     "utility_shield_capacitor",
   ],
+  constructionShip: [
+    "utility_civilian_sensor",
+    "utility_repair_drones",
+    "utility_shield_capacitor",
+  ],
   colonizationShip: [
-    "utility_optical_array",
+    "utility_civilian_sensor",
     "utility_repair_drones",
     "utility_shield_capacitor",
   ],
@@ -1382,6 +1552,12 @@ const DEFAULT_WEAPON_BY_SIZE: Record<WeaponSlotSize, string> = {
   small: "weapon_laser_cannon",
   medium: "weapon_missile_rack",
   large: "weapon_missile_rack_large",
+};
+
+const DEFAULT_WEAPON_MODULES_BY_KIND: Partial<Record<StarbaseShipKind, string[]>> = {
+  // The baseline destroyer is deliberately an escort: useful direct kinetic
+  // output plus one high-throughput flak battery for missile screening.
+  destroyer: ["weapon_railgun_medium", "weapon_point_defense_medium", "weapon_phase_laser_small"],
 };
 
 const DEFAULT_DEFENSE_MODULES = [
@@ -1582,7 +1758,7 @@ export function createDefaultShipDesign(
   );
   return {
     ...draftForLayout,
-    weaponModuleIds: normalizeComponentModuleIds([], hull.kind, layout.weaponSlots),
+    weaponModuleIds: normalizeComponentModuleIds(DEFAULT_WEAPON_MODULES_BY_KIND[hull.kind], hull.kind, layout.weaponSlots),
     defenseModuleIds: normalizeComponentModuleIds([], hull.kind, layout.defenseSlots),
     utilityModuleIds,
     utilityModuleId: utilityModuleIds[0] ?? null,
@@ -1656,7 +1832,9 @@ export function normalizeShipDesign(
 
 function adjustRangeBand(rangeBand: RangeBand | undefined, bonus: number): RangeBand | undefined {
   if (!rangeBand || bonus === 0) return rangeBand;
-  return rangeBandFromIndex(RANGE_BAND_INDEX[rangeBand] + bonus);
+  // outOfRange is a sentinel, never an attainable weapon band. Stacking range
+  // sections therefore tops out at extreme instead of producing Infinity.
+  return rangeBandFromIndex(Math.min(RANGE_BAND_INDEX.extreme, RANGE_BAND_INDEX[rangeBand] + bonus));
 }
 
 function applyWeaponModifiers(mount: WeaponMountDefinition, modifiers: ShipStatModifiers): WeaponMountDefinition {
@@ -1755,7 +1933,7 @@ export function calculateShipDesignStats(design: ShipDesign): ShipDesignStats {
     shipKind: hull.kind,
     label: hull.label,
     className: design.name,
-    speed: Math.max(0.05, totals.speed),
+    speed: design.shipKind === "defensePlatform" ? 0 : Math.max(0.05, totals.speed),
     buildDays: Math.max(1, totals.buildDays),
     alloyUpkeepPerDay: Math.max(0, totals.alloyUpkeepPerDay),
     crewDemand: Math.max(0, totals.crewDemand),

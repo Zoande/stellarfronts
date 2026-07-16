@@ -2,6 +2,8 @@ import type { GalaxyPerspective } from "../../src/data/Factions";
 import type { FactionState } from "../../src/game/GameProtocol";
 import type {
   ServerCombatContact,
+  ServerCombatProjectile,
+  CombatAfterActionReport,
   ServerFleet,
   ServerShip,
   ServerStar,
@@ -31,6 +33,8 @@ export interface BuildSystemDetailPayloadInput {
   ships: ServerShip[];
   starbases: ServerStarbase[];
   recentCombatContacts: ServerCombatContact[];
+  combatProjectiles?: ServerCombatProjectile[];
+  combatReports?: CombatAfterActionReport[];
   factions: FactionState[];
   shipDesigns: ShipDesign[];
   technologies: FactionTechnologyView[];
@@ -141,6 +145,8 @@ export function buildSystemDetailPayload(
       ships,
       starbases,
       recentCombatContacts,
+      combatProjectiles: (input.combatProjectiles ?? []).filter((projectile) => projectile.starId === input.starId),
+      combatReports: (input.combatReports ?? []).filter((report) => report.starId === input.starId),
       hyperlaneExits: buildSystemHyperlaneExits(
         input.starId,
         input.stars,

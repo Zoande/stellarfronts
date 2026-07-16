@@ -31,7 +31,7 @@ import type { LeaderState } from "../data/Leaders";
 import { CameraController } from "../systems/CameraController";
 import { OwnershipOverlayRenderer } from "../systems/OwnershipOverlayRenderer";
 import { NebulaFieldRenderer } from "../systems/NebulaFieldRenderer";
-import { buildNebulaStarIdSet, connectNebulaeWithHyperlanes, findNebulaForStar } from "../data/Nebula";
+import { NEBULA_DEFINITIONS, buildNebulaStarIdSet, connectNebulaeWithHyperlanes, findNebulaForStar } from "../data/Nebula";
 import type { NebulaRegion } from "../data/Nebula";
 import { StarFieldRenderer } from "../systems/StarFieldRenderer";
 import type { GalaxyIconClickType, GalaxyShipIcon, ShipIconStyle } from "../systems/StarFieldRenderer";
@@ -39,6 +39,8 @@ import { SelectionPanel } from "../ui/SelectionPanel";
 import type { FleetPolicyControl, FleetPolicyValue, SelectionData, SelectionShipData } from "../ui/SelectionPanel";
 import { CelestialObjectPanel } from "../ui/CelestialObjectPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
+import { GalaxySystemTooltip } from "../ui/GalaxySystemTooltip";
+import type { GalaxySystemTooltipData, GalaxySystemTooltipRow } from "../ui/GalaxySystemTooltip";
 import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { computeStarbasePower } from "../game/combatPower";
@@ -49,6 +51,8 @@ import {
 } from "../game/EmpireDisplayColors";
 import type { EmpireSystemRelation } from "../game/EmpireDisplayColors";
 import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
+import { formatIntelFreshness, getClientIntelField } from "../game/ClientIntelligence";
+import type { IntelValue } from "../data/Intelligence";
 import type { GalaxyShipTransit, ShipAction } from "../game/GameplayTypes";
 import type { ClientCommand, DiplomacyMovementPayload, ServerFleet, ServerShip, ServerStarbase, ServerStarbaseSummary } from "../game/GameProtocol";
 import type { FactionTechnologyView } from "../data/Technology";
@@ -1005,6 +1009,7 @@ export class GalaxyScene implements IGameScene {
   private selectionPanel!: SelectionPanel;
   private objectPanel!: CelestialObjectPanel;
   private starbasePanel!: StarbasePanel;
+  private systemTooltip: GalaxySystemTooltip | null = null;
 
   private hyperlanesVisible = true;
   private centerCloudVisible = true;
@@ -1023,6 +1028,7 @@ export class GalaxyScene implements IGameScene {
 
   private readonly onCanvasPointerLeave = (): void => {
     this.hoveredStarId = -1;
+    this.systemTooltip?.hide();
   };
 
   constructor(
@@ -1197,6 +1203,7 @@ export class GalaxyScene implements IGameScene {
     this.renderSelectedFleetPanels();
     this.objectPanel = new CelestialObjectPanel();
     this.starbasePanel = new StarbasePanel();
+    this.systemTooltip = new GalaxySystemTooltip();
     this.starField.setIconClickCallback((type, shiftKey, starId) => {
       this.handleIconClick(type, shiftKey, starId);
     });
@@ -1206,7 +1213,7 @@ export class GalaxyScene implements IGameScene {
 
     this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
       if (pointerInfo.type === PointerEventTypes.POINTERMOVE) {
-        this.updateHoveredStarFromPointer();
+        this.updateHoveredStarFromPointer(pointerInfo.event as PointerEvent);
         return;
       }
 
@@ -1762,6 +1769,7 @@ export class GalaxyScene implements IGameScene {
   }
 
   private getFleetActions(fleet: ServerFleet | null | undefined): ShipAction[] {
+    if (fleet?.stationaryStarbaseId) return [];
     const actions: ShipAction[] = ["move"];
     if (this.fleetCanBuildStarbase(fleet)) actions.push("build");
     if (this.fleetCanColonize(fleet)) actions.push("colonize");
@@ -2154,9 +2162,115 @@ export class GalaxyScene implements IGameScene {
     return nearestStar;
   }
 
-  private updateHoveredStarFromPointer(): void {
+  private updateHoveredStarFromPointer(event: PointerEvent): void {
     const hovered = this.findNearestStarAtPointer();
     this.hoveredStarId = hovered ? hovered.id : -1;
+    if (!hovered) {
+      this.systemTooltip?.hide();
+      return;
+    }
+    this.systemTooltip?.show(this.buildSystemTooltipData(hovered), event.clientX, event.clientY);
+  }
+
+  private buildSystemTooltipData(star: StarData): GalaxySystemTooltipData {
+    if (this.perspective.mode === "observer") {
+      return {
+        title: star.name,
+        titleStatus: "current",
+        rows: this.buildObserverSystemTooltipRows(star),
+      };
+    }
+
+    if (!this.isStarKnownToPerspective(star.id)) {
+      return { title: "Unknown", unknown: true, rows: [] };
+    }
+
+    const name = getClientIntelField<string>("star", star.id, "name");
+    return {
+      title: name.status === "unknown" ? "Unknown System" : String(name.value),
+      titleStatus: name.status,
+      titleFreshness: formatIntelFreshness(name, this.clockYear),
+      rows: this.buildFactionSystemTooltipRows(star),
+    };
+  }
+
+  private buildObserverSystemTooltipRows(star: StarData): GalaxySystemTooltipRow[] {
+    const rows: GalaxySystemTooltipRow[] = [
+      { label: "Star", value: this.formatStarType(star.type), status: "current" },
+      { label: "Planets", value: String(star.system.planets.length), status: "current" },
+    ];
+    this.appendNebulaTooltipRow(rows, star.id);
+    rows.push(this.buildKnownOwnerTooltipRow(this.starOwnership[star.id] ?? -1, "current"));
+    return rows;
+  }
+
+  private buildFactionSystemTooltipRows(star: StarData): GalaxySystemTooltipRow[] {
+    const type = getClientIntelField<string>("star", star.id, "type");
+    const planetCount = getClientIntelField<number>("system", star.id, "planetCount");
+    const owner = getClientIntelField<number>("system", star.id, "ownerId");
+    const rows: GalaxySystemTooltipRow[] = [
+      this.buildIntelTooltipRow("Star", type, (value) => this.formatStarType(value)),
+      this.buildIntelTooltipRow("Planets", planetCount, (value) => String(Math.max(0, Math.floor(Number(value))))),
+    ];
+    this.appendNebulaTooltipRow(rows, star.id);
+    rows.push(owner.status === "unknown"
+      ? { label: "Owner", value: "Unknown", status: "unknown" }
+      : this.buildKnownOwnerTooltipRow(Number(owner.value), owner.status, formatIntelFreshness(owner, this.clockYear)));
+    return rows;
+  }
+
+  private buildIntelTooltipRow<T>(
+    label: string,
+    field: IntelValue<T>,
+    format: (value: T) => string,
+  ): GalaxySystemTooltipRow {
+    if (field.status === "unknown") return { label, value: "Unknown", status: "unknown" };
+    return {
+      label,
+      value: format(field.value),
+      status: field.status,
+      freshness: formatIntelFreshness(field, this.clockYear),
+    };
+  }
+
+  private buildKnownOwnerTooltipRow(
+    ownerId: number,
+    status: "current" | "stale",
+    freshness: string | null = null,
+  ): GalaxySystemTooltipRow {
+    if (!Number.isInteger(ownerId) || ownerId < 0) {
+      return { label: "Owner", value: "Unclaimed", status, freshness };
+    }
+
+    const factionName = this.perspective.mode === "observer"
+      ? this.factions.find((faction) => faction.id === ownerId)?.name ?? "Unknown faction"
+      : (() => {
+          const field = getClientIntelField<string>("faction", ownerId, "name");
+          return field.status === "unknown" ? "Unknown faction" : String(field.value);
+        })();
+    const relation = this.getEmpireRelation(ownerId);
+    return {
+      label: "Owner",
+      value: ownerId === this.playerFactionId ? `${factionName} (You)` : factionName,
+      status,
+      freshness,
+      tone: relation === "own" ? "friendly" : relation === "hostile" ? "hostile" : "neutral",
+    };
+  }
+
+  private appendNebulaTooltipRow(rows: GalaxySystemTooltipRow[], starId: number): void {
+    const nebula = findNebulaForStar(this.nebulae, starId);
+    if (!nebula) return;
+    rows.push({
+      label: "Nebula",
+      value: NEBULA_DEFINITIONS[nebula.kind].label,
+      status: "current",
+    });
+  }
+
+  private formatStarType(type: unknown): string {
+    const value = String(type);
+    return /^[BAFGKM]$/.test(value) ? `${value}-class star` : value;
   }
 
   private tryEnterSystemAtPointer(): boolean {
@@ -2206,7 +2320,7 @@ export class GalaxyScene implements IGameScene {
 
   private createFleetSelectionData(fleet: ServerFleet): SelectionData {
     const owner = this.factions.find((faction) => faction.id === fleet.ownerId) ?? null;
-    const canCommand = this.isOwnShipOwner(owner?.id ?? null);
+    const canCommand = this.isOwnShipOwner(owner?.id ?? null) && !fleet.stationaryStarbaseId;
     const fleetShips = this.getShipsForFleet(fleet.id);
     const fleetSize = fleet.shipIds.length || fleetShips.length || 1;
     const defense = this.getFleetDefense(fleet.id);
@@ -2216,7 +2330,9 @@ export class GalaxyScene implements IGameScene {
       type: "fleet",
       id: fleet.id,
       readoutId: this.formatFleetReadoutId(fleet),
-      name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+      name: fleet.stationaryStarbaseId
+        ? `${owner?.name ?? "Unidentified"} Defense Platforms`
+        : owner ? `${owner.name} Fleet` : "Unidentified Fleet",
       hp: defense.hull,
       maxHp: defense.maxHull,
       shield: defense.shield,
@@ -2227,7 +2343,7 @@ export class GalaxyScene implements IGameScene {
       maxHull: defense.maxHull,
       shipCount: fleetSize,
       ships: this.createSelectionShipRows(fleet, owner),
-      class: fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
+      class: fleet.stationaryStarbaseId ? `${fleetSize} Stationary Platform${fleetSize === 1 ? "" : "s"}` : fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
       status: engaged ? fleet.combatStatus : this.formatSelectionFleetStatus(fleet),
       detail: canCommand
         ? this.formatFleetNavigationDetail(fleet)
@@ -2410,7 +2526,7 @@ export class GalaxyScene implements IGameScene {
       ? this.factions.find((faction) => faction.id === serverFleet.ownerId) ?? null
       : this.getShipOwnerForStarId(shipStarId);
     const ownerId = owner?.id ?? null;
-    const canCommand = this.isOwnShipOwner(ownerId);
+    const canCommand = this.isOwnShipOwner(ownerId) && !serverFleet?.stationaryStarbaseId;
     const fleetShips = this.getShipsForFleet(serverFleet?.id ?? null);
     const fleetSize = serverFleet?.shipIds.length ?? (fleetShips.length || 1);
     const defense = this.getFleetDefense(serverFleet?.id ?? null);
@@ -2437,7 +2553,9 @@ export class GalaxyScene implements IGameScene {
         type: "fleet",
         id: serverFleet?.id ?? String(shipStarId),
         readoutId: serverFleet ? this.formatFleetReadoutId(serverFleet) : `SYS-${String(shipStarId).padStart(3, "0")}`,
-        name: owner ? `${owner.name} Fleet` : "Unidentified Fleet",
+        name: serverFleet?.stationaryStarbaseId
+          ? `${owner?.name ?? "Unidentified"} Defense Platforms`
+          : owner ? `${owner.name} Fleet` : "Unidentified Fleet",
         hp: defense.hull,
         maxHp: defense.maxHull,
         shield: defense.shield,
@@ -2448,13 +2566,15 @@ export class GalaxyScene implements IGameScene {
         maxHull: defense.maxHull,
         shipCount: fleetSize,
         ships: serverFleet ? this.createSelectionShipRows(serverFleet, owner) : [],
-        class: fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
+        class: serverFleet?.stationaryStarbaseId ? `${fleetSize} Stationary Platform${fleetSize === 1 ? "" : "s"}` : fleetSize === 1 ? "Single-Ship Fleet" : `${fleetSize} Ships`,
         status: engaged
           ? serverFleet?.combatStatus ?? "engaged"
           : serverFleet
             ? this.formatSelectionFleetStatus(serverFleet)
             : this.playerShipTransit && shipStarId === this.playerShipStarId ? "Moving" : "Operational",
-        detail: canCommand
+        detail: serverFleet?.stationaryStarbaseId
+          ? "Anchored starbase defense group. Platforms engage hostile contacts automatically."
+          : canCommand
           ? this.formatFleetNavigationDetail(serverFleet)
           : "Foreign fleet. Command controls unavailable.",
         movement: this.createFleetMovementSelectionData(serverFleet),
@@ -2551,6 +2671,7 @@ export class GalaxyScene implements IGameScene {
   }
 
   private getFleetIconColor(fleet: ServerFleet): [number, number, number] {
+    if (getClientIntelField("fleet", fleet.id, "existence").status === "stale") return [0.48, 0.52, 0.54];
     const owner = this.factions.find((faction) => faction.id === fleet.ownerId);
     return owner?.color ?? [1, 1, 1];
   }
@@ -2689,6 +2810,9 @@ export class GalaxyScene implements IGameScene {
       ownerColor: owner?.color,
       status: starbase?.status ?? "online",
       power: this.formatStarbasePower(starbase),
+      fleets: this.serverFleets,
+      ships: this.serverShips,
+      shipDesigns: this.shipDesigns,
       technology: this.options.technology,
       nebulaKind: findNebulaForStar(this.nebulae, starId)?.kind ?? null,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
@@ -2845,12 +2969,14 @@ export class GalaxyScene implements IGameScene {
 
   setServerShips(ships: ServerShip[]): void {
     this.serverShips = ships;
+    this.starbasePanel?.refreshMilitaryContext(this.serverFleets, this.serverShips, this.shipDesigns);
     this.starField?.setShipIconStyles(this.getShipIconStyles());
     if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
   setShipDesigns(shipDesigns: ShipDesign[]): void {
     this.shipDesigns = shipDesigns;
+    this.starbasePanel?.refreshMilitaryContext(this.serverFleets, this.serverShips, this.shipDesigns);
     if (this.selectedFleetIds.size > 0) this.renderSelectedFleetPanels();
   }
 
@@ -2862,6 +2988,7 @@ export class GalaxyScene implements IGameScene {
 
   setServerFleets(fleets: ServerFleet[]): void {
     this.serverFleets = fleets;
+    this.starbasePanel?.refreshMilitaryContext(this.serverFleets, this.serverShips, this.shipDesigns);
     this.playerShipSystemIds = new Set(
       fleets
         .map((fleet) => fleet.currentStarId)
@@ -2972,7 +3099,7 @@ export class GalaxyScene implements IGameScene {
           this.objectPanel.refreshAssignedLeader(
             planet.id,
             this.getAssignedLeader("planet", planet.id),
-            this.starOwnership[planetState.starId] === this.playerFactionId,
+            planetState.ownerId === this.playerFactionId,
           );
         }
       }
@@ -2987,7 +3114,7 @@ export class GalaxyScene implements IGameScene {
     )) ?? null;
   }
 
-  showPlanetDetails(star: StarData, planet: PlanetConfig, planetState: PlanetState): void {
+  showPlanetDetails(star: StarData, planet: PlanetConfig, planetState: PlanetState, interactive = true): void {
     this.objectPanel.show({
       kind: "planet",
       objectId: planet.id,
@@ -3000,9 +3127,16 @@ export class GalaxyScene implements IGameScene {
       accentColor: "rgba(102, 236, 199, 0.95)",
       technology: this.options.technology,
       assignedLeader: this.getAssignedLeader("planet", planet.id),
-      canManageLeaders: this.starOwnership[star.id] === this.playerFactionId,
-      onPlanetCommand: (command) => this.options.onPlanetCommand?.(command),
+      canManageLeaders: interactive && this.starOwnership[star.id] === this.playerFactionId,
+      onPlanetCommand: interactive ? (command) => this.options.onPlanetCommand?.(command) : undefined,
+      onClose: (objectId, kind) => {
+        if (kind === "planet") this.options.onReleasePlanetDetails?.(objectId);
+      },
     });
+  }
+
+  isShowingPlanetDetails(planetId: string): boolean {
+    return this.objectPanel.isShowing(planetId, "planet");
   }
 
   refreshPlanetDetails(planet: PlanetConfig, planetState: PlanetState): void {
@@ -3159,6 +3293,8 @@ export class GalaxyScene implements IGameScene {
     this.selectionPanel?.clear();
     this.objectPanel?.dispose();
     this.starbasePanel?.dispose();
+    this.systemTooltip?.dispose();
+    this.systemTooltip = null;
     this.hyperlaneMesh?.dispose();
     this.hyperlaneMesh = null;
     if (this.ownershipOverlayMesh) {

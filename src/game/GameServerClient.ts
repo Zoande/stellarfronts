@@ -15,6 +15,7 @@ import type {
   SystemDetailPayload,
   SystemDetailsEvent,
 } from "./GameProtocol";
+import { mergeClientIntelEntities, setClientIntelligence } from "./ClientIntelligence";
 
 type SnapshotHandler = (snapshot: GameSnapshot, changed?: ServerUpdateField[]) => void;
 type MessageHandler = (message: string, ok: boolean) => void;
@@ -50,7 +51,7 @@ function withClientClockSync<T extends { clock?: GameSnapshot["clock"] }>(event:
  * server reports a protocol not listed here, the client refuses to connect with
  * a clear message rather than misbehaving.
  */
-export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [2];
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [4];
 
 export class ClientServerVersionError extends Error {}
 
@@ -117,6 +118,7 @@ export class GameServerClient {
             return;
           }
           this.latestSnapshot = withClientClockSync(parsed);
+          setClientIntelligence(this.latestSnapshot.intelligence, this.latestSnapshot.clock.year);
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot);
           if (!resolved) {
             resolved = true;
@@ -158,11 +160,15 @@ export class GameServerClient {
             governments: parsed.governments ?? this.latestSnapshot.governments,
             species: parsed.species ?? this.latestSnapshot.species,
             recentCombatContacts: parsed.recentCombatContacts ?? this.latestSnapshot.recentCombatContacts,
+            combatProjectiles: parsed.combatProjectiles ?? this.latestSnapshot.combatProjectiles,
+            combatReports: parsed.combatReports ?? this.latestSnapshot.combatReports,
             diplomacy: parsed.diplomacy ?? this.latestSnapshot.diplomacy,
+            intelligence: parsed.intelligence ?? this.latestSnapshot.intelligence,
             situations: parsed.situations ?? this.latestSnapshot.situations,
             events: parsed.events ?? this.latestSnapshot.events,
             tradeAlerts: parsed.tradeAlerts ?? this.latestSnapshot.tradeAlerts,
           };
+          setClientIntelligence(this.latestSnapshot.intelligence, this.latestSnapshot.clock.year);
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);
           return;
         }
@@ -178,10 +184,16 @@ export class GameServerClient {
           const event: GameDetailEvent = parsed.status === "notModified" && cached
             ? { ...parsed, payload: cached.payload }
             : parsed;
+          const detailIntel = event.payload && "intelligence" in event.payload
+            ? event.payload.intelligence
+            : undefined;
+          if (Array.isArray(detailIntel)) mergeClientIntelEntities(detailIntel);
           if (event.status === "full" && event.payload) {
             this.detailCache.set(key, { event, payload: event.payload });
           } else if (event.status === "notModified" && cached) {
             this.detailCache.set(key, { event, payload: cached.payload });
+          } else if (event.status === "unavailable") {
+            this.detailCache.delete(key);
           }
 
           const pending = this.detailRequests.get(key);
@@ -283,13 +295,19 @@ export class GameServerClient {
       scope,
       id,
       knownRevision: cached?.event.revision ?? null,
-    }).then((event) => event as GameDetailEvent & { payload?: T });
+    }).then((event) => {
+      if (event.status === "unavailable") {
+        throw new Error(event.message ?? "Information does not exist.");
+      }
+      return event as GameDetailEvent & { payload?: T };
+    });
   }
 
   subscribeDetail<T extends GameDetailPayload>(
     scope: GameDetailScope,
     id: string | number | null | undefined,
     handler: DetailHandler<T>,
+    options: { emitCached?: boolean } = {},
   ): () => void {
     const normalizedId = id ?? null;
     const key = createDetailKey(scope, normalizedId);
@@ -298,7 +316,7 @@ export class GameServerClient {
     this.detailHandlers.set(key, handlers);
 
     const cached = this.detailCache.get(key);
-    if (cached) {
+    if (cached && options.emitCached !== false) {
       window.setTimeout(() => handler(cached.event as GameDetailEvent & { payload?: T }), 0);
     }
     this.send({

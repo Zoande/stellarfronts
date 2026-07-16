@@ -1,6 +1,6 @@
 import { RESOURCE_KINDS } from "../../src/data/Economy";
 import type { PlanetModifier, ResourceCounts } from "../../src/data/Economy";
-import { createLegendaryLeaderCandidate, formatLeaderClass } from "../../src/data/Leaders";
+import { createLegendaryLeaderCandidate, formatLeaderClass, getLeaderArchetypesByFaction } from "../../src/data/Leaders";
 import type { LeaderClass, LeaderState } from "../../src/data/Leaders";
 import type { GameEffect } from "../../src/data/GameEffects";
 import { getEventDefinition, LEADER_OFFER_EVENT_ID, LOST_IN_TRANSIT_EVENT_ID } from "../../src/data/Events";
@@ -92,12 +92,14 @@ export function expireFactionModifiers(ctx: RuntimeContext): boolean {
 
 export function generatePowerfulLeaderCandidate(ctx: RuntimeContext, factionId: number): LeaderState {
   const leaderClass: LeaderClass = Math.random() < 0.5 ? "military" : "civilian";
+  const archetypeId = getLeaderArchetypesByFaction(ctx.state.factions, ctx.state.species).get(factionId) ?? "humanoid";
   return createLegendaryLeaderCandidate(
     factionId,
     leaderClass,
     getLeaderDayIndex(ctx.state.clock.year),
     Math.floor(Math.random() * 100000),
     ctx.state.clock.year,
+    archetypeId,
   );
 }
 

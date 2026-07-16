@@ -32,6 +32,7 @@ import { STAR_TYPES, StarType } from "../data/StarMap";
 import type { StarData } from "../data/StarMap";
 import type { EmpireSystemRelation } from "../game/EmpireDisplayColors";
 import type { GalaxyShipTransit } from "../game/GameplayTypes";
+import { getClientIntelField } from "../game/ClientIntelligence";
 
 export interface ShipIconStyle {
   starId: number;
@@ -709,6 +710,7 @@ export class StarFieldRenderer {
     ctx.clearRect(0, 0, STAR_LABEL_TEXTURE_WIDTH, STAR_LABEL_TEXTURE_HEIGHT);
 
     const labelText = star.name;
+    const nameIntel = getClientIntelField("star", star.id, "name");
     ctx.direction = "ltr";
     ctx.textAlign = hasNameplate ? "center" : "right";
     ctx.textBaseline = "middle";
@@ -737,7 +739,11 @@ export class StarFieldRenderer {
     ctx.strokeStyle = "rgba(0, 0, 0, 0.95)";
     ctx.lineWidth = Math.max(hasNameplate ? 4 : 6, fontSize * (hasNameplate ? 0.07 : 0.12));
     ctx.strokeText(labelText, x, y);
-    ctx.fillStyle = hasNameplate ? nameplateTheme.text : "rgba(255, 255, 255, 0.96)";
+    ctx.fillStyle = nameIntel.status === "stale"
+      ? "rgba(145, 156, 160, 0.9)"
+      : nameIntel.status === "unknown"
+        ? "rgba(120, 132, 136, 0.82)"
+        : hasNameplate ? nameplateTheme.text : "rgba(255, 255, 255, 0.96)";
     ctx.fillText(labelText, x, y);
     
     labelTexture.update(true);

@@ -205,10 +205,15 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
     researchModifiers: [],
     effects: [
       { type: "unlock_ship_hull", shipKind: "corvette" },
+      { type: "unlock_ship_hull", shipKind: "defensePlatform" },
+      { type: "unlock_ship_hull", shipKind: "scienceShip" },
+      { type: "unlock_ship_hull", shipKind: "armyShip" },
       { type: "unlock_ship_hull", shipKind: "constructionShip" },
       { type: "unlock_ship_hull", shipKind: "colonizationShip" },
       { type: "unlock_ship_section", sectionModuleId: "weapon_section_corvette_swarmer" },
       { type: "unlock_ship_section", sectionModuleId: "defense_section_corvette_swarmer" },
+      { type: "unlock_ship_section", sectionModuleId: "weapon_section_defense_platform_battery" },
+      { type: "unlock_ship_section", sectionModuleId: "defense_section_defense_platform_bastion" },
     ],
   },
   {
@@ -262,6 +267,8 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_ship_module", moduleId: "defense_reinforced_hull" },
       { type: "unlock_ship_module", moduleId: "utility_ion_propulsors" },
       { type: "unlock_ship_module", moduleId: "utility_optical_array" },
+      { type: "unlock_ship_module", moduleId: "utility_survey_array" },
+      { type: "unlock_ship_module", moduleId: "utility_civilian_sensor" },
       { type: "unlock_ship_module", moduleId: "utility_fire_control" },
       { type: "unlock_ship_module", moduleId: "utility_reactor_capacitor" },
       { type: "unlock_ship_module", moduleId: "utility_repair_drones" },
@@ -313,6 +320,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_starbase_building", building: "alloyAssemblyDock" },
       { type: "unlock_starbase_building", building: "researchAnnex" },
       { type: "unlock_starbase_building", building: "logisticsDepot" },
+      { type: "unlock_starbase_building", building: "listeningStation" },
     ],
   },
   {

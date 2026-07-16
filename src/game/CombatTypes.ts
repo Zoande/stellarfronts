@@ -22,6 +22,15 @@ export type FleetTacticalOrderType = "move" | "attack" | "hold" | "guard" | "ret
 
 export type CombatTargetKind = "fleet" | "starbase";
 
+export type FleetEngagementRule = "avoid" | "defendSystem" | "engageSystem";
+export type FleetDoctrine = "artillery" | "line" | "assault" | "escort";
+export type FleetRetreatPreset = "fightOn" | "balanced" | "preserveFleet" | "avoidLosses";
+
+export type CombatAttackClass = "beam" | "kinetic" | "plasma" | "missile" | "torpedo" | "pointDefense";
+export type CombatCounterClass = "pointDefense" | "beamDiffraction" | "kineticDeflection" | "plasmaDispersion" | "closeDefenseSuppression";
+export type CombatProjectileStatus = "inFlight" | "intercepted" | "impacted" | "expired";
+export type CombatTrackQuality = "none" | "rough" | "identified" | "precise";
+
 export type RangeBand = "pointBlank" | "close" | "medium" | "long" | "extreme" | "outOfRange";
 
 export const RANGE_BANDS: RangeBand[] = ["pointBlank", "close", "medium", "long", "extreme", "outOfRange"];

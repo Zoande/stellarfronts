@@ -122,6 +122,9 @@ export function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<Serve
     weaponCooldowns: typeof starbase.weaponCooldowns === "object" && starbase.weaponCooldowns
       ? Object.fromEntries(Object.entries(starbase.weaponCooldowns).map(([key, value]) => [key, Math.max(0, Number(value) || 0)]))
       : {},
+    weaponReadyAtYears: typeof starbase.weaponReadyAtYears === "object" && starbase.weaponReadyAtYears
+      ? Object.fromEntries(Object.entries(starbase.weaponReadyAtYears).filter(([, value]) => Number.isFinite(Number(value))).map(([key, value]) => [key, Number(value)]))
+      : {},
     lastShieldDamageAtYear: starbase.lastShieldDamageAtYear ?? null,
     level,
     economy: calculateStarbaseEconomy(level, buildingSlots),
@@ -179,12 +182,18 @@ export function normalizeShip(
   const targetDesign = explicitTarget ?? fallbackTarget;
   const stats = calculateShipDesignStats(design);
   const combat = stats.combat;
-  const maxHull = Math.max(1, Number(ship.maxHull ?? ship.maxHp) || combat.maxHull);
-  const maxShield = Math.max(0, Number(ship.maxShield) || combat.maxShield);
-  const maxArmor = Math.max(0, Number(ship.maxArmor) || combat.maxArmor);
-  const hull = Math.max(0, Math.min(maxHull, Number(ship.hull ?? ship.hp) || maxHull));
-  const shield = Math.max(0, Math.min(maxShield, Number(ship.shield) || maxShield));
-  const armor = Math.max(0, Math.min(maxArmor, Number(ship.armor) || maxArmor));
+  const maxHullValue = Number(ship.maxHull ?? ship.maxHp);
+  const maxShieldValue = Number(ship.maxShield);
+  const maxArmorValue = Number(ship.maxArmor);
+  const maxHull = Math.max(1, Number.isFinite(maxHullValue) ? maxHullValue : combat.maxHull);
+  const maxShield = Math.max(0, Number.isFinite(maxShieldValue) ? maxShieldValue : combat.maxShield);
+  const maxArmor = Math.max(0, Number.isFinite(maxArmorValue) ? maxArmorValue : combat.maxArmor);
+  const hullValue = Number(ship.hull ?? ship.hp);
+  const shieldValue = Number(ship.shield);
+  const armorValue = Number(ship.armor);
+  const hull = Math.max(0, Math.min(maxHull, Number.isFinite(hullValue) ? hullValue : maxHull));
+  const shield = Math.max(0, Math.min(maxShield, Number.isFinite(shieldValue) ? shieldValue : maxShield));
+  const armor = Math.max(0, Math.min(maxArmor, Number.isFinite(armorValue) ? armorValue : maxArmor));
   return {
     id: ship.id,
     ownerId,
@@ -204,6 +213,18 @@ export function normalizeShip(
     weaponCooldowns: typeof ship.weaponCooldowns === "object" && ship.weaponCooldowns
       ? Object.fromEntries(Object.entries(ship.weaponCooldowns).map(([key, value]) => [key, Math.max(0, Number(value) || 0)]))
       : {},
+    weaponReadyAtYears: typeof ship.weaponReadyAtYears === "object" && ship.weaponReadyAtYears
+      ? Object.fromEntries(Object.entries(ship.weaponReadyAtYears).filter(([, value]) => Number.isFinite(Number(value))).map(([key, value]) => [key, Number(value)]))
+      : {},
+    lastShieldDamageAtYear: Number.isFinite(ship.lastShieldDamageAtYear) ? Number(ship.lastShieldDamageAtYear) : null,
+    subsystemState: {
+      disabledWeaponKeys: Array.isArray(ship.subsystemState?.disabledWeaponKeys)
+        ? ship.subsystemState!.disabledWeaponKeys.filter((key) => typeof key === "string")
+        : [],
+      engineDisabled: ship.subsystemState?.engineDisabled === true,
+      emergencyMobility: ship.subsystemState?.emergencyMobility === true,
+    },
+    disabled: ship.disabled === true,
   };
 }
 
@@ -225,10 +246,28 @@ export function normalizeFleet(
     : null;
   const shipIds = Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [];
   const combatSettings = createDefaultFleetCombatSettings(fleet.combatSettings);
+  if (!fleet.combatSettings?.doctrine) {
+    combatSettings.doctrine = formation === "echelon" || fleet.combatSettings?.behavior === "artillery"
+      ? "artillery"
+      : formation === "vanguard" || fleet.combatSettings?.behavior === "brawler" || fleet.combatSettings?.behavior === "swarm"
+        ? "assault"
+        : formation === "defensive" || fleet.combatSettings?.behavior === "defender"
+          ? "escort"
+          : "line";
+  }
+  if (!fleet.combatSettings?.engagementRule) {
+    combatSettings.engagementRule = fleet.combatStance === "passive" || fleet.combatStance === "evade"
+      ? "avoid"
+      : fleet.combatStance === "aggressive" || fleet.combatStance === "hunt"
+        ? "engageSystem"
+        : "defendSystem";
+  }
   const systemPosition = fleet.systemPosition ?? systemCenterPosition();
+  const stationaryStarbaseId = typeof fleet.stationaryStarbaseId === "string" ? fleet.stationaryStarbaseId : null;
   return {
     id: fleet.id,
     ownerId: Number.isInteger(fleet.ownerId) ? fleet.ownerId : 0,
+    stationaryStarbaseId,
     shipIds,
     formation,
     currentStarId,
@@ -241,7 +280,7 @@ export function normalizeFleet(
     phaseProgress: Math.max(0, Math.min(1, Number(fleet.phaseProgress) || 0)),
     phaseElapsedMs: fleet.phaseElapsedMs ?? Math.round((fleet.phaseProgress ?? 0) * phaseDuration(ctx, phase)),
     orderType,
-    speed: Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
+    speed: stationaryStarbaseId ? 0 : Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
     combatStance: normalizeCombatStance(fleet.combatStance),
     retreatState: normalizeFleetRetreatState(fleet.retreatState),
     systemPosition,
@@ -256,6 +295,7 @@ export function normalizeFleet(
     tacticalRadius: getFleetTacticalRadius(shipIds.length),
     maxWeaponRange: Math.max(0, Number(fleet.maxWeaponRange) || 0),
     minWeaponRange: Math.max(0, Number(fleet.minWeaponRange) || 0),
+    weightedWeaponRange: Math.max(0, Number(fleet.weightedWeaponRange) || 0),
     currentTargetId: typeof fleet.currentTargetId === "string" ? fleet.currentTargetId : null,
     currentTargetKind: fleet.currentTargetKind === "fleet" || fleet.currentTargetKind === "starbase" ? fleet.currentTargetKind : null,
     combatStatus: fleet.combatStatus === "maneuvering"
@@ -267,6 +307,34 @@ export function normalizeFleet(
       ? fleet.combatStatus
       : "idle",
     lastCombatAtYear: Number.isFinite(fleet.lastCombatAtYear) ? Number(fleet.lastCombatAtYear) : null,
+    battleSnapshot: fleet.battleSnapshot && Number.isFinite(fleet.battleSnapshot.initialDurability)
+      ? {
+        battleId: String(fleet.battleSnapshot.battleId || `battle:${fleet.id}`),
+        startedAtYear: Number(fleet.battleSnapshot.startedAtYear) || GAME_START_YEAR,
+        initialDurability: Math.max(1, Number(fleet.battleSnapshot.initialDurability)),
+        initialShipIds: Array.isArray(fleet.battleSnapshot.initialShipIds) ? fleet.battleSnapshot.initialShipIds.filter((id) => typeof id === "string") : [],
+        projectilesIntercepted: Math.max(0, Number(fleet.battleSnapshot.projectilesIntercepted) || 0),
+        strayHits: Math.max(0, Number(fleet.battleSnapshot.strayHits) || 0),
+        subsystemCriticals: Math.max(0, Number(fleet.battleSnapshot.subsystemCriticals) || 0),
+        capturedStarbaseIds: Array.isArray(fleet.battleSnapshot.capturedStarbaseIds) ? fleet.battleSnapshot.capturedStarbaseIds.filter((id) => typeof id === "string") : [],
+        retreated: fleet.battleSnapshot.retreated === true,
+        repairSpending: fleet.battleSnapshot.repairSpending && typeof fleet.battleSnapshot.repairSpending === "object" ? { ...fleet.battleSnapshot.repairSpending } : {},
+      }
+      : null,
+    repairOrder: fleet.repairOrder && typeof fleet.repairOrder.targetFleetId === "string"
+      ? {
+        targetFleetId: fleet.repairOrder.targetFleetId,
+        targetShipId: typeof fleet.repairOrder.targetShipId === "string" ? fleet.repairOrder.targetShipId : null,
+        stage: fleet.repairOrder.stage === "subsystems" || fleet.repairOrder.stage === "hull" || fleet.repairOrder.stage === "armor" || fleet.repairOrder.stage === "shield" ? fleet.repairOrder.stage : "emergencyMobility",
+        progressHours: Math.max(0, Number(fleet.repairOrder.progressHours) || 0),
+        startedAtYear: Number(fleet.repairOrder.startedAtYear) || GAME_START_YEAR,
+      }
+      : null,
+    commandUsed: Math.max(0, Number(fleet.commandUsed) || 0),
+    commandCapacity: Math.max(1, Number(fleet.commandCapacity) || 20),
+    commandAccuracyMultiplier: Math.max(0.6, Math.min(1, Number(fleet.commandAccuracyMultiplier) || 1)),
+    commandCooldownMultiplier: Math.max(1, Math.min(1.5, Number(fleet.commandCooldownMultiplier) || 1)),
+    commandCoordinationMultiplier: Math.max(0.5, Math.min(1, Number(fleet.commandCoordinationMultiplier) || 1)),
   };
 }
 
@@ -344,7 +412,9 @@ export function syncFleetMembership(ctx: RuntimeContext, nextState: GameState): 
       fleet.shipIds = shipIds;
       changed = true;
     }
-    const nextSpeed = Math.min(...ships.map((ship) => Math.max(0.05, ship.speed)));
+    const nextSpeed = fleet.stationaryStarbaseId
+      ? 0
+      : Math.min(...ships.map((ship) => Math.max(0.05, ship.speed)));
     if (Math.abs(fleet.speed - nextSpeed) > 0.0001) {
       fleet.speed = nextSpeed;
       changed = true;
@@ -561,7 +631,7 @@ export function assignFoundingSpeciesToOwnedPops(nextState: GameState): boolean 
   const factionById = new Map(nextState.factions.map((faction) => [faction.id, faction]));
   nextState.planetStates = nextState.planetStates.map((planetState) => {
     if (!planetState.isHabited) return planetState;
-    const ownerId = nextState.starOwnership[planetState.starId] ?? -1;
+    const ownerId = planetState.ownerId ?? -1;
     const faction = factionById.get(ownerId);
     const foundingSpeciesId = faction?.foundingSpeciesId ?? (faction ? getFactionFoundingSpeciesId(faction.id) : null);
     if (!foundingSpeciesId) return planetState;
@@ -618,7 +688,7 @@ function addInferredTechIdsFromShipDesign(techIds: Set<TechId>, design: ShipDesi
 export function inferCompletedTechIdsFromExistingAssets(nextState: GameState, factionId: number): TechId[] {
   const techIds = new Set<TechId>();
   for (const planetState of nextState.planetStates) {
-    if ((nextState.starOwnership[planetState.starId] ?? -1) !== factionId) continue;
+    if (planetState.ownerId !== factionId) continue;
     for (const building of Object.values(planetState.buildings).flat()) {
       const buildingKind = getPlanetBuildingKind(building);
       if (buildingKind) addInferredTechIdsFromBuilding(techIds, buildingKind, getPlanetBuildingLevel(building));
