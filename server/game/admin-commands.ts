@@ -63,7 +63,7 @@ import { getWeaponId } from "./combat";
 import { saveState } from "./persistence";
 import { RECENT_COMBAT_CONTACT_HISTORY } from "./constants";
 import { clamp, systemCenterPosition, cloneSystemPosition } from "./pure-helpers";
-import { normalizeCombatStance, isFleetBehavior, isFleetChasePolicy, isFleetRetreatPolicy, isDistrictKind, isValidSlotIndex } from "./validators";
+import { isFleetDoctrine, isFleetEngagementRule, isFleetRetreatPreset, isDistrictKind, isValidSlotIndex } from "./validators";
 import {
   getFactionTechnology,
   getPlanetDistrictLimitsFromState,
@@ -1134,16 +1134,14 @@ export async function executeAdminCommand(
     }
     case "set_fleet_doctrine": {
       const fleet = resolveFleetToken(ctx, parsed.args[0], context);
-      const stance = commandOption(parsed, "stance");
-      const behavior = commandOption(parsed, "behavior");
-      const chase = commandOption(parsed, "chase");
+      const engagement = commandOption(parsed, "engagement");
+      const doctrine = commandOption(parsed, "doctrine");
       const retreat = commandOption(parsed, "retreat");
-      if (stance) fleet.combatStance = normalizeCombatStance(stance);
       fleet.combatSettings = createDefaultFleetCombatSettings({
         ...fleet.combatSettings,
-        behavior: isFleetBehavior(behavior) ? behavior : fleet.combatSettings.behavior,
-        chasePolicy: isFleetChasePolicy(chase) ? chase : fleet.combatSettings.chasePolicy,
-        retreatPolicy: isFleetRetreatPolicy(retreat) ? retreat : fleet.combatSettings.retreatPolicy,
+        engagementRule: isFleetEngagementRule(engagement) ? engagement : fleet.combatSettings.engagementRule,
+        doctrine: isFleetDoctrine(doctrine) ? doctrine : fleet.combatSettings.doctrine,
+        retreatPreset: isFleetRetreatPreset(retreat) ? retreat : fleet.combatSettings.retreatPreset,
       });
       return changedResult(ctx, "Fleet doctrine updated.", ["fleets"]);
     }
@@ -1209,17 +1207,17 @@ export async function executeAdminCommand(
       const ownerB = (ownerA + 1) % Math.max(1, ctx.state.factions.length);
       if (scenario === "artillery_vs_starbase") {
         const fleet = createAdminFleetWithShips(ctx, ownerA, starId, undefined, 6, { x: -48, y: SYSTEM_FLEET_Y, z: 0 });
-        fleet.combatSettings.behavior = "artillery";
+        fleet.combatSettings.doctrine = "artillery";
         ctx.state.starbases = ctx.state.starbases.filter((starbase) => starbase.starId !== starId);
         ctx.state.starbases.push(createAdminStarbase(ctx, starId, ownerB, "starbase", getSystemStarbasePosition()));
-      } else if (scenario === "swarm_vs_line") {
+      } else if (scenario === "assault_vs_line" || scenario === "swarm_vs_line") {
         const a = createAdminFleetWithShips(ctx, ownerA, starId, undefined, 16, { x: -30, y: SYSTEM_FLEET_Y, z: 0 });
         const b = createAdminFleetWithShips(ctx, ownerB, starId, undefined, 10, { x: 30, y: SYSTEM_FLEET_Y, z: 0 });
-        a.combatSettings.behavior = "swarm"; b.combatSettings.behavior = "line";
+        a.combatSettings.doctrine = "assault"; b.combatSettings.doctrine = "line";
       } else if (scenario === "retreat_test") {
         const a = createAdminFleetWithShips(ctx, ownerA, starId, undefined, 4, { x: -22, y: SYSTEM_FLEET_Y, z: 0 });
         const b = createAdminFleetWithShips(ctx, ownerB, starId, undefined, 12, { x: 22, y: SYSTEM_FLEET_Y, z: 0 });
-        a.combatSettings.retreatPolicy = "high"; b.combatSettings.behavior = "brawler";
+        a.combatSettings.retreatPreset = "avoidLosses"; b.combatSettings.doctrine = "assault";
       } else if (scenario === "orbit_defense") {
         ctx.state.starbases.push(createAdminStarbase(ctx, starId, ownerA, "starbase", getSystemStarbasePosition()));
         createAdminFleetWithShips(ctx, ownerB, starId, undefined, 8, { x: 44, y: SYSTEM_FLEET_Y, z: 0 });

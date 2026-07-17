@@ -159,13 +159,13 @@ export const ADMIN_COMMAND_DEFINITIONS: AdminCommandDefinition[] = [
   command("merge_fleets", "fleets", "merge_fleets <targetFleetId> <sourceFleetId,...>", "Merge fleets immediately."),
   command("set_cooldowns", "fleets", "set_cooldowns <fleetId|shipId|starbaseId|selected> <ready|hours>", "Set weapon cooldowns."),
 
-  command("set_fleet_doctrine", "doctrine", "set_fleet_doctrine <fleetId|selected> [stance=<stance>] [behavior=<behavior>] [chase=<policy>] [retreat=<policy>]", "Set fleet doctrine."),
+  command("set_fleet_doctrine", "doctrine", "set_fleet_doctrine <fleetId|selected> [engagement=<avoid|defendSystem|engageSystem>] [doctrine=<artillery|line|assault|escort>] [retreat=<fightOn|balanced|preserveFleet|avoidLosses>]", "Set fleet automation controls."),
   command("set_retreat_destination", "doctrine", "set_retreat_destination <fleetId|selected> <nearest_friendly_starbase|selected_system> [systemId]", "Set retreat destination."),
   command("order_fleet", "doctrine", "order_fleet <fleetId|selected> <hold|retreat|attack|guard|move> [...]", "Issue a tactical order."),
   command("clear_order", "doctrine", "clear_order <fleetId|selected>", "Clear a tactical order."),
 
   command("start_duel", "combat", "start_duel <systemId|current> <ownerA> <ownerB> [designA=default] [designB=default] [countA=1] [countB=1] [distance=40]", "Spawn two hostile test fleets."),
-  command("spawn_encounter", "combat", "spawn_encounter <skirmish|artillery_vs_starbase|swarm_vs_line|retreat_test|orbit_defense> <systemId|current>", "Spawn a named combat scenario."),
+  command("spawn_encounter", "combat", "spawn_encounter <skirmish|artillery_vs_starbase|assault_vs_line|retreat_test|orbit_defense> <systemId|current>", "Spawn a named combat scenario."),
   command("force_attack", "combat", "force_attack <fleetId|selected> <targetFleetId|starbaseId>", "Force a fleet to attack."),
   command("stop_combat", "combat", "stop_combat <fleetId|selected|system|all>", "Clear combat orders/status."),
   command("set_weapon_cooldown", "combat", "set_weapon_cooldown <shipId|starbaseId> <mountIndex|all> <ready|hours>", "Set a weapon cooldown."),

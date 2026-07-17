@@ -8,7 +8,7 @@ import {
   SYSTEM_FLEET_Y,
 } from "../../src/data/SystemCoordinates";
 import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY } from "../../src/game/GameTime";
-import type { ServerFleet, ServerShip, SystemDetailPayload } from "../../src/game/GameProtocol";
+import type { ServerCombatProjectile, ServerFleet, ServerShip, SystemDetailPayload } from "../../src/game/GameProtocol";
 import { SystemViewStore } from "../../src/scenes/system/SystemViewStore";
 
 function createStars() {
@@ -142,4 +142,50 @@ test("SystemViewStore prunes deleted selected fleets", () => {
   store.applyPayload(createPayload([fleetB]));
 
   assert.deepEqual(store.getSelectedFleetIds(), ["fleet-b"]);
+});
+
+test("SystemViewStore exposes active combat projectiles from refreshed payloads", () => {
+  const payload = createPayload([]);
+  const projectile: ServerCombatProjectile = {
+    id: "projectile-a",
+    ownerId: 1,
+    sourceActorId: "fleet-a",
+    sourceActorKind: "fleet",
+    sourceShipId: "ship-a",
+    sourceMountKey: "torpedo-large",
+    targetActorId: "fleet-b",
+    targetActorKind: "fleet",
+    targetShipId: "ship-b",
+    starId: payload.star.id,
+    attackClass: "torpedo",
+    interceptableBy: ["pointDefense"],
+    launchYear: 2100,
+    impactYear: 2100.01,
+    sourcePosition: { x: -2, y: SYSTEM_FLEET_Y, z: 0 },
+    targetPosition: { x: 2, y: SYSTEM_FLEET_Y, z: 0 },
+    damage: 44,
+    shieldPenetration: 0.52,
+    armorPenetration: 0.28,
+    shieldDamageMultiplier: 1,
+    armorDamageMultiplier: 1,
+    hullDamageMultiplier: 1.1,
+    lockedHit: true,
+    accuracyMiss: false,
+    dodged: false,
+    guided: true,
+    reacquired: false,
+    hp: 9,
+    maxHp: 9,
+    evasion: 0.5,
+    status: "inFlight",
+  };
+  payload.combatProjectiles = [projectile];
+  const store = new SystemViewStore(payload, 2100);
+
+  assert.deepEqual(store.getCombatProjectiles(), [projectile]);
+
+  const refreshed = createPayload([]);
+  refreshed.combatProjectiles = [];
+  store.applyPayload(refreshed);
+  assert.deepEqual(store.getCombatProjectiles(), []);
 });

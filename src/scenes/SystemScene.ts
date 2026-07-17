@@ -69,6 +69,7 @@ import type {
   FleetMovementSegment,
   FleetOrbitTarget,
   ServerCombatContact,
+  ServerCombatProjectile,
   ServerFleet,
   ServerShip,
   ServerStarbase,
@@ -83,7 +84,7 @@ import { SelectionPanel } from "../ui/SelectionPanel";
 import type { FleetPolicyControl, FleetPolicyValue, SelectionData, SelectionShipData } from "../ui/SelectionPanel";
 import { StarbasePanel } from "../ui/StarbasePanel";
 import { computeFleetPower, computeStarbasePower } from "../game/combatPower";
-import type { CombatStance, FleetBehavior, FleetChasePolicy, FleetRetreatPolicy } from "../game/CombatTypes";
+import type { FleetDoctrine, FleetEngagementRule, FleetRetreatPreset } from "../game/CombatTypes";
 import { getClientIntelField } from "../game/ClientIntelligence";
 import { SystemAssetRegistry } from "./system/SystemAssetRegistry";
 import type { SystemAssetDefinition } from "./system/SystemAssetRegistry";
@@ -128,6 +129,7 @@ export interface SystemSceneOptions {
   serverShips?: ServerShip[];
   shipDesigns?: ShipDesign[];
   recentCombatContacts?: ServerCombatContact[];
+  combatProjectiles?: ServerCombatProjectile[];
   starbaseSystemIds?: number[];
   starbases?: ServerStarbaseSummary[];
   factions?: FactionInfo[];
@@ -186,7 +188,6 @@ const SHIP_ENTRY_START_PROGRESS = 0.72;
 const STAR_BANNER_DIR = "/textures/planet-banners";
 
 const TACTICAL_SHIP_TARGET_SIZE = 0.65;
-const TACTICAL_BEAM_TTL = 0.45;
 const TACTICAL_RING_SEGMENTS = 144;
 
 const STAR_BANNER_TEXTURES: Record<StarType, string> = {
@@ -214,6 +215,7 @@ export class SystemScene implements IGameScene {
   private serverShips: ServerShip[];
   private shipDesigns: ShipDesign[];
   private recentCombatContacts: ServerCombatContact[];
+  private combatProjectiles: ServerCombatProjectile[];
   private starbaseSystemIds: Set<number>;
   private starbases: ServerStarbaseSummary[];
   private factions: FactionInfo[];
@@ -380,6 +382,7 @@ export class SystemScene implements IGameScene {
     this.serverShips = this.systemStore?.getShips() ?? options.serverShips ?? [];
     this.shipDesigns = this.systemStore?.getShipDesigns() ?? options.shipDesigns ?? [];
     this.recentCombatContacts = this.systemStore?.getRecentCombatContacts() ?? options.recentCombatContacts ?? [];
+    this.combatProjectiles = this.systemStore?.getCombatProjectiles() ?? options.combatProjectiles ?? [];
     this.starbases = this.systemStore?.getStarbases() ?? options.starbases ?? [];
     this.starbaseSystemIds = new Set(
       this.systemStore
@@ -733,6 +736,7 @@ export class SystemScene implements IGameScene {
     this.selectionPanel = new SelectionPanel(canvas, {
       onShipAction: (action, selection) => this.handleSelectedFleetAction(action, selection),
       onFleetPolicyChange: (control, value, selection) => this.setFleetPolicy(control, value, selection),
+      onRepairFleet: (constructionFleetId, targetFleetId) => this.options.onFleetCommand?.({ type: "repairFleet", constructionFleetId, targetFleetId }),
     });
     this.labelOverlay = new SystemLabelOverlay();
     this.renderSelectedFleetPanels();
@@ -817,6 +821,11 @@ export class SystemScene implements IGameScene {
 
     this.objectRenderer.update(dt, 3.8);
     this.effectsRenderer?.update(dt);
+    const cameraImpulse = this.effectsRenderer?.consumeCameraImpulse() ?? 0;
+    if (cameraImpulse > 0.001 && this.camera) {
+      this.camera.inertialAlphaOffset += (Math.random() - 0.5) * cameraImpulse * 0.012;
+      this.camera.inertialBetaOffset += (Math.random() - 0.5) * cameraImpulse * 0.007;
+    }
     this.nebulaEnvironment?.update(dt);
 
     if (this.starKind === "pulsar") {
@@ -1358,46 +1367,34 @@ export class SystemScene implements IGameScene {
     const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
     if (!fleet || fleet.ownerId !== this.playerFactionId) return;
 
-    if (control === "stance") {
-      const options: CombatStance[] = ["passive", "evade", "holdPosition", "guardArea", "defendSystem", "aggressive", "hunt"];
-      if (!options.includes(value as CombatStance)) return;
+    if (control === "engagementRule") {
+      const options: FleetEngagementRule[] = ["avoid", "defendSystem", "engageSystem"];
+      if (!options.includes(value as FleetEngagementRule)) return;
       this.options.onFleetCommand?.({
         type: "setFleetCombatSettings",
         fleetId,
-        combatSettings: {},
-        combatStance: value as CombatStance,
+        combatSettings: { engagementRule: value as FleetEngagementRule },
       });
       return;
     }
 
-    if (control === "behavior") {
-      const options: FleetBehavior[] = ["artillery", "line", "brawler", "swarm", "defender"];
-      if (!options.includes(value as FleetBehavior)) return;
+    if (control === "doctrine") {
+      const options: FleetDoctrine[] = ["artillery", "line", "assault", "escort"];
+      if (!options.includes(value as FleetDoctrine)) return;
       this.options.onFleetCommand?.({
         type: "setFleetCombatSettings",
         fleetId,
-        combatSettings: { behavior: value as FleetBehavior },
+        combatSettings: { doctrine: value as FleetDoctrine },
       });
       return;
     }
 
-    if (control === "chase") {
-      const options: FleetChasePolicy[] = ["none", "system", "friendlySystems", "neutralSystems", "enemySystems"];
-      if (!options.includes(value as FleetChasePolicy)) return;
-      this.options.onFleetCommand?.({
-        type: "setFleetCombatSettings",
-        fleetId,
-        combatSettings: { chasePolicy: value as FleetChasePolicy },
-      });
-      return;
-    }
-
-    const options: FleetRetreatPolicy[] = ["none", "low", "medium", "high"];
-    if (!options.includes(value as FleetRetreatPolicy)) return;
+    const options: FleetRetreatPreset[] = ["fightOn", "balanced", "preserveFleet", "avoidLosses"];
+    if (!options.includes(value as FleetRetreatPreset)) return;
     this.options.onFleetCommand?.({
       type: "setFleetCombatSettings",
       fleetId,
-      combatSettings: { retreatPolicy: value as FleetRetreatPolicy },
+      combatSettings: { retreatPreset: value as FleetRetreatPreset },
     });
   }
 
@@ -2014,7 +2011,7 @@ export class SystemScene implements IGameScene {
     const defense = this.getFleetDefense(fleet.id);
     const actions = this.getFleetActions(fleet);
     const doctrine = fleet.combatSettings
-      ? `${fleet.combatStance} | ${fleet.combatSettings.behavior} | retreat ${fleet.combatSettings.retreatPolicy}`
+      ? `${fleet.combatSettings.engagementRule ?? "defendSystem"} | ${fleet.combatSettings.doctrine ?? "line"} | ${fleet.combatSettings.retreatPreset ?? "preserveFleet"}`
       : this.formatFleetNavigationDetail(fleet);
     return {
       type: "fleet",
@@ -2043,10 +2040,12 @@ export class SystemScene implements IGameScene {
       ownerColor: owner?.color,
       canCommand: fleet.ownerId === this.playerFactionId && !fleet.stationaryStarbaseId,
       actions: fleet.ownerId === this.playerFactionId && !fleet.stationaryStarbaseId ? actions : undefined,
-      combatStance: fleet.combatStance,
-      combatBehavior: fleet.combatSettings.behavior,
-      chasePolicy: fleet.combatSettings.chasePolicy,
-      retreatPolicy: fleet.combatSettings.retreatPolicy,
+      engagementRule: fleet.combatSettings.engagementRule ?? "defendSystem",
+      doctrine: fleet.combatSettings.doctrine ?? "line",
+      retreatPreset: fleet.combatSettings.retreatPreset ?? "preserveFleet",
+      repairTargets: ships.some((ship) => ship.shipKind === "constructionShip") ? this.getFieldRepairTargets(fleet) : undefined,
+      activeRepairTargetFleetId: fleet.repairOrder?.targetFleetId ?? null,
+      repairStatus: fleet.repairOrder ? `${fleet.repairOrder.stage}${fleet.combatStatus !== "idle" ? " (paused during combat)" : ""}` : null,
       leader: this.getAssignedLeader("fleet", fleet.id),
     };
   }
@@ -2681,6 +2680,8 @@ export class SystemScene implements IGameScene {
     this.effectsRenderer = new SystemEffectsRenderer(this.scene, this.glowLayer, {
       maxBeams: 96,
       maxProjectiles: 180,
+      maxPulses: 96,
+      maxParticles: 56,
     });
     this.actionTargetRenderer = new SystemActionTargetRenderer(this.scene, this.glowLayer, {
       color: SYSTEM_ACTION_MARKER_COLOR,
@@ -3348,24 +3349,7 @@ export class SystemScene implements IGameScene {
         ?? new Vector3(contact.sourcePosition.x, SYSTEM_FLEET_Y + 0.4, contact.sourcePosition.z);
       const to = this.getCombatEntityPosition(contact.targetId)
         ?? new Vector3(contact.targetPosition.x, SYSTEM_FLEET_Y + 0.4, contact.targetPosition.z);
-      const weaponId = contact.weaponId?.toLowerCase() ?? "";
-      if (weaponId.includes("missile") || weaponId.includes("torpedo")) {
-        this.effectsRenderer?.queueProjectile(`fleetMissile-${contact.id}`, from, to, new Color3(1, 0.52, 0.12), 0.8, 0.24);
-      } else if (weaponId.includes("point") || weaponId.includes("pd") || weaponId.includes("flak")) {
-        for (let i = 0; i < 3; i += 1) {
-          const offset = new Vector3((i - 1) * 0.12, i * 0.04, 0);
-          this.effectsRenderer?.queueProjectile(`fleetPd-${contact.id}-${i}`, from.add(offset), to, new Color3(0.5, 0.9, 1), 0.32, 0.1);
-        }
-      } else {
-        this.effectsRenderer?.queueBeam(
-          `fleetBeam-${contact.id}`,
-          from,
-          to,
-          contact.hit ? new Color3(0.3, 0.84, 1) : new Color3(0.7, 0.72, 0.78),
-          TACTICAL_BEAM_TTL,
-          contact.hit ? 0.85 : 0.38,
-        );
-      }
+      this.effectsRenderer?.queueCombatContact(contact, from, to);
       effectsQueued += 1;
     }
     if (this.combatContactSeen.size > 320) {
@@ -4029,6 +4013,13 @@ export class SystemScene implements IGameScene {
     }
   }
 
+  private getFieldRepairTargets(constructionFleet: ServerFleet): Array<{ fleetId: string; label: string }> {
+    return this.serverFleets
+      .filter((fleet) => fleet.id !== constructionFleet.id && fleet.currentStarId === constructionFleet.currentStarId)
+      .filter((fleet) => this.getShipsForFleet(fleet.id).some((ship) => ship.hull < ship.maxHull || ship.armor < ship.maxArmor || ship.shield < ship.maxShield || ship.subsystemState?.engineDisabled || (ship.subsystemState?.disabledWeaponKeys.length ?? 0) > 0))
+      .map((fleet) => ({ fleetId: fleet.id, label: `${this.getFaction(fleet.ownerId)?.name ?? "Unknown"} · ${fleet.id}` }));
+  }
+
   private renderPlanetObjectPanel(
     panelPlanet: PlanetConfig,
     planetState: PlanetState | undefined,
@@ -4338,6 +4329,7 @@ export class SystemScene implements IGameScene {
     }
     this.selectionPanel?.setClockYear(year);
     this.objectPanel?.setClockYear(year);
+    this.syncCombatProjectileVisuals();
   }
 
   selectFleetById(fleetId: string): boolean {
@@ -4385,6 +4377,19 @@ export class SystemScene implements IGameScene {
     this.queueRecentCombatContactEffects();
   }
 
+  setCombatProjectiles(projectiles: ServerCombatProjectile[]): void {
+    this.combatProjectiles = projectiles;
+    this.syncCombatProjectileVisuals();
+  }
+
+  private syncCombatProjectileVisuals(): void {
+    this.effectsRenderer?.syncCombatProjectiles(
+      this.combatProjectiles,
+      this.clockYear,
+      (entityId) => entityId ? this.getCombatEntityPosition(entityId) : null,
+    );
+  }
+
   setTechnology(technology: FactionTechnologyView | null): void {
     this.options.technology = technology;
   }
@@ -4409,6 +4414,7 @@ export class SystemScene implements IGameScene {
     this.serverShips = this.systemStore.getShips();
     this.shipDesigns = this.systemStore.getShipDesigns();
     this.recentCombatContacts = this.systemStore.getRecentCombatContacts();
+    this.combatProjectiles = this.systemStore.getCombatProjectiles();
     this.starbases = this.systemStore.getStarbases();
     this.starbaseSystemIds = new Set(this.starbases.map((starbase) => starbase.starId));
     this.factions = this.systemStore.getFactions();
@@ -4433,6 +4439,8 @@ export class SystemScene implements IGameScene {
     this.clockYear = clockYear;
     this.selectionPanel?.setClockYear(clockYear);
     this.objectPanel?.setClockYear(clockYear);
+    this.queueRecentCombatContactEffects();
+    this.syncCombatProjectileVisuals();
 
     const nextSelection = Array.from(this.selectedFleetIds).join("\0");
     if (previousSelection !== nextSelection) {

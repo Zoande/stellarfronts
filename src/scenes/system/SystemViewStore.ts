@@ -14,6 +14,7 @@ import type { SystemPosition } from "../../data/SystemCoordinates";
 import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY } from "../../game/GameTime";
 import type {
   ServerCombatContact,
+  ServerCombatProjectile,
   ServerFleet,
   ServerShip,
   ServerStarbaseSummary,
@@ -100,6 +101,10 @@ export class SystemViewStore {
 
   getRecentCombatContacts(): ServerCombatContact[] {
     return this.payload.recentCombatContacts;
+  }
+
+  getCombatProjectiles(): ServerCombatProjectile[] {
+    return this.payload.combatProjectiles ?? [];
   }
 
   getHyperlaneExits(): SystemHyperlaneExitPoint[] {
