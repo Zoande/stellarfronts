@@ -8,7 +8,8 @@ of the game-server WebSocket. Source: [`server/auth-server.ts`](../../server/aut
 
 Everything persists to `server/state/auth.sqlite` via the `authStore` singleton
 ([`server/auth-store.ts`](../../server/auth-store.ts)): accounts, sessions, game memberships, the game
-catalog, registered versions, and news/messages. Passwords are hashed with **PBKDF2**.
+catalog, registered versions, news/messages, and account progression. Passwords are hashed with
+**PBKDF2**.
 
 ## Sessions
 
@@ -28,7 +29,8 @@ Routed in [`server/auth-server.ts`](../../server/auth-server.ts) (subset):
 | `POST /api/dev/login`, `/api/dev/logout`, `GET /api/dev/stats`, `POST /api/dev/games` | Dev panel. |
 | `GET/POST /api/admin/news/...`, `GET /api/news/posts` | News posts/media. |
 | `GET /api/messages`, `POST /api/messages/send` | Direct messages. |
-| `GET /api/player/profile`, `POST /api/internal/game-xp` | Player profile / XP. |
+| `GET /api/player/profile`, `POST /api/player/quests/:questId/claim` | Player profile and quest reward claims. |
+| `POST /api/internal/game-xp` | Control-token-gated in-game XP awards. |
 | `POST /api/oauth/google`, `/api/oauth/microsoft` | **Return `501` — OAuth not enabled.** |
 | `GET /health`, `/robots.txt`, `/sitemap.xml`, `/news` | Ops / SEO / news page. |
 
@@ -50,12 +52,24 @@ accounts claim a generated country (faction). The perspective an account gets is
 store (`isPrivilegedGameAccount` → `{ mode: 'observer' }`) and enforced by the game server on every
 command.
 
+## Account progression
+
+XP, levels, achievements, quest windows, and Dark Matter are stored per account in the progression
+tables. Dark Matter therefore carries across games and is intentionally separate from faction
+stockpiles. Reward insertion and spending are atomic: achievements and quest windows can be claimed
+once, while `spendPlayerDarkMatter` debits only when the full requested balance is available. The
+game server maps a game/faction back to its owning account when it needs to bill a recurring fleet
+boost. Gameplay details are in
+[`../systems/account-progression-and-dark-matter.md`](../systems/account-progression-and-dark-matter.md).
+
 ## How to extend / rules
 
 - Account/session logic belongs in the auth store; the game server only *consumes* a validated
   session and perspective.
 - Don't trust the client's claimed identity — the game server re-derives perspective from the session.
 - New seeded accounts/roles go through `seedAccounts`; keep observer/admin read-only semantics intact.
+- Account-scoped currencies belong in auth SQLite, not `GameState`; game-server mutations must send
+  an account-resource update to every connected session for that account.
 
 ## Known limitations
 

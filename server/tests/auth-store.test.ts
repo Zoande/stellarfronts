@@ -41,6 +41,15 @@ test("dark matter is account-scoped and awarded once for progression rewards", (
     profile.achievements.find((achievement) => achievement.id === "first-contact")?.darkMatterReward,
     1,
   );
+
+  const otherAccount = store.signup({ username: "darkmatter-other", password: "darkmatter-other" }).account;
+  assert.equal(store.getPlayerDarkMatter(otherAccount.id), 0);
+
+  const afterSpend = store.spendPlayerDarkMatter(account.id, 1);
+  assert.equal(afterSpend, balanceAfterClaim - 1);
+  assert.equal(store.getPlayerDarkMatter(otherAccount.id), 0);
+  assert.equal(store.spendPlayerDarkMatter(account.id, balanceAfterClaim + 100), null);
+  assert.equal(store.getPlayerDarkMatter(account.id), afterSpend);
 });
 
 test("multi-game auth store claims generated countries per game", () => {
@@ -76,9 +85,21 @@ test("multi-game auth store claims generated countries per game", () => {
     mode: "faction",
     factionId: first.factionId,
   });
+  assert.equal(
+    store.getAccountIdForGameFaction(game.id, first.factionId),
+    colorAccounts[0].id,
+  );
+  assert.equal(store.getAccountIdForGameFaction(game.id, 999), null);
 
   const permanent = store.joinGame(colorAccounts[0], game.id, "Renamed Later");
   assert.deepEqual(permanent, first);
+
+  const secondGame = store.createGame("Second Front");
+  const secondGameMembership = store.joinGame(colorAccounts[0], secondGame.id, "Second Country");
+  assert.equal(
+    store.getAccountIdForGameFaction(secondGame.id, secondGameMembership.factionId),
+    colorAccounts[0].id,
+  );
 
   for (const account of colorAccounts.slice(2)) {
     store.joinGame(account, game.id, `Claim ${account.username}`);

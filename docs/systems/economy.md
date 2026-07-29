@@ -70,6 +70,11 @@ hourly index: it recalculates planet economies, applies research progression (se
 Construction queues advance via `processPlanetConstruction`. Deficits don't push stockpiles negative;
 sustained deficits feed **shortage situations** (see [events-and-situations.md](events-and-situations.md)).
 
+Owned planetary queue items may also be completed immediately with account-scoped Dark Matter. The
+server applies `max(1, ceil(remainingDays × 0.05))`, validates that the item can still complete, then
+uses `completePlanetConstructionQueueItem` and recalculates the economy. See
+[account-progression-and-dark-matter.md](account-progression-and-dark-matter.md).
+
 ## How to extend / rules
 
 - **Add a building or job:** follow the recipes in

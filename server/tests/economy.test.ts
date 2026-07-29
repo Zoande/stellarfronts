@@ -6,6 +6,7 @@ import {
   BUILDING_DEFINITIONS,
   BUILDING_MINERAL_COSTS,
   calculatePlanetEconomy,
+  completePlanetConstructionQueueItem,
   createBuildingConstructionQueueItem,
   createBuildingUpgradeConstructionQueueItem,
   createEmptyResourceCounts,
@@ -421,6 +422,63 @@ test("construction queue completes districts and buildings over time", () => {
   assertBuilding(result.state.buildings.city[3], "housingComplex");
   assert.equal(result.state.constructionQueue.length, 0);
   assert.equal(result.completed.length, 2);
+});
+
+test("Dark Matter construction skips complete only the selected valid queue item", () => {
+  const planet = createHabitedPlanet();
+  const districtItem = createDistrictConstructionQueueItem("agriculture", "district-skip");
+  const buildingItem = createBuildingConstructionQueueItem(
+    "housingComplex",
+    "city",
+    3,
+    undefined,
+    "building-after-skip",
+  );
+  const queued = recalculatePlanetStateEconomy({
+    ...planet,
+    constructionQueue: [districtItem, buildingItem],
+  }, DEFAULT_LIMITS);
+
+  const skipped = completePlanetConstructionQueueItem(
+    queued,
+    districtItem.id,
+    DEFAULT_LIMITS,
+  );
+
+  assert.ok(skipped);
+  assert.equal(skipped.completed.id, districtItem.id);
+  assert.equal(skipped.completed.remainingDays, 0);
+  assert.equal(
+    skipped.state.builtDistricts.agriculture,
+    planet.builtDistricts.agriculture + 1,
+  );
+  assert.deepEqual(
+    skipped.state.constructionQueue.map((item) => item.id),
+    [buildingItem.id],
+  );
+});
+
+test("Dark Matter construction skips reject missing or no-longer-valid targets", () => {
+  const planet = createHabitedPlanet();
+  const districtItem = createDistrictConstructionQueueItem("agriculture", "district-invalid");
+  const queued = {
+    ...planet,
+    builtDistricts: {
+      ...planet.builtDistricts,
+      agriculture: DEFAULT_LIMITS.agriculture,
+    },
+    constructionQueue: [districtItem],
+  };
+
+  assert.equal(
+    completePlanetConstructionQueueItem(queued, "missing-item", DEFAULT_LIMITS),
+    null,
+  );
+  assert.equal(
+    completePlanetConstructionQueueItem(queued, districtItem.id, DEFAULT_LIMITS),
+    null,
+  );
+  assert.equal(queued.constructionQueue.length, 1);
 });
 
 test("building upgrades complete through construction and scale building effects", () => {

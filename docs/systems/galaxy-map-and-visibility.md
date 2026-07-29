@@ -1,68 +1,87 @@
-# Galaxy, Map & Visibility
+# Galaxy, Map & Intelligence
 
-The galaxy is a deterministic procedural starfield connected by hyperlanes, with per-faction fog of
-war. Generation config is [`src/data/GalaxyMap.ts`](../../src/data/GalaxyMap.ts); stars/planets are in
+The galaxy is a deterministic procedural starfield connected by hyperlanes. What a faction knows is
+controlled by a field-level intelligence system rather than one all-or-nothing fog radius.
+Generation config is [`src/data/GalaxyMap.ts`](../../src/data/GalaxyMap.ts); stars and planets are in
 [`src/data/StarMap.ts`](../../src/data/StarMap.ts); lanes in
-[`src/data/Hyperlanes.ts`](../../src/data/Hyperlanes.ts); factions and visibility math in
-[`src/data/Factions.ts`](../../src/data/Factions.ts); server-side discovery in
-[`server/game/visibility.ts`](../../server/game/visibility.ts).
+[`src/data/Hyperlanes.ts`](../../src/data/Hyperlanes.ts); intelligence definitions in
+[`src/data/Intelligence.ts`](../../src/data/Intelligence.ts); and evaluation/persistence in
+[`server/game/intelligence.ts`](../../server/game/intelligence.ts).
 
 ## Generation
 
-`GALAXY_MAP` ([`src/data/GalaxyMap.ts`](../../src/data/GalaxyMap.ts)) defines a deterministic galaxy:
-`starCount` 500, `seed` 42, a 4-arm spiral shape, minimum star spacing, and camera limits. Generation
-is seeded so the same game seed reproduces the same galaxy. Each star carries planet configs
-(`StarMap.ts`); planet habitability/types drive colonization potential.
+`GALAXY_MAP` defines a deterministic 500-star, 4-arm spiral using seed 42, minimum star spacing, and
+camera limits. Each star carries planet configs whose types and habitability affect colonization.
+`FACTION_COUNT` is 15; `buildFactions` distributes home systems and
+`buildHomeSystemOwnership` seeds ownership.
 
-Factions: `FACTION_COUNT` is 15 ([`src/data/Factions.ts`](../../src/data/Factions.ts)). `buildFactions`
-assigns spatially distributed home stars and a color palette; `buildHomeSystemOwnership` seeds initial
-ownership. The 15 seeded `color_*` accounts map one-to-one onto these faction slots.
+Stars are linked by undirected `hyperlanes` pairs with a derived `adjacency` list. Fleets cross only
+known, enterable lanes; in-system travel is a separate movement segment. System geometry comes from
+[`src/data/SystemCoordinates.ts`](../../src/data/SystemCoordinates.ts).
 
-## Hyperlanes & adjacency
+## Field-level intelligence
 
-Stars are linked by undirected hyperlanes, stored on `GameState` as `hyperlanes` (id pairs) with a
-derived `adjacency` list. Fleets travel **only** along lanes; in-system movement is separate (see
-[ships-fleets-starbases.md](ships-fleets-starbases.md)). System geometry (planet orbits, lane entry/
-exit, staging) comes from [`src/data/SystemCoordinates.ts`](../../src/data/SystemCoordinates.ts).
+Intel is stored per faction as `IntelligenceByFaction`. Each entity (`star`, `system`, `planet`,
+`starbase`, `fleet`, `ship`, or `faction`) has independently observed fields. A field exposed to the
+client is:
 
-## Visibility & fog of war
+- `current` while an active source observes it;
+- `stale` when the last observation is remembered but no source currently covers it; or
+- absent/`unknown` when the faction has never learned it.
 
-Two related notions ([`server/game/visibility.ts`](../../server/game/visibility.ts)):
+This allows, for example, knowing a star's type without its full planet economy, or remembering a
+fleet contact without receiving current telemetry. Known lanes are persisted similarly and become
+stale outside current coverage. There is no separate first-contact or `metByFaction` system:
+faction identity is public, while foreign government, economy, technology, leadership, and
+diplomacy facts are governed by intel bundles.
 
-- **Currently visible** — `computeCurrentVisibleSet` unions discovery from a faction's home star,
-  every *online* starbase it owns, and every fleet it owns (including both endpoints while in
-  transit). Each source reveals stars within `DISCOVERY_JUMPS` (2) hops via
-  `computeVisibleStarIds(adjacency, source, DISCOVERY_JUMPS)`. (The function's own default cap is
-  `FOG_OF_WAR_MAX_JUMPS` = 3 when no override is passed; the server passes 2.)
-- **Discovered (known)** — `refreshDiscovery` folds the visible set into a **monotonic**
-  `discoveredByFaction` record: once seen, a system stays known. It also records
-  `lastKnownOwnershipByFaction` (what you last saw owning a star) so fog shows stale-but-plausible
-  ownership.
+## Sensors, coverage, and command links
 
-**First contact ("met")** is derived from discovery: if faction A has ever discovered a star owned by
-B, they are recorded as met — symmetrically — in `metByFaction` (`markFactionsMet`). "Met" gates
-cross-faction migration and some diplomacy.
+Sensor suites are data-driven in `SENSOR_SUITE_DEFINITIONS`. Planetary capitals, listening stations,
+online starbases and their sensor buildings, and operational ship modules contribute sources.
+Different range bands reveal different bundles; military sensors can be restricted to military
+contacts, while science and civilian sensors expose different field sets.
 
-The snapshot/view builders translate these into what each client receives: full data for visible
-systems, name-only stubs for discovered-but-not-visible systems, redaction for the rest, and
-lane/fleet/starbase filtering by visibility. See
-[`../server/protocol-and-snapshots.md`](../server/protocol-and-snapshots.md).
+Nebula systems block propagation across their boundary, so a remote source covers the near side but
+not the system inside. A source located inside a nebula covers only its own system.
+
+Command links use the same evaluated source network but are distinct from observation. Planet and
+starbase sources provide authority; mobile ship sources relay only when their coverage overlaps an
+authority network. Server command handlers call `hasCommandLink` before accepting remote fleet or
+planet orders.
+
+`refreshIntelligence` records newly observed truth into the persistent faction store.
+`getKnownStarIds`, `getCurrentStarIds`, `getKnownLanePairs`, and `getKnownSystemOwner` are derived
+from those observations. [`server/game/visibility.ts`](../../server/game/visibility.ts) remains as a
+compatibility facade for older call sites; new intelligence behavior belongs in `intelligence.ts`.
+
+## Snapshot behavior
+
+Snapshots materialize entities from the requesting perspective. Observers receive current truth;
+faction players receive only known fields, marked current or stale. Unknown structured fields are
+omitted rather than emitted as empty arrays, because even an array length can leak information.
+Client helpers in [`src/game/ClientIntelligence.ts`](../../src/game/ClientIntelligence.ts) interpret
+these sparse views for scenes and panels.
 
 ## How to extend / rules
 
-- Galaxy shape/size is data — change `GALAXY_MAP`, not generation call sites.
-- Discovery records are **monotonic**; preserve that (don't remove from `discoveredByFaction` outside
-  the explicit admin `forget`/`reset_visibility` paths).
-- Anything visibility-affecting (a fleet moves, a starbase goes online/offline) must trigger
-  `refreshDiscovery` so snapshots stay correct — the tick already does this when fleets move.
-- New per-faction visibility records (like `metByFaction`) are `Record<string, …>` keyed by faction
-  id string; backfill them on load.
+- Add or tune sensor behavior in `SENSOR_SUITE_DEFINITIONS`; do not hard-code a new vision radius in a
+  scene or command handler.
+- Assign new truth fields to an `IntelBundleId`, then grant that bundle or explicit field from the
+  intended sensor bands.
+- Preserve stored observations when current coverage disappears so values correctly become stale.
+- Never enumerate unknown truth-side collection members into a wire view.
+- Visibility- or sensor-affecting state changes must invalidate/refresh intelligence before updates
+  are broadcast.
+- New persistent intelligence fields need bootstrap and normalization defaults.
 
 ## Key files
 
-- Config: [`src/data/GalaxyMap.ts`](../../src/data/GalaxyMap.ts).
-- Stars/planets: [`src/data/StarMap.ts`](../../src/data/StarMap.ts),
-  [`src/data/SystemCoordinates.ts`](../../src/data/SystemCoordinates.ts).
-- Lanes: [`src/data/Hyperlanes.ts`](../../src/data/Hyperlanes.ts).
-- Factions/visibility math: [`src/data/Factions.ts`](../../src/data/Factions.ts).
-- Server discovery: [`server/game/visibility.ts`](../../server/game/visibility.ts).
+- Map data: [`src/data/GalaxyMap.ts`](../../src/data/GalaxyMap.ts),
+  [`src/data/StarMap.ts`](../../src/data/StarMap.ts),
+  [`src/data/Hyperlanes.ts`](../../src/data/Hyperlanes.ts).
+- Intel model: [`src/data/Intelligence.ts`](../../src/data/Intelligence.ts).
+- Server evaluation: [`server/game/intelligence.ts`](../../server/game/intelligence.ts).
+- Snapshot materialization: [`server/game/snapshot.ts`](../../server/game/snapshot.ts).
+- Client reads: [`src/game/ClientIntelligence.ts`](../../src/game/ClientIntelligence.ts).
+- Tests: [`server/tests/intelligence.test.ts`](../../server/tests/intelligence.test.ts).

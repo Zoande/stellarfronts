@@ -23,7 +23,7 @@ StellarFronts is not one server — it is three cooperating pieces (plus the bro
 | Process | Entry point | Default port | Responsibility |
 | --- | --- | --- | --- |
 | **Client** | `src/index.tsx` → [`src/App.tsx`](../../src/App.tsx) | `5173` (Vite) | React UI for login/home/dev, plus the BabylonJS in-game command view. |
-| **Auth server** | [`server/auth-server.ts`](../../server/auth-server.ts) | `8788` | HTTP: accounts, sessions, game catalog, join, dev panel. SQLite-backed. |
+| **Auth server** | [`server/auth-server.ts`](../../server/auth-server.ts) | `8788` | HTTP: accounts, sessions, game catalog, progression, news/messages, dev panel. SQLite-backed. |
 | **Game server** | [`server/index.ts`](../../server/index.ts) | `8787` | WebSocket: the live game simulation and per-client snapshots. One game = one runtime. |
 | **Orchestrator** | [`server/orchestrator.ts`](../../server/orchestrator.ts) | `8790` control, `8787` gateway | Optional. Hosts multiple **code versions** as git worktrees and proxies clients to the right one. |
 
@@ -47,7 +47,7 @@ src/                     Client + shared gameplay data/logic (bundled into the b
 server/                  Node game + auth servers and orchestration
   index.ts               Game server entry: tick loop + command handling
   auth-server.ts         HTTP auth server
-  auth-store.ts          SQLite store (accounts, sessions, games, versions, news)
+  auth-store.ts          SQLite store (accounts, sessions, games, versions, news/messages, progression)
   orchestrator.ts        Multi-version host + gateway
   versionManifest.ts     This build's schema/protocol identity
   game-state-path.ts     Resolves the on-disk state directory
@@ -75,8 +75,9 @@ version of these shared files. See [`04-backward-compatibility.md`](04-backward-
 
 ## What's mature vs. WIP
 
-- **Mature:** economy/population, technology/research, galaxy generation & visibility, ships/
-  starbases/fleets, combat, market, diplomacy, government & species/rights.
+- **Mature:** economy/population, technology/research, galaxy generation & field-level intelligence,
+  ships/starbases/fleets, combat, market, diplomacy, government & species/rights, account
+  progression/news/messaging.
 - **In progress:** the events/situations *catalog* (the framework exists; few scenarios), leader
   pool generation / legendary offers, OAuth login (endpoints return `501`), and email verification
   (UI shell only).

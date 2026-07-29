@@ -42,26 +42,27 @@ normalization in [`server/game/clock.ts`](../../server/game/clock.ts).
 `Set<ServerUpdateField>` of what changed. If paused, it just syncs clock timestamps and returns. The
 phases run in this order — each adds fields to the `changed` set:
 
-1. **Clock** — advance `clock.year`; add `clock`.
-2. **Fleet movement** — `advanceFleet` per fleet; collect arrivals. If anything moved,
-   `refreshDiscovery()`.
+1. **Dark Matter fleet billing + clock** — bill moving-day boost boundaries up to the target time,
+   retime exhausted fleets, then advance `clock.year`; add `clock`/`fleets`.
+2. **Intelligence and fleet movement** — refresh sensor intelligence, stop/recover fleets that lost
+   their command link, run `advanceFleet`, and refresh intelligence again if anything moved.
 3. **Missing-in-action** — `processMissingInActionFleets` (emergency-retreat recovery).
 4. **Continuous combat** — `processContinuousFleetCombat` → ships/fleets/starbases/combatContacts/
    visibility.
 5. **Leaders & government** — `processLeaderDays` on the daily index → leaders/governments/economy/
    fleets/technologies.
-6. **Construction** — `processPlanetConstruction`, `processStarbaseConstruction`,
-   `processStarbaseRepairs`, `processStarbaseShipQueues`.
+6. **Construction & repairs** — `processPlanetConstruction`, `processStarbaseConstruction`,
+   starbase/ship/construction repairs, and `processStarbaseShipQueues`.
 7. **Economy** — `processEconomyHours` on the hourly index → factionEconomies, and research →
    technologies.
-8. **Market** — `processMarketTicks` → market / factionEconomies.
+8. **Market** — `processMarketTicks` → market / tradeAlerts / factionEconomies.
 9. **Shortages** — `processShipShortageEffects` (resource deficits degrade ships/starbases).
 10. **Population** — `processPopulationWeeks` on the weekly index → factionEconomies /
     habitedPlanetSystems.
 11. **Situations & events** — `processSituations`, `processRandomEvents`, `processEventTimeouts`.
 
 The order matters: economy deltas feed situations (with a deliberate one-tick lag), research consumes
-economy output, and visibility is refreshed whenever movement/combat changes the map.
+economy output, and intelligence is refreshed whenever movement/combat changes the map.
 
 ## How to extend / rules
 

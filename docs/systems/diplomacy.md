@@ -32,8 +32,9 @@ The client sends diplomacy commands (`setBorderPolicy`, `declareWar`, `proposeTr
 `respondDiplomacyProposal`, `cancelTreaty`, `cancelDiplomacyProposal`, `proposePeace`,
 `sendDiplomacyMessage` — see `ClientCommand` in
 [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts)); the server validates and applies them in
-[`server/game/diplomacy-handlers.ts`](../../server/game/diplomacy-handlers.ts). First contact ("met",
-see [galaxy-map-and-visibility.md](galaxy-map-and-visibility.md)) is a precondition for most relations.
+[`server/game/diplomacy-handlers.ts`](../../server/game/diplomacy-handlers.ts). Faction identity is
+public in the current intelligence model, so diplomacy targets do not require a separate
+first-contact record.
 
 ## How to extend / rules
 

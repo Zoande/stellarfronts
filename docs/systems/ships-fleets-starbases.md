@@ -51,6 +51,11 @@ merging, orbiting, and retreat are handled in
 [`server/game/fleet-combat.ts`](../../server/game/fleet-combat.ts) (`advanceFleet`, `startMoveOrder`,
 `findRoute`, …).
 
+Moving fleets can spend account-scoped Dark Matter for a 10× travel boost. Activation prepays one
+moving day and the server bills each later day boundary until arrival, deactivation, or insufficient
+funds. Route retiming preserves the current position. See
+[account-progression-and-dark-matter.md](account-progression-and-dark-matter.md).
+
 ## How to extend / rules
 
 - **Add a ship hull/module/section:** add to the relevant `Record` in
@@ -61,6 +66,8 @@ merging, orbiting, and retreat are handled in
 - Construction is server-authoritative and tech-gated; validate in the relevant command handler.
 - New fields on ships/fleets/starbases need normalizer defaults (`normalizeFleet`/`normalizeStarbase`)
   so old saves load.
+- Recurring movement modifiers must retime the remaining authoritative movement plan; changing only
+  client interpolation or `phaseProgress` will desynchronize arrival.
 
 ## Key files
 
@@ -72,3 +79,5 @@ merging, orbiting, and retreat are handled in
 - UI: [`src/ui/FleetManagerPanel.ts`](../../src/ui/FleetManagerPanel.ts),
   [`src/ui/StarbasePanel.ts`](../../src/ui/StarbasePanel.ts).
 - Tests: [`server/tests/ship-designs.test.ts`](../../server/tests/ship-designs.test.ts).
+  Dark Matter movement coverage is in
+  [`server/tests/dark-matter.test.ts`](../../server/tests/dark-matter.test.ts).

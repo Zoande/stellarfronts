@@ -1,162 +1,179 @@
-# StellarFronts Prototype
+# StellarFronts
 
-StellarFronts is a browser-based space strategy prototype with a Vite/React client, a WebSocket game server, and a separate HTTP auth server. It is a mixed 2D/3D strategy app: the browser frontend handles login, game selection, and the command UI, while BabylonJS powers the in-game scene and asset rendering.
+StellarFronts is a browser-based multiplayer 4X space-strategy prototype. Players claim a country,
+explore a persistent procedural galaxy, build planetary and orbital infrastructure, design fleets,
+research technologies, trade, negotiate, and fight real-time battles. React provides the account and
+home experience; BabylonJS and imperative DOM overlays power the in-game command view.
 
-## At A Glance
+Balance and content are still in active development.
 
-- The core loop is join a game, claim or resume a country, explore the galaxy, expand with starbases and districts, and manage economy and research over time.
-- The app uses a split client/server architecture: `src/` holds the React UI and shared gameplay data, while `server/` contains auth, state persistence, and real-time game simulation.
-- The game supports multiple account types, including normal players, observers, and admins, with observer/admin access controlling how much of the map you can see. Admin debug commands are included in game.
-- The command view uses BabylonJS, procedural skybox code, and loaded GLB ships/starbases to present the game world.
-- Asset warm-up happens in `src/utils/preloadAuthAssets.ts`, while the main 3D scene work lives in `src/components/BackgroundScene.tsx`, `src/ui/FleetManagerPanel.ts`, and `src/utils/proceduralSpaceSkybox.ts`.
-- The project is built around logistics, expansion, economy, research, market trading, and system control rather than only direct combat. All systems and balance are still a work in progress
+## Quick start
 
-## Quick Start
+Requirements: a current Node.js release supported by the dependencies and npm.
 
-1. Install dependencies with `npm install`.
-2. Set `ADMIN_PASSWORD` to a long, unique password in the process environment.
-3. Start the full local stack with `npm run dev:all`.
-4. Open `http://localhost:5173`.
+```bash
+npm install
+```
 
-The local stack is:
+Create `.env` in the repository root:
 
-- Client: `http://localhost:5173`
-- Auth server: `http://localhost:8788`
-- Game server: `ws://localhost:8787`
+```env
+ADMIN_PASSWORD=replace-with-a-local-admin-password
+DEV_PANEL_PASSWORD=replace-with-a-local-dev-panel-password
+```
+
+Both variables are required; startup fails instead of falling back to a built-in password. Values are
+read literally, so parentheses or quotes become part of the password. Then run:
+
+```bash
+npm run dev:all
+```
+
+Open `http://localhost:5173`. The local stack uses:
+
+| Service | Default |
+| --- | --- |
+| Vite client | `http://localhost:5173` |
+| Auth HTTP server | `http://localhost:8788` |
+| Game WebSocket server | `ws://localhost:8787` |
+
+See [the local development guide](docs/must-read/06-local-dev-and-environments.md) and
+[`.env.example`](.env.example) for all environment variables and production examples.
+
+## Architecture
+
+StellarFronts normally runs as three processes:
+
+- `src/`: React pages, BabylonJS scenes, DOM HUD/panels, and gameplay modules shared with the server.
+- `server/auth-server.ts`: account, profile, news, messaging, game-catalog, and developer HTTP APIs.
+- `server/index.ts`: the authoritative real-time game simulation and WebSocket protocol.
+
+An optional orchestrator in `server/orchestrator.ts` can host games on different git-backed code
+versions simultaneously and proxy each client to the correct runtime. Game state is saved per game;
+accounts and cross-game progression live in SQLite.
+
+`src/data/` and `src/game/` are imported by both browser and server code. Changes there affect both
+builds and must remain compatible with persisted state and the supported wire protocol. Start with
+[the engineering docs](docs/README.md) before changing shared models.
+
+## App routes
+
+- `/`: login and signup.
+- `/home`: game catalog, joined games, account profile, progression, quests, and achievements.
+- `/game/:gameId`: the BabylonJS galaxy/system command view.
+- `/news` and `/news/:slug`: public news, comments, and voting.
+- `/dev`: password-gated developer and version-management tools.
+
+Google and Microsoft OAuth routes currently return `501`. Email-verification UI exists, but there is
+no backend verification flow.
+
+## Gameplay
+
+Implemented systems include:
+
+- A deterministic 500-star, 15-faction galaxy with hyperlanes and generated planets/nebulae.
+- Field-level intelligence with sensor suites, current/stale observations, known lanes, nebula
+  blocking, and authority-based command links.
+- Real-time fleet movement with route segments, system/hyperlane travel, orbiting, merging, retreat,
+  tactical formations, repair orders, and selectable doctrines.
+- Modular ship design across hulls, sections, weapons, defenses, and utilities.
+- Starbase construction, upgrades, buildings, shipyards, ship queues, defenses, and repairs.
+- Planetary districts, urban sub-districts, buildings/upgrades, construction queues, and colonies.
+- Population by species, jobs/classes, housing, amenities, happiness, crime, stability, growth,
+  habitability, species rights, and living standards.
+- Food, minerals, energy, goods, alloys, and research production/upkeep with shortages.
+- Technology prerequisites, active/passive research, unlocks, and economic/fleet modifiers.
+- Government laws and positions, recruitable leaders, and planet/fleet/government assignments.
+- Market prices, player pressure, direct trades, transaction history, and auto-trade orders.
+- Diplomacy messages, border policies, wars, treaties, migration/trade privileges, and peace terms.
+- Continuous fleet/starbase combat with range bands, projectiles, interception, subsystem damage,
+  tactical orders, retreats, reports, and captured systems.
+- Situations, decision events, notifications, admin commands, and runtime developer controls.
+
+## Account progression and Dark Matter
+
+XP, 20 account levels, achievements, weekly/three-day quests, news activity, and direct messages are
+stored per account. Achievements and quests reward both XP and Dark Matter.
+
+Dark Matter carries across games. It currently supports:
+
+- 10× fleet movement for 1 Dark Matter per in-game moving day, stopping on arrival or when the
+  account runs out.
+- Immediate planetary construction completion at
+  `max(1, ceil(remaining days × 0.05))` Dark Matter.
+
+The game server performs atomic account debits and pushes balance updates to every connected session
+for that account. See
+[Account Progression & Dark Matter](docs/systems/account-progression-and-dark-matter.md).
+
+## Accounts and persistence
+
+Authentication uses PBKDF2 password hashes and an HttpOnly `sf_session` cookie. First startup seeds:
+
+- `observer` / `observer`: read-only full-truth observer.
+- `admin` / `$ADMIN_PASSWORD`: privileged read-only game observer with admin commands.
+- `color_1` through `color_15`: ordinary local player accounts whose password matches the username.
+
+Ordinary accounts claim a generated country independently in each game. Account state, sessions,
+memberships, news, messaging, and progression are stored in `server/state/auth.sqlite`. Game saves
+are stored under `server/state/games/<gameId>/game-state.json`.
+
+## Versioning
+
+The current build advertises protocol version 4 and schema version 24. It can load schemas 23 and 24;
+the field-level intelligence schema intentionally does not migrate older visibility saves. The
+orchestrator checks compatibility before moving a game and creates backups around reset/update
+operations.
+
+See [Versioning & Schema](docs/must-read/03-versioning-and-schema.md) before changing persisted or
+wire state.
 
 ## Scripts
 
-- `npm run dev` starts the Vite client only.
-- `npm run server:dev` starts the WebSocket game server.
-- `npm run auth:dev` starts the HTTP auth server.
-- `npm run dev:all` starts client, auth, and game servers together.
-- `npm run orchestrator:dev` starts the orchestrator that hosts games across code versions.
-- `npm run control` is the command-line client for the orchestrator (versions and game lifecycle).
-- `npm run server:test` runs the server test suite.
-- `npm run server:typecheck` type-checks the server and shared TypeScript files.
-- `npm run build` runs the production TypeScript and Vite builds.
-- `npm run preview` previews the built client.
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the Vite client. |
+| `npm run auth:dev` | Start the auth HTTP server. |
+| `npm run server:dev` | Start the standalone game WebSocket server. |
+| `npm run dev:all` | Start client, auth, and standalone game server together. |
+| `npm run orchestrator:dev` | Start the multi-version gateway/orchestrator. |
+| `npm run control` | Call orchestrator version/game lifecycle commands. |
+| `npx tsc --noEmit` | Type-check client and shared TypeScript. |
+| `npm run server:typecheck` | Type-check server and shared TypeScript. |
+| `npm run server:test` | Run the Node server test suite. |
+| `npm run build` | Type-check and build the production client. |
+| `npm run preview` | Preview the production client build. |
 
-## What The App Does
+## Repository map
 
-The app is split into pathname-driven flows in `src/App.tsx`:
-
-- `/` shows the login/signup experience.
-- `/home` shows the game catalog and account summary.
-- `/game/:gameId` boots the BabylonJS command view for a specific game.
-- `/dev` opens the developer panel.
-
-The client uses React 19, Vite, React Router, and BabylonJS 7. The space backdrop is procedural rather than image-only, and the command view mixes 3D scenes with HUD-style overlays.
-
-## Authentication And Accounts
-
-Authentication lives in `server/auth-server.ts` and `server/auth-store.ts`.
-
-- Accounts are stored in SQLite at `server/state/auth.sqlite`.
-- Sessions use the HttpOnly cookie `sf_session`.
-- Passwords are hashed with PBKDF2.
-- The auth server exposes login, signup, logout, `me`, game listing, game join, and dev-panel endpoints.
-- Google and Microsoft OAuth endpoints exist, but they return `501` because OAuth is not enabled yet.
-
-Seeded accounts are created automatically:
-
-- `observer` / `observer`
-- `admin` uses the required `ADMIN_PASSWORD` environment variable; startup fails if it is unset or empty
-- `color_1` through `color_15` are seeded user accounts
-
-Observer and admin accounts can enter games without claiming a country. Normal accounts join a game by claiming one generated country.
-
-## Persistence
-
-- Game state is stored under `server/state/games/<gameId>/game-state.json`.
-- Auth state and dev stats live in the SQLite database under `server/state/auth.sqlite`.
-- The game server saves dirty state on a timer, and deleted dev games also remove their saved state directory.
-
-## Game Versions And Lifecycle
-
-- An orchestrator (`server/orchestrator.ts`) can host games on different code versions at the same time, so a new game can run updated code while an older game stays on its original code.
-- A version is a git ref the orchestrator checks out as an isolated worktree and runs as its own game-server process; clients reach the right one through a single gateway, so the public endpoint and tunnel config stay unchanged.
-- Versions and per-game lifecycle (create on a chosen version, reset, update, stop, start, archive, and rollback) are controlled from the developer panel or the `npm run control` CLI, with compatibility checks before an update.
-- Each save is stamped with its schema and protocol version, and state is backed up before resets and updates.
-
-## Gameplay Systems
-
-The project is a logistics, expansion, and command prototype rather than a pure battle sandbox. The implemented systems include:
-
-- A deterministic procedural galaxy with 500 stars and 15 factions.
-- Faction visibility and fog-of-war based on jump distance from each home system.
-- Fleet movement across the hyperlane network with transit phases.
-- Starbase construction from fleets, plus starbase upgrades from outpost to star fortress.
-- Starbase buildings such as shipyards, solar arrays, hydroponics bays, orbital fabricators, alloy assembly docks, research annexes, and logistics depots.
-- Corvette production from completed shipyards.
-- Planet districts, planet buildings, and urban sub-districts with compatibility rules.
-- Resource production and upkeep for food, minerals, energy, goods, alloys, and research.
-- Population, jobs, housing, amenities, happiness, crime, stability, and growth pressure.
-- Research with active and passive pools, prerequisites, and unlocks.
-- Government laws, leaders, and leader assignment effects.
-- Market trading with player pressure and auto-trade orders.
-- Combat systems with tactical orders, attack-target and attack-system commands, range bands, shield/armor/hull damage resolution, and combat contacts tracked in system view.
-- Admin commands and a developer panel for game and account management.
-
-## Data Model Highlights
-
-The main shared data modules live under `src/data/` and `src/game/`:
-
-- `src/data/Economy.ts` defines resources, jobs, districts, buildings, population growth, and upkeep logic.
-- `src/data/Starbase.ts` defines starbase levels, building kinds, ship kinds, and combat stats.
-- `src/data/Factions.ts` defines faction generation and visibility calculations.
-- `src/data/GalaxyMap.ts` defines the deterministic galaxy size, shape, and camera limits.
-- `src/data/Technology.ts` defines the tech tree and research effects.
-- `src/data/Market.ts` defines market state, pricing, and trade pressure.
-- `src/data/Government.ts` and `src/data/Leaders.ts` define laws, effects, and leaders.
-- `src/game/GameProtocol.ts` defines the client/server protocol and game state payloads.
-
-## Development And Configuration
-
-The repo includes `.env.example` with local development values and commented production examples.
-
-Local development works without extra setup if you keep the default localhost values:
-
-```env
-VITE_AUTH_SERVER_URL=http://localhost:8788
-VITE_WS_URL=ws://localhost:8787
-AUTH_SERVER_PORT=8788
-GAME_SERVER_PORT=8787
-ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-WS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-ADMIN_PASSWORD=replace-with-a-long-unique-password
+```text
+src/
+  auth/          Auth client and shared account/profile types
+  components/    React shells and shared page components
+  data/          Shared gameplay models and definitions
+  game/          Protocol, time, boot, and shared gameplay helpers
+  pages/         Login, home, game, news, and developer pages
+  scenes/        BabylonJS galaxy/system scenes
+  systems/       Scene rendering and interaction subsystems
+  ui/            In-game DOM HUD, panels, and modals
+server/
+  game/          Authoritative simulation, persistence, intelligence, snapshots
+  tests/         Node test suite
+  auth-store.ts  SQLite accounts, catalog, news, messaging, progression
+  auth-server.ts HTTP API
+  index.ts       Game server/runtime and command handlers
+  orchestrator.ts Multi-version host and gateway
+docs/            Engineering and gameplay-system documentation
+resources/       Source art and model resources
+public/          Browser-served static assets
 ```
 
-Production examples in `.env.example` show a split frontend/backend deployment with separate auth and WebSocket endpoints, plus cookie domain and secure-cookie settings for cross-subdomain auth.
+## Documentation
 
-`wrangler.jsonc` points Cloudflare Pages static assets at `dist/` with single-page-application fallback for client-side routing.
-
-## Current Limitations
-
-- `src/pages/EmailVerificationPage.tsx` is a UI shell; there is no backend email verification flow yet.
-- OAuth login buttons exist in the UI, but the server explicitly returns `501` for those endpoints.
-
-## Verification
-
-The current README content is aligned with the checked-in code and repo config in:
-
-- `package.json`
-- `src/App.tsx`
-- `src/auth/client.ts`
-- `server/auth-server.ts`
-- `server/auth-store.ts`
-- `server/index.ts`
-- `server/game-state-path.ts`
-- `src/data/Economy.ts`
-- `src/data/Starbase.ts`
-- `src/data/Factions.ts`
-- `src/data/GalaxyMap.ts`
-- `src/data/Technology.ts`
-- `src/data/Market.ts`
-- `src/data/Government.ts`
-- `src/data/Leaders.ts`
-- `src/game/GameProtocol.ts`
-- `server/combat.ts`
-- `server/combat.test.ts`
-- `.env.example`
-- `wrangler.jsonc`
+- [Documentation index](docs/README.md)
+- [Project overview](docs/must-read/01-project-overview.md)
+- [Architecture and data flow](docs/must-read/02-architecture.md)
+- [Contributing rules](docs/must-read/05-contributing-rules.md)
+- [Gameplay systems](docs/systems/README.md)
+- [Server engineering](docs/server/README.md)
+- [Client engineering](docs/client/README.md)

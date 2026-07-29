@@ -13,7 +13,10 @@ pathname:
 - `/game/:gameId` — the BabylonJS command view ([`src/pages/GamePage.tsx`](../../src/pages/GamePage.tsx)).
 - `/dev` — developer panel ([`src/pages/DevPage.tsx`](../../src/pages/DevPage.tsx),
   [`DevVersionPanel.tsx`](../../src/pages/DevVersionPanel.tsx)).
-- `/news`, plus `EmailVerificationPage`/`SuccessPage` shells.
+- `/news` and `/news/:slug` — public news list/article views.
+
+`EmailVerificationPage` and `SuccessPage` exist as UI shells but are not part of the active route
+switch.
 
 ## `useAppFlow`
 
@@ -27,9 +30,10 @@ backdrop is [`src/components/BackgroundScene.tsx`](../../src/components/Backgrou
 
 Opening a game runs [`src/game/boot.ts`](../../src/game/boot.ts), which:
 
-1. **Connects** a `GameServerClient` ([`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts))
-   over WebSocket and awaits the first `snapshot`. It checks `protocolVersion` against
-   `SUPPORTED_SERVER_PROTOCOL_VERSIONS` and refuses an unsupported server.
+1. **Loads account resources and connects** a `GameServerClient`
+   ([`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts)) over WebSocket, awaiting the
+   first `snapshot`. It checks `protocolVersion` against `SUPPORTED_SERVER_PROTOCOL_VERSIONS` and
+   refuses an unsupported server. Account-resource events keep Dark Matter synchronized afterward.
 2. **Initializes the engine** via [`src/SceneManager.ts`](../../src/SceneManager.ts) (WebGPU with a
    WebGL2 fallback) and starts the render loop.
 3. **Starts in GalaxyScene** ([`src/scenes/GalaxyScene.ts`](../../src/scenes/GalaxyScene.ts)); clicking

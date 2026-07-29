@@ -21,10 +21,11 @@ Domain terms used across the codebase and these docs.
   lane network between systems.
 - **Hyperlane** — an undirected connection between two stars; fleets travel only along lanes. Stored
   as `hyperlanes` pairs with a derived `adjacency` list.
-- **Visible vs. known** — *visible* systems are those a faction can currently see (within
-  `DISCOVERY_JUMPS` = 2 of a home/starbase/fleet); *known/discovered* systems are any ever seen. Fog
-  of war redacts the rest. See [`../systems/galaxy-map-and-visibility.md`](../systems/galaxy-map-and-visibility.md).
-- **Met** — two factions that have made first contact; recorded symmetrically in `metByFaction`.
+- **Current / stale / unknown intel** — each known entity field has its own observation status.
+  Active sensors make it current; remembered observations become stale; never-observed fields remain
+  unknown. See [`../systems/galaxy-map-and-visibility.md`](../systems/galaxy-map-and-visibility.md).
+- **Command link** — the authority-and-relay sensor network that permits remote orders. Seeing an
+  entity does not by itself guarantee command access.
 
 ### Economy & planets
 
@@ -46,6 +47,8 @@ Domain terms used across the codebase and these docs.
 - **Range band** — discrete distance bucket used to resolve weapon effectiveness in combat.
 - **Doctrine / stance / retreat policy** — tactical behavior settings governing how a fleet engages
   and when it retreats ([`src/game/CombatTypes.ts`](../../src/game/CombatTypes.ts)).
+- **Dark Matter** — an account-scoped progression reward spent on 10× fleet travel boosts and
+  immediate planetary construction completion. It carries across games.
 
 ### Protocol & state
 

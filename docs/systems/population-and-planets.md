@@ -47,8 +47,9 @@ amenities, stability, crime, employment, and **capacity pressure** (population v
 `calculatePlanetCapacity`). Growth is applied incrementally; the server advances it on the weekly
 population index (`processPopulationWeeks`), which also handles **migration** between planets/factions
 (rates and gating in [`server/game/constants.ts`](../../server/game/constants.ts), e.g.
-`MIGRATION_*`). Cross-faction migration is gated on first contact ("met") and scales with diplomatic
-intimacy / open borders / migration pacts.
+`MIGRATION_*`). Internal migration is active. Cross-faction migration is currently disabled by the
+legacy `haveFactionsMet` compatibility predicate after the old first-contact model was removed;
+open-border and migration-pact tiers remain defined but cannot currently produce a foreign flow.
 
 ## How to extend / rules
 
@@ -56,8 +57,9 @@ intimacy / open borders / migration pacts.
   (happiness/crime/stability/growth helpers) rather than scattering magic numbers.
 - New `PlanetState` fields need a normalizer default (old saves won't have them).
 - Population is server-authoritative and advanced weekly; don't simulate growth on the client.
-- Migration constants live in [`server/game/constants.ts`](../../server/game/constants.ts) — keep
-  related tiers consistent (met / open-border / pact multipliers).
+- Migration constants live in [`server/game/constants.ts`](../../server/game/constants.ts). If
+  foreign migration is re-enabled, replace the legacy first-contact gate deliberately and cover the
+  baseline/open-border/pact tiers together.
 
 ## Key files
 

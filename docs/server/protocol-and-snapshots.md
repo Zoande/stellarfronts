@@ -11,11 +11,12 @@ reject helpers are in [`server/game/socket-io.ts`](../../server/game/socket-io.t
 Server → client:
 
 - **`snapshot`** (`GameSnapshot`) — the full, perspective-filtered state, sent once on connect
-  (`attachClient` in [`server/index.ts`](../../server/index.ts)). Carries `protocolVersion` (2).
+  (`attachClient` in [`server/index.ts`](../../server/index.ts)). Carries `protocolVersion` (4).
 - **`update`** (`GameUpdate`) — an incremental message with `changed: ServerUpdateField[]` and only
   those fields. Sent every tick that changes something.
 - **`detail`** — a scoped payload for a specific panel/entity (see below).
-- Plus `serverInfo` and command results (`accept`/`reject`).
+- Plus `serverInfo`, command results (`accept`/`reject`), and account-resource updates
+  (`accountResources`) for account-scoped balances such as Dark Matter.
 
 Client → server: `ClientCommand` (the union in
 [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts)) — movement, building, diplomacy,
@@ -26,21 +27,21 @@ research, leaders, market, detail subscriptions, admin, etc.
 The set of fields an `update` can carry: `clock`, `visibility`, `planetStates`,
 `habitedPlanetSystems`, `factionEconomies`, `ships`, `shipDesigns`, `fleets`, `starbases`,
 `technologies`, `leaders`, `governments`, `species`, `diplomacy`, `market`, `combatContacts`,
-`situations`, `events`. `advanceState` adds the ones it touched; only those are rebuilt and sent.
+`combatProjectiles`, `combatReports`, `situations`, `events`, and `tradeAlerts`. `advanceState` adds
+the ones it touched; only those are rebuilt and sent.
 
 ## Perspective filtering (fog of war)
 
 Every message is built **per client perspective** (`GalaxyPerspective`: `faction` with an id, or
-`observer`). The snapshot builders in [`server/game/snapshot.ts`](../../server/game/snapshot.ts) use
-the visibility sets (see [`../systems/galaxy-map-and-visibility.md`](../systems/galaxy-map-and-visibility.md))
-to:
+`observer`). The snapshot builders in [`server/game/snapshot.ts`](../../server/game/snapshot.ts)
+materialize field-level intelligence (see
+[`../systems/galaxy-map-and-visibility.md`](../systems/galaxy-map-and-visibility.md)) to:
 
-- Include full data only for **visible** systems; emit redacted "unknown" stars
-  (`createRedactedStar`) for discovered-but-not-visible ones; omit the rest.
-- Filter fleets/starbases/hyperlanes by visibility.
-- Show last-known ownership for fog'd systems.
-- Restrict faction-private data (own economies, technologies, governments, designs, events) to the
-  owning faction; observers/admins get a broader read-only view.
+- send current or stale known star/system fields while leaving unknown fields redacted;
+- expose only observed fleets, ships, starbases, and lanes at the fidelity granted by sensor bundles;
+- show last-observed ownership through the stored system-owner field; and
+- restrict faction-private economies, technologies, governments, designs, and events to their owner,
+  while observers/admins receive broader read-only truth.
 
 Because a new field is simply absent for an older server, clients must read defensively — see
 [`../must-read/04-backward-compatibility.md`](../must-read/04-backward-compatibility.md).

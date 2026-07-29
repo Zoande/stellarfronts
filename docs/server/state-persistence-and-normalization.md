@@ -25,7 +25,7 @@ On load, [`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts
 2. **Schema gate:** rejects the save if `canMigrateFromSchema(VERSION_MANIFEST, parsed.schemaVersion)`
    is false (a last-line guard; the orchestrator gates updates up front).
 3. **Normalizes:** drops removed fields (e.g. legacy `battles`), backfills missing collections
-   (`adjacency`, `discoveredByFaction`, `metByFaction`, …), and re-runs the shared normalizers
+   (`adjacency`, `intelligenceByFaction`, `startingIntelligenceSeeded`, …), and re-runs the shared normalizers
    (`createPlanetStateFromConfig`/`createPlanetStateFromSeed`, fleet/starbase/government/species/
    market normalizers).
 4. **Derived sync:** `syncFleetMembership`, `syncSystemOwnershipFromStarbases`, `refreshDiscovery`,
@@ -54,8 +54,7 @@ on top of the orchestrator's version filter.
 
 - New persisted field → type it, initialize it in `createInitialState`, and **backfill it on load**.
 - Decide on a schema bump per [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md)
-  (and keep the `GameState.schemaVersion` literal in lockstep with the manifest — see the known
-  inconsistency there).
+  and keep the manifest, `GameState` type, fresh-state value, and load normalization aligned.
 - Don't read a persisted field without a fallback; old saves may predate it.
 
 ## Key files

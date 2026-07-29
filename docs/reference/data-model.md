@@ -10,8 +10,9 @@ From [`server/game/types.ts`](../../server/game/types.ts):
 
 | Field | Type / source | What it is |
 | --- | --- | --- |
-| `schemaVersion` | literal `20` | On-disk schema marker (see note below). |
+| `schemaVersion` | literal `23 \| 24` | Supported on-load schema marker; fresh and normalized saves use 24. |
 | `stars` | `StarData[]` ([`StarMap.ts`](../../src/data/StarMap.ts)) | Every star and its planet configs. |
+| `nebulae` | `NebulaRegion[]` ([`Nebula.ts`](../../src/data/Nebula.ts)) | Generated nebula regions and their affected systems. |
 | `planetStates` | `PlanetState[]` ([`Economy.ts`](../../src/data/Economy.ts)) | Per-planet economy: districts, buildings, population, computed `economy` summary. |
 | `factionEconomies` | `FactionEconomyState[]` ([`Economy.ts`](../../src/data/Economy.ts)) | Per-faction stockpiles and monthly deltas. |
 | `factionTechnologies` | `FactionTechState[]` ([`Technology.ts`](../../src/data/Technology.ts)) | Per-faction research progress, active tech, completed techs. |
@@ -33,13 +34,12 @@ From [`server/game/types.ts`](../../server/game/types.ts):
 | `ships` | `GameShip[]` | All ships (hp/shield/armor/hull, design ref). |
 | `fleets` | `GameFleet[]` | Fleets (ship membership, position, phase, orders). |
 | `recentCombatContacts` | `ServerCombatContact[]` | Rolling combat-event log. |
-| `discoveredByFaction` | `Record<string, number[]>` | Stars each faction has ever discovered. |
-| `metByFaction` | `Record<string, number[]>` | Symmetric first-contact record (monotonic). |
-| `lastKnownOwnershipByFaction` | `Record<string, number[]>` | Each faction's last-seen ownership snapshot (fog of war). |
+| `intelligenceByFaction` | `IntelligenceByFaction` ([`Intelligence.ts`](../../src/data/Intelligence.ts)) | Persisted field-level observations and known lanes per faction. |
+| `startingIntelligenceSeeded` | `boolean` | Whether initial faction intelligence has been generated. |
 | `clock` | `GameClock & {...}` ([`GameProtocol.ts`](../../src/game/GameProtocol.ts)) | Year, speed, paused, plus last-processed indices. |
 
-> **Schema note.** `GameState.schemaVersion` is a literal `20`, distinct from
-> `VERSION_MANIFEST.schemaVersion`. See the known inconsistency in
+> **Schema note.** The type accepts schema 23 while loading the one supported predecessor, but
+> `createInitialState` and normalization write schema 24. See
 > [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md).
 
 ## Frequently referenced nested types
@@ -50,8 +50,9 @@ From [`server/game/types.ts`](../../server/game/types.ts):
   housing/amenities/happiness/crime/stability/growth).
 - **`ServerFleet` / `GameFleet`** ([`GameProtocol.ts`](../../src/game/GameProtocol.ts),
   [`types.ts`](../../server/game/types.ts)) — ship ids, system position, `phase`
-  (idle/departing/jumping/arriving), order, combat stance/retreat policy. `GameFleet` adds
-  `phaseElapsedMs` for server-side phase timing.
+  (idle/departing/jumping/arriving), order, combat stance/retreat policy, movement plan, and optional
+  Dark Matter boost telemetry. `GameFleet` requires `phaseElapsedMs`,
+  `darkMatterBoostActive`, and `darkMatterBoostPaidUntilYear` for server-side timing and billing.
 - **`ServerStarbase`** ([`GameProtocol.ts`](../../src/game/GameProtocol.ts)) — level, `status`
   (online/building), shield/armor/hull, weapon cooldowns, construction queues.
 - **`FactionEconomyState`** ([`Economy.ts`](../../src/data/Economy.ts)) — `stockpiles`,

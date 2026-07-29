@@ -26,7 +26,7 @@ category — consult the source for exact, current syntax.
 | **time** | `tick_size`, `tick_speed`, `pause`, `resume`, `step`, `advance_hours`, `advance_days`, `set_year`, `speed_preset` | Control the clock and force-advance the simulation. |
 | **save** | `save`, `reset_galaxy`, `clear_recent_combat`, `clear_orders`, `clear_fleet_movement`, `clear_planet_queue`, `clear_starbase_queue` | Persistence and queue/order cleanup. |
 | **navigation** (localOnly) | `goto`, `select`, `render_debug`, `show_ranges`, `show_footprints`, `show_labels`, `effect_test` | Move the client view and toggle debug overlays. |
-| **ownership** | `discover`, `forget`, `reveal_all`, `reset_visibility` | Manipulate fog-of-war / discovery for a faction. |
+| **ownership** | `intel_inspect`, `intel_report`, `intel_revoke` | Inspect, grant, or revoke field-level faction intelligence. |
 | **economy** | (see source) | Adjust faction stockpiles / economy for testing. |
 | **technology** | `tech_status`, … | Inspect/force research progress and unlocks. |
 | **designs** | (see source) | Inspect/spawn ship designs. |

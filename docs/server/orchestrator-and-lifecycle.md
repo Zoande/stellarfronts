@@ -72,8 +72,8 @@ State is backed up before resets/updates, enabling `rollback-game`.
   games you intend to upgrade — don't narrow it casually.
 - The schema/protocol numbers a version advertises come straight from
   [`server/versionManifest.ts`](../../server/versionManifest.ts) via `--print-version`; keep that
-  accurate (and in lockstep — see the known inconsistency in
-  [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md)).
+  accurate and aligned with bootstrap/load normalization; see
+  [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md).
 - Worktrees are detached at a SHA on purpose; don't point a version at a moving branch and expect it
   to track.
 

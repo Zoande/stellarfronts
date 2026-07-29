@@ -43,8 +43,8 @@ Fleets carry combat settings from [`src/game/CombatTypes.ts`](../../src/game/Com
 runs each tick: it positions fleets, computes range bands, fires ready weapons, applies damage,
 checks retreat, and records `recentCombatContacts` (bounded by `RECENT_COMBAT_CONTACT_HISTORY`).
 Emergency retreats can damage/scatter a fleet (`EMERGENCY_RETREAT_*` constants) and send ships
-"missing in action" (`processMissingInActionFleets`). Combat contact between factions also triggers
-first-contact ("met") and can change ownership — feeding diplomacy and visibility.
+"missing in action" (`processMissingInActionFleets`). Combat can change starbase/system ownership
+and refreshes intelligence so each faction's current or stale observations reflect the new truth.
 
 `combatPower` ([`src/game/combatPower.ts`](../../src/game/combatPower.ts)) computes a composite fleet
 strength used for previews and as a research-context input.

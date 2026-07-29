@@ -9,7 +9,7 @@ pixels. Read [`01-project-overview.md`](01-project-overview.md) first for the pr
 Browser (React + BabylonJS)
    │  HTTP (login, /me, game list, join)
    ▼
-Auth server  ──────────────►  SQLite (accounts, sessions, games, versions)
+Auth server  ──────────────►  SQLite (accounts, sessions, games, versions, progression)
    │  issues sf_session cookie
    │
    │  WebSocket (?gameId=…, cookie auth)
@@ -39,7 +39,7 @@ version's internal process. Clients don't know the difference.
    to the game server (`VITE_WS_URL`, default `ws://localhost:8787`), carrying the `sf_session`
    cookie.
 4. The game server validates the cookie (against the auth store) and origin, then attaches a client
-   session and immediately sends a full **snapshot** (`attachClient` in
+   session and immediately sends the account balance plus a full **snapshot** (`attachClient` in
    [`server/index.ts`](../../server/index.ts)).
 
 ## The authoritative loop (server)
@@ -102,6 +102,10 @@ the server sends a `detail` payload, re-sending only when a revision hash change
 (`subscribeDetail` in [`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts);
 server side in [`server/game/detail-payloads.ts`](../../server/game/detail-payloads.ts)). This keeps
 the per-tick update small. See [`client/server-client-and-details.md`](../client/server-client-and-details.md).
+
+Account-scoped values use a small third path: the auth profile supplies XP/quests/achievements and
+the initial Dark Matter balance, while game-server debits emit `accountResources` events directly to
+all connected sessions for that account. They are not part of faction `GameState`.
 
 ## Persistence & versioning at a glance
 

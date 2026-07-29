@@ -51,8 +51,9 @@ other, not both.
 
 ## Environment configuration
 
-Use [`.env.example`](../../.env.example) as a reference. Set `ADMIN_PASSWORD` in the environment
-inherited by the server processes; the remaining local values work unchanged. Key vars:
+Use [`.env.example`](../../.env.example) as a reference. The npm server scripts load `.env` from the
+repository root through Node's `--env-file=.env`; both password variables must be present. Values are
+literal, so punctuation, quotes, or parentheses become part of the password. Key vars:
 
 - `VITE_AUTH_SERVER_URL`, `VITE_WS_URL` — where the client looks for the auth and game servers.
 - `ALLOWED_ORIGINS` (auth, CORS) and `WS_ALLOWED_ORIGINS` (game server, WebSocket origin allow-list).
@@ -80,7 +81,8 @@ one generated country (faction).
 ## On-disk state
 
 - Game saves: `server/state/games/<gameId>/game-state.json` (+ a `.owner` lock file).
-- Accounts, sessions, game catalog, versions, news: `server/state/auth.sqlite`.
+- Accounts, sessions, game catalog, versions, news/messages, and account progression:
+  `server/state/auth.sqlite`.
 - `SF_STATE_DIR` overrides the state root (the orchestrator sets it for child version processes); see
   [`server/game-state-path.ts`](../../server/game-state-path.ts).
 

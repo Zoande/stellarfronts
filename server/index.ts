@@ -95,7 +95,7 @@ import {
   weaponCanFireAtDistance,
 } from "./game/combat";
 import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_HOUR, elapsedHoursToGameYear, gameYearToHourIndex, gameYearToWeekIndex } from "../src/game/GameTime";
-import { DARK_MATTER_FLEET_COST_PER_MOVING_DAY, DARK_MATTER_FLEET_SPEED_MULTIPLIER, getConstructionDarkMatterCost } from "../src/game/DarkMatter";
+import { DARK_MATTER_FLEET_COST_PER_MOVING_DAY, DARK_MATTER_FLEET_SPEED_MULTIPLIER, getConstructionDarkMatterCost, getFleetDarkMatterBillingPlan } from "../src/game/DarkMatter";
 import { gameHourToRealMinute } from "../src/game/ResourceRate";
 import { getFirstRequiredTechName, getMissingPrerequisites, getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel, getRequiredTechIdsForStarbaseBuilding, isTechnologyAvailable, isTechnologyCompleted, isUnlockedByAnyRequiredTech, TechId, TECHNOLOGY_BY_ID } from "../src/data/Technology";
 import { formatLeaderClass, getLeaderAssignmentClass } from "../src/data/Leaders";
@@ -2147,7 +2147,6 @@ function fleetUpdateSignature(): string {
 }
 
 function processFleetDarkMatterBoostBilling(targetYear: number): boolean {
-  const oneDayYears = 1 / GAME_DAYS_PER_YEAR;
   let changed = false;
 
   for (const fleet of ctx.state.fleets) {
@@ -2161,32 +2160,29 @@ function processFleetDarkMatterBoostBilling(targetYear: number): boolean {
       continue;
     }
 
-    const lastBillableYear = Math.min(targetYear, plan.endsAtYear - oneDayYears * 1e-6);
-    if (lastBillableYear + Number.EPSILON < paidUntil) continue;
-    const chargesDue = Math.max(
-      0,
-      Math.floor((lastBillableYear - paidUntil) / oneDayYears + 1 + 1e-7),
-    );
-    if (chargesDue === 0) continue;
-
     const accountId = authStore.getAccountIdForGameFaction(ctx.game.id, fleet.ownerId);
     const available = accountId === null ? 0 : authStore.getPlayerDarkMatter(accountId);
-    const payableDays = Math.min(chargesDue, Math.floor(available / DARK_MATTER_FLEET_COST_PER_MOVING_DAY));
-    if (accountId !== null && payableDays > 0) {
+    const billing = getFleetDarkMatterBillingPlan(
+      paidUntil,
+      targetYear,
+      plan.endsAtYear,
+      available,
+    );
+    if (billing.chargesDue === 0) continue;
+    if (accountId !== null && billing.darkMatterCost > 0) {
       const balance = authStore.spendPlayerDarkMatter(
         accountId,
-        payableDays * DARK_MATTER_FLEET_COST_PER_MOVING_DAY,
+        billing.darkMatterCost,
       );
       if (balance !== null) broadcastAccountDarkMatter(accountId, balance);
     }
 
-    const nextPaidUntil = paidUntil + payableDays * oneDayYears;
-    if (payableDays < chargesDue) {
-      rescaleFleetMovementPlan(ctx, fleet, DARK_MATTER_FLEET_SPEED_MULTIPLIER, nextPaidUntil);
+    if (billing.exhaustedAtYear !== null) {
+      rescaleFleetMovementPlan(ctx, fleet, DARK_MATTER_FLEET_SPEED_MULTIPLIER, billing.exhaustedAtYear);
       fleet.darkMatterBoostActive = false;
       fleet.darkMatterBoostPaidUntilYear = null;
     } else {
-      fleet.darkMatterBoostPaidUntilYear = nextPaidUntil;
+      fleet.darkMatterBoostPaidUntilYear = billing.nextPaidUntilYear;
     }
     changed = true;
   }

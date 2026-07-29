@@ -9,7 +9,7 @@ server side is documented in [`../server/protocol-and-snapshots.md`](../server/p
 
 `connect()` opens the WebSocket (`VITE_WS_URL` + `?gameId=…`, cookie auth), sends `{ type: "join" }`,
 and resolves with the first `GameSnapshot`. It validates `protocolVersion` against
-`SUPPORTED_SERVER_PROTOCOL_VERSIONS` (`[2]`) and rejects an unsupported server with a clear message.
+`SUPPORTED_SERVER_PROTOCOL_VERSIONS` (`[4]`) and rejects an unsupported server with a clear message.
 Connections reuse a cached snapshot if already connected.
 
 ## State caching
@@ -18,6 +18,9 @@ The client keeps `latestSnapshot` and merges each incremental `update` into it f
 the fields the update carries, defaulting to the prior value). Snapshot handlers
 (`snapshotHandlers`) are notified on each snapshot/merge so scenes and panels can re-render. Clock
 fields are synced for smooth local interpolation (`withClientClockSync`).
+
+Account-scoped resources do not belong in `GameSnapshot`: `accountResources` events update the live
+Dark Matter balance, while the periodic player-profile refresh in `boot.ts` remains a fallback.
 
 ## Detail subscriptions
 

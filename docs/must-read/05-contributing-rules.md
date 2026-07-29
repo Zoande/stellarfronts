@@ -77,8 +77,8 @@ Worked end-to-end by the Planetary Capital change; see
 3. **Backfill it** on load — give the normalizer a default (`parsed.newField = parsed.newField ?? …`)
    so old saves don't arrive missing it. Normalization *is* the migration.
 4. **Decide on a schema bump.** Additive fields with a backfill usually need none. If you do bump
-   `CURRENT_SCHEMA_VERSION`, keep the `GameState.schemaVersion` literal in lockstep — see the known
-   inconsistency in [`03-versioning-and-schema.md`](03-versioning-and-schema.md).
+   `CURRENT_SCHEMA_VERSION`, keep the manifest, `GameState` type, fresh-state value, and load
+   normalization in lockstep; see [`03-versioning-and-schema.md`](03-versioning-and-schema.md).
 5. **Send it to clients** only if needed: add it to the snapshot/update builders and (if the wire
    shape changes incompatibly) bump `protocolVersion`.
 
