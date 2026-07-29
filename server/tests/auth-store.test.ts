@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { AuthStore } from "../auth-store";
+import { WEEKLY_QUESTS } from "../game/progression";
 import type { AuthAccount } from "../../src/auth/types";
 import type { SpeciesSetup } from "../../src/data/Species";
 
@@ -11,6 +12,36 @@ function requireAccount(account: AuthAccount | null): AuthAccount {
   assert.ok(account);
   return account;
 }
+
+test("dark matter is account-scoped and awarded once for progression rewards", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-auth-"));
+  const store = new AuthStore(path.join(directory, "auth.sqlite"));
+  const account = store.signup({ username: "darkmatter", password: "darkmatter" }).account;
+
+  assert.equal(store.getPlayerDarkMatter(account.id), 0);
+  assert.deepEqual(store.checkAndUnlockAchievements(account.id), ["first-contact"]);
+  assert.equal(store.getPlayerDarkMatter(account.id), 1);
+
+  const quest = WEEKLY_QUESTS[0];
+  const windowKey = "test-window";
+  store.upsertQuestProgress(account.id, quest.id, windowKey, quest.target, quest.target);
+  const reward = store.claimQuestReward(account.id, quest.id, windowKey);
+  assert.ok(reward);
+  assert.equal(reward.xpGained, quest.xpReward);
+  assert.equal(reward.darkMatterGained, quest.darkMatterReward);
+  assert.ok(reward.newDarkMatter >= 1 + quest.darkMatterReward);
+
+  const balanceAfterClaim = store.getPlayerDarkMatter(account.id);
+  assert.equal(store.claimQuestReward(account.id, quest.id, windowKey), null);
+  assert.equal(store.getPlayerDarkMatter(account.id), balanceAfterClaim);
+
+  const profile = store.buildPlayerProfile(account);
+  assert.equal(profile.darkMatter, balanceAfterClaim);
+  assert.equal(
+    profile.achievements.find((achievement) => achievement.id === "first-contact")?.darkMatterReward,
+    1,
+  );
+});
 
 test("multi-game auth store claims generated countries per game", () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-auth-"));

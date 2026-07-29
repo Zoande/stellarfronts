@@ -42,6 +42,7 @@ export interface HudState {
   toggles: HudVisualToggles;
   clock?: GameClock;
   economy?: FactionEconomyState | null;
+  darkMatter?: number;
   resourcePlanets?: HudResourcePlanetSummary[];
   flagDesign?: FlagDesign | null;
   situations?: ActiveSituation[];
@@ -552,9 +553,62 @@ const HUD_STYLE = `
 /* Anchored just to the right of the faction flag (flag right edge ≈ 73px after the
    resource bar's 1.3 scale) and below the resource strip, so notifications always
    sit beside the flag rather than under it. */
+#spaceHudDarkMatter {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 142px;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 3px 10px 4px;
+  border: 1px solid rgba(94, 173, 142, 0.62);
+  border-top: 0;
+  border-radius: 0 0 7px 7px;
+  background:
+    linear-gradient(180deg, rgba(6, 27, 24, 0.98), rgba(3, 13, 15, 0.98)),
+    radial-gradient(circle at 50% 0%, rgba(174, 86, 255, 0.16), transparent 7rem);
+  color: #e9f3f7;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.34), inset 0 -1px 0 rgba(117, 255, 208, 0.06);
+  pointer-events: none;
+  z-index: 6;
+}
+
+.spaceHudDarkMatterIcon {
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(206, 146, 255, 0.7);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #f3c7ff 0 12%, #a13ade 34%, #3a115f 72%, #130520 100%);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 7px;
+  line-height: 1;
+  box-shadow: 0 0 8px rgba(177, 71, 255, 0.46);
+}
+
+.spaceHudDarkMatterLabel {
+  color: rgba(196, 219, 214, 0.82);
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.spaceHudDarkMatterValue {
+  color: #f5eaff;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 #spaceHudNotifications {
   position: absolute;
-  top: 60px;
+  top: 76px;
   left: 84px;
   display: flex;
   gap: 6px;
@@ -873,9 +927,14 @@ const HUD_STYLE = `
     min-width: 94px;
   }
 
-  /* Resources wrap to multiple rows on narrow screens; drop the strip below them. */
+  /* Resources wrap to multiple rows on narrow screens; drop the account
+     resource tab and notification strip below them. */
+  #spaceHudDarkMatter {
+    top: 100px;
+  }
+
   #spaceHudNotifications {
-    top: 108px;
+    top: 132px;
     left: 64px;
     max-width: calc(100vw - 76px);
   }
@@ -949,6 +1008,7 @@ export class HudOverlay {
   private readonly connectedContainer: HTMLDivElement;
   private readonly clockEl: HTMLDivElement;
   private readonly resourceEl: HTMLDivElement;
+  private readonly darkMatterEl: HTMLDivElement;
   private readonly notificationEl: HTMLDivElement;
   private notificationSignature = "";
   private readonly sidebarEl: HTMLDivElement;
@@ -960,6 +1020,7 @@ export class HudOverlay {
   private clockShellVisible = false;
   private connectedSignature: string | null = null;
   private resourceSignature = "";
+  private darkMatterSignature = "";
   private flagSignature = "";
   private factionFlagSvg = "";
   private readonly tooltips = new FloatingTooltipManager({
@@ -987,6 +1048,10 @@ export class HudOverlay {
 
     this.resourceEl = document.createElement("div");
     this.resourceEl.id = "spaceHudResources";
+
+    this.darkMatterEl = document.createElement("div");
+    this.darkMatterEl.id = "spaceHudDarkMatter";
+    this.darkMatterEl.setAttribute("aria-label", "Dark Matter account balance");
 
     this.notificationEl = document.createElement("div");
     this.notificationEl.id = "spaceHudNotifications";
@@ -1064,6 +1129,7 @@ export class HudOverlay {
     this.root.appendChild(bottom);
     this.root.appendChild(this.clockEl);
     this.root.appendChild(this.resourceEl);
+    this.root.appendChild(this.darkMatterEl);
     this.root.appendChild(this.notificationEl);
     this.root.appendChild(this.sidebarEl);
     this.root.appendChild(toggles);
@@ -1140,6 +1206,19 @@ export class HudOverlay {
         this.resourceEl.innerHTML = "";
         this.resourceSignature = "";
       }
+    }
+    const rawDarkMatter = state.darkMatter;
+    const darkMatter = typeof rawDarkMatter === "number" && Number.isFinite(rawDarkMatter)
+      ? Math.max(0, Math.floor(rawDarkMatter))
+      : 0;
+    const nextDarkMatterSignature = String(darkMatter);
+    if (this.darkMatterSignature !== nextDarkMatterSignature) {
+      this.darkMatterEl.innerHTML = `
+        <span class="spaceHudDarkMatterIcon" aria-hidden="true">◆</span>
+        <span class="spaceHudDarkMatterLabel">Dark Matter</span>
+        <span class="spaceHudDarkMatterValue">${formatCompactNumber(darkMatter)}</span>
+      `;
+      this.darkMatterSignature = nextDarkMatterSignature;
     }
     this.renderNotifications(state);
     this.exitButton.disabled = !state.canExitSystem;

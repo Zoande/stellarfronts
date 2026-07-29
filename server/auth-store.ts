@@ -26,6 +26,7 @@ import type {
   AuthAccount,
   AccountType,
   AchievementInfo,
+  ClaimQuestResponse,
   Credentials,
   DevGameRuntimeRow,
   DevGameRuntimeStats,
@@ -68,7 +69,6 @@ const DEV_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEV_ACTIVITY_SERIES_DAYS = 14;
 const GAME_RUNTIME_STALE_MS = 20_000;
-const DEFAULT_DEV_PANEL_PASSWORD = 'ABDUGYA1398';
 const ADMIN_USERNAME = 'admin';
 const SESSION_COOKIE_NAME = 'sf_session';
 const DEV_SESSION_COOKIE_NAME = 'sf_dev_session';
@@ -496,7 +496,11 @@ function createGameSeed(): number {
 }
 
 function getDevPanelPassword(): string {
-  return process.env.DEV_PANEL_PASSWORD ?? DEFAULT_DEV_PANEL_PASSWORD;
+  const password = process.env.DEV_PANEL_PASSWORD;
+  if (!password) {
+    throw new Error('DEV_PANEL_PASSWORD environment variable is required');
+  }
+  return password;
 }
 
 function getAdminPassword(): string {
@@ -549,9 +553,11 @@ function buildSeedAccounts(): Array<{ username: string; password: string; accoun
 export class AuthStore {
   private readonly db: DatabaseInstance;
   private readonly adminPassword: string;
+  private readonly devPanelPassword: string;
 
   constructor(dbPath = path.join(STATE_ROOT, 'auth.sqlite')) {
     this.adminPassword = getAdminPassword();
+    this.devPanelPassword = getDevPanelPassword();
     mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
@@ -691,6 +697,7 @@ export class AuthStore {
       CREATE TABLE IF NOT EXISTS player_progression (
         account_id INTEGER PRIMARY KEY,
         total_xp INTEGER NOT NULL DEFAULT 0,
+        dark_matter INTEGER NOT NULL DEFAULT 0,
         updated_at INTEGER NOT NULL,
         FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
       );
@@ -1315,7 +1322,7 @@ export class AuthStore {
   }
 
   validateDevPassword(password: string): boolean {
-    return safeStringEquals(password, getDevPanelPassword());
+    return safeStringEquals(password, this.devPanelPassword);
   }
 
   createDevSession(): string {
@@ -1966,7 +1973,7 @@ export class AuthStore {
   private ensurePlayerRow(accountId: number): void {
     const now = Date.now();
     this.db.prepare(
-      `INSERT OR IGNORE INTO player_progression (account_id, total_xp, updated_at) VALUES (?, 0, ?)`,
+      `INSERT OR IGNORE INTO player_progression (account_id, total_xp, dark_matter, updated_at) VALUES (?, 0, 0, ?)`,
     ).run(accountId, now);
     this.db.prepare(
       `INSERT OR IGNORE INTO player_stats (account_id, comment_count, vote_count, upvote_count, downvote_count, quests_claimed, game_damage_dealt, game_profit_earned, game_stability_ticks) VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0)`,
@@ -2010,6 +2017,22 @@ export class AuthStore {
     return (this.db.prepare(`SELECT total_xp FROM player_progression WHERE account_id = ?`).get(accountId) as { total_xp: number }).total_xp;
   }
 
+  addPlayerDarkMatter(accountId: number, amount: number): number {
+    this.ensurePlayerRow(accountId);
+    const now = Date.now();
+    this.db.prepare(
+      `UPDATE player_progression SET dark_matter = dark_matter + ?, updated_at = ? WHERE account_id = ?`,
+    ).run(Math.max(0, Math.floor(amount)), now, accountId);
+    return this.getPlayerDarkMatter(accountId);
+  }
+
+  getPlayerDarkMatter(accountId: number): number {
+    this.ensurePlayerRow(accountId);
+    return (this.db.prepare(
+      `SELECT dark_matter FROM player_progression WHERE account_id = ?`,
+    ).get(accountId) as { dark_matter: number }).dark_matter;
+  }
+
   awardGameXp(accountId: number, type: 'damage' | 'stability' | 'profit', rawValue: number): number {
     this.ensurePlayerRow(accountId);
     const rate = GAME_XP_RATES[type];
@@ -2026,11 +2049,17 @@ export class AuthStore {
     return (this.db.prepare(`SELECT achievement_id FROM player_achievements WHERE account_id = ?`).all(accountId) as Array<{ achievement_id: string }>).map((r) => r.achievement_id);
   }
 
-  private unlockAchievement(accountId: number, achievementId: string, xpReward: number): boolean {
+  private unlockAchievement(
+    accountId: number,
+    achievementId: string,
+    xpReward: number,
+    darkMatterReward: number,
+  ): boolean {
     const now = Date.now();
     const result = this.db.prepare(`INSERT OR IGNORE INTO player_achievements (account_id, achievement_id, unlocked_at) VALUES (?, ?, ?)`).run(accountId, achievementId, now);
-    if (result.changes > 0 && xpReward > 0) {
-      this.addPlayerXp(accountId, xpReward);
+    if (result.changes > 0) {
+      if (xpReward > 0) this.addPlayerXp(accountId, xpReward);
+      if (darkMatterReward > 0) this.addPlayerDarkMatter(accountId, darkMatterReward);
     }
     return result.changes > 0;
   }
@@ -2046,7 +2075,7 @@ export class AuthStore {
       for (const ach of ACHIEVEMENTS) {
         if (alreadyUnlocked.has(ach.id)) continue;
         if (ach.check(stats)) {
-          if (this.unlockAchievement(accountId, ach.id, ach.xpReward)) {
+          if (this.unlockAchievement(accountId, ach.id, ach.xpReward, ach.darkMatterReward)) {
             allUnlocked.push(ach.id);
             changed = true;
           }
@@ -2072,15 +2101,28 @@ export class AuthStore {
     `).run({ accountId, questId, windowKey, initialProgress, initialCompletedAt, amount, target, now });
   }
 
-  claimQuestReward(accountId: number, questId: string, windowKey: string): boolean {
+  claimQuestReward(accountId: number, questId: string, windowKey: string): ClaimQuestResponse | null {
     const now = Date.now();
     const result = this.db.prepare(`
       UPDATE player_quests SET claimed_at = ?
       WHERE account_id = ? AND quest_id = ? AND window_key = ? AND completed_at IS NOT NULL AND claimed_at IS NULL
     `).run(now, accountId, questId, windowKey);
-    if (result.changes === 0) return false;
+    if (result.changes === 0) return null;
     this.db.prepare(`UPDATE player_stats SET quests_claimed = quests_claimed + 1 WHERE account_id = ?`).run(accountId);
-    return true;
+    const quest = [...WEEKLY_QUESTS, ...TRIDAY_QUESTS].find((definition) => definition.id === questId);
+    const xpGained = quest?.xpReward ?? 0;
+    const darkMatterGained = quest?.darkMatterReward ?? 0;
+    this.addPlayerXp(accountId, xpGained);
+    this.addPlayerDarkMatter(accountId, darkMatterGained);
+    this.checkAndUnlockAchievements(accountId);
+    const newTotalXp = this.getPlayerXp(accountId);
+    return {
+      xpGained,
+      darkMatterGained,
+      newTotalXp,
+      newDarkMatter: this.getPlayerDarkMatter(accountId),
+      newLevel: getLevelForXp(newTotalXp),
+    };
   }
 
   onPlayerComment(accountId: number): void {
@@ -2140,6 +2182,7 @@ export class AuthStore {
       title: ach.title,
       description: ach.description,
       xpReward: ach.xpReward,
+      darkMatterReward: ach.darkMatterReward,
       unlockedAt: unlockedMap.get(ach.id) ?? null,
     }));
 
@@ -2167,7 +2210,8 @@ export class AuthStore {
       const p = questProgressMap.get(`${key}:${q.id}`);
       return {
         id: q.id, title: q.title, description: q.description,
-        type: q.type, target: q.target, xpReward: q.xpReward, action: q.action,
+        type: q.type, target: q.target, xpReward: q.xpReward,
+        darkMatterReward: q.darkMatterReward, action: q.action,
         progress: p?.progress ?? 0,
         completedAt: p?.completed_at ?? null,
         claimedAt: p?.claimed_at ?? null,
@@ -2178,6 +2222,7 @@ export class AuthStore {
 
     return {
       totalXp,
+      darkMatter: this.getPlayerDarkMatter(account.id),
       level,
       levelName: currentLevelDef.name,
       levelColor: currentLevelDef.color,

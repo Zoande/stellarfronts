@@ -94,9 +94,10 @@ function AchievementPanel({ achievements, onClose }: { achievements: Achievement
               <div className="home-ach-body">
                 <div className="home-ach-title">{ach.title}</div>
                 <div className="home-ach-desc">{ach.description}</div>
-                {ach.xpReward > 0 && (
-                  <div className="home-ach-reward">+{ach.xpReward} XP</div>
-                )}
+                <div className="home-ach-reward">
+                  {ach.xpReward > 0 && <span>+{ach.xpReward} XP</span>}
+                  <span>+{ach.darkMatterReward} Dark Matter</span>
+                </div>
               </div>
             </div>
           ))}
@@ -156,7 +157,9 @@ function QuestPanel({
             disabled={claiming === q.id}
             onClick={() => void handleClaim(q)}
           >
-            {claiming === q.id ? 'Claiming…' : `Claim +${q.xpReward} XP`}
+            {claiming === q.id
+              ? 'Claiming…'
+              : `Claim +${q.xpReward} XP · +${q.darkMatterReward} Dark Matter`}
           </button>
         )}
         {claimed && <span className="home-quest-claimed-badge">Claimed</span>}

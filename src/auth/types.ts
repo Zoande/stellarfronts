@@ -260,6 +260,7 @@ export interface AchievementInfo {
   title: string;
   description: string;
   xpReward: number;
+  darkMatterReward: number;
   unlockedAt: number | null;
 }
 
@@ -270,6 +271,7 @@ export interface QuestInfo {
   type: 'weekly' | 'triday';
   target: number;
   xpReward: number;
+  darkMatterReward: number;
   action: string;
   progress: number;
   completedAt: number | null;
@@ -280,6 +282,7 @@ export interface QuestInfo {
 
 export interface PlayerProfile {
   totalXp: number;
+  darkMatter: number;
   level: number;
   levelName: string;
   levelColor: string;
@@ -298,7 +301,9 @@ export interface PlayerProfileResponse {
 
 export interface ClaimQuestResponse {
   xpGained: number;
+  darkMatterGained: number;
   newTotalXp: number;
+  newDarkMatter: number;
   newLevel: number;
 }
 

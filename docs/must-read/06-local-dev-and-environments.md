@@ -57,7 +57,7 @@ inherited by the server processes; the remaining local values work unchanged. Ke
 - `VITE_AUTH_SERVER_URL`, `VITE_WS_URL` — where the client looks for the auth and game servers.
 - `ALLOWED_ORIGINS` (auth, CORS) and `WS_ALLOWED_ORIGINS` (game server, WebSocket origin allow-list).
 - `ADMIN_PASSWORD` — required; set it to a long, unique password before starting any server process.
-- `DEV_PANEL_PASSWORD` — defaults to `ABDUGYA1398`.
+- `DEV_PANEL_PASSWORD` — required; controls access to the developer panel.
 - `COOKIE_DOMAIN`, `COOKIE_SECURE` — leave unset locally; set for cross-subdomain production.
 
 The production section of `.env.example` shows a split deploy (Cloudflare Pages client +

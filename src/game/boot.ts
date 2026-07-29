@@ -59,6 +59,7 @@ import { isLocalAdminCommand, parseAdminCommand } from "./AdminCommands";
 import type { AdminCommandContext, AdminCommandResult } from "./AdminCommands";
 import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_DAY, estimateClockYear } from "./GameTime";
 import type { HyperlaneExitPoint, ShipAction } from "./GameplayTypes";
+import { getPlayerProfile } from "@/auth/client";
 
 export interface BootOptions {
   adminCommandsEnabled?: boolean;
@@ -76,7 +77,13 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   reportProgress(0.08, "Connecting to game server");
   const server = new GameServerClient(options.gameId);
+  const profilePromise = getPlayerProfile().catch(() => null);
   let snapshot = await server.connect();
+  const initialProfile = await profilePromise;
+  const initialDarkMatter = initialProfile?.darkMatter;
+  let darkMatter = typeof initialDarkMatter === "number" && Number.isFinite(initialDarkMatter)
+    ? Math.max(0, Math.floor(initialDarkMatter))
+    : 0;
   const adminCommandsEnabled = options.adminCommandsEnabled === true;
   applyPlanetStatesToStars(snapshot.stars, snapshot.planetStates);
 
@@ -97,6 +104,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   let cachedHyperlaneAdjacency: number[][] = buildHyperlaneAdjacency(snapshot.hyperlanes, snapshot.stars.length);
   let currentSystemStar: StarData | null = null;
   let hud: HudOverlay | null = null;
+  let darkMatterRefreshTimer: number | null = null;
   const seenEventIds = new Set<string>();
   const eventModal = new EventModal({
     onResolve: (eventId, choiceId) => {
@@ -1048,6 +1056,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       toggles: visualToggles,
       clock: snapshot.clock,
       economy: getCurrentFactionEconomy(),
+      darkMatter,
       resourcePlanets: getCurrentFactionResourcePlanets(),
       flagDesign: currentFaction?.flagDesign ?? null,
       situations: snapshot.situations,
@@ -1524,6 +1533,21 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     },
     onOpenMarket: () => openMarketPanel(),
   });
+  darkMatterRefreshTimer = window.setInterval(() => {
+    void getPlayerProfile()
+      .then((profile) => {
+        const nextDarkMatter = Number.isFinite(profile.darkMatter)
+          ? Math.max(0, Math.floor(profile.darkMatter))
+          : 0;
+        if (nextDarkMatter === darkMatter) return;
+        darkMatter = nextDarkMatter;
+        updateHud();
+      })
+      .catch(() => {
+        // The account service can be temporarily unavailable while the game
+        // server remains healthy; retain the last authoritative balance.
+      });
+  }, 60_000);
 
   const pressedCodes = new Set<string>();
   const handleKeyDown = (ev: KeyboardEvent) => {
@@ -1576,6 +1600,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     window.removeEventListener("keydown", handleKeyDown);
     window.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener(OPEN_LEADERS_PANEL_EVENT, handleOpenLeadersPanel);
+    if (darkMatterRefreshTimer !== null) window.clearInterval(darkMatterRefreshTimer);
     hud?.dispose();
     eventModal.dispose();
     situationModal.dispose();

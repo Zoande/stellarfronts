@@ -13,7 +13,6 @@ import {
   serializeSessionCookie,
 } from './auth-store';
 import { getGameStateDirectory } from './game-state-path';
-import { TRIDAY_QUESTS, WEEKLY_QUESTS, getLevelForXp as getProgressionLevel } from './game/progression';
 import type { AuthAccount, Credentials, LoginCredentials, NewsContentBlock, NewsPost } from '../src/auth/types';
 
 const PORT = Number(process.env.AUTH_SERVER_PORT ?? 8788);
@@ -761,15 +760,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     const body = await readJsonBody<{ windowKey?: unknown }>(request);
     const windowKey = typeof body.windowKey === 'string' ? body.windowKey : '';
     const questId = decodeURIComponent(claimQuestMatch[1]);
-    const claimed = authStore.claimQuestReward(account.id, questId, windowKey);
-    if (!claimed) {
+    const reward = authStore.claimQuestReward(account.id, questId, windowKey);
+    if (!reward) {
       writeJson(response, 400, { error: 'Quest not completed or already claimed' });
       return;
     }
-    const xpReward = [...WEEKLY_QUESTS, ...TRIDAY_QUESTS].find((q) => q.id === questId)?.xpReward ?? 0;
-    const newTotalXp = authStore.addPlayerXp(account.id, xpReward);
-    authStore.checkAndUnlockAchievements(account.id);
-    writeJson(response, 200, { xpGained: xpReward, newTotalXp, newLevel: getProgressionLevel(newTotalXp) });
+    writeJson(response, 200, reward);
     return;
   }
 
