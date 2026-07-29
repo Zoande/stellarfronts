@@ -40,8 +40,9 @@ CORS is gated by `ALLOWED_ORIGINS`; the game server's WebSocket origin allow-lis
 `seedAccounts` ([`server/auth-store.ts`](../../server/auth-store.ts)) creates on first run:
 
 - `observer` / `observer` — read-only spectator.
-- `admin` / `$ADMIN_PASSWORD` (default `ABDUGYA1398`) — privileged; observer-style access plus admin
-  commands. `isAdminAccount` / `isPrivilegedGameAccount` drive access.
+- `admin` / `$ADMIN_PASSWORD` — privileged; observer-style access plus admin commands.
+  `ADMIN_PASSWORD` is required and the process fails to start if it is unset or empty.
+  `isAdminAccount` / `isPrivilegedGameAccount` drive access.
 - `color_1` … `color_15` (password = username) — one ordinary player per faction slot.
 
 Observer and admin accounts join games in **observer mode** (read-only, full-map view); ordinary

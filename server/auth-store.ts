@@ -70,7 +70,6 @@ const DEV_ACTIVITY_SERIES_DAYS = 14;
 const GAME_RUNTIME_STALE_MS = 20_000;
 const DEFAULT_DEV_PANEL_PASSWORD = 'ABDUGYA1398';
 const ADMIN_USERNAME = 'admin';
-const DEFAULT_ADMIN_PASSWORD = 'ABDUGYA1398';
 const SESSION_COOKIE_NAME = 'sf_session';
 const DEV_SESSION_COOKIE_NAME = 'sf_dev_session';
 const PASSWORD_ITERATIONS = 210_000;
@@ -501,7 +500,11 @@ function getDevPanelPassword(): string {
 }
 
 function getAdminPassword(): string {
-  return process.env.ADMIN_PASSWORD ?? DEFAULT_ADMIN_PASSWORD;
+  const password = process.env.ADMIN_PASSWORD;
+  if (!password) {
+    throw new Error('ADMIN_PASSWORD environment variable is required');
+  }
+  return password;
 }
 
 function safeStringEquals(actual: string, expected: string): boolean {
@@ -545,8 +548,10 @@ function buildSeedAccounts(): Array<{ username: string; password: string; accoun
 
 export class AuthStore {
   private readonly db: DatabaseInstance;
+  private readonly adminPassword: string;
 
   constructor(dbPath = path.join(STATE_ROOT, 'auth.sqlite')) {
+    this.adminPassword = getAdminPassword();
     mkdirSync(path.dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
@@ -1409,7 +1414,7 @@ export class AuthStore {
     `).run(
       ADMIN_USERNAME,
       salt,
-      hashPassword(getAdminPassword(), salt),
+      hashPassword(this.adminPassword, salt),
       now,
       now,
     );

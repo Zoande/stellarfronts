@@ -14,8 +14,9 @@ StellarFronts is a browser-based space strategy prototype with a Vite/React clie
 ## Quick Start
 
 1. Install dependencies with `npm install`.
-2. Start the full local stack with `npm run dev:all`.
-3. Open `http://localhost:5173`.
+2. Set `ADMIN_PASSWORD` to a long, unique password in the process environment.
+3. Start the full local stack with `npm run dev:all`.
+4. Open `http://localhost:5173`.
 
 The local stack is:
 
@@ -60,7 +61,7 @@ Authentication lives in `server/auth-server.ts` and `server/auth-store.ts`.
 Seeded accounts are created automatically:
 
 - `observer` / `observer`
-- `admin` uses the configured admin password, defaulting to `ABDUGYA1398`
+- `admin` uses the required `ADMIN_PASSWORD` environment variable; startup fails if it is unset or empty
 - `color_1` through `color_15` are seeded user accounts
 
 Observer and admin accounts can enter games without claiming a country. Normal accounts join a game by claiming one generated country.
@@ -123,6 +124,7 @@ AUTH_SERVER_PORT=8788
 GAME_SERVER_PORT=8787
 ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 WS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+ADMIN_PASSWORD=replace-with-a-long-unique-password
 ```
 
 Production examples in `.env.example` show a split frontend/backend deployment with separate auth and WebSocket endpoints, plus cookie domain and secure-cookie settings for cross-subdomain auth.

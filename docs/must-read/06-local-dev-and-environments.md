@@ -51,11 +51,13 @@ other, not both.
 
 ## Environment configuration
 
-Copy [`.env.example`](../../.env.example) to `.env`. Local defaults work with no changes. Key vars:
+Use [`.env.example`](../../.env.example) as a reference. Set `ADMIN_PASSWORD` in the environment
+inherited by the server processes; the remaining local values work unchanged. Key vars:
 
 - `VITE_AUTH_SERVER_URL`, `VITE_WS_URL` — where the client looks for the auth and game servers.
 - `ALLOWED_ORIGINS` (auth, CORS) and `WS_ALLOWED_ORIGINS` (game server, WebSocket origin allow-list).
-- `ADMIN_PASSWORD`, `DEV_PANEL_PASSWORD` — default `ABDUGYA1398`.
+- `ADMIN_PASSWORD` — required; set it to a long, unique password before starting any server process.
+- `DEV_PANEL_PASSWORD` — defaults to `ABDUGYA1398`.
 - `COOKIE_DOMAIN`, `COOKIE_SECURE` — leave unset locally; set for cross-subdomain production.
 
 The production section of `.env.example` shows a split deploy (Cloudflare Pages client +
@@ -68,8 +70,8 @@ The auth store seeds accounts on first run ([`server/auth-store.ts`](../../serve
 `seedAccounts`):
 
 - `observer` / `observer` — read-only spectator; can enter any game without claiming a country.
-- `admin` / `$ADMIN_PASSWORD` (default `ABDUGYA1398`) — privileged; observer-style access plus admin
-  commands.
+- `admin` / `$ADMIN_PASSWORD` — privileged; observer-style access plus admin commands. The variable
+  is required; startup fails if it is unset or empty.
 - `color_1` … `color_15` (password = username) — ordinary player accounts, one per faction slot.
 
 Observer and admin accounts join in **observer mode** (read-only). Ordinary accounts join by claiming
