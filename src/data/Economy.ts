@@ -2287,6 +2287,33 @@ export function progressPlanetConstructionQueue(
   return { state: next, changed, completed };
 }
 
+export function completePlanetConstructionQueueItem(
+  state: PlanetState,
+  queueItemId: string,
+  districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
+  speciesContext?: PlanetEconomySpeciesContext,
+): { state: PlanetState; completed: PlanetConstructionQueueItem } | null {
+  const item = state.constructionQueue.find((candidate) => candidate.id === queueItemId);
+  if (!item) return null;
+  const limits = districtLimits ?? state.builtDistricts;
+  const withoutItem = {
+    ...state,
+    constructionQueue: state.constructionQueue.filter((candidate) => candidate.id !== queueItemId),
+  };
+  const completed = { ...item, remainingDays: 0 };
+  if (!canCompleteConstructionItem(withoutItem, completed, limits)) return null;
+  return {
+    state: recalculatePlanetStateEconomy(
+      completeConstructionItem(withoutItem, completed),
+      limits,
+      externalModifiers,
+      speciesContext,
+    ),
+    completed,
+  };
+}
+
 export function filterInvalidQueuedBuildingsForSubDistrictChange(
   state: PlanetState,
   subDistrictIndex: number,

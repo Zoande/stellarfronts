@@ -1775,6 +1775,7 @@ export class GalaxyScene implements IGameScene {
     if (this.fleetCanBuildStarbase(fleet)) actions.push("build");
     if (this.fleetCanColonize(fleet)) actions.push("colonize");
     actions.push("attack", "stop", "merge", "retreat", "retreatTo", "emergencyRetreatTo");
+    if (fleet?.movementPlan) actions.push("toggleDarkMatterBoost");
     return actions;
   }
 
@@ -1876,6 +1877,33 @@ export class GalaxyScene implements IGameScene {
     if (action === "stop") {
       if (this.selectedCommandShipId) {
         this.options.onFleetCommand?.({ type: "stopFleet", fleetId: this.selectedCommandShipId });
+      }
+      this.clearShipAction();
+      return;
+    }
+
+    if (action === "toggleDarkMatterBoost") {
+      const fleet = this.selectedCommandShipId
+        ? this.serverFleets.find((candidate) => candidate.id === this.selectedCommandShipId)
+        : null;
+      if (!fleet?.movementPlan) {
+        this.clearShipAction();
+        return;
+      }
+      const enabled = fleet.darkMatterBoostActive !== true;
+      const confirmed = enabled
+        ? window.confirm(
+          "Activate Dark Matter fleet boost?\n\nEffect: 10x movement speed\nCost: 1 Dark Matter now, then 1 per in-game moving day\nThe boost stops automatically on arrival or when your balance is empty.",
+        )
+        : window.confirm(
+          "Disable the Dark Matter fleet boost?\n\nThe fleet will return to normal movement speed. Prepaid Dark Matter is not refunded.",
+        );
+      if (confirmed) {
+        this.options.onFleetCommand?.({
+          type: "setFleetDarkMatterBoost",
+          fleetId: fleet.id,
+          enabled,
+        });
       }
       this.clearShipAction();
       return;
@@ -2361,7 +2389,9 @@ export class GalaxyScene implements IGameScene {
         : this.getStarName(fleet.movementPlan.destinationStarId));
     return {
       destination,
+      startedYear: fleet.movementPlan.startedAtYear,
       arrivalYear: fleet.movementPlan.endsAtYear,
+      darkMatterBoostActive: fleet.darkMatterBoostActive === true,
     };
   }
 

@@ -1325,6 +1325,15 @@ export class AuthStore {
     return safeStringEquals(password, this.devPanelPassword);
   }
 
+  getAccountIdForGameFaction(gameId: string, factionId: number): number | null {
+    const row = this.db.prepare(`
+      SELECT account_id
+      FROM game_memberships
+      WHERE game_id = ? AND faction_id = ?
+    `).get(gameId, factionId) as { account_id: number } | undefined;
+    return row?.account_id ?? null;
+  }
+
   createDevSession(): string {
     const token = createSessionToken();
     const tokenHash = hashSessionToken(token);
@@ -2031,6 +2040,19 @@ export class AuthStore {
     return (this.db.prepare(
       `SELECT dark_matter FROM player_progression WHERE account_id = ?`,
     ).get(accountId) as { dark_matter: number }).dark_matter;
+  }
+
+  spendPlayerDarkMatter(accountId: number, amount: number): number | null {
+    const cost = Math.max(0, Math.floor(amount));
+    this.ensurePlayerRow(accountId);
+    if (cost === 0) return this.getPlayerDarkMatter(accountId);
+    const now = Date.now();
+    const result = this.db.prepare(`
+      UPDATE player_progression
+      SET dark_matter = dark_matter - ?, updated_at = ?
+      WHERE account_id = ? AND dark_matter >= ?
+    `).run(cost, now, accountId, cost);
+    return result.changes > 0 ? this.getPlayerDarkMatter(accountId) : null;
   }
 
   awardGameXp(accountId: number, type: 'damage' | 'stability' | 'profit', rawValue: number): number {

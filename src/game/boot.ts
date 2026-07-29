@@ -1533,6 +1533,14 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     },
     onOpenMarket: () => openMarketPanel(),
   });
+  server.onAccountResources((nextDarkMatter) => {
+    const normalized = Number.isFinite(nextDarkMatter)
+      ? Math.max(0, Math.floor(nextDarkMatter))
+      : darkMatter;
+    if (normalized === darkMatter) return;
+    darkMatter = normalized;
+    updateHud();
+  });
   darkMatterRefreshTimer = window.setInterval(() => {
     void getPlayerProfile()
       .then((profile) => {

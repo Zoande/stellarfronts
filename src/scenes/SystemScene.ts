@@ -1297,6 +1297,30 @@ export class SystemScene implements IGameScene {
       this.clearFleetAction();
       return;
     }
+    if (action === "toggleDarkMatterBoost") {
+      const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+      if (!fleet?.movementPlan) {
+        this.clearFleetAction();
+        return;
+      }
+      const enabled = fleet.darkMatterBoostActive !== true;
+      const confirmed = enabled
+        ? window.confirm(
+          "Activate Dark Matter fleet boost?\n\nEffect: 10x movement speed\nCost: 1 Dark Matter now, then 1 per in-game moving day\nThe boost stops automatically on arrival or when your balance is empty.",
+        )
+        : window.confirm(
+          "Disable the Dark Matter fleet boost?\n\nThe fleet will return to normal movement speed. Prepaid Dark Matter is not refunded.",
+        );
+      if (confirmed) {
+        this.options.onFleetCommand?.({
+          type: "setFleetDarkMatterBoost",
+          fleetId,
+          enabled,
+        });
+      }
+      this.clearFleetAction();
+      return;
+    }
     if (action === "retreatTo" || action === "emergencyRetreatTo") {
       this.options.onRequestFleetActionInGalaxy?.(fleetId, action);
       this.clearFleetAction();
@@ -2001,6 +2025,7 @@ export class SystemScene implements IGameScene {
     if (this.fleetCanBuildStarbase(fleet)) actions.push("build");
     if (this.fleetCanColonize(fleet)) actions.push("colonize");
     actions.push("attack", "stop", "hold", "guard", "retreat", "retreatTo", "emergencyRetreatTo", "merge");
+    if (fleet.movementPlan) actions.push("toggleDarkMatterBoost");
     return actions;
   }
 
@@ -2061,7 +2086,9 @@ export class SystemScene implements IGameScene {
           : `Star ${fleet.movementPlan.destinationStarId}`);
     return {
       destination,
+      startedYear: fleet.movementPlan.startedAtYear,
       arrivalYear: fleet.movementPlan.endsAtYear,
+      darkMatterBoostActive: fleet.darkMatterBoostActive === true,
     };
   }
 

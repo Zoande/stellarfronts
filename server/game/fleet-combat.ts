@@ -35,6 +35,7 @@ import {
   GAME_START_YEAR,
   REAL_MS_PER_GAME_DAY,
 } from "../../src/game/GameTime";
+import { DARK_MATTER_FLEET_SPEED_MULTIPLIER } from "../../src/game/DarkMatter";
 import { getFleetTacticalRadius, hashTacticalId } from "../../src/game/tacticalFormation";
 import type {
   FleetFormation,
@@ -181,10 +182,11 @@ export function movePointToward(
 export function phaseDuration(
   ctx: RuntimeContext,
   phase: ShipTransitPhase,
-  fleet?: Pick<ServerFleet, "id" | "ownerId" | "speed">,
+  fleet?: Pick<ServerFleet, "id" | "ownerId" | "speed" | "darkMatterBoostActive">,
 ): number {
   const fleetSpeed = fleet ? getFleetSpeedMultiplier(ctx.state, fleet) : 1;
-  const speed = Math.max(0.05, (fleet?.speed ?? DEFAULT_SHIP_SPEED) * fleetSpeed);
+  const darkMatterSpeed = fleet?.darkMatterBoostActive ? DARK_MATTER_FLEET_SPEED_MULTIPLIER : 1;
+  const speed = Math.max(0.05, (fleet?.speed ?? DEFAULT_SHIP_SPEED) * fleetSpeed * darkMatterSpeed);
   const travelScale = 1 / speed;
   switch (phase) {
     case "departingSystem":
@@ -207,7 +209,7 @@ export function phaseDuration(
 export function phaseDurationDays(
   ctx: RuntimeContext,
   phase: ShipTransitPhase,
-  fleet?: Pick<ServerFleet, "id" | "ownerId" | "speed">,
+  fleet?: Pick<ServerFleet, "id" | "ownerId" | "speed" | "darkMatterBoostActive">,
 ): number {
   if (phase === "idle") return 0;
   return phaseDuration(ctx, phase, fleet) / REAL_MS_PER_GAME_DAY;
@@ -216,7 +218,7 @@ export function phaseDurationDays(
 export function phaseDurationYears(
   ctx: RuntimeContext,
   phase: ShipTransitPhase,
-  fleet?: Pick<ServerFleet, "id" | "ownerId" | "speed">,
+  fleet?: Pick<ServerFleet, "id" | "ownerId" | "speed" | "darkMatterBoostActive">,
 ): number {
   return phaseDurationDays(ctx, phase, fleet) / GAME_DAYS_PER_YEAR;
 }
@@ -257,9 +259,10 @@ export function systemTravelDays(
   ctx: RuntimeContext,
   from: { x: number; y: number; z: number },
   to: { x: number; y: number; z: number },
-  fleet: Pick<ServerFleet, "id" | "ownerId" | "speed">,
+  fleet: Pick<ServerFleet, "id" | "ownerId" | "speed" | "darkMatterBoostActive">,
 ): number {
-  const speedScale = Math.max(0.05, fleet.speed * getFleetSpeedMultiplier(ctx.state, fleet));
+  const darkMatterSpeed = fleet.darkMatterBoostActive ? DARK_MATTER_FLEET_SPEED_MULTIPLIER : 1;
+  const speedScale = Math.max(0.05, fleet.speed * getFleetSpeedMultiplier(ctx.state, fleet) * darkMatterSpeed);
   return Math.max(0.1, distance3(from, to) / (SYSTEM_FLEET_SPEED_UNITS_PER_DAY * speedScale));
 }
 
@@ -267,7 +270,7 @@ export function hyperlaneTravelDays(
   ctx: RuntimeContext,
   fromStarId: number,
   toStarId: number,
-  fleet: Pick<ServerFleet, "id" | "ownerId" | "speed">,
+  fleet: Pick<ServerFleet, "id" | "ownerId" | "speed" | "darkMatterBoostActive">,
 ): number {
   const from = ctx.state.stars[fromStarId];
   const to = ctx.state.stars[toStarId];
@@ -275,7 +278,8 @@ export function hyperlaneTravelDays(
   const distance = Math.hypot(to.x - from.x, to.z - from.z);
   // Ion storms and similar nebulas mire fleets crossing into/out of them.
   const nebulaSpeedMultiplier = nebulaTravelSpeedMultiplier(ctx.state.nebulae, fromStarId, toStarId);
-  const speed = Math.max(0.05, fleet.speed * getFleetSpeedMultiplier(ctx.state, fleet) * 2 * nebulaSpeedMultiplier);
+  const darkMatterSpeed = fleet.darkMatterBoostActive ? DARK_MATTER_FLEET_SPEED_MULTIPLIER : 1;
+  const speed = Math.max(0.05, fleet.speed * getFleetSpeedMultiplier(ctx.state, fleet) * darkMatterSpeed * 2 * nebulaSpeedMultiplier);
   return Math.max(0.1, distance / speed);
 }
 
@@ -369,6 +373,53 @@ export function getFleetAuthoritativeSystemPosition(
     }
   }
   return cloneSystemPosition(fleet.systemPosition ?? systemCenterPosition());
+}
+
+/**
+ * Re-times only the untravelled portion of a fleet's active route. A scale of
+ * 0.1 activates the 10x boost; 10 restores normal speed without teleporting.
+ */
+export function rescaleFleetMovementPlan(
+  ctx: RuntimeContext,
+  fleet: GameFleet,
+  scale: number,
+  atYear = ctx.state.clock.year,
+): void {
+  const plan = fleet.movementPlan;
+  if (!plan || plan.segments.length === 0 || atYear >= plan.endsAtYear) return;
+
+  const position = getFleetAuthoritativeSystemPosition(ctx, fleet, atYear);
+  const remaining = plan.segments.filter((segment) => segment.endYear > atYear);
+  if (remaining.length === 0) return;
+
+  let cursorYear = atYear;
+  let cursorPosition = position;
+  const segments = remaining.map((segment) => {
+    const remainingYears = Math.max(0.000001, segment.endYear - Math.max(atYear, segment.startYear));
+    const durationYears = Math.max(0.000001, remainingYears * scale);
+    const next: FleetMovementSegment = {
+      ...segment,
+      from: cloneSystemPosition(cursorPosition),
+      startYear: cursorYear,
+      endYear: cursorYear + durationYears,
+    };
+    cursorYear = next.endYear;
+    cursorPosition = next.to;
+    return next;
+  });
+
+  fleet.systemPosition = position;
+  fleet.movementPlan = {
+    ...plan,
+    startedAtYear: atYear,
+    endsAtYear: cursorYear,
+    totalDays: Math.max(0, (cursorYear - atYear) * GAME_DAYS_PER_YEAR),
+    segments,
+  };
+  const first = segments[0];
+  fleet.phaseStartedAtYear = first.startYear;
+  fleet.phaseDurationDays = Math.max(0.1, (first.endYear - first.startYear) * GAME_DAYS_PER_YEAR);
+  fleet.phaseProgress = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +743,8 @@ export function startPositionOrder(
       ctx.setFleetPhase(fleet, "idle");
     }
     fleet.movementPlan = null;
+    fleet.darkMatterBoostActive = false;
+    fleet.darkMatterBoostPaidUntilYear = null;
     return;
   }
 
@@ -1053,6 +1106,8 @@ export function advanceFleet(ctx: RuntimeContext, fleet: GameFleet, scaledMs: nu
     fleet.hyperlanePosition = null;
     fleet.systemPosition = plan.segments[plan.segments.length - 1]?.to ?? systemCenterPosition();
     fleet.movementPlan = null;
+    fleet.darkMatterBoostActive = false;
+    fleet.darkMatterBoostPaidUntilYear = null;
 
     if (fleet.orderType === "merge") {
       if (!completeMergeSourceFleet(ctx, fleet)) {
@@ -2500,6 +2555,8 @@ export function clearFleetMovementNow(ctx: RuntimeContext, fleet: GameFleet): vo
   fleet.orderType = null;
   fleet.hyperlanePosition = null;
   fleet.movementPlan = null;
+  fleet.darkMatterBoostActive = false;
+  fleet.darkMatterBoostPaidUntilYear = null;
   fleet.mergeTargetFleetId = null;
   clearFleetOrbit(fleet);
   clearFleetCombatIntent(fleet);

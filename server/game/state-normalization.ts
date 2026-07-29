@@ -286,6 +286,10 @@ export function normalizeFleet(
     systemPosition,
     hyperlanePosition: fleet.hyperlanePosition ?? null,
     movementPlan: fleet.movementPlan ?? null,
+    darkMatterBoostActive: fleet.darkMatterBoostActive === true,
+    darkMatterBoostPaidUntilYear: Number.isFinite(fleet.darkMatterBoostPaidUntilYear)
+      ? fleet.darkMatterBoostPaidUntilYear!
+      : null,
     orbitTargetPlanetId: typeof fleet.orbitTargetPlanetId === "string" ? fleet.orbitTargetPlanetId : null,
     orbitOffset: fleet.orbitOffset ?? null,
     orbitTarget: fleet.orbitTarget ?? null,

@@ -158,6 +158,8 @@ export function createFleet(
     systemPosition: systemCenterPosition(),
     hyperlanePosition: null,
     movementPlan: null,
+    darkMatterBoostActive: false,
+    darkMatterBoostPaidUntilYear: null,
     orbitTargetPlanetId: null,
     orbitOffset: null,
     orbitTarget: null,

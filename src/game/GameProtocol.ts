@@ -74,7 +74,8 @@ export type ShipAction =
   | "orbit"
   | "hold"
   | "guard"
-  | "protect";
+  | "protect"
+  | "toggleDarkMatterBoost";
 
 export type FleetFormation = "line" | "vanguard" | "echelon" | "defensive";
 
@@ -549,6 +550,8 @@ export interface ServerFleet {
   systemPosition: ShipSystemPosition;
   hyperlanePosition: ShipHyperlanePosition | null;
   movementPlan: FleetMovementPlan | null;
+  darkMatterBoostActive?: boolean;
+  darkMatterBoostPaidUntilYear?: number | null;
   orbitTargetPlanetId: string | null;
   orbitOffset: ShipSystemPosition | null;
   orbitTarget: FleetOrbitTarget | null;
@@ -684,6 +687,12 @@ export interface StopFleetCommand {
   fleetId: string;
 }
 
+export interface SetFleetDarkMatterBoostCommand {
+  type: "setFleetDarkMatterBoost";
+  fleetId: string;
+  enabled: boolean;
+}
+
 export interface SetSpeedCommand {
   type: "setSpeedMultiplier";
   multiplier: number;
@@ -738,6 +747,12 @@ export interface SetUrbanSubDistrictCommand {
 
 export interface CancelPlanetConstructionCommand {
   type: "cancelPlanetConstruction";
+  planetId: string;
+  queueItemId: string;
+}
+
+export interface SkipPlanetConstructionCommand {
+  type: "skipPlanetConstruction";
   planetId: string;
   queueItemId: string;
 }
@@ -981,6 +996,7 @@ export type ClientCommand =
   | ColonizePlanetCommand
   | MergeFleetsCommand
   | StopFleetCommand
+  | SetFleetDarkMatterBoostCommand
   | SetSpeedCommand
   | BuildDistrictCommand
   | BuildPlanetBuildingCommand
@@ -988,6 +1004,7 @@ export type ClientCommand =
   | DowngradePlanetBuildingCommand
   | SetPlanetBuildingEnabledCommand
   | CancelPlanetConstructionCommand
+  | SkipPlanetConstructionCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
   | BuildStarbaseShipCommand
@@ -1100,6 +1117,11 @@ export interface CommandResultEvent {
   message: string;
 }
 
+export interface AccountResourcesEvent {
+  type: "accountResources";
+  darkMatter: number;
+}
+
 export interface ServerInfoEvent {
   type: "serverInfo";
   message: string;
@@ -1132,6 +1154,7 @@ export type ServerEvent =
   | GameSnapshot
   | GameUpdate
   | CommandResultEvent
+  | AccountResourcesEvent
   | AdminCommandResult
   | ServerInfoEvent
   | PlanetDetailsEvent

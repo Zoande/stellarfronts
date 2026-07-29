@@ -31,6 +31,8 @@ import type { StoredGame } from "../auth-store";
 
 export interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
+  darkMatterBoostActive: boolean;
+  darkMatterBoostPaidUntilYear: number | null;
 }
 
 export interface GameShip extends ServerShip {}

@@ -19,6 +19,7 @@ import { mergeClientIntelEntities, setClientIntelligence } from "./ClientIntelli
 
 type SnapshotHandler = (snapshot: GameSnapshot, changed?: ServerUpdateField[]) => void;
 type MessageHandler = (message: string, ok: boolean) => void;
+type AccountResourcesHandler = (darkMatter: number) => void;
 type PlanetDetailsHandler = (event: PlanetDetailsEvent) => void;
 type DetailHandler<T extends GameDetailPayload = GameDetailPayload> = (event: GameDetailEvent & { payload?: T }) => void;
 type AdminCommandHandler = (event: AdminCommandResult) => void;
@@ -79,6 +80,7 @@ export class GameServerClient {
   private latestSnapshot: GameSnapshot | null = null;
   private snapshotHandlers = new Set<SnapshotHandler>();
   private messageHandlers = new Set<MessageHandler>();
+  private accountResourcesHandlers = new Set<AccountResourcesHandler>();
   private planetDetailsHandlers = new Set<PlanetDetailsHandler>();
   private detailHandlers = new Map<string, Set<DetailHandler>>();
   private adminCommandHandlers = new Set<AdminCommandHandler>();
@@ -213,6 +215,11 @@ export class GameServerClient {
           return;
         }
 
+        if (parsed.type === "accountResources") {
+          for (const handler of this.accountResourcesHandlers) handler(parsed.darkMatter);
+          return;
+        }
+
         if (parsed.type === "adminCommandResult") {
           if (parsed.requestId) {
             const pending = this.adminCommandRequests.get(parsed.requestId);
@@ -244,6 +251,11 @@ export class GameServerClient {
   onMessage(handler: MessageHandler): () => void {
     this.messageHandlers.add(handler);
     return () => this.messageHandlers.delete(handler);
+  }
+
+  onAccountResources(handler: AccountResourcesHandler): () => void {
+    this.accountResourcesHandlers.add(handler);
+    return () => this.accountResourcesHandlers.delete(handler);
   }
 
   onPlanetDetails(handler: PlanetDetailsHandler): () => void {
@@ -357,6 +369,7 @@ export class GameServerClient {
   dispose(): void {
     this.snapshotHandlers.clear();
     this.messageHandlers.clear();
+    this.accountResourcesHandlers.clear();
     this.planetDetailsHandlers.clear();
     this.detailHandlers.clear();
     this.adminCommandHandlers.clear();

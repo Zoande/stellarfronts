@@ -59,6 +59,7 @@ import { NEBULA_DEFINITIONS, NEBULA_KINDS } from "../data/Nebula";
 import type { ClientCommand } from "../game/GameProtocol";
 import type { LeaderState } from "../data/Leaders";
 import { GAME_DAYS_PER_YEAR } from "../game/GameTime";
+import { getConstructionDarkMatterCost } from "../game/DarkMatter";
 import { monthlyToRealMinute, quarterlyToRealMinute, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
 import {
   getFirstRequiredTechName,
@@ -629,6 +630,11 @@ export class CelestialObjectPanel {
         this.show(this.getFreshData(data));
       });
     });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-skip-planet-queue]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.handleSkipPlanetConstruction(data, button.dataset.coSkipPlanetQueue);
+      });
+    });
 
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-demographic]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -828,6 +834,24 @@ export class CelestialObjectPanel {
     this.applyLocalPlanetState(freshData, planetState);
   }
 
+  private handleSkipPlanetConstruction(data: CelestialObjectPanelData, queueItemId?: string): void {
+    const freshData = this.getFreshData(data);
+    if (!freshData.planetState || !queueItemId) return;
+    const item = this.getEstimatedConstructionQueue(freshData.planetState)
+      .find((candidate) => candidate.id === queueItemId);
+    if (!item) return;
+    const cost = getConstructionDarkMatterCost(item.remainingDays);
+    const confirmed = window.confirm(
+      `Finish ${item.label} immediately?\n\nCost: ${cost} Dark Matter\nThe construction will complete instantly.`,
+    );
+    if (!confirmed) return;
+    freshData.onPlanetCommand?.({
+      type: "skipPlanetConstruction",
+      planetId: freshData.planetState.id,
+      queueItemId,
+    });
+  }
+
   private handlePickSubDistrict(
     data: CelestialObjectPanelData,
     subDistrictIndex: number,
@@ -930,6 +954,12 @@ export class CelestialObjectPanel {
         if (days) days.textContent = `${remaining} remaining`;
         const fill = element.querySelector<HTMLElement>("[data-co-queue-progress-fill]");
         if (fill) fill.style.width = this.getConstructionProgressPercent(item);
+        const skip = element.querySelector<HTMLButtonElement>("[data-co-skip-planet-queue]");
+        if (skip) {
+          const cost = getConstructionDarkMatterCost(item.remainingDays);
+          skip.title = `Finish instantly · ${cost} Dark Matter`;
+          skip.setAttribute("aria-label", `Finish ${item.label} instantly for ${cost} Dark Matter`);
+        }
       });
       this.panelElement.querySelectorAll<HTMLElement>("[data-co-queued-building-days]").forEach((element) => {
         if (element.dataset.coQueueItem !== item.id) return;
@@ -1286,9 +1316,15 @@ export class CelestialObjectPanel {
       if (current.dataset.coQueueItem === nextKey) {
         const currentCancel = current.querySelector<HTMLButtonElement>("[data-co-cancel-planet-queue]");
         const nextCancel = nextChild.querySelector<HTMLButtonElement>("[data-co-cancel-planet-queue]");
-        if (Boolean(currentCancel) !== Boolean(nextCancel)) {
+        const currentSkip = current.querySelector<HTMLButtonElement>("[data-co-skip-planet-queue]");
+        const nextSkip = nextChild.querySelector<HTMLButtonElement>("[data-co-skip-planet-queue]");
+        if (Boolean(currentCancel) !== Boolean(nextCancel) || Boolean(currentSkip) !== Boolean(nextSkip)) {
           current.replaceWith(nextChild);
           return;
+        }
+        if (currentSkip && nextSkip) {
+          currentSkip.title = nextSkip.title;
+          currentSkip.setAttribute("aria-label", nextSkip.getAttribute("aria-label") ?? "Finish construction instantly");
         }
         const currentName = current.querySelector<HTMLElement>(".coQueueItemMain strong");
         const nextName = nextChild.querySelector<HTMLElement>(".coQueueItemMain strong");
@@ -1388,6 +1424,9 @@ export class CelestialObjectPanel {
     });
     this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-cancel-planet-queue]").forEach((button) => {
       this.bindClickOnce(button, () => this.handleCancelPlanetConstruction(data, button.dataset.coCancelPlanetQueue));
+    });
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-skip-planet-queue]").forEach((button) => {
+      this.bindClickOnce(button, () => this.handleSkipPlanetConstruction(data, button.dataset.coSkipPlanetQueue));
     });
     this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-change-sub]").forEach((button) => {
       this.bindClickOnce(button, () => {
@@ -3363,6 +3402,7 @@ export class CelestialObjectPanel {
   }
 
   private renderQueueItem(item: PlanetConstructionQueueItem, canCancel: boolean): string {
+    const darkMatterCost = getConstructionDarkMatterCost(item.remainingDays);
     return `
       <div class="coQueueItem" data-co-queue-item="${this.escapeHtml(item.id)}">
         ${canCancel ? `
@@ -3373,6 +3413,13 @@ export class CelestialObjectPanel {
             aria-label="Cancel ${this.escapeHtml(item.label)}"
             title="Cancel construction"
           >X</button>
+          <button
+            class="coQueueSkip"
+            type="button"
+            data-co-skip-planet-queue="${this.escapeHtml(item.id)}"
+            aria-label="Finish ${this.escapeHtml(item.label)} instantly for ${darkMatterCost} Dark Matter"
+            title="Finish instantly · ${darkMatterCost} Dark Matter"
+          ><span aria-hidden="true">»</span></button>
         ` : ""}
         <div class="coQueueItemMain">
           <strong title="${this.escapeHtml(item.label)}">${this.escapeHtml(item.label)}</strong>
@@ -5810,12 +5857,13 @@ button.coBuildingIconSlot {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
   gap: 5px 8px;
+  min-height: 51px;
   padding-right: 32px;
 }
 
-.coQueueCancel {
+.coQueueCancel,
+.coQueueSkip {
   position: absolute;
-  top: 4px;
   right: 4px;
   width: 20px;
   height: 20px;
@@ -5831,10 +5879,30 @@ button.coBuildingIconSlot {
   cursor: pointer;
 }
 
+.coQueueCancel {
+  top: 4px;
+}
+
 .coQueueCancel:hover {
   border-color: rgba(255, 151, 151, 0.92);
   background: rgba(116, 20, 34, 0.94);
   color: #ffe2e2;
+}
+
+.coQueueSkip {
+  top: 27px;
+  border-color: rgba(199, 105, 255, 0.7);
+  background: linear-gradient(145deg, rgba(75, 18, 106, 0.94), rgba(26, 9, 50, 0.94));
+  color: #efc4ff;
+  font-size: 17px;
+  text-shadow: 0 0 7px rgba(215, 99, 255, 0.85);
+}
+
+.coQueueSkip:hover {
+  border-color: rgba(225, 158, 255, 0.96);
+  background: linear-gradient(145deg, rgba(112, 29, 155, 0.98), rgba(45, 12, 78, 0.98));
+  color: #fff;
+  box-shadow: 0 0 8px rgba(190, 71, 255, 0.44);
 }
 
 .coQueueItemMain,

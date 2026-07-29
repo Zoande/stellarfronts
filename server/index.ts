@@ -5,7 +5,7 @@ import type { FactionInfo, GalaxyPerspective } from "../src/data/Factions";
 import { applyPlanetStatesToStars, createPlanetStateFromConfig } from "../src/data/StarMap";
 import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../src/data/SystemCoordinates";
-import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getEffectiveSpeciesHabitability, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, NEW_COLONY_POPULATION, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
+import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, completePlanetConstructionQueueItem, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getEffectiveSpeciesHabitability, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, NEW_COLONY_POPULATION, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
 import { MARKET_FEE_RATE } from "../src/data/Market";
 import { countStarbaseShipyards, createStarbaseBuildingQueueItem, createStarbaseShipQueueItem, createStarbaseUpgradeQueueItem, hasQueuedStarbaseBuildingTarget, isStarbaseBuildingKind, isStarbaseShipKind, STARBASE_LEVEL_DEFINITIONS } from "../src/data/Starbase";
 import { getNebulaGatedBuildingKinds, nebulaEnablesBuildingAtStar } from "../src/data/Nebula";
@@ -94,7 +94,8 @@ import {
   rollWeaponShot,
   weaponCanFireAtDistance,
 } from "./game/combat";
-import { GAME_START_YEAR, REAL_MS_PER_GAME_HOUR, elapsedHoursToGameYear, gameYearToHourIndex, gameYearToWeekIndex } from "../src/game/GameTime";
+import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_HOUR, elapsedHoursToGameYear, gameYearToHourIndex, gameYearToWeekIndex } from "../src/game/GameTime";
+import { DARK_MATTER_FLEET_COST_PER_MOVING_DAY, DARK_MATTER_FLEET_SPEED_MULTIPLIER, getConstructionDarkMatterCost } from "../src/game/DarkMatter";
 import { gameHourToRealMinute } from "../src/game/ResourceRate";
 import { getFirstRequiredTechName, getMissingPrerequisites, getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel, getRequiredTechIdsForStarbaseBuilding, isTechnologyAvailable, isTechnologyCompleted, isUnlockedByAnyRequiredTech, TechId, TECHNOLOGY_BY_ID } from "../src/data/Technology";
 import { formatLeaderClass, getLeaderAssignmentClass } from "../src/data/Leaders";
@@ -209,7 +210,7 @@ import {
   processLeaderDays,
 } from "./game/population";
 import { isShipDesignUnlockedForFaction, getShipDesignMissingTechnologyName } from "./game/research";
-import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow, processFleetCommandLinkLoss } from "./game/fleet-combat";
+import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow, processFleetCommandLinkLoss, rescaleFleetMovementPlan } from "./game/fleet-combat";
 
 // Probe mode: the orchestrator runs each worktree with `--print-version` to read
 // its committed identity (protocol/schema/migratesFrom) without booting a server.
@@ -326,6 +327,14 @@ function broadcastUpdates(changed: ServerUpdateField[]): void {
     sendEvent(client.socket, createUpdate(ctx, client.perspective, deduped));
   }
   broadcastSubscribedDetails();
+}
+
+function broadcastAccountDarkMatter(accountId: number, darkMatter: number): void {
+  for (const client of ctx.clients) {
+    if (client.account.id === accountId) {
+      sendEvent(client.socket, { type: "accountResources", darkMatter });
+    }
+  }
 }
 
 
@@ -578,6 +587,50 @@ function handleStopFleet(socket: WebSocket, perspective: GalaxyPerspective, flee
   refreshDiscovery();
   accept(socket, "Fleet stopped.");
   broadcastUpdates(["clock", "fleets", "visibility"]);
+}
+
+function handleSetFleetDarkMatterBoost(
+  session: ClientSession,
+  fleetId: string,
+  enabled: boolean,
+): void {
+  const factionId = validateCommandPerspective(session.perspective);
+  if (factionId === null) return reject(session.socket, "Observer mode is read-only.");
+  const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
+  if (!fleet) return reject(session.socket, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(session.socket, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(session.socket, "Fleet command link unavailable.");
+  if (typeof enabled !== "boolean") return reject(session.socket, "Invalid Dark Matter boost setting.");
+
+  if (!enabled) {
+    if (!fleet.darkMatterBoostActive) return reject(session.socket, "Dark Matter boost is not active.");
+    rescaleFleetMovementPlan(ctx, fleet, DARK_MATTER_FLEET_SPEED_MULTIPLIER);
+    fleet.darkMatterBoostActive = false;
+    fleet.darkMatterBoostPaidUntilYear = null;
+    ctx.hasDirtyState = true;
+    accept(session.socket, "Dark Matter fleet boost disabled.");
+    broadcastUpdates(["clock", "fleets"]);
+    return;
+  }
+
+  if (fleet.darkMatterBoostActive) return reject(session.socket, "Dark Matter boost is already active.");
+  if (!fleet.movementPlan || ctx.state.clock.year >= fleet.movementPlan.endsAtYear) {
+    return reject(session.socket, "The fleet must be moving to activate a Dark Matter boost.");
+  }
+
+  const balance = authStore.spendPlayerDarkMatter(
+    session.account.id,
+    DARK_MATTER_FLEET_COST_PER_MOVING_DAY,
+  );
+  if (balance === null) return reject(session.socket, "Not enough Dark Matter.");
+
+  fleet.darkMatterBoostActive = true;
+  fleet.darkMatterBoostPaidUntilYear = ctx.state.clock.year + gameDaysToYears(1);
+  rescaleFleetMovementPlan(ctx, fleet, 1 / DARK_MATTER_FLEET_SPEED_MULTIPLIER);
+  ctx.hasDirtyState = true;
+  broadcastAccountDarkMatter(session.account.id, balance);
+  accept(session.socket, "Dark Matter boost active: fleet movement is 10x faster.");
+  broadcastUpdates(["clock", "fleets"]);
 }
 
 function handleRetreatFleet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): void {
@@ -1885,6 +1938,38 @@ function handleCancelPlanetConstruction(
   });
 }
 
+function handleSkipPlanetConstruction(
+  session: ClientSession,
+  planetId: string,
+  queueItemId: string,
+): void {
+  const planetState = validatePlanetCommand(session.socket, session.perspective, planetId);
+  if (!planetState) return;
+  const item = planetState.constructionQueue.find((candidate) => candidate.id === queueItemId);
+  if (!item) return reject(session.socket, "Construction item not found.");
+
+  const completed = completePlanetConstructionQueueItem(
+    planetState,
+    queueItemId,
+    getPlanetDistrictLimitsFromState(ctx.state, planetState) ?? undefined,
+    getPlanetTechnologyModifiers(ctx.state, planetState),
+    getPlanetSpeciesContext(ctx.state, planetState),
+  );
+  if (!completed) return reject(session.socket, "This construction item can no longer be completed.");
+
+  const cost = getConstructionDarkMatterCost(item.remainingDays);
+  const balance = authStore.spendPlayerDarkMatter(session.account.id, cost);
+  if (balance === null) return reject(session.socket, `Need ${cost} Dark Matter.`);
+
+  broadcastAccountDarkMatter(session.account.id, balance);
+  commitPlanetState(
+    session.socket,
+    session.perspective,
+    `${item.label} completed instantly for ${cost} Dark Matter.`,
+    completed.state,
+  );
+}
+
 function handleSetUrbanSubDistrict(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -2043,6 +2128,8 @@ function fleetUpdateSignature(): string {
     combatStance: fleet.combatStance,
     retreatState: fleet.retreatState,
     movementPlan: fleet.movementPlan,
+    darkMatterBoostActive: fleet.darkMatterBoostActive,
+    darkMatterBoostPaidUntilYear: fleet.darkMatterBoostPaidUntilYear,
     orbitTargetPlanetId: fleet.orbitTargetPlanetId,
     orbitOffset: fleet.orbitOffset,
     orbitTarget: fleet.orbitTarget,
@@ -2057,6 +2144,54 @@ function fleetUpdateSignature(): string {
     combatStatus: fleet.combatStatus,
     lastCombatAtYear: fleet.lastCombatAtYear,
   })));
+}
+
+function processFleetDarkMatterBoostBilling(targetYear: number): boolean {
+  const oneDayYears = 1 / GAME_DAYS_PER_YEAR;
+  let changed = false;
+
+  for (const fleet of ctx.state.fleets) {
+    if (!fleet.darkMatterBoostActive) continue;
+    const plan = fleet.movementPlan;
+    const paidUntil = fleet.darkMatterBoostPaidUntilYear;
+    if (!plan || paidUntil === null || ctx.state.clock.year >= plan.endsAtYear) {
+      fleet.darkMatterBoostActive = false;
+      fleet.darkMatterBoostPaidUntilYear = null;
+      changed = true;
+      continue;
+    }
+
+    const lastBillableYear = Math.min(targetYear, plan.endsAtYear - oneDayYears * 1e-6);
+    if (lastBillableYear + Number.EPSILON < paidUntil) continue;
+    const chargesDue = Math.max(
+      0,
+      Math.floor((lastBillableYear - paidUntil) / oneDayYears + 1 + 1e-7),
+    );
+    if (chargesDue === 0) continue;
+
+    const accountId = authStore.getAccountIdForGameFaction(ctx.game.id, fleet.ownerId);
+    const available = accountId === null ? 0 : authStore.getPlayerDarkMatter(accountId);
+    const payableDays = Math.min(chargesDue, Math.floor(available / DARK_MATTER_FLEET_COST_PER_MOVING_DAY));
+    if (accountId !== null && payableDays > 0) {
+      const balance = authStore.spendPlayerDarkMatter(
+        accountId,
+        payableDays * DARK_MATTER_FLEET_COST_PER_MOVING_DAY,
+      );
+      if (balance !== null) broadcastAccountDarkMatter(accountId, balance);
+    }
+
+    const nextPaidUntil = paidUntil + payableDays * oneDayYears;
+    if (payableDays < chargesDue) {
+      rescaleFleetMovementPlan(ctx, fleet, DARK_MATTER_FLEET_SPEED_MULTIPLIER, nextPaidUntil);
+      fleet.darkMatterBoostActive = false;
+      fleet.darkMatterBoostPaidUntilYear = null;
+    } else {
+      fleet.darkMatterBoostPaidUntilYear = nextPaidUntil;
+    }
+    changed = true;
+  }
+
+  return changed;
 }
 
 function advanceState(now: number): Set<ServerUpdateField> {
@@ -2075,7 +2210,12 @@ function advanceState(now: number): Set<ServerUpdateField> {
   const elapsedGameDays = elapsedRealSeconds * ctx.state.clock.tickSizeDays / Math.max(0.01, ctx.state.clock.tickSpeedSeconds);
   const elapsedGameHours = elapsedGameDays * 24;
   const scaledMs = elapsedGameHours * REAL_MS_PER_GAME_HOUR;
-  ctx.state.clock.year += elapsedHoursToGameYear(elapsedGameHours);
+  const targetYear = ctx.state.clock.year + elapsedHoursToGameYear(elapsedGameHours);
+  if (processFleetDarkMatterBoostBilling(targetYear)) {
+    ctx.hasDirtyState = true;
+    changed.add("fleets");
+  }
+  ctx.state.clock.year = targetYear;
   ctx.state.clock.lastUpdatedAt = now;
   ctx.state.clock.syncedAtMs = now;
   changed.add("clock");
@@ -2731,6 +2871,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     handleStopFleet(session.socket, session.perspective, command.fleetId);
     return;
   }
+  if (command.type === "setFleetDarkMatterBoost") {
+    handleSetFleetDarkMatterBoost(session, command.fleetId, command.enabled);
+    return;
+  }
   if (command.type === "buildDistrict") {
     handleBuildDistrict(session.socket, session.perspective, command.planetId, command.districtKind);
     return;
@@ -2783,6 +2927,10 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "cancelPlanetConstruction") {
     handleCancelPlanetConstruction(session.socket, session.perspective, command.planetId, command.queueItemId);
+    return;
+  }
+  if (command.type === "skipPlanetConstruction") {
+    handleSkipPlanetConstruction(session, command.planetId, command.queueItemId);
     return;
   }
   if (command.type === "upgradeStarbase") {
@@ -2957,6 +3105,10 @@ function attachClient(socket: WebSocket, account: AuthAccount, perspective: Gala
     console.error(`[GameServer] Failed to record ctx.game enter for ${ctx.game.id}`, error);
   }
   sendEvent(socket, { type: "serverInfo", message: `Connected to StellarFronts ctx.game ${ctx.game.name}.` });
+  sendEvent(socket, {
+    type: "accountResources",
+    darkMatter: authStore.getPlayerDarkMatter(account.id),
+  });
   // Runtime creation can outlive the client's first WebSocket message.
   sendEvent(socket, createSnapshot(ctx, perspective));
   session.sentInitialSnapshot = true;
