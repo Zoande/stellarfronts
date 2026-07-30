@@ -251,7 +251,7 @@ function createAdminStarbase(ctx: RuntimeContext, starId: number, ownerId: numbe
     weaponCooldowns: {},
     lastShieldDamageAtYear: null,
     level,
-    economy: calculateStarbaseEconomy(level),
+    economy: calculateStarbaseEconomy(level, createEmptyStarbaseSlots()),
     buildingSlots: createEmptyStarbaseSlots(),
     constructionQueue: [],
     shipQueue: [],

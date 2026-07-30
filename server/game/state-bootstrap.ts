@@ -127,7 +127,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     maxHull: starbaseCombat.maxHull,
     lastShieldDamageAtYear: null,
     level: "starbase",
-    economy: calculateStarbaseEconomy("starbase"),
+    economy: calculateStarbaseEconomy("starbase", createEmptyStarbaseSlots()),
     buildingSlots: createEmptyStarbaseSlots(),
     constructionQueue: [],
     shipQueue: [],

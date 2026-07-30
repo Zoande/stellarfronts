@@ -8,13 +8,14 @@ import {
   createBuildingUpgradeConstructionQueueItem,
   createDistrictConstructionQueueItem,
   DISTRICT_BUILD_DAYS,
-  DISTRICT_MINERAL_COSTS,
+  DISTRICT_COSTS,
   filterInvalidQueuedBuildingsForSubDistrictChange,
   getBuildingBuildDays,
+  getBuildingCost,
   getBuildingLevelEffectMultiplier,
-  getBuildingMineralCost,
   getBuildingUpgradeBuildDays,
-  getBuildingUpgradeMineralCost,
+  getBuildingUpgradeCost,
+  getBuildingUpkeep,
   getBuildingUpgradeTargetLevel,
   getCompatibleBuildings,
   getConstructionSpeedMultiplier,
@@ -53,6 +54,7 @@ import type {
   PlanetState,
   PopGroup,
   ResourceKind,
+  ResourceCounts,
   UrbanSubDistrictKind,
 } from "../data/Economy";
 import { NEBULA_DEFINITIONS, NEBULA_KINDS } from "../data/Nebula";
@@ -2261,7 +2263,7 @@ export class CelestialObjectPanel {
             const definition = BUILDING_DEFINITIONS[building];
             const note = lockedByTechnology
               ? `Requires ${this.getRequiredBuildingTechnologyName(building)}`
-              : `${getBuildingMineralCost(building)} minerals | ${getBuildingBuildDays(building)} days`;
+              : `${this.formatResourceCost(getBuildingCost(building))} | ${getBuildingBuildDays(building)} days`;
             return `
               <button
                 type="button"
@@ -2615,7 +2617,7 @@ export class CelestialObjectPanel {
 
   private renderDistrictTooltip(kind: DistrictKind): string {
     const rows: string[] = [
-      `<div><span>Cost</span><strong>${DISTRICT_MINERAL_COSTS[kind]} Minerals</strong></div>`,
+      `<div><span>Cost</span><strong>${this.escapeHtml(this.formatResourceCost(DISTRICT_COSTS[kind]))}</strong></div>`,
       `<div><span>Build Time</span><strong>${DISTRICT_BUILD_DAYS[kind]} days</strong></div>`,
     ];
     if (kind === "city") {
@@ -2623,10 +2625,10 @@ export class CelestialObjectPanel {
       rows.push(`<div><span>Jobs</span><strong>+100M ${this.escapeHtml(JOB_LABELS.clerk)}</strong></div>`);
     } else if (kind === "generator") {
       rows.push(`<div><span>Jobs</span><strong>+1B ${this.escapeHtml(JOB_LABELS.technician)}</strong></div>`);
-      rows.push(`<div><span>Base Output</span><strong>+5 Energy / 1M workers</strong></div>`);
+      rows.push(`<div><span>Base Output</span><strong>+0.072 Energy / 1M workers</strong></div>`);
     } else if (kind === "mining") {
       rows.push(`<div><span>Jobs</span><strong>+1B ${this.escapeHtml(JOB_LABELS.miner)}</strong></div>`);
-      rows.push(`<div><span>Base Output</span><strong>+5 Minerals / 1M workers</strong></div>`);
+      rows.push(`<div><span>Base Output</span><strong>+0.09 Minerals / 1M workers</strong></div>`);
     } else {
       rows.push(`<div><span>Jobs</span><strong>+1B ${this.escapeHtml(JOB_LABELS.farmer)}</strong></div>`);
       rows.push(`<div><span>Base Output</span><strong>+6 Food / 1M workers</strong></div>`);
@@ -2834,6 +2836,7 @@ export class CelestialObjectPanel {
     const economy = planetState.economy;
     const productionRows = this.getResourceProductionContributions(planetState, resource);
     const upkeepRows = this.getResourceUpkeepContributions(planetState, resource);
+    const buildingUpkeep = this.getDirectBuildingUpkeepTotal(planetState, resource);
     return `
       <div class="coTooltipTitle">${this.escapeHtml(RESOURCE_LABELS[resource])}</div>
       <p>Planetary ${this.escapeHtml(RESOURCE_LABELS[resource].toLowerCase())} flow per real minute at standard speed.</p>
@@ -2841,6 +2844,7 @@ export class CelestialObjectPanel {
         ${this.renderTooltipGridItem("Net", `${this.formatSignedCompact(monthlyToRealMinute(economy.net[resource]))}${RESOURCE_RATE_LABEL}`)}
         ${this.renderTooltipGridItem("Production", `${this.formatCompact(monthlyToRealMinute(economy.production[resource]))}${RESOURCE_RATE_LABEL}`, this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Production`, productionRows, (value) => `${this.formatSignedCompact(monthlyToRealMinute(value))}${RESOURCE_RATE_LABEL}`))}
         ${this.renderTooltipGridItem("Upkeep", `${this.formatCompact(monthlyToRealMinute(economy.upkeep[resource]))}${RESOURCE_RATE_LABEL}`, this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Upkeep`, upkeepRows, (value) => `${this.formatCompact(monthlyToRealMinute(value))}${RESOURCE_RATE_LABEL}`))}
+        ${buildingUpkeep > 0 ? this.renderTooltipGridItem("Buildings", `${this.formatCompact(monthlyToRealMinute(buildingUpkeep))}${RESOURCE_RATE_LABEL}`) : ""}
         ${this.renderTooltipGridItem("Deficit", economy.deficit[resource] > 0 ? `${this.formatCompact(monthlyToRealMinute(economy.deficit[resource]))}${RESOURCE_RATE_LABEL}` : "0/min")}
       </div>
     `;
@@ -3072,6 +3076,20 @@ export class CelestialObjectPanel {
     return this.getGroupedContributions(planetState, (group) => this.getGroupResourceUpkeep(planetState, group, resource));
   }
 
+  private getDirectBuildingUpkeepTotal(planetState: PlanetState, resource: ResourceKind): number {
+    let total = 0;
+    const add = (building: PlanetBuildingSlot): void => {
+      const kind = getPlanetBuildingKind(building);
+      if (!kind || !isPlanetBuildingEnabled(building)) return;
+      total += getBuildingUpkeep(kind, getPlanetBuildingLevel(building))[resource];
+    };
+    for (const building of Object.values(planetState.buildings).flat()) add(building);
+    for (const subDistrict of planetState.urbanSubDistricts) {
+      for (const building of subDistrict.buildings) add(building);
+    }
+    return total;
+  }
+
   private getCrimePressureContributions(planetState: PlanetState): TooltipJobContribution[] {
     const totalPopulation = this.getPopGroupPopulation(planetState);
     return this.getGroupedContributions(planetState, (group) => (
@@ -3141,7 +3159,7 @@ export class CelestialObjectPanel {
       }
     }
     if (resource === "goods") {
-      const goodsUpkeep = group.job === "unemployed" ? 0.025 : this.getClassGoodsUpkeep(group.class);
+      const goodsUpkeep = group.job === "unemployed" ? 0.0005 : this.getClassGoodsUpkeep(group.class);
       amount += this.applyPlanetModifiers(
         units * goodsUpkeep,
         planetState.economy.activeModifiers,
@@ -3150,7 +3168,7 @@ export class CelestialObjectPanel {
     }
     if (resource === "food") {
       amount += this.applyPlanetModifiers(
-        units * 1.1 * getHabitabilityUpkeepMultiplier(group.habitability),
+        units * 0.022 * getHabitabilityUpkeepMultiplier(group.habitability),
         planetState.economy.activeModifiers,
         "popUpkeep:food",
       );
@@ -3256,6 +3274,13 @@ export class CelestialObjectPanel {
     return value.toFixed(2).replace(/0$/, "").replace(/\.0$/, "");
   }
 
+  private formatResourceCost(cost: ResourceCounts): string {
+    const parts = RESOURCE_KINDS
+      .filter((resource) => cost[resource] > 0)
+      .map((resource) => `${this.formatCompact(cost[resource])} ${RESOURCE_LABELS[resource]}`);
+    return parts.length > 0 ? parts.join(" · ") : "Free";
+  }
+
   private renderBuildingTooltip(
     definition: BuildingDefinition,
     planetState: PlanetState,
@@ -3281,12 +3306,12 @@ export class CelestialObjectPanel {
       ? `Level ${level} -> ${targetLevel}`
       : `Level ${level}${level >= BUILDING_MAX_LEVEL ? " (max)" : ""}`;
     const buildCost = queued?.kind === "buildingUpgrade" && queued.targetLevel
-      ? queued.mineralCost
+      ? queued.cost
       : building
         ? targetLevel
-          ? getBuildingUpgradeMineralCost(definition.kind, level)
-          : 0
-        : getBuildingMineralCost(definition.kind, 1);
+          ? getBuildingUpgradeCost(definition.kind, level)
+          : null
+        : getBuildingCost(definition.kind, 1);
     const buildDays = queued?.kind === "buildingUpgrade"
       ? queued.remainingDays
       : building
@@ -3296,13 +3321,14 @@ export class CelestialObjectPanel {
         : getBuildingBuildDays(definition.kind, 1);
     const jobLines = this.renderBuildingJobLines(definition, planetState, level);
     const productionLines = this.renderBuildingProductionLines(definition, planetState, level);
+    const directUpkeep = getBuildingUpkeep(definition.kind, level);
     const compatible = this.isDefinitionCompatible(definition, area, subDistrictIndex, planetState);
     return `
       <div class="coTooltipTitle">${this.escapeHtml(definition.label)}</div>
       <p>${this.escapeHtml(definition.description)}</p>
       <div class="coTooltipGrid">
         <div><span>Level</span><strong>${this.escapeHtml(levelLabel)}</strong></div>
-        <div><span>${building ? "Upgrade Cost" : "Cost"}</span><strong>${buildCost > 0 ? `${buildCost} Minerals` : "Maxed"}</strong></div>
+        <div><span>${building ? "Upgrade Cost" : "Cost"}</span><strong>${buildCost ? this.escapeHtml(this.formatResourceCost(buildCost)) : "Maxed"}</strong></div>
         <div><span>${building ? "Upgrade Time" : "Build Time"}</span><strong>${queued ? `${this.formatConstructionDays(queued.remainingDays)} left` : buildDays > 0 ? `${this.formatConstructionDays(buildDays)}` : "Maxed"}</strong></div>
         <div><span>Slot</span><strong>${compatible ? "Compatible" : "Incompatible"}</strong></div>
       </div>
@@ -3315,6 +3341,8 @@ export class CelestialObjectPanel {
       <div class="coTooltipList">${jobLines.length ? jobLines.map((line) => `<span>${line}</span>`).join("") : "<span>No direct jobs.</span>"}</div>
       <div class="coTooltipSectionTitle">Predicted Output / min</div>
       <div class="coTooltipList">${productionLines.length ? productionLines.map((line) => `<span>${line}</span>`).join("") : "<span>No direct production.</span>"}</div>
+      <div class="coTooltipSectionTitle">Building Upkeep / month</div>
+      <div class="coTooltipList"><span>${this.escapeHtml(this.formatResourceCost(directUpkeep))}</span></div>
     `;
   }
 
@@ -3425,7 +3453,7 @@ export class CelestialObjectPanel {
           <strong title="${this.escapeHtml(item.label)}">${this.escapeHtml(item.label)}</strong>
           <span data-co-queue-days>${this.formatConstructionDays(item.remainingDays)} remaining</span>
         </div>
-        <small>${item.mineralCost} minerals</small>
+        <small>${this.escapeHtml(this.formatResourceCost(item.cost))}</small>
         <div class="coQueueProgress"><span data-co-queue-progress-fill style="width:${this.getConstructionProgressPercent(item)}"></span></div>
       </div>
     `;
@@ -3690,9 +3718,9 @@ export class CelestialObjectPanel {
   }
 
   private getClassGoodsUpkeep(jobClass: JobClass): number {
-    if (jobClass === "upper") return 0.45;
-    if (jobClass === "middle") return 0.25;
-    return 0.08;
+    if (jobClass === "upper") return 0.009;
+    if (jobClass === "middle") return 0.005;
+    return 0.0016;
   }
 
   private resolveSelectedEconomyJob(planetState: PlanetState): JobKind | null {

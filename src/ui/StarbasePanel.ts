@@ -349,7 +349,7 @@ export class StarbasePanel {
             <article>
               <span>Upgrade Target</span>
               <strong>${nextDefinition ? this.escapeHtml(nextDefinition.label) : "Maximum Level"}</strong>
-              <small>${upgrade ? `${upgrade.alloyCost} alloys | ${upgrade.buildDays} days` : "No further upgrade"}</small>
+              <small>${upgrade ? `${this.escapeHtml(this.renderInlineCost(upgrade.cost))} | ${upgrade.buildDays} days` : "No further upgrade"}</small>
               <button type="button"${upgrade ? "" : " disabled"} data-sb-upgrade>Upgrade</button>
             </article>
           </div>
@@ -626,6 +626,7 @@ export class StarbasePanel {
                 <span class="sbBuildingInfo">
                   <strong>${this.escapeHtml(definition.label)}</strong>
                   <small>${this.escapeHtml(note)}</small>
+                  <small>${this.escapeHtml(this.renderBuildingProjectedDelta(definition.production, definition.upkeep))}</small>
                   <em>${this.escapeHtml(definition.description)}</em>
                 </span>
               </button>
@@ -687,6 +688,14 @@ export class StarbasePanel {
       .filter((resource) => Math.abs(counts[resource]) > 0.0001)
       .map((resource) => `${this.formatCompact(counts[resource])} ${RESOURCE_LABELS[resource]}`);
     return parts.length > 0 ? parts.join(", ") : "Free";
+  }
+
+  private renderBuildingProjectedDelta(production: ResourceCounts, upkeep: ResourceCounts): string {
+    const parts = RESOURCE_KINDS
+      .map((resource) => ({ resource, value: production[resource] - upkeep[resource] }))
+      .filter(({ value }) => Math.abs(value) > 0.0001)
+      .map(({ resource, value }) => `${value >= 0 ? "+" : "-"}${this.formatCompact(value)} ${RESOURCE_LABELS[resource]}/month`);
+    return parts.length > 0 ? `Projected: ${parts.join(", ")}` : "Projected: no direct resource change";
   }
 
   private renderDailyDemand(counts: ResourceCounts): string {

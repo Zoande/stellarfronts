@@ -58,7 +58,7 @@ import type { SystemPosition } from "../data/SystemCoordinates";
 import type { PlanetState } from "../data/Economy";
 import type { LeaderState } from "../data/Leaders";
 import type { FactionInfo } from "../data/Factions";
-import { STARBASE_LEVEL_DEFINITIONS } from "../data/Starbase";
+import { OUTPOST_CONSTRUCTION_COST, STARBASE_LEVEL_DEFINITIONS } from "../data/Starbase";
 import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { OrbitSystem } from "../systems/OrbitSystem";
@@ -3978,7 +3978,10 @@ export class SystemScene implements IGameScene {
           items.push({ label: "Orbit Star", onSelect: () => this.issueMoveToSystemPosition(target.position!, this.star.id, orbitTarget) });
         }
         if (this.fleetCanBuildStarbase(fleet)) {
-          items.push({ label: "Build Starbase", onSelect: () => this.issueBuildAtStar() });
+          items.push({
+            label: `Build Outpost · ${OUTPOST_CONSTRUCTION_COST.minerals}M ${OUTPOST_CONSTRUCTION_COST.goods}G ${OUTPOST_CONSTRUCTION_COST.alloys}A · 180d · upkeep 4E/mo`,
+            onSelect: () => this.issueBuildAtStar(),
+          });
         }
         break;
       }

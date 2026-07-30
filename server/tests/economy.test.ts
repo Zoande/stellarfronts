@@ -14,6 +14,8 @@ import {
   createPlanetBuildingState,
   createPlanetStateFromSeed,
   getEffectiveSpeciesHabitability,
+  getBuildingCost,
+  getBuildingUpkeep,
   getPlanetBuildingKind,
   getPlanetBuildingLevel,
   getHabitabilityProductionMultiplier,
@@ -171,9 +173,9 @@ test("resource deltas and deficits are computed from assigned population", () =>
   const economy = calculatePlanetEconomy(planet);
 
   assert.ok(economy.production.food > 0);
-  assert.equal(economy.upkeep.food, (planet.population / PEOPLE_PER_MONTHLY_UNIT) * 1.1);
+  assert.equal(economy.upkeep.food, (planet.population / PEOPLE_PER_MONTHLY_UNIT) * 0.022);
   assert.equal(economy.net.food, economy.production.food - economy.upkeep.food);
-  assert.equal(economy.upkeep.goods, 80);
+  assert.equal(economy.upkeep.goods, 1.6);
   assert.equal(economy.deficit.goods, economy.upkeep.goods);
   assert.ok(economy.stability < 50);
   assert.ok(economy.crime > 0);
@@ -501,6 +503,38 @@ test("building upgrades complete through construction and scale building effects
 test("building mineral costs are exposed for server validation and UI", () => {
   assert.equal(BUILDING_MINERAL_COSTS.housingComplex, BUILDING_DEFINITIONS.housingComplex.mineralCost);
   assert.ok(BUILDING_MINERAL_COSTS.alloyFoundries > BUILDING_MINERAL_COSTS.housingComplex);
+});
+
+test("building levels use authored mixed-resource costs and direct energy upkeep", () => {
+  const levelOne = getBuildingCost("researchLabs", 1);
+  const levelFour = getBuildingCost("researchLabs", 4);
+  assert.deepEqual(
+    { minerals: levelOne.minerals, energy: levelOne.energy, goods: levelOne.goods, alloys: levelOne.alloys },
+    { minerals: 500, energy: 150, goods: 50, alloys: 0 },
+  );
+  assert.deepEqual(
+    { minerals: levelFour.minerals, energy: levelFour.energy, goods: levelFour.goods, alloys: levelFour.alloys },
+    { minerals: 32_000, energy: 10_000, goods: 5_000, alloys: 1_200 },
+  );
+  assert.equal(getBuildingUpkeep("researchLabs", 1).energy, 3);
+  assert.equal(getBuildingUpkeep("researchLabs", 4).energy, 16);
+
+  const planet = createHabitedPlanet();
+  planet.population = 0;
+  planet.speciesPopulations = [];
+  planet.builtDistricts = { ...ZERO_DISTRICTS };
+  planet.buildings = {
+    city: [createPlanetBuildingState("housingComplex"), null, null, null, null, null],
+    generator: [null, null, null],
+    mining: [null, null, null],
+    agriculture: [null, null, null],
+  };
+  planet.urbanSubDistricts = [
+    { kind: "residential", buildings: [null, null, null] },
+    { kind: "mixedIndustry", buildings: [null, null, null] },
+  ];
+  const economy = calculatePlanetEconomy(planet);
+  assert.equal(economy.upkeep.energy, 1);
 });
 
 test("species traits and living standards feed habitability, happiness, growth, and upkeep", () => {

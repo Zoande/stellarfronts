@@ -22,6 +22,11 @@ test("default corvette design uses section modules and five utility slots", () =
   assert.deepEqual(weaponKinds, ["laser", "laser", "missile"].sort());
   assert.ok(stats.combat.maxHull > 0);
   assert.ok(stats.combat.maxShield > 0);
+  assert.equal(stats.buildDays, 45);
+  assert.equal(stats.cost.minerals, 327);
+  assert.equal(stats.cost.alloys, 519);
+  assert.ok(Math.abs(stats.upkeep.energy - 0.86) < 0.000001);
+  assert.ok(Math.abs(stats.upkeep.alloys - 0.0795) < 0.000001);
 });
 
 test("default construction ship design has utility systems and no weapons", () => {

@@ -135,7 +135,7 @@ export const PASSIVE_RESEARCH_FRACTION = 0.2;
 export const DEFAULT_PASSIVE_RESEARCH_CAP_FRACTION = 0.8;
 export const MIN_TECH_RESEARCH_MULTIPLIER = 1;
 export const MAX_TECH_RESEARCH_MULTIPLIER = 2;
-export const BASELINE_RESEARCH_PER_HOUR = 0.25;
+export const BASELINE_RESEARCH_PER_HOUR = 0.01;
 
 const passive = (baseWeight = 0.1): TechnologyPassiveResearchRules => ({
   baseWeight,

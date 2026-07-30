@@ -6,7 +6,8 @@ export const DISCOVERY_JUMPS = 2;
 export const DEPART_DURATION_MS = 20_000;
 export const JUMP_DURATION_MS = 10_000;
 export const ARRIVE_DURATION_MS = 30_000;
-export const BUILD_DURATION_MS = 180_000;
+/** 180 game days at the standard one-real-second-per-game-hour clock. */
+export const BUILD_DURATION_MS = 180 * 24 * 1_000;
 export const SAVE_INTERVAL_MS = 5_000;
 export const SERVER_TICK_INTERVAL_MS = 100;
 export const RUNTIME_STATS_INTERVAL_MS = 5_000;

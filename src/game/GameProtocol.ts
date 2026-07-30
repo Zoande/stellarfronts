@@ -544,6 +544,8 @@ export interface ServerFleet {
   routeIndex: number;
   phaseProgress: number;
   orderType: FleetOrderType;
+  /** Resources reserved for an active outpost construction order. */
+  pendingStarbaseBuildCost?: ResourceCounts | null;
   speed: number;
   combatStance: CombatStance;
   retreatState: FleetRetreatState | null;

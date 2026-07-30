@@ -144,6 +144,26 @@ function addResources(base: ResourceCounts, delta: Partial<ResourceCounts> | und
   return next;
 }
 
+function scaleResources(values: ResourceCounts, multiplier: number): ResourceCounts {
+  const next = { ...values };
+  for (const resource of Object.keys(next) as Array<keyof ResourceCounts>) {
+    next[resource] *= multiplier;
+  }
+  return next;
+}
+
+const SHIP_BUILD_TIME_MULTIPLIERS: Record<StarbaseShipKind, number> = {
+  corvette: 45 / 6,
+  destroyer: 120 / 17,
+  cruiser: 300 / 35,
+  battleship: 720 / 70,
+  defensePlatform: 90 / 13,
+  scienceShip: 60 / 9,
+  armyShip: 90 / 12,
+  constructionShip: 60 / 7,
+  colonizationShip: 120 / 11,
+};
+
 function createMount(
   kind: WeaponKind,
   mount: Omit<WeaponMountDefinition, "kind" | "minRangeBand" | "maxRangeBand" | "optimalRangeBand" | "cooldownRounds">,
@@ -1934,11 +1954,11 @@ export function calculateShipDesignStats(design: ShipDesign): ShipDesignStats {
     label: hull.label,
     className: design.name,
     speed: design.shipKind === "defensePlatform" ? 0 : Math.max(0.05, totals.speed),
-    buildDays: Math.max(1, totals.buildDays),
+    buildDays: Math.max(1, Math.round(totals.buildDays * SHIP_BUILD_TIME_MULTIPLIERS[hull.kind])),
     alloyUpkeepPerDay: Math.max(0, totals.alloyUpkeepPerDay),
     crewDemand: Math.max(0, totals.crewDemand),
-    cost,
-    upkeep,
+    cost: scaleResources(cost, 1.5),
+    upkeep: scaleResources(upkeep, 0.5),
     combat: {
       maxShield: Math.max(0, totals.maxShield),
       maxArmor: Math.max(0, totals.maxArmor),

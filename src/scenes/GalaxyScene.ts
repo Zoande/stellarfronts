@@ -42,6 +42,7 @@ import { StarbasePanel } from "../ui/StarbasePanel";
 import { GalaxySystemTooltip } from "../ui/GalaxySystemTooltip";
 import type { GalaxySystemTooltipData, GalaxySystemTooltipRow } from "../ui/GalaxySystemTooltip";
 import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
+import { OUTPOST_CONSTRUCTION_COST } from "../data/Starbase";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { computeStarbasePower } from "../game/combatPower";
 import {
@@ -2126,7 +2127,11 @@ export class GalaxyScene implements IGameScene {
       items.push({ label: "Attack", disabled: !reachable("attack"), onSelect: issue("attack") });
     }
     if (this.fleetCanBuildStarbase(commandFleet)) {
-      items.push({ label: "Build Starbase", disabled: !reachable("build"), onSelect: issue("build") });
+      items.push({
+        label: `Build Outpost · ${OUTPOST_CONSTRUCTION_COST.minerals}M ${OUTPOST_CONSTRUCTION_COST.goods}G ${OUTPOST_CONSTRUCTION_COST.alloys}A · 180d · upkeep 4E/mo`,
+        disabled: !reachable("build"),
+        onSelect: issue("build"),
+      });
     }
     if (this.fleetCanColonize(commandFleet) && commandFleet?.currentStarId === star.id) {
       // Colonize enters the system and arms the colonize action there.

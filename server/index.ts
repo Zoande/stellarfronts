@@ -7,7 +7,7 @@ import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../src/data/SystemCoordinates";
 import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, completePlanetConstructionQueueItem, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getEffectiveSpeciesHabitability, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, NEW_COLONY_POPULATION, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
 import { MARKET_FEE_RATE } from "../src/data/Market";
-import { countStarbaseShipyards, createStarbaseBuildingQueueItem, createStarbaseShipQueueItem, createStarbaseUpgradeQueueItem, hasQueuedStarbaseBuildingTarget, isStarbaseBuildingKind, isStarbaseShipKind, STARBASE_LEVEL_DEFINITIONS } from "../src/data/Starbase";
+import { countStarbaseShipyards, createStarbaseBuildingQueueItem, createStarbaseShipQueueItem, createStarbaseUpgradeQueueItem, getStarbaseShipConstructionCostMultiplier, hasQueuedStarbaseBuildingTarget, isStarbaseBuildingKind, isStarbaseShipKind, OUTPOST_CONSTRUCTION_COST, STARBASE_LEVEL_DEFINITIONS } from "../src/data/Starbase";
 import { getNebulaGatedBuildingKinds, nebulaEnablesBuildingAtStar } from "../src/data/Nebula";
 import type {
   StarbaseBuildingKind,
@@ -17,6 +17,7 @@ import type {
   WeaponMountDefinition,
 } from "../src/data/Starbase";
 import { calculateShipDesignStats, getShipDesignLayout, isKnownShipKind, normalizeShipDesign, SHIP_HULL_DEFINITIONS } from "../src/data/ShipDesigns";
+import { scaleResourceCounts } from "./game/pure-helpers";
 import type { ShipDesign } from "../src/data/ShipDesigns";
 import type {
   BuildingKind,
@@ -427,12 +428,16 @@ function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, fleetId:
   if (ctx.state.starbases.some((starbase) => starbase.starId === targetStarId)) return reject(socket, "System already has a starbase.");
   try {
     prepareFleetForReplacementOrder(ctx, fleet);
+    if (!spendResources(socket, factionId, OUTPOST_CONSTRUCTION_COST)) return;
     startBuildOrder(ctx, fleet, targetStarId);
+    fleet.pendingStarbaseBuildCost = { ...OUTPOST_CONSTRUCTION_COST };
     ctx.hasDirtyState = true;
     refreshDiscovery();
     accept(socket, "Build order accepted.");
-    broadcastUpdates(["clock", "fleets", "visibility"]);
+    broadcastUpdates(["clock", "fleets", "factionEconomies", "visibility"]);
   } catch (error) {
+    refundResources(factionId, OUTPOST_CONSTRUCTION_COST);
+    fleet.pendingStarbaseBuildCost = null;
     reject(socket, error instanceof Error ? error.message : "Build order rejected.");
   }
 }
@@ -586,7 +591,7 @@ function handleStopFleet(socket: WebSocket, perspective: GalaxyPerspective, flee
   ctx.hasDirtyState = true;
   refreshDiscovery();
   accept(socket, "Fleet stopped.");
-  broadcastUpdates(["clock", "fleets", "visibility"]);
+  broadcastUpdates(["clock", "fleets", "factionEconomies", "visibility"]);
 }
 
 function handleSetFleetDarkMatterBoost(
@@ -1405,6 +1410,15 @@ function handleBuildStarbaseBuilding(
     && !nebulaEnablesBuildingAtStar(ctx.state.nebulae, starbase.starId, buildingKind)) {
     return reject(socket, "This building can only be built inside the right nebula.");
   }
+  if (
+    (buildingKind === "listeningStation" || buildingKind === "logisticsDepot")
+    && (
+      starbase.buildingSlots.includes(buildingKind)
+      || starbase.constructionQueue.some((item) => item.kind === "building" && item.buildingKind === buildingKind)
+    )
+  ) {
+    return reject(socket, `${buildingKind === "listeningStation" ? "Listening Station" : "Logistics Depot"} is unique per starbase.`);
+  }
   const unlockedSlots = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.buildingSlots ?? 0;
   if (!isValidSlotIndex(slotIndex, starbase.buildingSlots.length) || slotIndex >= unlockedSlots) {
     return reject(socket, "Invalid starbase building slot.");
@@ -1447,11 +1461,12 @@ function handleBuildStarbaseShip(
     return reject(socket, `Requires ${getShipDesignMissingTechnologyName(ctx, starbase.ownerId, design) ?? "required technology"}.`);
   }
   const stats = calculateShipDesignStats(design);
+  const constructionCostMultiplier = getStarbaseShipConstructionCostMultiplier(starbase.buildingSlots);
   const item = createStarbaseShipQueueItem(shipKind, {
     kind: "build",
     designId: design.id,
     label: design.name,
-    cost: stats.cost,
+    cost: scaleResourceCounts(stats.cost, constructionCostMultiplier),
     totalDays: stats.buildDays,
     remainingDays: stats.buildDays,
     alloyUpkeepPerDay: stats.alloyUpkeepPerDay,
@@ -1521,7 +1536,10 @@ function handleUpgradeShip(
     designId: currentDesign.id,
     targetDesignId: targetDesign.id,
     label: isPlatformReactivation ? `Reactivate ${targetDesign.name}` : `Upgrade to ${targetDesign.name}`,
-    cost: upgrade.cost,
+    cost: scaleResourceCounts(
+      upgrade.cost,
+      getStarbaseShipConstructionCostMultiplier(starbase.buildingSlots),
+    ),
     totalDays: upgrade.totalDays,
     remainingDays: upgrade.totalDays,
     alloyUpkeepPerDay: upgrade.alloyUpkeepPerDay,
@@ -1692,7 +1710,7 @@ function handleBuildDistrict(
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
   if (factionId === null) return reject(socket, "Observer mode is read-only.");
   const item = createDistrictConstructionQueueItem(districtKind);
-  if (!spendMinerals(socket, factionId, item.mineralCost)) return;
+  if (!spendResources(socket, factionId, item.cost)) return;
 
   commitPlanetState(socket, perspective, "District queued.", {
     ...planetState,
@@ -1734,7 +1752,7 @@ function handleBuildPlanetBuilding(
       return reject(socket, "Building is incompatible with this sub-district.");
     }
     const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex, subDistrictIndex);
-    if (!spendMinerals(socket, factionId, item.mineralCost)) return;
+    if (!spendResources(socket, factionId, item.cost)) return;
     commitPlanetState(socket, perspective, "Building queued.", {
       ...planetState,
       constructionQueue: [...planetState.constructionQueue, item],
@@ -1749,7 +1767,7 @@ function handleBuildPlanetBuilding(
   if (hasQueuedBuildingTarget(planetState, area, slotIndex)) return reject(socket, "Building slot is already queued.");
   if (!isBuildingCompatible(buildingKind, area)) return reject(socket, "Building is incompatible with this district.");
   const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex);
-  if (!spendMinerals(socket, factionId, item.mineralCost)) return;
+  if (!spendResources(socket, factionId, item.cost)) return;
 
   commitPlanetState(socket, perspective, "Building queued.", {
     ...planetState,
@@ -1813,7 +1831,7 @@ function handleUpgradePlanetBuilding(
     slotIndex,
     subDistrictIndex,
   );
-  if (!spendMinerals(socket, factionId, item.mineralCost)) return;
+  if (!spendResources(socket, factionId, item.cost)) return;
   commitPlanetState(socket, perspective, "Building upgrade queued.", {
     ...planetState,
     constructionQueue: [...planetState.constructionQueue, item],
@@ -1929,8 +1947,9 @@ function handleCancelPlanetConstruction(
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
   if (factionId === null) return reject(socket, "Observer mode is read-only.");
   const remainingRatio = item.totalDays > 0 ? Math.max(0, Math.min(1, item.remainingDays / item.totalDays)) : 0;
-  const mineralRefund = Math.floor(item.mineralCost * remainingRatio);
-  if (mineralRefund > 0) refundResources(factionId, { minerals: mineralRefund });
+  const refund = createEmptyResourceCounts();
+  for (const resource of RESOURCE_KINDS) refund[resource] = Math.floor(item.cost[resource] * remainingRatio);
+  refundResources(factionId, refund);
 
   commitPlanetState(socket, perspective, "Construction cancelled.", {
     ...planetState,

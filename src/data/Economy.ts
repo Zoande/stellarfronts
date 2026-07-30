@@ -147,6 +147,12 @@ export interface BuildingDefinition {
   sensorSuiteIds?: import("./Intelligence").SensorSuiteId[];
 }
 
+export interface BuildingLevelDefinition {
+  cost: ResourceCounts;
+  upkeep: ResourceCounts;
+  buildDays: number;
+}
+
 export interface PlanetBuildingState {
   kind: BuildingKind;
   level: number;
@@ -161,6 +167,8 @@ export interface PlanetConstructionQueueItem {
   id: string;
   kind: PlanetConstructionKind;
   label: string;
+  cost: ResourceCounts;
+  /** Legacy mirror retained so older clients and saves remain readable. */
   mineralCost: number;
   totalDays: number;
   remainingDays: number;
@@ -299,22 +307,29 @@ export const STARTING_HABITED_POPULATION = 10_000_000_000;
 export const NEW_COLONY_POPULATION = 500_000_000;
 export const BUILDING_MAX_LEVEL = 5;
 const BASE_POPULATION_GROWTH_RATE_PER_QUARTER = 0.01;
-const POP_FOOD_UPKEEP_PER_UNIT = 1.1;
-const UNEMPLOYED_GOODS_UPKEEP_PER_UNIT = 0.025;
+const POP_FOOD_UPKEEP_PER_UNIT = 0.022;
+const UNEMPLOYED_GOODS_UPKEEP_PER_UNIT = 0.0005;
 const CRIMINAL_JOB_POPULATION_SHARE_AT_MAX_CRIME = 0.25;
 
+export const DISTRICT_COSTS: Record<DistrictKind, ResourceCounts> = {
+  city: { food: 0, minerals: 800, energy: 200, goods: 50, alloys: 0, research: 0 },
+  generator: { food: 0, minerals: 600, energy: 150, goods: 0, alloys: 0, research: 0 },
+  mining: { food: 0, minerals: 650, energy: 150, goods: 0, alloys: 0, research: 0 },
+  agriculture: { food: 50, minerals: 550, energy: 100, goods: 0, alloys: 0, research: 0 },
+};
+
 export const DISTRICT_MINERAL_COSTS: Record<DistrictKind, number> = {
-  city: 520,
-  generator: 420,
-  mining: 420,
-  agriculture: 390,
+  city: DISTRICT_COSTS.city.minerals,
+  generator: DISTRICT_COSTS.generator.minerals,
+  mining: DISTRICT_COSTS.mining.minerals,
+  agriculture: DISTRICT_COSTS.agriculture.minerals,
 };
 
 export const DISTRICT_BUILD_DAYS: Record<DistrictKind, number> = {
-  city: 14,
-  generator: 10,
-  mining: 10,
-  agriculture: 9,
+  city: 240,
+  generator: 180,
+  mining: 180,
+  agriculture: 180,
 };
 
 export const RESOURCE_KINDS: ResourceKind[] = ["food", "minerals", "energy", "goods", "alloys", "research"];
@@ -382,7 +397,7 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Rulers",
     class: "upper",
     description: "The planetary governing council and its household. Sets policy, upholds public order, and keeps the populace content.",
-    upkeep: { energy: 1, goods: 1.5 },
+    upkeep: { energy: 0.02, goods: 0.03 },
     amenities: 6,
     crimeReduction: 0.02,
   },
@@ -391,7 +406,7 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Administrators",
     class: "upper",
     description: "Coordinates planetary bureaucracy, services, and strategic direction.",
-    upkeep: { energy: 1, goods: 1 },
+    upkeep: { energy: 0.02, goods: 0.02 },
     amenities: 3,
   },
   researcher: {
@@ -399,31 +414,31 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Researchers",
     class: "middle",
     description: "Turns energy and goods into stockpiled research.",
-    output: { research: 3 },
-    upkeep: { energy: 2.5, goods: 1.2 },
+    output: { research: 0.06 },
+    upkeep: { energy: 0.05, goods: 0.024 },
   },
   artisan: {
     kind: "artisan",
     label: "Artisans",
     class: "middle",
     description: "Refines minerals into civilian goods.",
-    output: { goods: 2.5 },
-    upkeep: { minerals: 4.5, energy: 0.5 },
+    output: { goods: 0.05 },
+    upkeep: { minerals: 0.09, energy: 0.01 },
   },
   metallurgist: {
     kind: "metallurgist",
     label: "Metallurgists",
     class: "middle",
     description: "Refines minerals into military and industrial alloys.",
-    output: { alloys: 1.6 },
-    upkeep: { minerals: 5.5, energy: 0.6 },
+    output: { alloys: 0.032 },
+    upkeep: { minerals: 0.11, energy: 0.012 },
   },
   entertainer: {
     kind: "entertainer",
     label: "Entertainers",
     class: "middle",
     description: "Provides culture, recreation, and morale services.",
-    upkeep: { goods: 0.6 },
+    upkeep: { goods: 0.012 },
     amenities: 7,
   },
   enforcer: {
@@ -431,7 +446,7 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Enforcers",
     class: "middle",
     description: "Maintains public order and suppresses organized crime.",
-    upkeep: { energy: 0.6, goods: 0.25 },
+    upkeep: { energy: 0.012, goods: 0.005 },
     crimeReduction: 0.025,
   },
   farmer: {
@@ -439,28 +454,28 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Farmers",
     class: "lower",
     description: "Produces food from agricultural land and hydroponic infrastructure.",
-    output: { food: 4.5 },
+    output: { food: 0.09 },
   },
   miner: {
     kind: "miner",
     label: "Miners",
     class: "lower",
     description: "Extracts minerals from planetary deposits.",
-    output: { minerals: 4.5 },
+    output: { minerals: 0.09 },
   },
   technician: {
     kind: "technician",
     label: "Technicians",
     class: "lower",
     description: "Operates power grids, reactors, and energy collection systems.",
-    output: { energy: 3.6 },
+    output: { energy: 0.072 },
   },
   clerk: {
     kind: "clerk",
     label: "Clerks",
     class: "lower",
     description: "Handles services, commerce, and local administration.",
-    output: { energy: 0.6 },
+    output: { energy: 0.012 },
     amenities: 1.5,
   },
   criminal: {
@@ -468,7 +483,7 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Criminals",
     class: "lower",
     description: "Organized illicit work that consumes supplies and intensifies local crime.",
-    upkeep: { energy: 0.15, goods: 0.08 },
+    upkeep: { energy: 0.003, goods: 0.0016 },
     crimeReduction: -0.01,
   },
   unemployed: {
@@ -534,7 +549,7 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     initials: "HC",
     description: "Dense residential towers and life-support extensions that expand planetary housing.",
     mineralCost: 220,
-    buildDays: 4,
+    buildDays: 30,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     housing: 1_200_000_000,
   },
@@ -543,8 +558,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Administrative Complex",
     initials: "AD",
     description: "Offices, courts, and planning bureaus that create administrator jobs.",
-    mineralCost: 420,
-    buildDays: 8,
+    mineralCost: 350,
+    buildDays: 45,
     compatibility: [{ area: "city" }],
     jobs: [{ job: "administrator", amount: 300_000_000 }],
   },
@@ -553,8 +568,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Research Labs",
     initials: "RL",
     description: "Laboratory campuses that create researcher jobs.",
-    mineralCost: 620,
-    buildDays: 14,
+    mineralCost: 500,
+    buildDays: 60,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["researchCampus"] }],
     jobs: [{ job: "researcher", amount: 500_000_000 }],
   },
@@ -563,8 +578,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Civilian Fabricators",
     initials: "CF",
     description: "Factory halls that create artisan jobs for civilian goods production.",
-    mineralCost: 520,
-    buildDays: 12,
+    mineralCost: 450,
+    buildDays: 60,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["mixedIndustry", "civilianIndustry"] }],
     jobs: [{ job: "artisan", amount: 500_000_000 }],
   },
@@ -573,8 +588,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Alloy Foundries",
     initials: "AF",
     description: "Heavy furnace and forge facilities that create metallurgist jobs.",
-    mineralCost: 680,
-    buildDays: 15,
+    mineralCost: 550,
+    buildDays: 75,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["mixedIndustry", "heavyIndustry"] }],
     jobs: [{ job: "metallurgist", amount: 500_000_000 }],
   },
@@ -583,8 +598,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Commercial Forum",
     initials: "CM",
     description: "Market districts and service hubs that create clerk jobs.",
-    mineralCost: 260,
-    buildDays: 5,
+    mineralCost: 250,
+    buildDays: 30,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     jobs: [{ job: "clerk", amount: 500_000_000 }],
   },
@@ -593,8 +608,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Food Processing Plant",
     initials: "FP",
     description: "Agricultural logistics and preservation plants that expand farmer jobs per agriculture district.",
-    mineralCost: 210,
-    buildDays: 4,
+    mineralCost: 250,
+    buildDays: 30,
     compatibility: [{ area: "agriculture" }],
     jobs: [{ job: "farmer", amount: 250_000_000, perDistrict: "agriculture" }],
   },
@@ -603,8 +618,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Agro-Industrial Kitchens",
     initials: "AK",
     description: "Food industry complexes that convert some farmer demand into artisan jobs.",
-    mineralCost: 460,
-    buildDays: 11,
+    mineralCost: 450,
+    buildDays: 60,
     compatibility: [{ area: "agriculture" }],
     jobs: [
       { job: "farmer", amount: -250_000_000, perDistrict: "agriculture" },
@@ -616,8 +631,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Mineral Purification Plant",
     initials: "MP",
     description: "Ore sorting and purification works that expand miner jobs per mining district.",
-    mineralCost: 230,
-    buildDays: 4,
+    mineralCost: 270,
+    buildDays: 30,
     compatibility: [{ area: "mining" }],
     jobs: [{ job: "miner", amount: 250_000_000, perDistrict: "mining" }],
   },
@@ -626,8 +641,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Ore Smelter",
     initials: "OS",
     description: "Industrial smelters that convert some miner demand into metallurgist jobs.",
-    mineralCost: 520,
-    buildDays: 12,
+    mineralCost: 500,
+    buildDays: 60,
     compatibility: [{ area: "mining" }],
     jobs: [
       { job: "miner", amount: -250_000_000, perDistrict: "mining" },
@@ -639,8 +654,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Energy Grid",
     initials: "EG",
     description: "Planetary power routing that expands technician jobs per generator district.",
-    mineralCost: 230,
-    buildDays: 4,
+    mineralCost: 270,
+    buildDays: 30,
     compatibility: [{ area: "generator" }],
     jobs: [{ job: "technician", amount: 250_000_000, perDistrict: "generator" }],
   },
@@ -649,8 +664,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Capacitor Workshops",
     initials: "CW",
     description: "Power component workshops that convert some technician demand into artisan jobs.",
-    mineralCost: 460,
-    buildDays: 11,
+    mineralCost: 450,
+    buildDays: 60,
     compatibility: [{ area: "generator" }],
     jobs: [
       { job: "technician", amount: -250_000_000, perDistrict: "generator" },
@@ -662,8 +677,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Entertainment Forum",
     initials: "EF",
     description: "Theaters, parks, and media venues that create entertainer jobs for amenities.",
-    mineralCost: 340,
-    buildDays: 7,
+    mineralCost: 300,
+    buildDays: 45,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     jobs: [{ job: "entertainer", amount: 500_000_000 }],
   },
@@ -672,10 +687,149 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Security Office",
     initials: "SO",
     description: "Precincts and public safety offices that create enforcer jobs to reduce crime.",
-    mineralCost: 340,
-    buildDays: 7,
+    mineralCost: 300,
+    buildDays: 45,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     jobs: [{ job: "enforcer", amount: 500_000_000 }],
+  },
+};
+
+function authoredBuildingLevel(
+  cost: ResourceDelta,
+  energyUpkeep: number,
+  buildDays: number,
+): BuildingLevelDefinition {
+  return {
+    cost: {
+      food: cost.food ?? 0,
+      minerals: cost.minerals ?? 0,
+      energy: cost.energy ?? 0,
+      goods: cost.goods ?? 0,
+      alloys: cost.alloys ?? 0,
+      research: cost.research ?? 0,
+    },
+    upkeep: {
+      food: 0,
+      minerals: 0,
+      energy: energyUpkeep,
+      goods: 0,
+      alloys: 0,
+      research: 0,
+    },
+    buildDays,
+  };
+}
+
+/**
+ * Authored independently by building and target level. These values deliberately
+ * avoid formula-driven scaling so later tiers can introduce distinct resource
+ * requirements without changing earlier construction.
+ */
+export const BUILDING_LEVEL_DEFINITIONS: Record<BuildingKind, Record<number, BuildingLevelDefinition>> = {
+  planetaryCapital: {
+    1: authoredBuildingLevel({}, 0, 1),
+    2: authoredBuildingLevel({ food: 200, minerals: 1_200, energy: 800, goods: 200, alloys: 100 }, 2, 240),
+    3: authoredBuildingLevel({ food: 500, minerals: 3_000, energy: 2_000, goods: 600, alloys: 300 }, 5, 720),
+    4: authoredBuildingLevel({ food: 1_000, minerals: 7_000, energy: 5_000, goods: 1_500, alloys: 800 }, 10, 1_800),
+    5: authoredBuildingLevel({ food: 2_000, minerals: 15_000, energy: 10_000, goods: 3_500, alloys: 2_000 }, 18, 3_600),
+  },
+  housingComplex: {
+    1: authoredBuildingLevel({ minerals: 220, energy: 60 }, 1, 30),
+    2: authoredBuildingLevel({ minerals: 1_800, energy: 600, goods: 150 }, 2, 180),
+    3: authoredBuildingLevel({ minerals: 6_000, energy: 2_000, goods: 600 }, 4, 540),
+    4: authoredBuildingLevel({ minerals: 18_000, energy: 6_000, goods: 2_000, alloys: 300 }, 7, 1_440),
+    5: authoredBuildingLevel({ minerals: 50_000, energy: 16_000, goods: 6_000, alloys: 1_200 }, 11, 3_600),
+  },
+  administrativeComplex: {
+    1: authoredBuildingLevel({ minerals: 350, energy: 100, goods: 25 }, 2, 45),
+    2: authoredBuildingLevel({ minerals: 2_500, energy: 900, goods: 300 }, 4, 240),
+    3: authoredBuildingLevel({ minerals: 8_000, energy: 2_800, goods: 1_000 }, 7, 720),
+    4: authoredBuildingLevel({ minerals: 24_000, energy: 8_000, goods: 3_000, alloys: 400 }, 11, 1_800),
+    5: authoredBuildingLevel({ minerals: 65_000, energy: 20_000, goods: 8_000, alloys: 1_500 }, 16, 3_600),
+  },
+  researchLabs: {
+    1: authoredBuildingLevel({ minerals: 500, energy: 150, goods: 50 }, 3, 60),
+    2: authoredBuildingLevel({ minerals: 3_500, energy: 1_200, goods: 500, alloys: 100 }, 6, 300),
+    3: authoredBuildingLevel({ minerals: 11_000, energy: 3_500, goods: 1_800, alloys: 400 }, 10, 900),
+    4: authoredBuildingLevel({ minerals: 32_000, energy: 10_000, goods: 5_000, alloys: 1_200 }, 16, 2_160),
+    5: authoredBuildingLevel({ minerals: 90_000, energy: 28_000, goods: 14_000, alloys: 4_000 }, 24, 3_600),
+  },
+  civilianFabricators: {
+    1: authoredBuildingLevel({ minerals: 450, energy: 120 }, 3, 60),
+    2: authoredBuildingLevel({ minerals: 3_200, energy: 1_000, goods: 200 }, 6, 300),
+    3: authoredBuildingLevel({ minerals: 10_000, energy: 3_000, goods: 900, alloys: 200 }, 11, 900),
+    4: authoredBuildingLevel({ minerals: 30_000, energy: 9_000, goods: 3_000, alloys: 1_000 }, 18, 2_160),
+    5: authoredBuildingLevel({ minerals: 80_000, energy: 24_000, goods: 8_000, alloys: 3_000 }, 27, 3_600),
+  },
+  alloyFoundries: {
+    1: authoredBuildingLevel({ minerals: 550, energy: 180, alloys: 25 }, 4, 75),
+    2: authoredBuildingLevel({ minerals: 4_000, energy: 1_200, alloys: 500 }, 8, 360),
+    3: authoredBuildingLevel({ minerals: 13_000, energy: 4_000, alloys: 1_800 }, 14, 1_080),
+    4: authoredBuildingLevel({ minerals: 38_000, energy: 12_000, goods: 1_000, alloys: 6_000 }, 23, 2_400),
+    5: authoredBuildingLevel({ minerals: 100_000, energy: 30_000, goods: 4_000, alloys: 18_000 }, 35, 3_600),
+  },
+  commercialForum: {
+    1: authoredBuildingLevel({ minerals: 250, energy: 60, goods: 15 }, 2, 30),
+    2: authoredBuildingLevel({ minerals: 2_000, energy: 700, goods: 250 }, 4, 180),
+    3: authoredBuildingLevel({ minerals: 6_500, energy: 2_200, goods: 800 }, 7, 600),
+    4: authoredBuildingLevel({ minerals: 19_000, energy: 6_500, goods: 2_500, alloys: 250 }, 11, 1_500),
+    5: authoredBuildingLevel({ minerals: 52_000, energy: 17_000, goods: 7_000, alloys: 1_000 }, 16, 3_600),
+  },
+  foodProcessingPlant: {
+    1: authoredBuildingLevel({ minerals: 250, energy: 60 }, 2, 30),
+    2: authoredBuildingLevel({ minerals: 1_800, energy: 600, goods: 100 }, 4, 180),
+    3: authoredBuildingLevel({ minerals: 6_000, energy: 2_000, goods: 400 }, 7, 600),
+    4: authoredBuildingLevel({ minerals: 18_000, energy: 6_000, goods: 1_500, alloys: 200 }, 11, 1_500),
+    5: authoredBuildingLevel({ minerals: 50_000, energy: 16_000, goods: 4_500, alloys: 800 }, 17, 3_600),
+  },
+  agroIndustrialKitchens: {
+    1: authoredBuildingLevel({ minerals: 450, energy: 120, goods: 25 }, 3, 60),
+    2: authoredBuildingLevel({ minerals: 3_000, energy: 1_000, goods: 350 }, 6, 300),
+    3: authoredBuildingLevel({ minerals: 9_500, energy: 3_000, goods: 1_200, alloys: 150 }, 10, 900),
+    4: authoredBuildingLevel({ minerals: 28_000, energy: 9_000, goods: 3_500, alloys: 700 }, 17, 2_040),
+    5: authoredBuildingLevel({ minerals: 75_000, energy: 23_000, goods: 10_000, alloys: 2_500 }, 25, 3_600),
+  },
+  mineralPurificationPlant: {
+    1: authoredBuildingLevel({ minerals: 270, energy: 60 }, 2, 30),
+    2: authoredBuildingLevel({ minerals: 2_000, energy: 650, goods: 100 }, 4, 180),
+    3: authoredBuildingLevel({ minerals: 6_500, energy: 2_100, goods: 450 }, 7, 600),
+    4: authoredBuildingLevel({ minerals: 19_000, energy: 6_200, goods: 1_500, alloys: 250 }, 11, 1_500),
+    5: authoredBuildingLevel({ minerals: 52_000, energy: 17_000, goods: 4_500, alloys: 900 }, 17, 3_600),
+  },
+  oreSmelter: {
+    1: authoredBuildingLevel({ minerals: 500, energy: 140, alloys: 20 }, 4, 60),
+    2: authoredBuildingLevel({ minerals: 3_500, energy: 1_100, alloys: 400 }, 8, 360),
+    3: authoredBuildingLevel({ minerals: 11_000, energy: 3_500, alloys: 1_500 }, 14, 1_080),
+    4: authoredBuildingLevel({ minerals: 32_000, energy: 10_000, goods: 800, alloys: 5_000 }, 22, 2_400),
+    5: authoredBuildingLevel({ minerals: 88_000, energy: 27_000, goods: 3_000, alloys: 15_000 }, 34, 3_600),
+  },
+  energyGrid: {
+    1: authoredBuildingLevel({ minerals: 270, energy: 60 }, 1, 30),
+    2: authoredBuildingLevel({ minerals: 2_000, energy: 700, goods: 100 }, 2, 180),
+    3: authoredBuildingLevel({ minerals: 6_500, energy: 2_200, goods: 450 }, 4, 600),
+    4: authoredBuildingLevel({ minerals: 19_000, energy: 6_500, goods: 1_500, alloys: 250 }, 7, 1_500),
+    5: authoredBuildingLevel({ minerals: 52_000, energy: 18_000, goods: 4_500, alloys: 900 }, 11, 3_600),
+  },
+  capacitorWorkshops: {
+    1: authoredBuildingLevel({ minerals: 450, energy: 120, goods: 20 }, 3, 60),
+    2: authoredBuildingLevel({ minerals: 3_000, energy: 1_000, goods: 300 }, 6, 300),
+    3: authoredBuildingLevel({ minerals: 9_500, energy: 3_200, goods: 1_000, alloys: 150 }, 10, 900),
+    4: authoredBuildingLevel({ minerals: 28_000, energy: 9_500, goods: 3_200, alloys: 700 }, 17, 2_040),
+    5: authoredBuildingLevel({ minerals: 75_000, energy: 25_000, goods: 9_000, alloys: 2_500 }, 25, 3_600),
+  },
+  entertainmentForum: {
+    1: authoredBuildingLevel({ minerals: 300, energy: 80, goods: 20 }, 2, 45),
+    2: authoredBuildingLevel({ minerals: 2_200, energy: 750, goods: 300 }, 4, 240),
+    3: authoredBuildingLevel({ minerals: 7_000, energy: 2_400, goods: 1_000 }, 7, 720),
+    4: authoredBuildingLevel({ minerals: 21_000, energy: 7_000, goods: 3_000, alloys: 300 }, 12, 1_680),
+    5: authoredBuildingLevel({ minerals: 58_000, energy: 19_000, goods: 8_500, alloys: 1_200 }, 18, 3_600),
+  },
+  securityOffice: {
+    1: authoredBuildingLevel({ minerals: 300, energy: 80, goods: 20 }, 2, 45),
+    2: authoredBuildingLevel({ minerals: 2_200, energy: 750, goods: 300 }, 4, 240),
+    3: authoredBuildingLevel({ minerals: 7_000, energy: 2_400, goods: 1_000 }, 7, 720),
+    4: authoredBuildingLevel({ minerals: 21_000, energy: 7_000, goods: 3_000, alloys: 300 }, 12, 1_680),
+    5: authoredBuildingLevel({ minerals: 58_000, energy: 19_000, goods: 8_500, alloys: 1_200 }, 18, 3_600),
   },
 };
 
@@ -686,11 +840,11 @@ export const BUILDING_LABELS: Record<BuildingKind, string> = Object.fromEntries(
 ) as Record<BuildingKind, string>;
 
 export const BUILDING_MINERAL_COSTS: Record<BuildingKind, number> = Object.fromEntries(
-  BUILDING_KINDS.map((building) => [building, BUILDING_DEFINITIONS[building].mineralCost]),
+  BUILDING_KINDS.map((building) => [building, BUILDING_LEVEL_DEFINITIONS[building][1].cost.minerals]),
 ) as Record<BuildingKind, number>;
 
 export const BUILDING_BUILD_DAYS: Record<BuildingKind, number> = Object.fromEntries(
-  BUILDING_KINDS.map((building) => [building, BUILDING_DEFINITIONS[building].buildDays]),
+  BUILDING_KINDS.map((building) => [building, BUILDING_LEVEL_DEFINITIONS[building][1].buildDays]),
 ) as Record<BuildingKind, number>;
 
 export const BUILDING_LEVEL_EFFECT_MULTIPLIERS: Record<number, number> = {
@@ -735,18 +889,22 @@ export function getBuildingLevelEffectMultiplier(level: number): number {
   return BUILDING_LEVEL_EFFECT_MULTIPLIERS[clampBuildingLevel(level)] ?? 1;
 }
 
-export function getBuildingMineralCost(building: BuildingKind, targetLevel = 1): number {
-  const definition = BUILDING_DEFINITIONS[building];
+export function getBuildingCost(building: BuildingKind, targetLevel = 1): ResourceCounts {
   const level = clampBuildingLevel(targetLevel);
-  const multiplier = level <= 1 ? 1 : 1.35 * Math.pow(level, 1.35);
-  return Math.round((definition?.mineralCost ?? 0) * multiplier);
+  return { ...BUILDING_LEVEL_DEFINITIONS[building][level].cost };
+}
+
+export function getBuildingUpkeep(building: BuildingKind, level = 1): ResourceCounts {
+  return { ...BUILDING_LEVEL_DEFINITIONS[building][clampBuildingLevel(level)].upkeep };
+}
+
+export function getBuildingMineralCost(building: BuildingKind, targetLevel = 1): number {
+  return getBuildingCost(building, targetLevel).minerals;
 }
 
 export function getBuildingBuildDays(building: BuildingKind, targetLevel = 1): number {
-  const definition = BUILDING_DEFINITIONS[building];
   const level = clampBuildingLevel(targetLevel);
-  const multiplier = level <= 1 ? 1 : 1.9 * Math.pow(level, 1.45);
-  return Math.max(1, Math.round((definition?.buildDays ?? 1) * multiplier));
+  return BUILDING_LEVEL_DEFINITIONS[building][level].buildDays;
 }
 
 export function getBuildingUpgradeTargetLevel(slot: PlanetBuildingSlot | undefined): number | null {
@@ -757,8 +915,11 @@ export function getBuildingUpgradeTargetLevel(slot: PlanetBuildingSlot | undefin
 }
 
 export function getBuildingUpgradeMineralCost(building: BuildingKind, currentLevel: number): number {
-  const targetLevel = clampBuildingLevel(currentLevel + 1);
-  return Math.max(0, getBuildingMineralCost(building, targetLevel) - Math.round(getBuildingMineralCost(building, currentLevel) * 0.35));
+  return getBuildingUpgradeCost(building, currentLevel).minerals;
+}
+
+export function getBuildingUpgradeCost(building: BuildingKind, currentLevel: number): ResourceCounts {
+  return getBuildingCost(building, clampBuildingLevel(currentLevel + 1));
 }
 
 export function getBuildingUpgradeBuildDays(building: BuildingKind, currentLevel: number): number {
@@ -835,11 +996,11 @@ export const URBAN_SUB_DISTRICT_KINDS: UrbanSubDistrictKind[] = [
 ];
 
 export const STARTING_RESOURCE_STOCKPILES: ResourceCounts = {
-  food: 6_000,
+  food: 3_000,
   minerals: 6_000,
-  energy: 6_000,
-  goods: 2_500,
-  alloys: 1_200,
+  energy: 4_000,
+  goods: 1_200,
+  alloys: 800,
   research: 0,
 };
 
@@ -881,6 +1042,18 @@ export function cloneResourceCounts(counts: ResourceCounts): ResourceCounts {
     alloys: counts.alloys,
     research: counts.research,
   };
+}
+
+function normalizeResourceCost(
+  counts: Partial<ResourceCounts> | undefined,
+  legacyMineralCost = 0,
+): ResourceCounts {
+  const normalized = createEmptyResourceCounts();
+  for (const resource of RESOURCE_KINDS) {
+    const fallback = resource === "minerals" ? legacyMineralCost : 0;
+    normalized[resource] = Math.max(0, Math.round(Number(counts?.[resource]) || fallback));
+  }
+  return normalized;
 }
 
 export function addResourceCounts(a: ResourceCounts, b: ResourceCounts): ResourceCounts {
@@ -1158,13 +1331,16 @@ function normalizeConstructionQueueItem(
   if (!item?.id || !item.label || (item.kind !== "district" && item.kind !== "building" && item.kind !== "buildingUpgrade")) return null;
   const totalDays = Math.max(1, Number(item.totalDays) || 1);
   const remainingDays = Math.max(0, Math.min(totalDays, Number(item.remainingDays) || totalDays));
-  const mineralCost = Math.max(0, Math.round(Number(item.mineralCost) || 0));
+  const legacyMineralCost = Math.max(0, Math.round(Number(item.mineralCost) || 0));
+  const cost = normalizeResourceCost(item.cost, legacyMineralCost);
+  const mineralCost = cost.minerals;
   if (item.kind === "district") {
     if (!item.districtKind || !["city", "generator", "mining", "agriculture"].includes(item.districtKind)) return null;
     return {
       id: item.id,
       kind: "district",
       label: item.label,
+      cost,
       mineralCost,
       totalDays,
       remainingDays,
@@ -1180,6 +1356,7 @@ function normalizeConstructionQueueItem(
     id: item.id,
     kind: item.kind,
     label: item.label,
+    cost,
     mineralCost,
     totalDays,
     remainingDays,
@@ -1394,7 +1571,7 @@ function applyGoodsUpkeep(
   context?: PlanetEconomySpeciesContext,
 ): void {
   const units = population / PEOPLE_PER_MONTHLY_UNIT;
-  const upkeepPerUnit = perUnitOverride ?? (jobClass === "upper" ? 0.45 : jobClass === "middle" ? 0.25 : 0.08);
+  const upkeepPerUnit = perUnitOverride ?? (jobClass === "upper" ? 0.009 : jobClass === "middle" ? 0.005 : 0.0016);
   addResource(
     upkeep,
     "goods",
@@ -1813,6 +1990,17 @@ export function calculatePlanetEconomy(
     ));
   }
 
+  const applyDirectBuildingUpkeep = (building: PlanetBuildingSlot): void => {
+    const buildingKind = getPlanetBuildingKind(building);
+    if (!buildingKind || !isPlanetBuildingEnabled(building)) return;
+    const buildingUpkeep = getBuildingUpkeep(buildingKind, getPlanetBuildingLevel(building));
+    for (const resource of RESOURCE_KINDS) addResource(upkeep, resource, buildingUpkeep[resource]);
+  };
+  for (const building of Object.values(state.buildings).flat()) applyDirectBuildingUpkeep(building);
+  for (const subDistrict of state.urbanSubDistricts) {
+    for (const building of subDistrict.buildings) applyDirectBuildingUpkeep(building);
+  }
+
   const net = createEmptyResourceCounts();
   const deficit = createEmptyResourceCounts();
   for (const resource of RESOURCE_KINDS) {
@@ -2061,11 +2249,13 @@ export function createDistrictConstructionQueueItem(
   districtKind: DistrictKind,
   id = createConstructionId("district", [districtKind]),
 ): PlanetConstructionQueueItem {
+  const cost = { ...DISTRICT_COSTS[districtKind] };
   return {
     id,
     kind: "district",
     label: `${districtKind[0].toUpperCase()}${districtKind.slice(1)} District`,
-    mineralCost: DISTRICT_MINERAL_COSTS[districtKind],
+    cost,
+    mineralCost: cost.minerals,
     totalDays: DISTRICT_BUILD_DAYS[districtKind],
     remainingDays: DISTRICT_BUILD_DAYS[districtKind],
     districtKind,
@@ -2079,11 +2269,13 @@ export function createBuildingConstructionQueueItem(
   subDistrictIndex?: number,
   id = createConstructionId("building", [buildingKind, area, subDistrictIndex, slotIndex]),
 ): PlanetConstructionQueueItem {
+  const cost = getBuildingCost(buildingKind, 1);
   return {
     id,
     kind: "building",
     label: BUILDING_LABELS[buildingKind],
-    mineralCost: getBuildingMineralCost(buildingKind, 1),
+    cost,
+    mineralCost: cost.minerals,
     totalDays: getBuildingBuildDays(buildingKind, 1),
     remainingDays: getBuildingBuildDays(buildingKind, 1),
     buildingKind,
@@ -2104,11 +2296,13 @@ export function createBuildingUpgradeConstructionQueueItem(
 ): PlanetConstructionQueueItem {
   const targetLevel = clampBuildingLevel(currentLevel + 1);
   const totalDays = getBuildingUpgradeBuildDays(buildingKind, currentLevel);
+  const cost = getBuildingUpgradeCost(buildingKind, currentLevel);
   return {
     id,
     kind: "buildingUpgrade",
     label: `${BUILDING_LABELS[buildingKind]} Level ${targetLevel}`,
-    mineralCost: getBuildingUpgradeMineralCost(buildingKind, currentLevel),
+    cost,
+    mineralCost: cost.minerals,
     totalDays,
     remainingDays: totalDays,
     buildingKind,

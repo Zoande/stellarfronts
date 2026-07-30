@@ -280,6 +280,9 @@ export function normalizeFleet(
     phaseProgress: Math.max(0, Math.min(1, Number(fleet.phaseProgress) || 0)),
     phaseElapsedMs: fleet.phaseElapsedMs ?? Math.round((fleet.phaseProgress ?? 0) * phaseDuration(ctx, phase)),
     orderType,
+    pendingStarbaseBuildCost: fleet.pendingStarbaseBuildCost
+      ? normalizeResourceCounts(fleet.pendingStarbaseBuildCost)
+      : null,
     speed: stationaryStarbaseId ? 0 : Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
     combatStance: normalizeCombatStance(fleet.combatStance),
     retreatState: normalizeFleetRetreatState(fleet.retreatState),

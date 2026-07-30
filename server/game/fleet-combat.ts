@@ -15,6 +15,7 @@ import {
 } from "../../src/data/SystemCoordinates";
 import { getSystemOrbitLayout } from "../../src/data/SystemCoordinates";
 import type { PlanetConfig, StarData } from "../../src/data/StarMap";
+import { addResourceCounts } from "../../src/data/Economy";
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
 import {
   calculateStarbaseEconomy,
@@ -688,7 +689,18 @@ export function createFleetMovementPlan(
 // Order helpers
 // ---------------------------------------------------------------------------
 
+export function refundPendingStarbaseBuildCost(ctx: RuntimeContext, fleet: GameFleet): boolean {
+  const refund = fleet.pendingStarbaseBuildCost;
+  if (!refund) return false;
+  const economy = ctx.state.factionEconomies.find((entry) => entry.factionId === fleet.ownerId);
+  if (economy) economy.stockpiles = addResourceCounts(economy.stockpiles, refund);
+  fleet.pendingStarbaseBuildCost = null;
+  ctx.hasDirtyState = true;
+  return Boolean(economy);
+}
+
 export function prepareFleetForReplacementOrder(ctx: RuntimeContext, fleet: GameFleet): void {
+  refundPendingStarbaseBuildCost(ctx, fleet);
   fleet.systemPosition = getFleetAuthoritativeSystemPosition(ctx, fleet);
   fleet.targetStarId = null;
   fleet.route = [fleet.currentStarId];
@@ -1039,7 +1051,7 @@ export function completeFleetOrder(ctx: RuntimeContext, fleet: GameFleet): void 
         maxHull: combat.maxHull,
         lastShieldDamageAtYear: null,
         level: "outpost",
-        economy: calculateStarbaseEconomy("outpost"),
+        economy: calculateStarbaseEconomy("outpost", createEmptyStarbaseSlots()),
         buildingSlots: createEmptyStarbaseSlots(),
         constructionQueue: [],
         shipQueue: [],
@@ -1049,6 +1061,9 @@ export function completeFleetOrder(ctx: RuntimeContext, fleet: GameFleet): void 
       ctx.syncSystemOwnershipFromStarbases();
       ctx.recalculatePlanetEconomies();
       ctx.refreshFactionEconomyDeltas();
+      fleet.pendingStarbaseBuildCost = null;
+    } else {
+      refundPendingStarbaseBuildCost(ctx, fleet);
     }
     finalOrbitTarget = createStarbaseOrbitTarget(starbase);
     fleet.systemPosition = finalOrbitTarget.position;
@@ -2547,6 +2562,7 @@ export function removeDestroyedShips(ctx: RuntimeContext): boolean {
 }
 
 export function clearFleetMovementNow(ctx: RuntimeContext, fleet: GameFleet): void {
+  refundPendingStarbaseBuildCost(ctx, fleet);
   const currentPosition = getFleetAuthoritativeSystemPosition(ctx, fleet);
   fleet.systemPosition = currentPosition;
   fleet.targetStarId = null;

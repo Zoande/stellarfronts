@@ -265,7 +265,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     buildingSlots: 2,
     defensePlatformCapacity: 2,
     production: resources({}),
-    upkeep: resources({ energy: 12, food: 1, goods: 1, alloys: 2 }),
+    upkeep: resources({ energy: 4, food: 0.25, goods: 0.5, alloys: 0.3 }),
     combat: {
       maxShield: 700,
       maxArmor: 500,
@@ -274,7 +274,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
       sensorRange: 3,
       weaponMounts: repeatMount(createLaserMount({ damage: 20, barrels: 3, accuracy: 0.8, armorPenetration: 0.4 }), 3),
     },
-    upgrade: { targetLevel: "starbase", alloyCost: 800, cost: resources({ alloys: 800, minerals: 200 }), buildDays: 18 },
+    upgrade: { targetLevel: "starbase", alloyCost: 1_200, cost: resources({ minerals: 2_500, alloys: 1_200, goods: 150 }), buildDays: 360 },
   },
   starbase: {
     level: "starbase",
@@ -283,7 +283,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     buildingSlots: 4,
     defensePlatformCapacity: 4,
     production: resources({}),
-    upkeep: resources({ energy: 28, food: 6, goods: 6, alloys: 8 }),
+    upkeep: resources({ energy: 10, food: 1, goods: 1.5, alloys: 1 }),
     combat: {
       maxShield: 1500,
       maxArmor: 1100,
@@ -292,7 +292,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
       sensorRange: 3,
       weaponMounts: repeatMount(createLaserMount({ damage: 26, barrels: 4, accuracy: 0.82, armorPenetration: 0.4 }), 5),
     },
-    upgrade: { targetLevel: "starhold", alloyCost: 2200, cost: resources({ alloys: 2200, minerals: 600 }), buildDays: 60 },
+    upgrade: { targetLevel: "starhold", alloyCost: 4_000, cost: resources({ minerals: 8_000, alloys: 4_000, goods: 600 }), buildDays: 900 },
   },
   starhold: {
     level: "starhold",
@@ -301,7 +301,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     buildingSlots: 6,
     defensePlatformCapacity: 8,
     production: resources({}),
-    upkeep: resources({ energy: 55, food: 14, goods: 14, alloys: 18, minerals: 6 }),
+    upkeep: resources({ energy: 22, food: 3, goods: 4, alloys: 3, minerals: 1 }),
     combat: {
       maxShield: 2500,
       maxArmor: 1800,
@@ -310,7 +310,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
       sensorRange: 3,
       weaponMounts: repeatMount(createLaserMount({ damage: 30, barrels: 4, accuracy: 0.84, armorPenetration: 0.45 }), 8),
     },
-    upgrade: { targetLevel: "starFortress", alloyCost: 4800, cost: resources({ alloys: 4800, minerals: 1400 }), buildDays: 180 },
+    upgrade: { targetLevel: "starFortress", alloyCost: 10_000, cost: resources({ minerals: 20_000, alloys: 10_000, goods: 1_500 }), buildDays: 1_800 },
   },
   starFortress: {
     level: "starFortress",
@@ -319,7 +319,7 @@ export const STARBASE_LEVEL_DEFINITIONS: Record<StarbaseLevel, StarbaseLevelDefi
     buildingSlots: 9,
     defensePlatformCapacity: 12,
     production: resources({}),
-    upkeep: resources({ energy: 95, food: 24, goods: 24, alloys: 34, minerals: 18 }),
+    upkeep: resources({ energy: 45, food: 7, goods: 8, alloys: 7, minerals: 4 }),
     combat: {
       maxShield: 3500,
       maxArmor: 2600,
@@ -349,9 +349,9 @@ export const STARBASE_BUILDING_DEFINITIONS: Record<StarbaseBuildingKind, Starbas
     label: "Listening Station",
     description: "Long-baseline arrays catalogue distant systems and maintain command telemetry across friendly space.",
     production: resources({}),
-    upkeep: resources({ energy: 6, goods: 1 }),
-    cost: resources({ minerals: 320, alloys: 70, goods: 30 }),
-    buildDays: 30,
+    upkeep: resources({ energy: 2, goods: 0.25 }),
+    cost: resources({ minerals: 2_500, alloys: 300, goods: 150 }),
+    buildDays: 120,
     sensorSuiteIds: ["listeningStationSensors"],
   },
   shipyard: {
@@ -359,73 +359,73 @@ export const STARBASE_BUILDING_DEFINITIONS: Record<StarbaseBuildingKind, Starbas
     label: "Shipyard",
     description: "Dedicated construction slip for assembling military and utility hulls in orbit.",
     production: resources({}),
-    upkeep: resources({ energy: 8, goods: 2, alloys: 1 }),
-    cost: resources({ minerals: 380, alloys: 100 }),
-    buildDays: 18,
+    upkeep: resources({ energy: 3, goods: 0.5, alloys: 0.25 }),
+    cost: resources({ minerals: 3_500, alloys: 500 }),
+    buildDays: 180,
     shipyards: 1,
   },
   solarArray: {
     kind: "solarArray",
     label: "Solar Array",
     description: "Wide collector wings convert stellar radiation into station power.",
-    production: resources({ energy: 18 }),
-    upkeep: resources({ alloys: 0.5 }),
-    cost: resources({ minerals: 260, alloys: 40 }),
-    buildDays: 30,
+    production: resources({ energy: 10 }),
+    upkeep: resources({ alloys: 0.1 }),
+    cost: resources({ minerals: 3_000, alloys: 300 }),
+    buildDays: 120,
   },
   hydroponicsBay: {
     kind: "hydroponicsBay",
     label: "Hydroponics Bay",
     description: "Pressurized cultivation decks grow food for crews and passing fleets.",
-    production: resources({ food: 12 }),
-    upkeep: resources({ energy: 4, goods: 1 }),
-    cost: resources({ minerals: 300, goods: 50 }),
-    buildDays: 30,
+    production: resources({ food: 8 }),
+    upkeep: resources({ energy: 1, goods: 0.2 }),
+    cost: resources({ minerals: 2_500, goods: 200 }),
+    buildDays: 120,
   },
   orbitalFabricator: {
     kind: "orbitalFabricator",
     label: "Orbital Fabricator",
     description: "Microgravity workshops turn imported minerals into advanced goods.",
-    production: resources({ goods: 8 }),
-    upkeep: resources({ minerals: 12, energy: 5 }),
-    cost: resources({ minerals: 480, alloys: 80 }),
-    buildDays: 60,
+    production: resources({ goods: 4 }),
+    upkeep: resources({ minerals: 5, energy: 2 }),
+    cost: resources({ minerals: 4_500, alloys: 350 }),
+    buildDays: 240,
   },
   alloyAssemblyDock: {
     kind: "alloyAssemblyDock",
     label: "Alloy Assembly Dock",
     description: "Heavy orbital foundries refine imported minerals into ship-grade alloys.",
-    production: resources({ alloys: 5 }),
-    upkeep: resources({ minerals: 14, energy: 6 }),
-    cost: resources({ minerals: 650, alloys: 140 }),
-    buildDays: 90,
+    production: resources({ alloys: 3 }),
+    upkeep: resources({ minerals: 7, energy: 3 }),
+    cost: resources({ minerals: 6_000, alloys: 700 }),
+    buildDays: 300,
   },
   researchAnnex: {
     kind: "researchAnnex",
     label: "Research Annex",
     description: "Observation labs and test bays generate research from orbital operations.",
-    production: resources({ research: 10 }),
-    upkeep: resources({ energy: 8, goods: 2 }),
-    cost: resources({ minerals: 500, goods: 100 }),
-    buildDays: 60,
+    production: resources({ research: 5 }),
+    upkeep: resources({ energy: 3, goods: 0.5 }),
+    cost: resources({ minerals: 5_000, goods: 400 }),
+    buildDays: 240,
   },
   logisticsDepot: {
     kind: "logisticsDepot",
     label: "Logistics Depot",
-    description: "Storage, docking, and maintenance facilities reduce station supply strain.",
-    production: resources({ energy: 4, goods: 2 }),
-    upkeep: resources({}),
-    cost: resources({ minerals: 320, alloys: 60 }),
-    buildDays: 30,
+    description: "Storage, docking, and maintenance facilities reduce starbase upkeep by 15% and ship-construction resource demand by 5%.",
+    production: resources({}),
+    upkeep: resources({ energy: 1, goods: 0.25 }),
+    cost: resources({ minerals: 3_500, alloys: 300 }),
+    buildDays: 180,
   },
   mineralHarvester: {
     kind: "mineralHarvester",
     label: "Mineral Harvester",
     description: "Electrostatic collectors scrape mineral-rich dust straight from the nebula. Only buildable inside a dust cloud.",
-    production: resources({ minerals: 16 }),
-    upkeep: resources({ energy: 5 }),
-    cost: resources({ minerals: 340, alloys: 60 }),
-    buildDays: 45,
+    production: resources({ minerals: 10 }),
+    upkeep: resources({ energy: 2 }),
+    cost: resources({ minerals: 4_500, alloys: 400 }),
+    buildDays: 240,
   },
 };
 
@@ -591,10 +591,10 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     className: "Falcon-class",
     description: "Fast escort hull for patrols, interception, and early fleet operations.",
     speed: 1.22,
-    buildDays: 5,
-    alloyUpkeepPerDay: 16,
+    buildDays: 45,
+    alloyUpkeepPerDay: 11.53,
     crewDemand: 1_200,
-    upkeep: resources({ energy: 1, alloys: 0.16 }),
+    upkeep: resources({ energy: 0.86, alloys: 0.08 }),
     combat: {
       maxShield: 140,
       maxArmor: 95,
@@ -610,10 +610,10 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     className: "Pioneer-class",
     description: "Utility hull fitted for deep-space construction and starbase deployment.",
     speed: 1.05,
-    buildDays: 6,
-    alloyUpkeepPerDay: 12,
+    buildDays: 60,
+    alloyUpkeepPerDay: 4.1,
     crewDemand: 700,
-    upkeep: resources({ energy: 0.86, alloys: 0.12 }),
+    upkeep: resources({ energy: 0.5, alloys: 0.04 }),
     combat: {
       maxShield: 90,
       maxArmor: 55,
@@ -629,10 +629,10 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     className: "Odyssey-class",
     description: "Civilian settlement ark carrying colonists, prefab habitats, and orbital landing craft.",
     speed: 0.92,
-    buildDays: 10,
-    alloyUpkeepPerDay: 14,
+    buildDays: 120,
+    alloyUpkeepPerDay: 2.8,
     crewDemand: 1_100,
-    upkeep: resources({ energy: 1.05, alloys: 0.14, goods: 0.1 }),
+    upkeep: resources({ energy: 0.61, alloys: 0.05, goods: 0.04 }),
     combat: {
       maxShield: 75,
       maxArmor: 50,
@@ -648,10 +648,10 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     className: "Vanguard-class",
     description: "Medium escort hull with heavier weapons and defenses for fleet-line combat.",
     speed: 0.98,
-    buildDays: 16,
-    alloyUpkeepPerDay: 36,
+    buildDays: 120,
+    alloyUpkeepPerDay: 9.18,
     crewDemand: 2_800,
-    upkeep: resources({ energy: 2.6, alloys: 0.38 }),
+    upkeep: resources({ energy: 1.75, alloys: 0.21 }),
     combat: {
       maxShield: 320,
       maxArmor: 280,
@@ -667,10 +667,10 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     className: "Resolute-class",
     description: "Heavy fleet hull with broadside hardpoints, strong defenses, and command endurance.",
     speed: 0.78,
-    buildDays: 34,
-    alloyUpkeepPerDay: 66,
+    buildDays: 300,
+    alloyUpkeepPerDay: 8.37,
     crewDemand: 6_400,
-    upkeep: resources({ energy: 4.8, alloys: 0.7, goods: 0.24 }),
+    upkeep: resources({ energy: 3.18, alloys: 0.51, goods: 0.08 }),
     combat: {
       maxShield: 740,
       maxArmor: 660,
@@ -686,10 +686,10 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     className: "Bulwark-class",
     description: "Capital hull for decisive engagements with the highest firepower and durability.",
     speed: 0.62,
-    buildDays: 68,
-    alloyUpkeepPerDay: 128,
+    buildDays: 720,
+    alloyUpkeepPerDay: 7.03,
     crewDemand: 14_000,
-    upkeep: resources({ energy: 9, alloys: 1.36, goods: 0.48 }),
+    upkeep: resources({ energy: 5.92, alloys: 1.08, goods: 0.17 }),
     combat: {
       maxShield: 1500,
       maxArmor: 1380,
@@ -705,10 +705,10 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     className: "Sentinel-class",
     description: "Stationary starbase defense hull with heavy batteries and no strategic drive.",
     speed: 0,
-    buildDays: 12,
-    alloyUpkeepPerDay: 28,
+    buildDays: 90,
+    alloyUpkeepPerDay: 12.6,
     crewDemand: 1_800,
-    upkeep: resources({ energy: 1.8, alloys: 0.3 }),
+    upkeep: resources({ energy: 1.55, alloys: 0.24 }),
     combat: {
       maxShield: 280,
       maxArmor: 260,
@@ -724,10 +724,10 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     className: "Pathfinder-class",
     description: "Dedicated survey vessel carrying high-resolution stellar and planetary instruments.",
     speed: 1.08,
-    buildDays: 8,
-    alloyUpkeepPerDay: 12,
+    buildDays: 60,
+    alloyUpkeepPerDay: 5.43,
     crewDemand: 850,
-    upkeep: resources({ energy: 1.1, alloys: 0.1, goods: 0.08 }),
+    upkeep: resources({ energy: 0.68, alloys: 0.05, goods: 0.04 }),
     combat: {
       maxShield: 75,
       maxArmor: 45,
@@ -743,10 +743,10 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     className: "Legion-class",
     description: "Placeholder troop transport hull for the future ground-army system.",
     speed: 0.88,
-    buildDays: 11,
-    alloyUpkeepPerDay: 18,
+    buildDays: 90,
+    alloyUpkeepPerDay: 4.7,
     crewDemand: 2_400,
-    upkeep: resources({ energy: 1.4, alloys: 0.16, goods: 0.1 }),
+    upkeep: resources({ energy: 0.75, alloys: 0.07, goods: 0.05 }),
     combat: {
       maxShield: 110,
       maxArmor: 100,
@@ -764,7 +764,8 @@ export function calculateStarbaseEconomy(
 ): StarbaseEconomy {
   const definition = STARBASE_LEVEL_DEFINITIONS[level] ?? STARBASE_LEVEL_DEFINITIONS.outpost;
   const production = resources(definition.production);
-  const upkeep = resources(definition.upkeep);
+  const hasLogisticsDepot = buildingSlots.includes("logisticsDepot");
+  const upkeep = scaleResources(resources(definition.upkeep), hasLogisticsDepot ? 0.85 : 1);
   for (const buildingKind of buildingSlots) {
     if (!buildingKind) continue;
     const building = STARBASE_BUILDING_DEFINITIONS[buildingKind];
@@ -779,6 +780,18 @@ export function calculateStarbaseEconomy(
     net[resource] = production[resource] - upkeep[resource];
   }
   return { production, upkeep, net };
+}
+
+export const OUTPOST_CONSTRUCTION_COST: ResourceCounts = resources({
+  minerals: 2_000,
+  goods: 100,
+  alloys: 250,
+});
+
+export function getStarbaseShipConstructionCostMultiplier(
+  buildingSlots: Array<StarbaseBuildingKind | null>,
+): number {
+  return buildingSlots.includes("logisticsDepot") ? 0.95 : 1;
 }
 
 export function getNextStarbaseLevel(level: StarbaseLevel): StarbaseLevel | null {
