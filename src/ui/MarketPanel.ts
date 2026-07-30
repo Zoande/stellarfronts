@@ -1,8 +1,11 @@
-import {
-  RESOURCE_KINDS,
-  RESOURCE_LABELS,
-} from "../data/Economy";
+import { RESOURCE_LABELS } from "../data/Economy";
 import type { ResourceKind } from "../data/Economy";
+import {
+  calculateBulkMarketQuote,
+  calculateMarketPricingState,
+  isMarketResourceKind,
+} from "../data/Market";
+import type { MarketResourceKind } from "../data/Market";
 import { GAME_DAYS_PER_YEAR } from "../game/GameTime";
 import { gameHourToRealMinute, realMinuteToGameHour, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
 import type {
@@ -26,7 +29,7 @@ export interface MarketPanelData extends MarketDetailPayload {
 
 const STYLE_ID = "market-panel-style";
 const MARKET_SCROLL_SELECTORS = [".marketResourceList", ".marketDetailPanel"] as const;
-type MarketGraphRange = "1D" | "7D" | "30D" | "1Y" | "MAX";
+type MarketGraphRange = "1D" | "7D" | "30D" | "3M" | "5M";
 
 const RESOURCE_ICON_URLS: Record<ResourceKind, string> = {
   food: "/textures/resource-icons/nobg/food.webp",
@@ -41,7 +44,7 @@ export class MarketPanel {
   private root: HTMLDivElement;
   private panelElement: HTMLDivElement | null = null;
   private currentData: MarketPanelData | null = null;
-  private selectedResourceId: ResourceKind | null = null;
+  private selectedResourceId: MarketResourceKind | null = null;
   private buyAmount = 100;
   private sellAmount = 100;
   private autoTradeAmount = 100;
@@ -139,7 +142,7 @@ export class MarketPanel {
         <div class="marketSummary">
           ${this.renderSummaryTile("EX", "Total Exports", this.formatEnergy(totalExports), "Energy")}
           ${this.renderSummaryTile("IM", "Total Imports", this.formatEnergy(totalImports), "Energy")}
-          ${this.renderSummaryTile("TR", "Trade Routes", "0", "Placeholder")}
+          ${this.renderSummaryTile("BL", "Market Bloc", `${data.marketMemberIds.length}`, data.marketMemberIds.length === 1 ? "Empire" : "Empires")}
           ${this.renderSummaryTile("%", "Market Fee", this.formatPercent(data.marketFee), "Base fee")}
         </div>
         <div class="marketMain">
@@ -155,20 +158,10 @@ export class MarketPanel {
             </div>
           </section>
           <section class="marketDetailPanel">
-            ${selected ? this.renderSelectedResource(data, selected) : this.renderNoSelection()}
+            ${selected ? this.renderSelectedResource(data, selected) : this.renderNoSelection(data.playerFactionId === null)}
           </section>
         </div>
       </section>
-      <nav class="marketTabs">
-        <button class="active" type="button">
-          <span class="marketTabBadge" aria-hidden="true">MK</span>
-          Market
-        </button>
-        <button class="disabled" type="button" disabled title="Trade route management is not implemented yet.">
-          <span class="marketTabBadge muted" aria-hidden="true">TR</span>
-          Trade Routes
-        </button>
-      </nav>
     `;
   }
 
@@ -188,11 +181,11 @@ export class MarketPanel {
   private renderResourceRow(resource: MarketResourceQuote, selected: boolean): string {
     const status = this.getMarketStatus(resource);
     return `
-      <button class="marketResourceRow ${selected ? "selected" : ""} ${resource.marketEnabled ? "" : "disabled"}" type="button" data-market-resource="${this.escapeAttribute(resource.resourceId)}">
+      <button class="marketResourceRow ${selected ? "selected" : ""}" type="button" data-market-resource="${this.escapeAttribute(resource.resourceId)}">
         <span class="marketResourceIconSlot">${this.renderResourceIcon(resource.resourceId)}</span>
         <span class="marketResourceCopy">
           <strong>${this.escapeHtml(RESOURCE_LABELS[resource.resourceId])}</strong>
-          <small>${resource.marketEnabled ? this.escapeHtml(status.label) : "Trading disabled"}</small>
+          <small>${this.escapeHtml(status.label)}</small>
         </span>
         <span class="marketResourcePrice">
           <small>Price</small>
@@ -204,13 +197,13 @@ export class MarketPanel {
 
   private renderSelectedResource(data: MarketPanelData, resource: MarketResourceQuote): string {
     const status = this.getMarketStatus(resource);
-    const disabled = !resource.marketEnabled || !data.onMarketCommand;
+    const disabled = !data.onMarketCommand;
     return `
       <div class="marketSelectedHeader">
         <span class="marketSelectedIcon">${this.renderResourceIcon(resource.resourceId, true)}</span>
         <span>
           <strong>${this.escapeHtml(RESOURCE_LABELS[resource.resourceId])} Market Details</strong>
-          <small>${resource.marketEnabled ? this.escapeHtml(status.label) : "This resource is visible but not market-enabled yet."}</small>
+          <small>${this.escapeHtml(status.label)}</small>
         </span>
         <em class="marketSelectedTrend ${this.getTrendLabel(resource).className}">${this.escapeHtml(this.getTrendLabel(resource).title)}</em>
       </div>
@@ -226,7 +219,7 @@ export class MarketPanel {
         <section class="marketGraphPanel">
           <div class="marketPanelHeading">
             <strong>Price History</strong>
-            <span>${resource.priceHistory.length >= 2 ? this.escapeHtml(this.graphRange) : "Projected sample"}</span>
+            <span>${resource.priceHistory.length >= 2 ? this.escapeHtml(this.graphRange) : "Collecting history"}</span>
           </div>
           ${this.renderPriceGraph(resource)}
           ${this.renderGraphRangeButtons()}
@@ -237,14 +230,18 @@ export class MarketPanel {
             <span>Energy settlement</span>
           </div>
           <div class="marketDetailsGrid">
-            ${this.renderDetailMetric("Supply Pressure", this.formatPressure(Math.max(0, -(resource.temporaryPressure + resource.persistentPressure))), "down")}
-            ${this.renderDetailMetric("Demand Pressure", this.formatPressure(Math.max(0, resource.temporaryPressure + resource.persistentPressure)), "up")}
-            ${this.renderDetailMetric("Internal Supply", `${this.formatCompact(resource.internalSupply)} / h`, "neutral")}
-            ${this.renderDetailMetric("Internal Demand", `${this.formatCompact(resource.internalDemand)} / h`, "neutral")}
+            ${this.renderDetailMetric("Production", `${this.formatCompact(resource.monthlyProduction)} / mo`, "good")}
+            ${this.renderDetailMetric("Upkeep", `${this.formatCompact(resource.monthlyUpkeep)} / mo`, "info")}
+            ${this.renderDetailMetric("Baseline Supply", this.formatCompact(resource.baselineSupply), "neutral")}
+            ${this.renderDetailMetric("Baseline Demand", this.formatCompact(resource.baselineDemand), "neutral")}
+            ${this.renderDetailMetric("5-Month Trade", this.formatSigned(resource.tradeBalance), resource.tradeBalance > 0 ? "up" : resource.tradeBalance < 0 ? "down" : "neutral")}
+            ${this.renderDetailMetric("Effective Supply", this.formatCompact(resource.effectiveSupply), "neutral")}
+            ${this.renderDetailMetric("Effective Demand", this.formatCompact(resource.effectiveDemand), "neutral")}
+            ${this.renderDetailMetric("Price Floor", this.formatPrice(resource.minimumPrice), "muted")}
             ${this.renderDetailMetric("Total Exports", this.formatEnergy(resource.totalExportsEnergy), "good")}
             ${this.renderDetailMetric("Total Imports", this.formatEnergy(resource.totalImportsEnergy), "info")}
             ${this.renderDetailMetric("Market Fee", this.formatPercent(data.marketFee), "neutral")}
-            ${this.renderDetailMetric("Trade Routes", "Placeholder", "muted")}
+            ${this.renderDetailMetric("Bloc Members", resource.marketMemberIds.join(", "), "muted")}
           </div>
         </section>
         <section class="marketTradePanel">
@@ -253,8 +250,8 @@ export class MarketPanel {
             <span>Market fee applies</span>
           </div>
           <div class="marketTradeControls">
-            ${this.renderTradeBox("buy", "Buy", this.buyAmount, resource.buyPrice, disabled)}
-            ${this.renderTradeBox("sell", "Sell", this.sellAmount, resource.sellPrice, disabled)}
+            ${this.renderTradeBox("buy", "Buy", this.buyAmount, resource, disabled)}
+            ${this.renderTradeBox("sell", "Sell", this.sellAmount, resource, disabled)}
           </div>
         </section>
         <section class="marketAutoTradePanel">
@@ -268,10 +265,10 @@ export class MarketPanel {
     tradeType: "buy" | "sell",
     label: string,
     amount: number,
-    unitPrice: number,
+    resource: MarketResourceQuote,
     disabled: boolean,
   ): string {
-    const total = Math.max(0, amount) * unitPrice;
+    const quote = this.calculateTradePreview(resource, tradeType, amount);
     return `
       <div class="marketTradeBox ${tradeType}">
         <div class="marketTradeBoxTitle">
@@ -290,7 +287,8 @@ export class MarketPanel {
         </div>
         <div class="marketTradeTotal">
           <span>${tradeType === "buy" ? "Cost" : "Payout"}</span>
-          <strong>${this.escapeHtml(this.formatEnergy(total))}</strong>
+          <strong data-market-preview-total="${tradeType}">${this.escapeHtml(this.formatEnergy(quote.totalEnergy))}</strong>
+          <small data-market-preview-unit="${tradeType}">${this.escapeHtml(this.formatPrice(quote.averageUnitPrice))} average · ${this.escapeHtml(this.formatPrice(quote.priceAfter))} after</small>
         </div>
         <button class="marketTradeButton" type="button" data-market-trade="${tradeType}" ${disabled ? "disabled" : ""}>
           <span class="marketTradeBadge ${tradeType}" aria-hidden="true">${tradeType === "buy" ? "+" : "-"}</span>
@@ -374,7 +372,7 @@ export class MarketPanel {
   }
 
   private renderGraphRangeButtons(): string {
-    const ranges: MarketGraphRange[] = ["1D", "7D", "30D", "1Y", "MAX"];
+    const ranges: MarketGraphRange[] = ["1D", "7D", "30D", "3M", "5M"];
     return `
       <div class="marketGraphRanges" aria-label="Price history range">
         ${ranges.map((range) => `
@@ -416,7 +414,7 @@ export class MarketPanel {
   }
 
   private renderResourceIcon(resource: ResourceKind, large = false): string {
-    if (!RESOURCE_KINDS.includes(resource)) {
+    if (!(resource in RESOURCE_ICON_URLS)) {
       return `<span class="marketResourceIcon marketResourceIcon-placeholder ${large ? "large" : ""}" aria-hidden="true"><span>??</span></span>`;
     }
     const iconUrl = RESOURCE_ICON_URLS[resource];
@@ -432,11 +430,11 @@ export class MarketPanel {
     `;
   }
 
-  private renderNoSelection(): string {
+  private renderNoSelection(observer = false): string {
     return `
       <div class="marketEmpty detail">
         <span class="marketResourceIcon marketResourceIcon-placeholder large" aria-hidden="true"></span>
-        <strong>Select a resource.</strong>
+        <strong>${observer ? "Select a faction perspective to view its market." : "Select a resource."}</strong>
       </div>
     `;
   }
@@ -458,8 +456,8 @@ export class MarketPanel {
 
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-market-resource]").forEach((button) => {
       button.addEventListener("click", () => {
-        const resourceId = button.dataset.marketResource as ResourceKind | undefined;
-        if (!resourceId || !RESOURCE_KINDS.includes(resourceId)) return;
+        const resourceId = button.dataset.marketResource;
+        if (!isMarketResourceKind(resourceId)) return;
         this.selectedResourceId = resourceId;
         this.show(data);
       });
@@ -467,9 +465,11 @@ export class MarketPanel {
 
     this.panelElement.querySelector<HTMLInputElement>("[data-market-buy-amount]")?.addEventListener("input", (ev) => {
       this.buyAmount = this.normalizeAmount((ev.currentTarget as HTMLInputElement).value, this.buyAmount);
+      this.updateTradePreview(data, "buy", this.buyAmount);
     });
     this.panelElement.querySelector<HTMLInputElement>("[data-market-sell-amount]")?.addEventListener("input", (ev) => {
       this.sellAmount = this.normalizeAmount((ev.currentTarget as HTMLInputElement).value, this.sellAmount);
+      this.updateTradePreview(data, "sell", this.sellAmount);
     });
 
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-market-preset]").forEach((button) => {
@@ -493,7 +493,7 @@ export class MarketPanel {
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-market-trade]").forEach((button) => {
       button.addEventListener("click", () => {
         const selected = this.getSelectedResource(data);
-        if (!selected || !data.onMarketCommand || !selected.marketEnabled) return;
+        if (!selected || !data.onMarketCommand) return;
         const tradeType = button.dataset.marketTrade === "sell" ? "sell" : "buy";
         const input = this.panelElement?.querySelector<HTMLInputElement>(`[data-market-${tradeType}-amount]`);
         const amount = this.normalizeAmount(input?.value, tradeType === "buy" ? this.buyAmount : this.sellAmount);
@@ -515,7 +515,7 @@ export class MarketPanel {
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-market-auto-add]").forEach((button) => {
       button.addEventListener("click", () => {
         const selected = this.getSelectedResource(data);
-        if (!selected || !data.onMarketCommand || !selected.marketEnabled) return;
+        if (!selected || !data.onMarketCommand) return;
         const tradeType = button.dataset.marketAutoAdd === "auto_sell" ? "auto_sell" : "auto_buy";
         const input = this.panelElement?.querySelector<HTMLInputElement>("[data-market-auto-amount]");
         const amountPerMinute = this.normalizeAmount(input?.value, this.autoTradeAmount);
@@ -549,8 +549,7 @@ export class MarketPanel {
 
   private ensureSelectedResource(data: MarketPanelData): void {
     if (this.selectedResourceId && data.resources.some((resource) => resource.resourceId === this.selectedResourceId)) return;
-    this.selectedResourceId = data.resources.find((resource) => resource.marketEnabled)?.resourceId
-      ?? data.resources[0]?.resourceId
+    this.selectedResourceId = data.resources[0]?.resourceId
       ?? null;
   }
 
@@ -565,39 +564,62 @@ export class MarketPanel {
       const ranged = rangeYears === null
         ? history
         : history.filter((snapshot) => snapshot.timestamp >= latestTimestamp - rangeYears);
-      return (ranged.length >= 2 ? ranged : history.slice(-2)).slice(-80);
+      const selected = ranged.length >= 2 ? ranged : history.slice(-2);
+      if (selected.length <= 80) return selected;
+      return Array.from({ length: 80 }, (_, index) => (
+        selected[Math.round(index * (selected.length - 1) / 79)]!
+      ));
     }
 
-    const seed = RESOURCE_KINDS.indexOf(resource.resourceId) + 1;
     const base = resource.finalQuotePrice || resource.currentPrice || resource.basePrice;
-    return Array.from({ length: 32 }, (_, index) => {
-      const wave = Math.sin(index * 0.58 + seed) * 0.045;
-      const slope = (index / 31 - 0.5) * 0.08 * (resource.trend === "down" ? -1 : 1);
-      const pressure = clamp01(Math.abs(resource.temporaryPressure + resource.persistentPressure)) * 0.08;
-      return {
-        timestamp: index,
-        price: Math.max(0.000001, base * (1 + wave + slope + pressure)),
-      };
-    });
+    const timestamp = resource.priceHistory[0]?.timestamp ?? 0;
+    return [
+      { timestamp: timestamp - 1 / GAME_DAYS_PER_YEAR, price: base },
+      { timestamp, price: base },
+    ];
   }
 
   private getGraphRangeYears(): number | null {
-    if (this.graphRange === "MAX") return null;
     if (this.graphRange === "1D") return 1 / GAME_DAYS_PER_YEAR;
     if (this.graphRange === "7D") return 7 / GAME_DAYS_PER_YEAR;
     if (this.graphRange === "30D") return 30 / GAME_DAYS_PER_YEAR;
-    return 1;
+    if (this.graphRange === "3M") return 90 / GAME_DAYS_PER_YEAR;
+    return 150 / GAME_DAYS_PER_YEAR;
   }
 
   private isGraphRange(value: string): value is MarketGraphRange {
-    return value === "1D" || value === "7D" || value === "30D" || value === "1Y" || value === "MAX";
+    return value === "1D" || value === "7D" || value === "30D" || value === "3M" || value === "5M";
   }
 
   private getMarketStatus(resource: MarketResourceQuote): { label: string; className: string } {
-    const pressure = resource.temporaryPressure + resource.persistentPressure;
-    if (pressure > 0.08) return { label: "High demand", className: "demand" };
-    if (pressure < -0.08) return { label: "High supply", className: "supply" };
+    const ratio = resource.effectiveDemand / Math.max(0.000001, resource.effectiveSupply);
+    if (ratio > 1.1) return { label: "High demand", className: "demand" };
+    if (ratio < 0.9) return { label: "High supply", className: "supply" };
     return { label: "Balanced", className: "balanced" };
+  }
+
+  private calculateTradePreview(
+    resource: MarketResourceQuote,
+    tradeType: "buy" | "sell",
+    amount: number,
+  ) {
+    const pricing = calculateMarketPricingState(
+      resource.resourceId,
+      resource.monthlyProduction,
+      resource.monthlyUpkeep,
+      resource.tradeBalance,
+    );
+    return calculateBulkMarketQuote(pricing, tradeType, amount);
+  }
+
+  private updateTradePreview(data: MarketPanelData, tradeType: "buy" | "sell", amount: number): void {
+    const resource = this.getSelectedResource(data);
+    if (!resource || !this.panelElement) return;
+    const quote = this.calculateTradePreview(resource, tradeType, amount);
+    const total = this.panelElement.querySelector<HTMLElement>(`[data-market-preview-total="${tradeType}"]`);
+    const unit = this.panelElement.querySelector<HTMLElement>(`[data-market-preview-unit="${tradeType}"]`);
+    if (total) total.textContent = this.formatEnergy(quote.totalEnergy);
+    if (unit) unit.textContent = `${this.formatPrice(quote.averageUnitPrice)} average · ${this.formatPrice(quote.priceAfter)} after`;
   }
 
   private getTrendLabel(resource: MarketResourceQuote): { title: string; className: string } {
@@ -656,8 +678,9 @@ export class MarketPanel {
     return `${(value * 100).toFixed(value * 100 >= 10 ? 0 : 1)}%`;
   }
 
-  private formatPressure(value: number): string {
-    return `${(value * 100).toFixed(1)}%`;
+  private formatSigned(value: number): string {
+    if (Math.abs(value) < 0.000001) return "0";
+    return `${value > 0 ? "+" : ""}${this.formatCompact(value)}`;
   }
 
   private formatCompact(value: number): string {
@@ -1739,8 +1762,4 @@ export class MarketPanel {
 `;
     document.head.appendChild(style);
   }
-}
-
-function clamp01(value: number): number {
-  return Math.max(0, Math.min(1, value));
 }

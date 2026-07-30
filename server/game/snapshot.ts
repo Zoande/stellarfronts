@@ -390,7 +390,7 @@ export function createSnapshot(ctx: RuntimeContext, perspective: GalaxyPerspecti
 
   return {
     type: "snapshot",
-    protocolVersion: 4,
+    protocolVersion: 5,
     perspective,
     ...visibleState,
     stars: createVisibleStars(ctx, perspective, knownSet),
@@ -402,7 +402,7 @@ export function createUpdate(ctx: RuntimeContext, perspective: GalaxyPerspective
   const knownSet = getKnownSet(ctx, perspective);
   const update: GameUpdate = {
     type: "update",
-    protocolVersion: 4,
+    protocolVersion: 5,
     perspective,
     changed,
     intelligence: getGalaxyIntelligenceView(ctx.state, perspective),

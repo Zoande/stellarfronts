@@ -435,6 +435,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
   });
   const getMarketPanelData = () => ({
     resources: marketDetail?.resources ?? [],
+    marketMemberIds: marketDetail?.marketMemberIds ?? [],
     playerStats: marketDetail?.playerStats ?? null,
     autoTrades: marketDetail?.autoTrades ?? [],
     transactions: marketDetail?.transactions ?? [],

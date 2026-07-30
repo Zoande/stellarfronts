@@ -7,7 +7,7 @@
 // the socket dispatch (sendDetailEvent / handleRequestDetails) stays in index.ts.
 // =============================================================================
 
-import { MARKET_FEE_RATE } from "../../src/data/Market";
+import { MARKET_FEE_RATE, MARKET_RESOURCE_KINDS } from "../../src/data/Market";
 import {
   TREATY_ARTICLE_DEFINITIONS,
   TRADE_PRIVILEGE_ARTICLE_ID,
@@ -40,7 +40,6 @@ import type {
 } from "../../src/game/GameProtocol";
 import { buildSystemDetailPayload, createSystemDetailRevision } from "./system-view";
 import {
-  calculateFactionResourceFlow,
   calculatePlayerMarketQuote,
   getReadonlyMarketPlayerStats,
   getMarketPriceHistory,
@@ -325,44 +324,44 @@ export function createSystemDetailPayload(
 
 export function createMarketDetailPayload(ctx: RuntimeContext, perspective: GalaxyPerspective): MarketDetailPayload {
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-  const flows = factionId === null ? undefined : calculateFactionResourceFlow(ctx.state, factionId);
   const playerStats = getReadonlyMarketPlayerStats(ctx, factionId);
-  const resources = ctx.state.market.resources.map<MarketResourceQuote>((resource) => {
-    const quote = calculatePlayerMarketQuote(resource, factionId, flows, ctx.state);
+  const resources = factionId === null ? [] : MARKET_RESOURCE_KINDS.map<MarketResourceQuote>((resourceId) => {
+    const quote = calculatePlayerMarketQuote(resourceId, factionId, ctx.state);
+    const pricing = quote.pricing;
     return {
-      resourceId: resource.resourceId,
-      basePrice: resource.basePrice,
-      currentPrice: resource.currentPrice,
-      liquidity: resource.liquidity,
-      temporaryPressure: resource.temporaryPressure,
-      persistentPressure: resource.persistentPressure,
-      marketEnabled: resource.marketEnabled,
-      lastUpdatedAt: resource.lastUpdatedAt,
+      resourceId,
+      marketMemberIds: quote.marketMemberIds,
+      basePrice: pricing.basePrice,
+      currentPrice: pricing.currentPrice,
+      minimumPrice: pricing.minimumPrice,
       finalQuotePrice: quote.finalQuotePrice,
       buyPrice: quote.buyPrice,
       sellPrice: quote.sellPrice,
       marketFee: MARKET_FEE_RATE,
       ownedAmount: quote.ownedAmount,
-      productionPerHour: quote.productionPerHour,
-      consumptionPerHour: quote.consumptionPerHour,
-      internalSupply: quote.internalSupply,
-      internalDemand: quote.internalDemand,
-      playerInternalModifier: quote.playerInternalModifier,
+      monthlyProduction: pricing.monthlyProduction,
+      monthlyUpkeep: pricing.monthlyUpkeep,
+      baselineSupply: pricing.baselineSupply,
+      baselineDemand: pricing.baselineDemand,
+      tradeBalance: pricing.tradeBalance,
+      effectiveSupply: pricing.effectiveSupply,
+      effectiveDemand: pricing.effectiveDemand,
       totalExportsEnergy: playerStats?.totalExportsEnergy ?? 0,
       totalImportsEnergy: playerStats?.totalImportsEnergy ?? 0,
-      priceHistory: getMarketPriceHistory(ctx, resource.resourceId),
-      trend: getMarketTrend(ctx, resource.resourceId, resource.currentPrice),
+      priceHistory: getMarketPriceHistory(ctx, factionId, resourceId),
+      trend: getMarketTrend(ctx, factionId, resourceId, pricing.currentPrice),
     };
   });
 
   return {
     resources,
+    marketMemberIds: resources[0]?.marketMemberIds ?? [],
     playerStats,
     autoTrades: factionId === null
       ? []
       : ctx.state.market.autoTrades.filter((order) => order.playerId === factionId),
     transactions: factionId === null
-      ? ctx.state.market.transactions.slice(-24)
+      ? []
       : ctx.state.market.transactions.filter((transaction) => transaction.playerId === factionId).slice(-24),
     marketFee: MARKET_FEE_RATE,
   };

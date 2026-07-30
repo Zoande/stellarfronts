@@ -71,7 +71,7 @@ import {
   syncFleetMembership,
   syncSystemOwnershipFromStarbases,
 } from "./state-normalization";
-import { recalculatePlanetEconomies, refreshFactionEconomyDeltas } from "./economy-market";
+import { ensureInitialMarketPriceSnapshots, recalculatePlanetEconomies, refreshFactionEconomyDeltas } from "./economy-market";
 import { refreshDiscovery } from "./visibility";
 import type { GameFleet, GameShip, GameState, RuntimeContext } from "./types";
 
@@ -168,7 +168,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 24,
+    schemaVersion: 25,
     stars,
     nebulae,
     planetStates,
@@ -218,6 +218,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   created.speciesRights = normalizeSpeciesRightsForFactions(created);
   recalculatePlanetEconomies(created);
   refreshFactionEconomyDeltas(created);
+  ensureInitialMarketPriceSnapshots(created);
 
   refreshDiscovery(created);
   return created;
@@ -236,7 +237,7 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
         `Game ${ctx.game.id} ctx.state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
       );
     }
-    parsed.schemaVersion = 24;
+    parsed.schemaVersion = 25;
     delete (parsed as GameState & { battles?: unknown }).battles;
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
@@ -369,6 +370,7 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     parsed.leaders = normalizedLeaders;
     recalculatePlanetEconomies(parsed);
     refreshFactionEconomyDeltas(parsed);
+    if (ensureInitialMarketPriceSnapshots(parsed)) ctx.hasDirtyState = true;
     const planetStateApplied = applyPlanetStatesToStars(parsed.stars, parsed.planetStates);
     if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || governmentsChanged || speciesChanged || speciesRightsChanged || speciesPopulationChanged || normalizedDiplomacy.changed || leadersChanged || homeStarbaseChanged || ownershipChanged) {
       ctx.hasDirtyState = true;

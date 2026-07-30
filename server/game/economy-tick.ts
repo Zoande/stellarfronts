@@ -15,11 +15,8 @@ import {
 } from "../../src/data/Economy";
 import type { PlanetState } from "../../src/data/Economy";
 import {
-  MARKET_FEE_RATE,
-  MARKET_TEMPORARY_DECAY_PER_HOUR,
-  MARKET_PERSISTENT_DECAY_PER_HOUR,
   MARKET_PRICE_SNAPSHOT_INTERVAL_HOURS,
-  recomputeMarketResourcePrice,
+  pruneMarketTradeBuckets,
 } from "../../src/data/Market";
 import type { MarketAutoTradeOrder } from "../../src/data/Market";
 import {
@@ -42,7 +39,7 @@ import {
   STARBASE_HULL_REPAIR_FRACTION_PER_DAY,
   STARBASE_HULL_REPAIR_ALLOY_COST_PER_POINT,
 } from "./constants";
-import { roundTinyPressure, scaleResourceCounts } from "./pure-helpers";
+import { scaleResourceCounts } from "./pure-helpers";
 import {
   getFactionEconomy,
   getFleetShieldMultiplier,
@@ -54,13 +51,11 @@ import {
 } from "./state-queries";
 import {
   calculateFactionMonthlyDelta,
-  calculateFactionResourceFlow,
-  calculatePlayerMarketQuote,
-  getMarketResourceState,
+  calculateTradeQuote,
   getMarketPlayerStats,
   recordMarketTransaction,
-  applyMarketTradePressure,
-  appendMarketPriceSnapshot,
+  recordMarketTradeVolume,
+  appendMarketPriceSnapshots,
 } from "./economy-market";
 import { getFactionResearchPerHour, applyTechnologyResearchForFaction } from "./research";
 import { findShipDesignById, getShipDesignForShip } from "./ship-designs";
@@ -136,25 +131,12 @@ export function processMarketTicks(ctx: RuntimeContext, targetHour: number): { m
   let economyChanged = false;
 
   if (elapsedHours > 0) {
-    const temporaryDecay = Math.pow(MARKET_TEMPORARY_DECAY_PER_HOUR, elapsedHours);
-    const persistentDecay = Math.pow(MARKET_PERSISTENT_DECAY_PER_HOUR, elapsedHours);
-    ctx.state.market.resources = ctx.state.market.resources.map((resource) => {
-      const temporaryPressure = roundTinyPressure(resource.temporaryPressure * temporaryDecay);
-      const persistentPressure = roundTinyPressure(resource.persistentPressure * persistentDecay);
-      const next = recomputeMarketResourcePrice({
-        ...resource,
-        temporaryPressure,
-        persistentPressure,
-      }, ctx.state.clock.year);
-      const resourceChanged = (
-        next.temporaryPressure !== resource.temporaryPressure
-        || next.persistentPressure !== resource.persistentPressure
-        || Math.abs(next.currentPrice - resource.currentPrice) > 0.000001
-      );
-      if (!resourceChanged) return resource;
+    const currentMonthIndex = gameYearToMonthIndex(ctx.state.clock.year);
+    const retainedBuckets = pruneMarketTradeBuckets(ctx.state.market.tradeBuckets, currentMonthIndex);
+    if (retainedBuckets.length !== ctx.state.market.tradeBuckets.length) {
+      ctx.state.market.tradeBuckets = retainedBuckets;
       marketChanged = true;
-      return next;
-    });
+    }
     for (const order of ctx.state.market.autoTrades) {
       const executed = executeMarketAutoTrade(ctx, order, elapsedHours);
       marketChanged = executed || marketChanged;
@@ -167,9 +149,7 @@ export function processMarketTicks(ctx: RuntimeContext, targetHour: number): { m
     ? ctx.state.market.lastSnapshotHour
     : targetHour;
   if (targetHour - snapshotHour >= MARKET_PRICE_SNAPSHOT_INTERVAL_HOURS) {
-    for (const resource of ctx.state.market.resources) {
-      appendMarketPriceSnapshot(ctx, resource, ctx.state.clock.year);
-    }
+    appendMarketPriceSnapshots(ctx, ctx.state.clock.year);
     ctx.state.market.lastSnapshotHour = targetHour;
     marketChanged = true;
   }
@@ -180,59 +160,82 @@ export function processMarketTicks(ctx: RuntimeContext, targetHour: number): { m
 
 export function executeMarketAutoTrade(ctx: RuntimeContext, order: MarketAutoTradeOrder, elapsedHours: number): boolean {
   if (!order.enabled || order.amountPerHour <= 0 || elapsedHours <= 0) return false;
-  const resource = getMarketResourceState(ctx, order.resourceId);
-  if (!resource?.marketEnabled) return false;
   const economy = getFactionEconomy(ctx.state, order.playerId);
   if (!economy) return false;
 
   const requestedAmount = order.amountPerHour * elapsedHours;
   if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) return false;
 
-  const flows = calculateFactionResourceFlow(ctx.state, order.playerId);
-  const quote = calculatePlayerMarketQuote(resource, order.playerId, flows, ctx.state);
   const stats = getMarketPlayerStats(ctx, order.playerId);
   let amount = requestedAmount;
 
   if (order.type === "auto_buy") {
-    const unitCost = quote.finalQuotePrice * (1 + MARKET_FEE_RATE);
-    amount = Math.min(amount, unitCost > 0 ? economy.stockpiles.energy / unitCost : 0);
+    amount = findAffordableMarketBuyAmount(ctx, order, requestedAmount, economy.stockpiles.energy);
     if (amount <= 0.000001) {
       recordTradeAlert(ctx, order, elapsedHours, 0);
       return false;
     }
-    const grossEnergy = amount * quote.finalQuotePrice;
-    const feePaid = grossEnergy * MARKET_FEE_RATE;
-    const buyCost = grossEnergy + feePaid;
+    const quote = calculateTradeQuote(ctx.state, order.playerId, order.resourceId, "buy", amount).trade;
+    const grossEnergy = amount * quote.averageUnitPrice;
+    const feePaid = quote.feePaid;
+    const buyCost = quote.totalEnergy;
     economy.stockpiles = {
       ...economy.stockpiles,
       energy: economy.stockpiles.energy - buyCost,
       [order.resourceId]: economy.stockpiles[order.resourceId] + amount,
     };
     stats.totalImportsEnergy += grossEnergy;
-    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_buy", amount, quote.finalQuotePrice, feePaid, -buyCost);
-    applyMarketTradePressure(ctx, resource, "auto_buy", amount);
+    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_buy", amount, quote.averageUnitPrice, feePaid, -buyCost);
+    recordMarketTradeVolume(ctx, order.playerId, order.resourceId, "auto_buy", amount);
   } else {
     amount = Math.min(amount, economy.stockpiles[order.resourceId]);
     if (amount <= 0.000001) {
       recordTradeAlert(ctx, order, elapsedHours, 0);
       return false;
     }
-    const grossEnergy = amount * quote.finalQuotePrice;
-    const feePaid = grossEnergy * MARKET_FEE_RATE;
-    const sellPayout = grossEnergy - feePaid;
+    const quote = calculateTradeQuote(ctx.state, order.playerId, order.resourceId, "sell", amount).trade;
+    const grossEnergy = amount * quote.averageUnitPrice;
+    const feePaid = quote.feePaid;
+    const sellPayout = quote.totalEnergy;
     economy.stockpiles = {
       ...economy.stockpiles,
       [order.resourceId]: economy.stockpiles[order.resourceId] - amount,
       energy: economy.stockpiles.energy + sellPayout,
     };
     stats.totalExportsEnergy += grossEnergy;
-    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_sell", amount, quote.finalQuotePrice, feePaid, sellPayout);
-    applyMarketTradePressure(ctx, resource, "auto_sell", amount);
+    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_sell", amount, quote.averageUnitPrice, feePaid, sellPayout);
+    recordMarketTradeVolume(ctx, order.playerId, order.resourceId, "auto_sell", amount);
   }
 
   order.updatedAt = ctx.state.clock.year;
   recordTradeAlert(ctx, order, elapsedHours, amount);
   return true;
+}
+
+function findAffordableMarketBuyAmount(
+  ctx: RuntimeContext,
+  order: MarketAutoTradeOrder,
+  requestedAmount: number,
+  availableEnergy: number,
+): number {
+  if (availableEnergy <= 0 || requestedAmount <= 0) return 0;
+  const requestedQuote = calculateTradeQuote(
+    ctx.state,
+    order.playerId,
+    order.resourceId,
+    "buy",
+    requestedAmount,
+  ).trade;
+  if (requestedQuote.totalEnergy <= availableEnergy) return requestedAmount;
+  let low = 0;
+  let high = requestedAmount;
+  for (let iteration = 0; iteration < 48; iteration += 1) {
+    const mid = (low + high) / 2;
+    const quote = calculateTradeQuote(ctx.state, order.playerId, order.resourceId, "buy", mid).trade;
+    if (quote.totalEnergy <= availableEnergy) low = mid;
+    else high = mid;
+  }
+  return low;
 }
 
 function recordTradeAlert(ctx: RuntimeContext, order: MarketAutoTradeOrder, elapsedHours: number, executedAmount: number): void {

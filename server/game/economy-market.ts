@@ -17,34 +17,33 @@ import {
   addResourceCounts,
   recalculatePlanetStateEconomy,
 } from "../../src/data/Economy";
-import type { ResourceCounts, ResourceKind } from "../../src/data/Economy";
+import type { ResourceCounts } from "../../src/data/Economy";
 import { applyPlanetStatesToStars } from "../../src/data/StarMap";
 import {
+  MARKET_RESOURCE_KINDS,
   MARKET_FEE_RATE,
   MARKET_TRANSACTION_LIMIT,
-  MARKET_MANUAL_PRESSURE_FACTOR,
-  MARKET_AUTO_PRESSURE_FACTOR,
-  PLAYER_INTERNAL_MODIFIER_MIN,
-  PLAYER_INTERNAL_MODIFIER_MAX,
-  calculateMarketPressureDelta,
-  recomputeMarketResourcePrice,
+  MARKET_TRADE_WINDOW_MONTHS,
+  calculateBulkMarketQuote,
+  calculateMarketPricingState,
   trimMarketPriceSnapshots,
 } from "../../src/data/Market";
 import type {
+  MarketBulkQuote,
   MarketPlayerStats,
+  MarketPricingState,
   MarketPriceSnapshot,
-  MarketResourceState,
+  MarketResourceKind,
   MarketTradeType,
 } from "../../src/data/Market";
 import {
-  TREATY_ARTICLE_DEFINITIONS,
   TRADE_PRIVILEGE_ARTICLE_ID,
   getActiveTreatyPartnersForArticle,
 } from "../../src/data/Diplomacy";
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
-import { GAME_HOURS_PER_MONTH } from "../../src/game/GameTime";
+import { GAME_HOURS_PER_MONTH, gameYearToMonthIndex } from "../../src/game/GameTime";
 import type { MarketResourceQuote } from "../../src/game/GameProtocol";
-import { clamp, scaleResourceCounts } from "./pure-helpers";
+import { scaleResourceCounts } from "./pure-helpers";
 import {
   getFleetLeaderEffects,
   getGovernmentFleetEffects,
@@ -61,14 +60,12 @@ export interface FactionResourceFlow {
 }
 
 export interface PlayerMarketQuote {
+  resourceId: MarketResourceKind;
+  marketMemberIds: number[];
   finalQuotePrice: number;
   buyPrice: number;
   sellPrice: number;
-  productionPerHour: number;
-  consumptionPerHour: number;
-  internalSupply: number;
-  internalDemand: number;
-  playerInternalModifier: number;
+  pricing: MarketPricingState;
   ownedAmount: number;
 }
 
@@ -140,20 +137,22 @@ export function calculateFactionMonthlyDelta(nextState: GameState, factionId: nu
 
 export function calculateFactionMarketMonthlyDelta(nextState: GameState, factionId: number): ResourceCounts {
   const delta = createEmptyResourceCounts();
-  const flows = calculateFactionResourceFlow(nextState, factionId);
   const orders = nextState.market?.autoTrades ?? [];
   for (const order of orders) {
     if (!order.enabled || order.playerId !== factionId || order.amountPerHour <= 0) continue;
-    const resource = nextState.market.resources.find((candidate) => candidate.resourceId === order.resourceId);
-    if (!resource?.marketEnabled) continue;
-    const quote = calculatePlayerMarketQuote(resource, factionId, flows, nextState);
+    const quote = calculatePlayerMarketQuote(order.resourceId, factionId, nextState);
+    const hourlyTrade = calculateBulkMarketQuote(
+      quote.pricing,
+      order.type === "auto_buy" ? "buy" : "sell",
+      order.amountPerHour,
+    );
     const amountPerMonth = order.amountPerHour * GAME_HOURS_PER_MONTH;
     if (order.type === "auto_buy") {
       delta[order.resourceId] += amountPerMonth;
-      delta.energy -= amountPerMonth * quote.buyPrice;
+      delta.energy -= hourlyTrade.totalEnergy * GAME_HOURS_PER_MONTH;
     } else {
       delta[order.resourceId] -= amountPerMonth;
-      delta.energy += amountPerMonth * quote.sellPrice;
+      delta.energy += hourlyTrade.totalEnergy * GAME_HOURS_PER_MONTH;
     }
   }
   return delta;
@@ -185,67 +184,73 @@ export function recalculatePlanetEconomies(nextState: GameState): void {
 // ---------------------------------------------------------------------------
 
 export function calculatePlayerMarketQuote(
-  resource: MarketResourceState,
-  factionId: number | null,
-  flows: FactionResourceFlow | undefined,
+  resourceId: MarketResourceKind,
+  factionId: number,
   nextState: GameState,
 ): PlayerMarketQuote {
-  const economy = factionId === null
-    ? null
-    : nextState.factionEconomies.find((candidate) => candidate.factionId === factionId) ?? null;
-  const productionPerHour = factionId === null || !flows
-    ? 0
-    : Math.max(0, flows.production[resource.resourceId]) / GAME_HOURS_PER_MONTH;
-  const consumptionPerHour = factionId === null || !flows
-    ? 0
-    : Math.max(0, flows.consumption[resource.resourceId]) / GAME_HOURS_PER_MONTH;
-  let effectiveProductionPerHour = productionPerHour;
-  let effectiveConsumptionPerHour = consumptionPerHour;
-
-  if (factionId !== null) {
-    const tradePrivilege = TREATY_ARTICLE_DEFINITIONS.find((article) => article.id === TRADE_PRIVILEGE_ARTICLE_ID);
-    const shareFraction = tradePrivilege?.effects.find((effect) => effect.type === "marketSharedSupply")?.shareFraction ?? 0;
-    if (shareFraction > 0) {
-      for (const partnerId of getActiveTreatyPartnersForArticle(nextState.diplomacy, factionId, TRADE_PRIVILEGE_ARTICLE_ID)) {
-        const partnerFlows = calculateFactionResourceFlow(nextState, partnerId);
-        effectiveProductionPerHour += (Math.max(0, partnerFlows.production[resource.resourceId]) / GAME_HOURS_PER_MONTH) * shareFraction;
-        effectiveConsumptionPerHour += (Math.max(0, partnerFlows.consumption[resource.resourceId]) / GAME_HOURS_PER_MONTH) * shareFraction;
-      }
-    }
+  const economy = nextState.factionEconomies.find((candidate) => candidate.factionId === factionId) ?? null;
+  const marketMemberIds = getMarketBlocMemberIds(nextState, factionId);
+  let monthlyProduction = 0;
+  let monthlyUpkeep = 0;
+  for (const memberId of marketMemberIds) {
+    const flows = calculateFactionResourceFlow(nextState, memberId);
+    monthlyProduction += Math.max(0, flows.production[resourceId]);
+    monthlyUpkeep += Math.max(0, flows.consumption[resourceId]);
   }
 
-  const internalSupply = effectiveProductionPerHour;
-  let internalDemand = effectiveConsumptionPerHour * 0.85;
-
-  if (effectiveConsumptionPerHour > effectiveProductionPerHour) {
-    const deficitRatio = clamp(
-      (effectiveConsumptionPerHour - effectiveProductionPerHour) / Math.max(effectiveConsumptionPerHour, 1),
-      0,
-      1,
-    );
-    internalDemand *= 1 - (0.12 * deficitRatio);
+  const memberSet = new Set(marketMemberIds);
+  const currentMonthIndex = gameYearToMonthIndex(nextState.clock.year);
+  let tradeBalance = 0;
+  for (const bucket of nextState.market.tradeBuckets) {
+    if (!memberSet.has(bucket.playerId) || bucket.resourceId !== resourceId) continue;
+    if (bucket.monthIndex > currentMonthIndex || currentMonthIndex - bucket.monthIndex >= MARKET_TRADE_WINDOW_MONTHS) continue;
+    tradeBalance += Math.max(0, bucket.purchases) - Math.max(0, bucket.sales);
   }
-
-  const ratio = (internalDemand + 10) / (internalSupply + 10);
-  const playerInternalModifier = factionId === null
-    ? 1
-    : clamp(
-      Math.pow(ratio, 0.18),
-      PLAYER_INTERNAL_MODIFIER_MIN,
-      PLAYER_INTERNAL_MODIFIER_MAX,
-    );
-  const finalQuotePrice = resource.currentPrice * playerInternalModifier;
+  const pricing = calculateMarketPricingState(resourceId, monthlyProduction, monthlyUpkeep, tradeBalance);
 
   return {
-    finalQuotePrice,
-    buyPrice: finalQuotePrice * (1 + MARKET_FEE_RATE),
-    sellPrice: finalQuotePrice * (1 - MARKET_FEE_RATE),
-    productionPerHour,
-    consumptionPerHour,
-    internalSupply,
-    internalDemand,
-    playerInternalModifier,
-    ownedAmount: economy?.stockpiles[resource.resourceId] ?? 0,
+    resourceId,
+    marketMemberIds,
+    finalQuotePrice: pricing.currentPrice,
+    buyPrice: pricing.currentPrice * (1 + MARKET_FEE_RATE),
+    sellPrice: pricing.currentPrice * (1 - MARKET_FEE_RATE),
+    pricing,
+    ownedAmount: economy?.stockpiles[resourceId] ?? 0,
+  };
+}
+
+export function getMarketBlocMemberIds(nextState: GameState, factionId: number): number[] {
+  const knownFactionIds = new Set(nextState.factions.map((faction) => faction.id));
+  if (!knownFactionIds.has(factionId)) return [];
+  const visited = new Set<number>([factionId]);
+  const queue = [factionId];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined) break;
+    for (const partnerId of getActiveTreatyPartnersForArticle(
+      nextState.diplomacy,
+      current,
+      TRADE_PRIVILEGE_ARTICLE_ID,
+    )) {
+      if (!knownFactionIds.has(partnerId) || visited.has(partnerId)) continue;
+      visited.add(partnerId);
+      queue.push(partnerId);
+    }
+  }
+  return Array.from(visited).sort((a, b) => a - b);
+}
+
+export function calculateTradeQuote(
+  nextState: GameState,
+  factionId: number,
+  resourceId: MarketResourceKind,
+  tradeType: "buy" | "sell",
+  amount: number,
+): { market: PlayerMarketQuote; trade: MarketBulkQuote } {
+  const market = calculatePlayerMarketQuote(resourceId, factionId, nextState);
+  return {
+    market,
+    trade: calculateBulkMarketQuote(market.pricing, tradeType, amount),
   };
 }
 
@@ -276,18 +281,23 @@ export function getReadonlyMarketPlayerStats(ctx: RuntimeContext, factionId: num
   };
 }
 
-export function getMarketResourceState(ctx: RuntimeContext, resourceId: ResourceKind): MarketResourceState | null {
-  return ctx.state.market.resources.find((resource) => resource.resourceId === resourceId) ?? null;
-}
-
-export function getMarketPriceHistory(ctx: RuntimeContext, resourceId: ResourceKind): MarketPriceSnapshot[] {
+export function getMarketPriceHistory(
+  ctx: RuntimeContext,
+  factionId: number,
+  resourceId: MarketResourceKind,
+): MarketPriceSnapshot[] {
   return ctx.state.market.priceSnapshots
-    .filter((snapshot) => snapshot.resourceId === resourceId)
+    .filter((snapshot) => snapshot.playerId === factionId && snapshot.resourceId === resourceId)
     .sort((a, b) => a.timestamp - b.timestamp);
 }
 
-export function getMarketTrend(ctx: RuntimeContext, resourceId: ResourceKind, currentPrice: number): MarketResourceQuote["trend"] {
-  const history = getMarketPriceHistory(ctx, resourceId);
+export function getMarketTrend(
+  ctx: RuntimeContext,
+  factionId: number,
+  resourceId: MarketResourceKind,
+  currentPrice: number,
+): MarketResourceQuote["trend"] {
+  const history = getMarketPriceHistory(ctx, factionId, resourceId);
   const previous = history.length >= 2 ? history[history.length - 2]?.price : history[0]?.price;
   if (!Number.isFinite(previous) || !previous) return "flat";
   const change = (currentPrice - previous) / Math.max(0.000001, previous);
@@ -296,21 +306,48 @@ export function getMarketTrend(ctx: RuntimeContext, resourceId: ResourceKind, cu
   return "flat";
 }
 
-export function appendMarketPriceSnapshot(ctx: RuntimeContext, resource: MarketResourceState, timestamp = ctx.state.clock.year): void {
-  ctx.state.market.priceSnapshots.push({
-    resourceId: resource.resourceId,
-    price: resource.currentPrice,
-    temporaryPressure: resource.temporaryPressure,
-    persistentPressure: resource.persistentPressure,
-    timestamp,
-  });
+export function appendMarketPriceSnapshots(ctx: RuntimeContext, timestamp = ctx.state.clock.year): void {
+  for (const faction of ctx.state.factions) {
+    for (const resourceId of MARKET_RESOURCE_KINDS) {
+      const quote = calculatePlayerMarketQuote(resourceId, faction.id, ctx.state);
+      ctx.state.market.priceSnapshots.push({
+        playerId: faction.id,
+        resourceId,
+        price: quote.finalQuotePrice,
+        timestamp,
+      });
+    }
+  }
   ctx.state.market.priceSnapshots = trimMarketPriceSnapshots(ctx.state.market.priceSnapshots);
+}
+
+export function ensureInitialMarketPriceSnapshots(nextState: GameState): boolean {
+  let changed = false;
+  for (const faction of nextState.factions) {
+    for (const resourceId of MARKET_RESOURCE_KINDS) {
+      if (nextState.market.priceSnapshots.some((snapshot) => (
+        snapshot.playerId === faction.id && snapshot.resourceId === resourceId
+      ))) continue;
+      const quote = calculatePlayerMarketQuote(resourceId, faction.id, nextState);
+      nextState.market.priceSnapshots.push({
+        playerId: faction.id,
+        resourceId,
+        price: quote.finalQuotePrice,
+        timestamp: nextState.clock.year,
+      });
+      changed = true;
+    }
+  }
+  if (changed) {
+    nextState.market.priceSnapshots = trimMarketPriceSnapshots(nextState.market.priceSnapshots);
+  }
+  return changed;
 }
 
 export function recordMarketTransaction(
   ctx: RuntimeContext,
   playerId: number,
-  resourceId: ResourceKind,
+  resourceId: MarketResourceKind,
   type: MarketTradeType,
   amount: number,
   unitPrice: number,
@@ -331,19 +368,24 @@ export function recordMarketTransaction(
   ctx.state.market.transactions = ctx.state.market.transactions.slice(-MARKET_TRANSACTION_LIMIT);
 }
 
-export function applyMarketTradePressure(ctx: RuntimeContext, resource: MarketResourceState, type: MarketTradeType, amount: number): void {
-  const direction = type === "buy" || type === "auto_buy" ? 1 : -1;
-  const factor = type === "buy" || type === "sell"
-    ? MARKET_MANUAL_PRESSURE_FACTOR
-    : MARKET_AUTO_PRESSURE_FACTOR;
-  const pressure = direction * calculateMarketPressureDelta(amount, resource.liquidity, factor);
-
-  if (type === "buy" || type === "sell") {
-    resource.temporaryPressure += pressure;
-  } else {
-    resource.persistentPressure += pressure;
+export function recordMarketTradeVolume(
+  ctx: RuntimeContext,
+  playerId: number,
+  resourceId: MarketResourceKind,
+  tradeType: "buy" | "sell" | "auto_buy" | "auto_sell",
+  amount: number,
+): void {
+  const monthIndex = gameYearToMonthIndex(ctx.state.clock.year);
+  let bucket = ctx.state.market.tradeBuckets.find((candidate) => (
+    candidate.playerId === playerId
+    && candidate.resourceId === resourceId
+    && candidate.monthIndex === monthIndex
+  ));
+  if (!bucket) {
+    bucket = { playerId, resourceId, monthIndex, purchases: 0, sales: 0 };
+    ctx.state.market.tradeBuckets.push(bucket);
   }
-
-  Object.assign(resource, recomputeMarketResourcePrice(resource, ctx.state.clock.year));
-  appendMarketPriceSnapshot(ctx, resource, ctx.state.clock.year);
+  if (tradeType === "buy" || tradeType === "auto_buy") bucket.purchases += Math.max(0, amount);
+  else bucket.sales += Math.max(0, amount);
+  ctx.hasDirtyState = true;
 }

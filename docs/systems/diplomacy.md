@@ -23,7 +23,7 @@ in [`src/data/Diplomacy.ts`](../../src/data/Diplomacy.ts); command handling in
 ## Article effects
 
 `TreatyArticleDefinition` describes what an article does (`TreatyArticleEffect`): e.g. `tradePrivilege`
-shares a fraction of internal market supply/demand; `migrationPact` boosts cross-faction migration.
+merges connected factions into one internal market bloc; `migrationPact` boosts cross-faction migration.
 War suspends these articles.
 
 ## Commands

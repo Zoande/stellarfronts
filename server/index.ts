@@ -6,7 +6,7 @@ import { applyPlanetStatesToStars, createPlanetStateFromConfig } from "../src/da
 import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../src/data/SystemCoordinates";
 import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, completePlanetConstructionQueueItem, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getEffectiveSpeciesHabitability, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, NEW_COLONY_POPULATION, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
-import { MARKET_FEE_RATE } from "../src/data/Market";
+import { isMarketResourceKind } from "../src/data/Market";
 import { countStarbaseShipyards, createStarbaseBuildingQueueItem, createStarbaseShipQueueItem, createStarbaseUpgradeQueueItem, getStarbaseShipConstructionCostMultiplier, hasQueuedStarbaseBuildingTarget, isStarbaseBuildingKind, isStarbaseShipKind, OUTPOST_CONSTRUCTION_COST, STARBASE_LEVEL_DEFINITIONS } from "../src/data/Starbase";
 import { getNebulaGatedBuildingKinds, nebulaEnablesBuildingAtStar } from "../src/data/Nebula";
 import type {
@@ -42,14 +42,6 @@ import type {
   SpeciesRights,
   SpeciesState,
 } from "../src/data/Species";
-import type {
-  MarketAutoTradeOrder,
-  MarketPlayerStats,
-  MarketPriceSnapshot,
-  MarketResourceState,
-  MarketState,
-  MarketTradeType,
-} from "../src/data/Market";
 import { buildHyperlaneAdjacency, buildHyperlanePairs } from "../src/data/Hyperlanes";
 import { type CombatStance } from "../src/game/CombatTypes";
 import type {
@@ -171,8 +163,7 @@ import { computeSpeedMultiplier } from "./game/clock";
 import { saveState, acquireOwnership, releaseOwnership } from "./game/persistence";
 import { computeShortageSeverity, getLeaderDayIndex, getSpeciesRightsForFaction, getPlanetSpeciesContext, getPlanetDistrictLimitsFromState, getFactionSpeciesRightsState, getFactionTechnology, getPlanetTechnologyModifiers, getSpeciesLawSelections, getEmpireSpeciesIds, getPlanetState, getPlanetConfig, canAccessStar, canAccessPlanet, validateCommandPerspective } from "./game/state-queries";
 import { findShipDesign, findShipDesignById, getNewestActiveShipDesign } from "./game/ship-designs";
-import { calculateFactionResourceFlow, calculatePlayerMarketQuote, refreshFactionEconomyDeltas as applyFactionEconomyDeltas, recalculatePlanetEconomies as applyRecalculatePlanetEconomies, getMarketPlayerStats, getMarketResourceState, recordMarketTransaction, applyMarketTradePressure } from "./game/economy-market";
-import type { FactionResourceFlow, PlayerMarketQuote } from "./game/economy-market";
+import { calculateFactionResourceFlow, calculateTradeQuote, refreshFactionEconomyDeltas as applyFactionEconomyDeltas, recalculatePlanetEconomies as applyRecalculatePlanetEconomies, getMarketPlayerStats, recordMarketTransaction, recordMarketTradeVolume } from "./game/economy-market";
 import { refreshDiscovery as applyRefreshDiscovery } from "./game/visibility";
 import { getKnownStarIds, hasCommandLink } from "./game/intelligence";
 import { createSnapshot, createUpdate } from "./game/snapshot";
@@ -1158,13 +1149,8 @@ function handleMarketTrade(
     return;
   }
 
-  if (!RESOURCE_KINDS.includes(resourceId)) {
+  if (!isMarketResourceKind(resourceId)) {
     reject(socket, "Resource is not available on the market.");
-    return;
-  }
-  const resource = getMarketResourceState(ctx, resourceId);
-  if (!resource || !resource.marketEnabled) {
-    reject(socket, "That resource is not market-enabled yet.");
     return;
   }
 
@@ -1184,14 +1170,13 @@ function handleMarketTrade(
     return;
   }
 
-  const flows = calculateFactionResourceFlow(ctx.state, factionId);
-  const quote = calculatePlayerMarketQuote(resource, factionId, flows, ctx.state);
-  const grossEnergy = amount * quote.finalQuotePrice;
-  const feePaid = grossEnergy * MARKET_FEE_RATE;
+  const quote = calculateTradeQuote(ctx.state, factionId, resourceId, tradeType, amount).trade;
+  const grossEnergy = amount * quote.averageUnitPrice;
+  const feePaid = quote.feePaid;
   const stats = getMarketPlayerStats(ctx, factionId);
 
   if (tradeType === "buy") {
-    const buyCost = grossEnergy + feePaid;
+    const buyCost = quote.totalEnergy;
     if (economy.stockpiles.energy < buyCost) {
       reject(socket, `Need ${formatEnergyAmount(buyCost)} Energy.`);
       return;
@@ -1202,23 +1187,23 @@ function handleMarketTrade(
       [resourceId]: economy.stockpiles[resourceId] + amount,
     };
     stats.totalImportsEnergy += grossEnergy;
-    recordMarketTransaction(ctx, factionId, resourceId, "buy", amount, quote.finalQuotePrice, feePaid, -buyCost);
-    applyMarketTradePressure(ctx, resource, "buy", amount);
+    recordMarketTransaction(ctx, factionId, resourceId, "buy", amount, quote.averageUnitPrice, feePaid, -buyCost);
+    recordMarketTradeVolume(ctx, factionId, resourceId, "buy", amount);
     accept(socket, `Bought ${amount} ${resourceId} for ${formatEnergyAmount(buyCost)} Energy.`);
   } else {
     if (economy.stockpiles[resourceId] < amount) {
       reject(socket, `Need ${amount} ${resourceId}.`);
       return;
     }
-    const sellPayout = grossEnergy - feePaid;
+    const sellPayout = quote.totalEnergy;
     economy.stockpiles = {
       ...economy.stockpiles,
       [resourceId]: economy.stockpiles[resourceId] - amount,
       energy: economy.stockpiles.energy + sellPayout,
     };
     stats.totalExportsEnergy += grossEnergy;
-    recordMarketTransaction(ctx, factionId, resourceId, "sell", amount, quote.finalQuotePrice, feePaid, sellPayout);
-    applyMarketTradePressure(ctx, resource, "sell", amount);
+    recordMarketTransaction(ctx, factionId, resourceId, "sell", amount, quote.averageUnitPrice, feePaid, sellPayout);
+    recordMarketTradeVolume(ctx, factionId, resourceId, "sell", amount);
     accept(socket, `Sold ${amount} ${resourceId} for ${formatEnergyAmount(sellPayout)} Energy.`);
   }
 
@@ -1239,13 +1224,8 @@ function handleAddMarketAutoTrade(
     reject(socket, "Observer mode is read-only.");
     return;
   }
-  if (!RESOURCE_KINDS.includes(resourceId)) {
+  if (!isMarketResourceKind(resourceId)) {
     reject(socket, "Resource is not available on the market.");
-    return;
-  }
-  const resource = getMarketResourceState(ctx, resourceId);
-  if (!resource?.marketEnabled) {
-    reject(socket, "That resource is not market-enabled yet.");
     return;
   }
   const amountPerHour = Number(rawAmountPerHour);

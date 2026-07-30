@@ -16,6 +16,7 @@ import type {
   MarketPlayerStats,
   MarketAutoTradeOrder,
   MarketPriceSnapshot,
+  MarketResourceKind,
   MarketTransactionRecord,
   MarketTradeAlert,
 } from "../data/Market";
@@ -248,24 +249,23 @@ export interface PlanetManagerDetailPayload {
 export type MarketTrend = "up" | "down" | "flat";
 
 export interface MarketResourceQuote {
-  resourceId: ResourceKind;
+  resourceId: MarketResourceKind;
+  marketMemberIds: number[];
   basePrice: number;
   currentPrice: number;
-  liquidity: number;
-  temporaryPressure: number;
-  persistentPressure: number;
-  marketEnabled: boolean;
-  lastUpdatedAt: number;
+  minimumPrice: number;
   finalQuotePrice: number;
   buyPrice: number;
   sellPrice: number;
   marketFee: number;
   ownedAmount: number;
-  productionPerHour: number;
-  consumptionPerHour: number;
-  internalSupply: number;
-  internalDemand: number;
-  playerInternalModifier: number;
+  monthlyProduction: number;
+  monthlyUpkeep: number;
+  baselineSupply: number;
+  baselineDemand: number;
+  tradeBalance: number;
+  effectiveSupply: number;
+  effectiveDemand: number;
   totalExportsEnergy: number;
   totalImportsEnergy: number;
   priceHistory: MarketPriceSnapshot[];
@@ -274,6 +274,7 @@ export interface MarketResourceQuote {
 
 export interface MarketDetailPayload {
   resources: MarketResourceQuote[];
+  marketMemberIds: number[];
   playerStats: MarketPlayerStats | null;
   autoTrades: MarketAutoTradeOrder[];
   transactions: MarketTransactionRecord[];
@@ -894,14 +895,14 @@ export interface RepairFleetCommand {
 
 export interface MarketTradeCommand {
   type: "marketTrade";
-  resourceId: ResourceKind;
+  resourceId: MarketResourceKind;
   tradeType: "buy" | "sell";
   amount: number;
 }
 
 export interface AddMarketAutoTradeCommand {
   type: "addMarketAutoTrade";
-  resourceId: ResourceKind;
+  resourceId: MarketResourceKind;
   tradeType: "auto_buy" | "auto_sell";
   amountPerHour: number;
 }
@@ -1046,7 +1047,7 @@ export type ClientCommand =
 
 export interface GameSnapshot {
   type: "snapshot";
-  protocolVersion?: 4;
+  protocolVersion?: 5;
   perspective: GalaxyPerspective;
   intelligence: GalaxyIntelligenceView;
   clock: GameClock;
@@ -1081,7 +1082,7 @@ export interface GameSnapshot {
 
 export interface GameUpdate {
   type: "update";
-  protocolVersion?: 4;
+  protocolVersion?: 5;
   perspective: GalaxyPerspective;
   intelligence?: GalaxyIntelligenceView;
   changed: ServerUpdateField[];
