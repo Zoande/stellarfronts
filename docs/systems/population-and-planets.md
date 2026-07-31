@@ -60,6 +60,36 @@ distance affect destination weight, not the displayed attractiveness score. Inte
 requires `Internal Only` or `Free Migration`. Foreign movement requires `Free Migration` in both
 empires and an active, unsuspended migration pact; open borders alone are insufficient.
 
+## Founding colonies
+
+Colonization is a persistent fleet order, not an instant remote action. The server accepts it only
+when the system is owned, the world is uninhabited and permitted by its planet type, founding-species
+effective habitability is above zero, the route and command link are valid, and the fleet has a
+surviving colonization ship. The fleet travels into the target planet's orbit and revalidates all
+conditions on arrival. Success consumes exactly one colonization ship. Failure preserves the ship,
+clears the order, and leaves the fleet orbiting; therefore competing orders are safe and the first
+successful arrival wins.
+
+`PlanetTypeConfig.colonizableByDefault` is false for Gaseous, Methane, Barren, Dusty, and Martian
+worlds, and true for Snowy, Arid, Grassland, Jungle, Marshy, Sandy, and Tundra. The shared eligibility
+predicate has an explicit future override hook, but no unlocking technology exists yet. Existing
+colonies on restricted types remain valid.
+
+New colonies begin with 500M founding-species population, a tier-1 Colony Headquarters, and zero
+built districts. No rule forces a two-city minimum in planet state or mirrored star metadata.
+Homeworld starter infrastructure remains seeded, and existing saves retain districts already built.
+Planet abandonment and capture behavior are unchanged.
+
+For ten exact game years, newly founded colonies receive the visible **Frontier Settlement**
+modifier: +20 migration attractiveness (final score still clamps to 0–100), +20M monthly migration
+intake, +10 stability, +25% district/building construction speed, and +25% natural growth. It gives
+no resource, housing, or habitability bonus. Existing saves receive no retroactive modifier.
+
+Planet Operations enumerates planets by owned **system**, including its uninhabited worlds. Each
+entry carries the system owner, founding-species id/name/effective habitability, and a typed
+eligibility result so the UI can distinguish `Colonizable`, `Restricted world`, and `Unsuitable`
+(for example, `Human — 65%`).
+
 ## Famine
 
 A planet is in famine while empire food-shortage progress is at least 34 and its local monthly food
@@ -81,5 +111,7 @@ never reduce a habited planet below the universal 1M floor.
 - Weekly births: [`server/game/population-growth.ts`](../../server/game/population-growth.ts).
 - Monthly famine: [`server/game/population-famine.ts`](../../server/game/population-famine.ts).
 - Monthly migration: [`server/game/population-migration.ts`](../../server/game/population-migration.ts).
+- Colonization eligibility: [`src/data/Colonization.ts`](../../src/data/Colonization.ts).
+- Server founding: [`server/game/colonization.ts`](../../server/game/colonization.ts).
 - UI: [`src/ui/CelestialObjectPanel.ts`](../../src/ui/CelestialObjectPanel.ts).
 - Tests: [`server/tests/population.test.ts`](../../server/tests/population.test.ts).

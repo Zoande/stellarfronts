@@ -19,6 +19,7 @@ import {
 import { MIGRATION_PACT_ARTICLE_ID, createInitialDiplomacyState } from "../../src/data/Diplomacy";
 import { createInitialGovernmentState } from "../../src/data/Government";
 import { processMonthlyMigration } from "../game/population-migration";
+import { processMonthlyFamine } from "../game/population-famine";
 import type { RuntimeContext } from "../game/types";
 import { SHORTAGE_EFFECTS } from "../../src/data/ShortageConsequences";
 
@@ -220,6 +221,87 @@ test("monthly migration conserves population, respects intake, records ledgers, 
     return target.populationMigration.inbound;
   };
   assert.equal(run(false), run(true));
+});
+
+test("migration protects staffed locked workers but leaves unlocked workers eligible", () => {
+  const run = (locked: boolean): number => {
+    const ctx = migrationContext();
+    const sourceIndex = ctx.state.planetStates.findIndex((planet) => planet.id === "source");
+    const targetIndex = ctx.state.planetStates.findIndex((planet) => planet.id === "target");
+    const source = ctx.state.planetStates[sourceIndex];
+    const target = ctx.state.planetStates[targetIndex];
+    const population = 500_000_000;
+    ctx.state.planetStates[sourceIndex] = {
+      ...source,
+      population,
+      speciesPopulations: [{ speciesId: "human", population }],
+      jobLocks: locked
+        ? [{ job: "colonizer", allocations: [{ speciesId: "human", population }] }]
+        : [],
+      economy: {
+        ...source.economy,
+        jobCapacity: { ...source.economy.jobCapacity, colonizer: population },
+        popGroups: [{
+          speciesId: "human",
+          speciesName: "Human",
+          job: "colonizer",
+          class: "lower",
+          population,
+          habitability: 80,
+          happiness: 50,
+        }],
+        migration: {
+          ...source.economy.migration,
+          attractiveness: 0,
+        },
+      },
+    };
+    ctx.state.planetStates[targetIndex] = {
+      ...target,
+      economy: {
+        ...target.economy,
+        migration: {
+          ...target.economy.migration,
+          attractiveness: 100,
+        },
+      },
+    };
+    processMonthlyMigration(ctx, 25_202);
+    return ctx.state.planetStates.find((planet) => planet.id === "source")!.populationMigration.outbound;
+  };
+
+  assert.ok(run(false) > 0);
+  assert.equal(run(true), 0);
+});
+
+test("famine can reduce a locked species without erasing its lock target", () => {
+  const ctx = migrationContext();
+  const sourceIndex = ctx.state.planetStates.findIndex((planet) => planet.id === "source");
+  const source = ctx.state.planetStates[sourceIndex];
+  const lockedPopulation = 500_000_000;
+  ctx.state.planetStates[sourceIndex] = {
+    ...source,
+    population: lockedPopulation,
+    speciesPopulations: [{ speciesId: "human", population: lockedPopulation }],
+    jobLocks: [{ job: "colonizer", allocations: [{ speciesId: "human", population: lockedPopulation }] }],
+    economy: {
+      ...source.economy,
+      populationDecline: {
+        active: true,
+        cause: "famine",
+        netPerMonth: -10_000_000,
+        foodDeficitRatio: 1,
+        shortageProgress: 100,
+        crisisFactor: 1,
+        speciesChanges: [{ speciesId: "human", deltaPerMonth: -10_000_000 }],
+        classChanges: [{ class: "lower", deltaPerMonth: -10_000_000 }],
+      },
+    },
+  };
+  assert.equal(processMonthlyFamine(ctx), true);
+  const reduced = ctx.state.planetStates.find((planet) => planet.id === "source")!;
+  assert.equal(reduced.population, lockedPopulation - 10_000_000);
+  assert.equal(reduced.jobLocks[0].allocations[0].population, lockedPopulation);
 });
 
 function foreignMigrationContext(withPact: boolean, atWar = false): RuntimeContext {

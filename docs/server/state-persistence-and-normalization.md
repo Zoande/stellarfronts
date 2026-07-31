@@ -15,7 +15,7 @@ this doc is the mechanism.
 `createInitialState` ([`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts))
 generates a new galaxy (stars, planets, factions, home starbases + starter ships) and initializes
 every subsystem's state (economies, technologies, governments, species/rights, diplomacy, market,
-leaders), stamping `schemaVersion` and aligning the clock to `GAME_START_YEAR`.
+leaders), stamping schema 27 and aligning the clock to `GAME_START_YEAR`.
 
 ## Loading & normalization (the migration mechanism)
 
@@ -35,6 +35,10 @@ On load, [`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts
 There are **no hand-written migration functions** — normalization *is* migration. Every persisted
 field must have a normalizer default; that is what lets old saves (and an older server's data) load
 on new code. See [`../must-read/04-backward-compatibility.md`](../must-read/04-backward-compatibility.md).
+
+The current build accepts schemas 23–27. Missing `PlanetState.jobLocks` normalize to `[]`; legacy
+planet modifiers without `expiresAtYear` remain permanent. Tier-1 saved homeworld capitals normalize
+to tier 2, while non-homeworld capital levels and all already-built district counts are retained.
 
 ## Saving
 

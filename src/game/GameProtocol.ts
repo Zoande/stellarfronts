@@ -7,11 +7,13 @@ import type {
   BuildingSlotArea,
   DistrictKind,
   FactionEconomyState,
+  JobKind,
   PlanetState,
   ResourceKind,
   ResourceCounts,
   UrbanSubDistrictKind,
 } from "../data/Economy";
+import type { ColonizationEligibility } from "../data/Colonization";
 import type {
   MarketPlayerStats,
   MarketAutoTradeOrder,
@@ -20,6 +22,9 @@ import type {
   MarketTransactionRecord,
   MarketTradeAlert,
 } from "../data/Market";
+
+/** Wire protocols accepted by the current browser client, newest last. */
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7];
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
@@ -238,8 +243,13 @@ export interface PlanetManagerPlanetEntry {
   starId: number;
   starName: string;
   ownerId: number;
+  systemOwnerId?: number;
   planet: PlanetConfig;
   planetState: PlanetState;
+  foundingSpeciesId?: string | null;
+  foundingSpeciesName?: string | null;
+  foundingSpeciesHabitability?: number | null;
+  colonizationEligibility?: ColonizationEligibility;
 }
 
 export interface PlanetManagerDetailPayload {
@@ -404,7 +414,7 @@ export interface ShipHyperlanePosition {
   progress: number;
 }
 
-export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "merge" | "retreat" | null;
+export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "colonize" | "merge" | "retreat" | null;
 
 export type FleetOrbitTargetKind = "star" | "planet" | "starbase" | "hyperlane" | "fleet";
 
@@ -744,6 +754,13 @@ export interface SetPlanetBuildingEnabledCommand {
   enabled: boolean;
 }
 
+export interface SetPlanetJobLockCommand {
+  type: "setPlanetJobLock";
+  planetId: string;
+  job: Exclude<JobKind, "criminal" | "unemployed">;
+  locked: boolean;
+}
+
 export interface SetUrbanSubDistrictCommand {
   type: "setUrbanSubDistrict";
   planetId: string;
@@ -1009,6 +1026,7 @@ export type ClientCommand =
   | UpgradePlanetBuildingCommand
   | DowngradePlanetBuildingCommand
   | SetPlanetBuildingEnabledCommand
+  | SetPlanetJobLockCommand
   | CancelPlanetConstructionCommand
   | SkipPlanetConstructionCommand
   | BuildStarbaseBuildingCommand
@@ -1050,7 +1068,7 @@ export type ClientCommand =
 
 export interface GameSnapshot {
   type: "snapshot";
-  protocolVersion?: 6;
+  protocolVersion?: number;
   perspective: GalaxyPerspective;
   intelligence: GalaxyIntelligenceView;
   clock: GameClock;
@@ -1085,7 +1103,7 @@ export interface GameSnapshot {
 
 export interface GameUpdate {
   type: "update";
-  protocolVersion?: 6;
+  protocolVersion?: number;
   perspective: GalaxyPerspective;
   intelligence?: GalaxyIntelligenceView;
   changed: ServerUpdateField[];

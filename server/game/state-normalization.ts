@@ -241,7 +241,7 @@ export function normalizeFleet(
   const phase = (fleet.phase ?? "idle") as ShipTransitPhase;
   const targetStarId = Number.isInteger(fleet.targetStarId) ? Number(fleet.targetStarId) : null;
   const formation = isFleetFormation(fleet.formation) ? fleet.formation : "line";
-  const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "attack" || fleet.orderType === "orbit" || fleet.orderType === "merge" || fleet.orderType === "retreat"
+  const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "attack" || fleet.orderType === "orbit" || fleet.orderType === "colonize" || fleet.orderType === "merge" || fleet.orderType === "retreat"
     ? fleet.orderType
     : null;
   const shipIds = Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [];

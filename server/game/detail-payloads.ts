@@ -59,6 +59,8 @@ import {
   canAccessStarbase,
 } from "./state-queries";
 import type { RuntimeContext } from "./types";
+import { getFactionPlanetColonizationEligibility } from "./colonization";
+import { getFactionFoundingSpeciesId } from "./state-normalization";
 
 function intelValue<T>(view: IntelEntityView | null, fieldId: string, fallback: T): T {
   const field = view?.fields[fieldId] as IntelValue<T> | undefined;
@@ -620,18 +622,35 @@ export function createDetailPayload(
     const detailState = createVisibleDetailState(ctx, perspective);
     const ownerId = perspective.mode === "faction" ? perspective.factionId : null;
     const planets = ctx.state.planetStates
-      .filter((planetState) => ownerId === null || planetState.ownerId === ownerId)
+      .filter((planetState) => ownerId === null || (ctx.state.starOwnership[planetState.starId] ?? -1) === ownerId)
       .filter((planetState) => canAccessPlanet(ctx, perspective, planetState))
       .map((planetState) => {
         const star = ctx.state.stars[planetState.starId];
         const planet = getPlanetConfig(ctx, planetState);
         if (!star || !planet) return null;
+        const systemOwnerId = ctx.state.starOwnership[planetState.starId] ?? -1;
+        const relevantFactionId = ownerId ?? systemOwnerId;
+        const foundingSpeciesId = relevantFactionId >= 0
+          ? ctx.state.factions.find((faction) => faction.id === relevantFactionId)?.foundingSpeciesId
+            ?? getFactionFoundingSpeciesId(relevantFactionId)
+          : null;
+        const foundingSpeciesName = foundingSpeciesId
+          ? ctx.state.species.find((species) => species.id === foundingSpeciesId)?.name ?? foundingSpeciesId
+          : null;
+        const colonizationEligibility = relevantFactionId >= 0
+          ? getFactionPlanetColonizationEligibility(ctx, relevantFactionId, planetState.id)
+          : null;
         return {
           starId: planetState.starId,
           starName: star.name,
           ownerId: planetState.ownerId ?? -1,
+          systemOwnerId,
           planet,
           planetState,
+          foundingSpeciesId,
+          foundingSpeciesName,
+          foundingSpeciesHabitability: colonizationEligibility?.foundingSpeciesHabitability ?? null,
+          colonizationEligibility: colonizationEligibility ?? undefined,
         };
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry !== null);

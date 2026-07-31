@@ -15,6 +15,11 @@ camera limits. Each star carries planet configs whose types and habitability aff
 `FACTION_COUNT` is 15; `buildFactions` distributes home systems and
 `buildHomeSystemOwnership` seeds ownership.
 
+Every `PlanetTypeConfig` declares `colonizableByDefault`. Gaseous, Methane, Barren, Dusty, and
+Martian are restricted; the other seven types are ordinary colony candidates. Actual eligibility
+also checks owned-system control, habitation, founding-species effective habitability, and fleet
+requirements through [`src/data/Colonization.ts`](../../src/data/Colonization.ts).
+
 Stars are linked by undirected `hyperlanes` pairs with a derived `adjacency` list. Fleets cross only
 known, enterable lanes; in-system travel is a separate movement segment. System geometry comes from
 [`src/data/SystemCoordinates.ts`](../../src/data/SystemCoordinates.ts).
@@ -41,6 +46,9 @@ Sensor suites are data-driven in `SENSOR_SUITE_DEFINITIONS`. Planetary capitals,
 online starbases and their sensor buildings, and operational ship modules contribute sources.
 Different range bands reveal different bundles; military sensors can be restricted to military
 contacts, while science and civilian sensors expose different field sets.
+
+All five authored planetary-capital tiers—from Colony Headquarters through Planetary Nexus—retain
+the same `planetaryCapitalSensors` suite; changing tier never silently removes planetary sensing.
 
 Nebula systems block propagation across their boundary, so a remote source covers the near side but
 not the system inside. A source located inside a nebula covers only its own system.

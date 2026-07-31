@@ -18,7 +18,12 @@ import {
   getPlanetSystemOrbitRadius,
   normalizePlanetOrbitFields,
 } from "../../src/data/SystemCoordinates";
-import { getEffectiveSpeciesHabitability, getPlanetBuildingKind, NEW_COLONY_POPULATION } from "../../src/data/Economy";
+import {
+  getEffectiveSpeciesHabitability,
+  getPlanetBuildingKind,
+  getPlanetBuildingLevel,
+  NEW_COLONY_POPULATION,
+} from "../../src/data/Economy";
 
 const DISTRICT_KINDS: DistrictKind[] = ["city", "generator", "mining", "agriculture"];
 
@@ -75,6 +80,7 @@ test("home systems receive tagged 100 percent human homeworlds", () => {
   assert.equal(homeState?.features.includes("homePlanet"), true);
   assert.equal(homeState?.habitability, HUMAN_BASE_HABITABILITY_BY_PLANET_TYPE[PlanetType.Grassland]);
   assert.equal(homeState ? getEffectiveSpeciesHabitability(homeState) : 0, 100);
+  assert.equal(homeState ? getPlanetBuildingLevel(homeState.buildings.city[0]) : 0, 2);
 });
 
 test("colonized planets can start with low population and no starter infrastructure", () => {
@@ -110,6 +116,11 @@ test("colonized planets can start with low population and no starter infrastruct
     1,
   );
   assert.equal(colony.constructionQueue.length, 0);
+  applyPlanetStatesToStars(stars, [colony]);
+  assert.equal(planet.objectDetails.builtDistricts.city, 0);
+  const reloaded = normalizePlanetStates(stars, [colony]).planetStates.find((state) => state.id === colony.id);
+  assert.ok(reloaded);
+  assert.deepEqual(reloaded?.builtDistricts, { city: 0, generator: 0, mining: 0, agriculture: 0 });
 });
 
 test("legacy planet metadata migrates to stable IDs and clamped mutable state", () => {

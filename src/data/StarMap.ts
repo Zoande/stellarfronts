@@ -255,6 +255,8 @@ export interface PlanetTypeConfig {
   diameterMax: number;
   /** Orbit speed multiplier */
   orbitSpeedMultiplier: number;
+  /** Whether ordinary empires may colonize this environment without a future override technology. */
+  colonizableByDefault: boolean;
 }
 
 export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
@@ -273,6 +275,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.9,
     diameterMax: 2.1,
     orbitSpeedMultiplier: 0.35,
+    colonizableByDefault: false,
   },
   [PlanetType.Gaseous]: {
     name: "Gaseous",
@@ -289,6 +292,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 2.0,
     diameterMax: 4.5,
     orbitSpeedMultiplier: 0.12,
+    colonizableByDefault: false,
   },
   [PlanetType.Snowy]: {
     name: "Snowy",
@@ -305,6 +309,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.7,
     diameterMax: 1.7,
     orbitSpeedMultiplier: 0.45,
+    colonizableByDefault: true,
   },
   [PlanetType.Arid]: {
     name: "Arid",
@@ -321,6 +326,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.8,
     diameterMax: 1.9,
     orbitSpeedMultiplier: 0.38,
+    colonizableByDefault: true,
   },
   [PlanetType.Dusty]: {
     name: "Dusty",
@@ -337,6 +343,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.85,
     diameterMax: 1.95,
     orbitSpeedMultiplier: 0.4,
+    colonizableByDefault: false,
   },
   [PlanetType.Grassland]: {
     name: "Grassland",
@@ -353,6 +360,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.9,
     diameterMax: 1.8,
     orbitSpeedMultiplier: 0.36,
+    colonizableByDefault: true,
   },
   [PlanetType.Jungle]: {
     name: "Jungle",
@@ -369,6 +377,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.95,
     diameterMax: 2.0,
     orbitSpeedMultiplier: 0.34,
+    colonizableByDefault: true,
   },
   [PlanetType.Marshy]: {
     name: "Marshy",
@@ -385,6 +394,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.88,
     diameterMax: 1.85,
     orbitSpeedMultiplier: 0.37,
+    colonizableByDefault: true,
   },
   [PlanetType.Martian]: {
     name: "Martian",
@@ -401,6 +411,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.82,
     diameterMax: 1.92,
     orbitSpeedMultiplier: 0.39,
+    colonizableByDefault: false,
   },
   [PlanetType.Methane]: {
     name: "Methane",
@@ -417,6 +428,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 2.1,
     diameterMax: 4.2,
     orbitSpeedMultiplier: 0.15,
+    colonizableByDefault: false,
   },
   [PlanetType.Sandy]: {
     name: "Sandy",
@@ -433,6 +445,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.8,
     diameterMax: 1.9,
     orbitSpeedMultiplier: 0.38,
+    colonizableByDefault: true,
   },
   [PlanetType.Tundra]: {
     name: "Tundra",
@@ -449,6 +462,7 @@ export const PLANET_TYPES: Record<PlanetType, PlanetTypeConfig> = {
     diameterMin: 0.75,
     diameterMax: 1.8,
     orbitSpeedMultiplier: 0.46,
+    colonizableByDefault: true,
   },
 };
 
@@ -603,7 +617,7 @@ export function createPlanetObjectDetails(
   };
 
   const builtDistricts: DistrictCounts = {
-    city: planet.isHabited ? Math.min(2, districtLimits.city) : 0,
+    city: 0,
     generator: 0,
     mining: 0,
     agriculture: 0,
@@ -627,14 +641,6 @@ export function withPlanetObjectDetails<T extends Omit<PlanetConfig, "objectDeta
     ...planet,
     objectDetails: planet.objectDetails ?? createPlanetObjectDetails(planet, detailKey),
   };
-}
-
-function ensureHabitedBuiltDistricts(planet: PlanetConfig): boolean {
-  if (!planet.isHabited || !planet.objectDetails) return false;
-  const expectedCityDistricts = Math.min(2, planet.objectDetails.districtLimits.city);
-  if (planet.objectDetails.builtDistricts.city >= expectedCityDistricts) return false;
-  planet.objectDetails.builtDistricts.city = expectedCityDistricts;
-  return true;
 }
 
 function createHomeworldPlanet(star: StarData, planetIndex: number): PlanetConfig {
@@ -662,12 +668,10 @@ export function ensureHabitedHomePlanets(stars: StarData[], homeStarIds: Iterabl
 
     const existingHabited = star.system.planets.find((planet) => planet.isHabited === true);
     if (existingHabited) {
-      changed = ensureHabitedBuiltDistricts(existingHabited) || changed;
       continue;
     }
 
     const planet = createHomeworldPlanet(star, star.system.planets.length);
-    ensureHabitedBuiltDistricts(planet);
     star.system.planets.push(planet);
     changed = true;
   }
@@ -700,7 +704,6 @@ export function normalizeCelestialObjectDetails(stars: StarData[]): boolean {
         planet.objectDetails.habitability = expectedHabitability;
         changed = true;
       }
-      changed = ensureHabitedBuiltDistricts(planet) || changed;
     }
   }
   return changed;
@@ -758,7 +761,14 @@ export function normalizePlanetStates(
       const expectedId = createPlanetId(star.id, planetIndex);
       const source = byId.get(planet.id) ?? byId.get(expectedId);
       const features = homeIds.has(star.id) && planet.isHabited === true ? ["homePlanet" as const] : undefined;
-      const nextState = createPlanetStateFromConfig(star.id, planetIndex, planet, source, features);
+      const nextState = createPlanetStateFromConfig(
+        star.id,
+        planetIndex,
+        planet,
+        source,
+        features,
+        { starterInfrastructure: source === undefined },
+      );
 
       if (!source || JSON.stringify(source) !== JSON.stringify(nextState)) {
         changed = true;
@@ -794,13 +804,6 @@ export function applyPlanetStatesToStars(stars: StarData[], planetStates: Planet
         state.builtDistricts,
         planet.objectDetails.districtLimits,
       );
-      if (state.isHabited) {
-        nextBuiltDistricts.city = Math.max(
-          nextBuiltDistricts.city,
-          Math.min(2, planet.objectDetails.districtLimits.city),
-        );
-      }
-
       if (planet.isHabited !== state.isHabited) {
         planet.isHabited = state.isHabited;
         changed = true;

@@ -31,6 +31,7 @@ const PRODUCTIVE_JOBS: JobKind[] = [
   "farmer",
   "miner",
   "technician",
+  "colonizer",
   "clerk",
 ];
 
@@ -149,15 +150,21 @@ function getCohortPriority(group: PopGroup): number {
 
 function createCohorts(profiles: MigrationProfile[]): MigrationCohort[] {
   return profiles
-    .flatMap((source) => source.planet.economy.popGroups.map((group, index): MigrationCohort => ({
-      id: `${source.planet.id}:${getCohortPriority(group)}:${group.speciesId}:${group.job}:${index}`,
-      source,
-      speciesId: group.speciesId,
-      job: group.job,
-      jobClass: group.class,
-      priority: getCohortPriority(group),
-      remaining: group.population,
-    })))
+    .flatMap((source) => source.planet.economy.popGroups.map((group, index): MigrationCohort => {
+      const lockedTarget = source.planet.jobLocks
+        ?.find((lock) => lock.job === group.job)
+        ?.allocations.find((allocation) => allocation.speciesId === group.speciesId)
+        ?.population ?? 0;
+      return {
+        id: `${source.planet.id}:${getCohortPriority(group)}:${group.speciesId}:${group.job}:${index}`,
+        source,
+        speciesId: group.speciesId,
+        job: group.job,
+        jobClass: group.class,
+        priority: getCohortPriority(group),
+        remaining: Math.max(0, group.population - Math.min(group.population, lockedTarget)),
+      };
+    }))
     .sort((a, b) => a.priority - b.priority || a.id.localeCompare(b.id));
 }
 

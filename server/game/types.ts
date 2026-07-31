@@ -38,7 +38,7 @@ export interface GameFleet extends ServerFleet {
 export interface GameShip extends ServerShip {}
 
 export interface GameState {
-  schemaVersion: 23 | 24 | 25 | 26;
+  schemaVersion: 23 | 24 | 25 | 26 | 27;
   stars: StarData[];
   nebulae: NebulaRegion[];
   planetStates: PlanetState[];

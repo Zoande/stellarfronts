@@ -2469,6 +2469,7 @@ export class GalaxyScene implements IGameScene {
       case "jumpingHyperlane":
         return "in transit";
       case "movingSystem":
+        if (fleet.orderType === "colonize") return "colonizing";
         return fleet.orderType === "merge" ? "merging" : "maneuvering";
       case "orbiting":
       case "orbitingPlanet":

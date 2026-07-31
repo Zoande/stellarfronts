@@ -56,7 +56,9 @@ import {
 } from "../data/SystemCoordinates";
 import type { SystemPosition } from "../data/SystemCoordinates";
 import type { PlanetState } from "../data/Economy";
+import { getPlanetColonizationEligibility } from "../data/Colonization";
 import type { LeaderState } from "../data/Leaders";
+import type { SpeciesState } from "../data/Species";
 import type { FactionInfo } from "../data/Factions";
 import { OUTPOST_CONSTRUCTION_COST, STARBASE_LEVEL_DEFINITIONS } from "../data/Starbase";
 import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
@@ -138,6 +140,7 @@ export interface SystemSceneOptions {
   playerFactionId?: number;
   planetStates?: PlanetState[];
   leaders?: LeaderState[];
+  species?: SpeciesState[];
   technology?: FactionTechnologyView | null;
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
@@ -224,6 +227,7 @@ export class SystemScene implements IGameScene {
   private warFactionIds = new Set<number>();
   private playerFactionId: number;
   private planetStates: PlanetState[];
+  private species: SpeciesState[];
   private leaders: LeaderState[];
   private shipTransit: GalaxyShipTransit | null;
   private clockYear: number;
@@ -398,6 +402,7 @@ export class SystemScene implements IGameScene {
     this.playerFactionId = options.playerFactionId ?? 0;
     this.applyDiplomacyMovement(options.diplomacy);
     this.planetStates = this.systemStore?.getPlanetStates() ?? options.planetStates ?? [];
+    this.species = options.species ?? [];
     this.leaders = this.systemStore?.getLeaders() ?? options.leaders ?? [];
     applyPlanetStatesToStars([this.star], this.planetStates);
     this.shipTransit = options.shipTransit ?? null;
@@ -1526,12 +1531,17 @@ export class SystemScene implements IGameScene {
     if (this.activeFleetAction !== "move" && !isColonize) return [];
 
     const targets: SystemActionTarget[] = [];
+    const selectedFleetId = this.getPrimarySelectedFleetId();
+    const selectedFleet = selectedFleetId
+      ? this.serverFleets.find((fleet) => fleet.id === selectedFleetId) ?? null
+      : null;
 
     // Planets are valid targets for both move (orbit) and colonize.
     for (let i = 0; i < this.planetConfigs.length; i++) {
       const planet = this.planetConfigs[i];
       const mesh = this.planetMeshes[i];
       if (!planet || !mesh) continue;
+      if (isColonize && !this.fleetCanColonizePlanet(selectedFleet, planet)) continue;
       targets.push(this.resolveSystemActionTargetMarkerPosition({
         kind: "planet",
         label: planet.name,
@@ -1660,6 +1670,11 @@ export class SystemScene implements IGameScene {
     const planet = index >= 0 ? this.planetConfigs[index] : null;
     const mesh = index >= 0 ? this.planetMeshes[index] : null;
     if (!planet || !mesh) return null;
+    if (this.activeFleetAction === "colonize") {
+      const fleetId = this.getPrimarySelectedFleetId();
+      const fleet = fleetId ? this.serverFleets.find((candidate) => candidate.id === fleetId) : null;
+      if (!this.fleetCanColonizePlanet(fleet, planet)) return null;
+    }
     return {
       kind: "planet",
       label: planet.name,
@@ -2019,6 +2034,24 @@ export class SystemScene implements IGameScene {
     return this.getShipsForFleet(fleet.id).some((ship) => ship.shipKind === "colonizationShip" && ship.hull > 0);
   }
 
+  private fleetCanColonizePlanet(fleet: ServerFleet | null | undefined, planet: PlanetConfig): boolean {
+    if (!this.fleetCanColonize(fleet)) return false;
+    const planetState = this.planetStates.find((candidate) => candidate.id === planet.id);
+    if (!planetState) return false;
+    const foundingSpeciesId = this.factions.find((faction) => faction.id === this.playerFactionId)?.foundingSpeciesId;
+    if (!foundingSpeciesId) return false;
+    return getPlanetColonizationEligibility({
+      planet,
+      planetState,
+      systemOwnerId: this.starOwnership[planetState.starId] ?? -1,
+      factionId: this.playerFactionId,
+      foundingSpeciesId,
+      speciesContext: { species: this.species },
+      hasColonizationShip: true,
+      fleetAvailable: true,
+    }).eligible;
+  }
+
   private getFleetActions(fleet: ServerFleet): ShipAction[] {
     if (fleet.stationaryStarbaseId) return [];
     const actions: ShipAction[] = ["move"];
@@ -2288,6 +2321,7 @@ export class SystemScene implements IGameScene {
       case "jumpingHyperlane":
         return "In Transit";
       case "movingSystem":
+        if (fleet.orderType === "colonize") return "Colonizing";
         return fleet.orderType === "merge" ? "Merging" : "Maneuvering";
       case "orbiting":
       case "orbitingPlanet":
@@ -3948,7 +3982,8 @@ export class SystemScene implements IGameScene {
         const planetId = target.id;
         if (planetId) {
           items.push({ label: `Orbit ${target.label ?? "Planet"}`, onSelect: () => this.options.onFleetCommand?.({ type: "orbitPlanet", fleetId: fleet.id, planetId }) });
-          if (this.fleetCanColonize(fleet)) {
+          const planet = this.planetConfigs.find((candidate) => candidate.id === planetId);
+          if (planet && this.fleetCanColonizePlanet(fleet, planet)) {
             items.push({ label: `Colonize ${target.label ?? "Planet"}`, onSelect: () => this.options.onFleetCommand?.({ type: "colonizePlanet", fleetId: fleet.id, planetId }) });
           }
         }

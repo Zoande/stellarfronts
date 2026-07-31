@@ -15,6 +15,7 @@ import type {
   SystemDetailPayload,
   SystemDetailsEvent,
 } from "./GameProtocol";
+import { SUPPORTED_SERVER_PROTOCOL_VERSIONS } from "./GameProtocol";
 import { mergeClientIntelEntities, setClientIntelligence } from "./ClientIntelligence";
 
 type SnapshotHandler = (snapshot: GameSnapshot, changed?: ServerUpdateField[]) => void;
@@ -52,8 +53,6 @@ function withClientClockSync<T extends { clock?: GameSnapshot["clock"] }>(event:
  * server reports a protocol not listed here, the client refuses to connect with
  * a clear message rather than misbehaving.
  */
-export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5];
-
 export class ClientServerVersionError extends Error {}
 
 function getWebSocketUrl(gameId?: string): string {

@@ -35,7 +35,7 @@ Shared helpers: [`panelTheme.ts`](../../src/ui/panelTheme.ts) (styling),
 
 | Panel | System | Sends (examples) |
 | --- | --- | --- |
-| [CelestialObjectPanel.ts](../../src/ui/CelestialObjectPanel.ts) | Planet/star detail, economy, construction | `buildDistrict`, `buildPlanetBuilding`, `upgradePlanetBuilding`, `setUrbanSubDistrict`, `cancelPlanetConstruction`, `skipPlanetConstruction` |
+| [CelestialObjectPanel.ts](../../src/ui/CelestialObjectPanel.ts) | Planet/star detail, economy, construction, multi-species job locks | `buildDistrict`, `buildPlanetBuilding`, `upgradePlanetBuilding`, `setPlanetJobLock`, `setUrbanSubDistrict`, `cancelPlanetConstruction`, `skipPlanetConstruction` |
 | [PlanetOperationsPanel.ts](../../src/ui/PlanetOperationsPanel.ts) | Owned-planet operations | planet construction commands |
 | [FleetManagerPanel.ts](../../src/ui/FleetManagerPanel.ts) | Fleets + ship designer | fleet orders, `buildStarbaseShip`, `upgradeShip`, `saveShipDesign`, `setFleetCombatSettings` |
 | [StarbasePanel.ts](../../src/ui/StarbasePanel.ts) | Starbase stats/queues | `buildStarbaseBuilding`, `upgradeStarbase` |
@@ -49,6 +49,12 @@ Shared helpers: [`panelTheme.ts`](../../src/ui/panelTheme.ts) (styling),
 
 Exact command shapes are in the `ClientCommand` union
 ([`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts)).
+
+Planet Operations is keyed by owned system rather than planet ownership, so uninhabited planets in
+owned systems remain visible. Its rows use the founding species' effective habitability and typed
+eligibility metadata to show `Colonizable`, `Restricted world`, or `Unsuitable`. Capital labels,
+descriptions, jobs, housing, and local modifiers come from the same authored tier helpers used by
+the economy; the capital downgrade control is disabled at every level.
 
 ## How to extend / rules
 

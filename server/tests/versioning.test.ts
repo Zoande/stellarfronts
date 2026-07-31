@@ -5,7 +5,13 @@ import path from "node:path";
 import { test } from "node:test";
 import { AuthStore } from "../auth-store";
 import type { StoredGameVersion } from "../auth-store";
-import { VERSION_MANIFEST, canMigrateFromSchema } from "../versionManifest";
+import {
+  CURRENT_PROTOCOL_VERSION,
+  CURRENT_SCHEMA_VERSION,
+  VERSION_MANIFEST,
+  canMigrateFromSchema,
+} from "../versionManifest";
+import { SUPPORTED_SERVER_PROTOCOL_VERSIONS } from "../../src/game/GameProtocol";
 
 function freshStore(): AuthStore {
   const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-version-"));
@@ -105,4 +111,13 @@ test("compatibility gate matches a version's declared migratesFromSchema", () =>
   assert.equal(target.migratesFromSchema.includes(17), false);
   // The current build accepts its own schema.
   assert.equal(canMigrateFromSchema(VERSION_MANIFEST, VERSION_MANIFEST.schemaVersion), true);
+});
+
+test("schema and wire protocol manifests stay aligned with current compatibility", () => {
+  assert.equal(CURRENT_SCHEMA_VERSION, 27);
+  assert.equal(VERSION_MANIFEST.schemaVersion, CURRENT_SCHEMA_VERSION);
+  assert.deepEqual(VERSION_MANIFEST.migratesFromSchema, [23, 24, 25, 26, 27]);
+  assert.equal(CURRENT_PROTOCOL_VERSION, 7);
+  assert.equal(VERSION_MANIFEST.protocolVersion, CURRENT_PROTOCOL_VERSION);
+  assert.deepEqual(SUPPORTED_SERVER_PROTOCOL_VERSIONS, [5, 6, 7]);
 });

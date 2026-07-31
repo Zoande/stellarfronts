@@ -120,10 +120,9 @@ are stored under `server/state/games/<gameId>/game-state.json`.
 
 ## Versioning
 
-The current build advertises protocol version 4 and schema version 24. It can load schemas 23 and 24;
-the field-level intelligence schema intentionally does not migrate older visibility saves. The
-orchestrator checks compatibility before moving a game and creates backups around reset/update
-operations.
+The current build advertises protocol version 7 and schema version 27. It normalizes schemas
+23–26 into schema 27, while the browser client accepts wire protocols 5, 6, and 7. The orchestrator
+checks compatibility before moving a game and creates backups around reset/update operations.
 
 See [Versioning & Schema](docs/must-read/03-versioning-and-schema.md) before changing persisted or
 wire state.

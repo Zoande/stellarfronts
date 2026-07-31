@@ -12,6 +12,7 @@ import {
   createEmptyResourceCounts,
   addResourceCounts,
   progressPlanetConstructionQueue,
+  removeExpiredPlanetModifiers,
 } from "../../src/data/Economy";
 import type { PlanetState } from "../../src/data/Economy";
 import {
@@ -81,9 +82,15 @@ export function processEconomyHours(ctx: RuntimeContext, targetHour: number): { 
   const previousPlanetSignatures = new Map(
     ctx.state.planetStates.map((planetState) => [planetState.id, getPlanetDetailSignature(planetState)]),
   );
+  let expiredModifiers = false;
+  ctx.state.planetStates = ctx.state.planetStates.map((planetState) => {
+    const result = removeExpiredPlanetModifiers(planetState, ctx.state.clock.year);
+    expiredModifiers = expiredModifiers || result.changed;
+    return result.state;
+  });
   ctx.recalculatePlanetEconomies();
   ctx.refreshFactionEconomyDeltas();
-  let economyChanged = false;
+  let economyChanged = expiredModifiers;
   let technologiesChanged = false;
   for (const economy of ctx.state.factionEconomies) {
     const processedHour = economy.lastProcessedHour ?? targetHour;

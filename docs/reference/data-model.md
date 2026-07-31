@@ -10,7 +10,7 @@ From [`server/game/types.ts`](../../server/game/types.ts):
 
 | Field | Type / source | What it is |
 | --- | --- | --- |
-| `schemaVersion` | literal `23 \| 24` | Supported on-load schema marker; fresh and normalized saves use 24. |
+| `schemaVersion` | literal `23 \| 24 \| 25 \| 26 \| 27` | Supported on-load schema marker; fresh and normalized saves use 27. |
 | `stars` | `StarData[]` ([`StarMap.ts`](../../src/data/StarMap.ts)) | Every star and its planet configs. |
 | `nebulae` | `NebulaRegion[]` ([`Nebula.ts`](../../src/data/Nebula.ts)) | Generated nebula regions and their affected systems. |
 | `planetStates` | `PlanetState[]` ([`Economy.ts`](../../src/data/Economy.ts)) | Per-planet economy: districts, buildings, population, computed `economy` summary. |
@@ -38,19 +38,21 @@ From [`server/game/types.ts`](../../server/game/types.ts):
 | `startingIntelligenceSeeded` | `boolean` | Whether initial faction intelligence has been generated. |
 | `clock` | `GameClock & {...}` ([`GameProtocol.ts`](../../src/game/GameProtocol.ts)) | Year, speed, paused, plus last-processed indices. |
 
-> **Schema note.** The type accepts schema 23 while loading the one supported predecessor, but
-> `createInitialState` and normalization write schema 24. See
+> **Schema note.** The type accepts schemas 23–27 while loading supported predecessors, but
+> `createInitialState` and normalization write schema 27. See
 > [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md).
 
 ## Frequently referenced nested types
 
 - **`PlanetState`** ([`Economy.ts`](../../src/data/Economy.ts)) — `builtDistricts`, `buildings`
-  (per-district slot arrays), `urbanSubDistricts`, `constructionQueue`, `speciesPopulations`, and a
+  (per-district slot arrays), `urbanSubDistricts`, `constructionQueue`, `speciesPopulations`,
+  `jobLocks: PlanetJobLock[]`, timed/permanent `modifiers`, and a
   computed `economy: PlanetEconomySummary` (production/upkeep/net, `jobCapacity`, `popGroups`,
   housing/amenities/happiness/crime/stability/growth).
 - **`ServerFleet` / `GameFleet`** ([`GameProtocol.ts`](../../src/game/GameProtocol.ts),
   [`types.ts`](../../server/game/types.ts)) — ship ids, system position, `phase`
-  (idle/departing/jumping/arriving), order, combat stance/retreat policy, movement plan, and optional
+  (idle/departing/jumping/arriving), order (including persistent `colonize`), combat stance/retreat
+  policy, movement plan, and optional
   Dark Matter boost telemetry. `GameFleet` requires `phaseElapsedMs`,
   `darkMatterBoostActive`, and `darkMatterBoostPaidUntilYear` for server-side timing and billing.
 - **`ServerStarbase`** ([`GameProtocol.ts`](../../src/game/GameProtocol.ts)) — level, `status`

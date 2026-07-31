@@ -51,6 +51,12 @@ merging, orbiting, and retreat are handled in
 [`server/game/fleet-combat.ts`](../../server/game/fleet-combat.ts) (`advanceFleet`, `startMoveOrder`,
 `findRoute`, …).
 
+`FleetOrderType` also includes persistent `colonize`. A colonization order stores the destination
+planet in its movement plan, travels to planetary orbit, and calls the server-authoritative founding
+path on arrival. Stop, replacement, retreat, merge, and command-link recovery replace/cancel it
+through the ordinary order lifecycle. Arrival failures clear the order without consuming a ship.
+See [population-and-planets.md](population-and-planets.md) for eligibility and colony effects.
+
 Moving fleets can spend account-scoped Dark Matter for a 10× travel boost. Activation prepays one
 moving day and the server bills each later day boundary until arrival, deactivation, or insufficient
 funds. Route retiming preserves the current position. See
@@ -80,4 +86,5 @@ funds. Route retiming preserves the current position. See
   [`src/ui/StarbasePanel.ts`](../../src/ui/StarbasePanel.ts).
 - Tests: [`server/tests/ship-designs.test.ts`](../../server/tests/ship-designs.test.ts).
   Dark Matter movement coverage is in
-  [`server/tests/dark-matter.test.ts`](../../server/tests/dark-matter.test.ts).
+  [`server/tests/dark-matter.test.ts`](../../server/tests/dark-matter.test.ts); colonization order
+  coverage is in [`server/tests/colonization-orders.test.ts`](../../server/tests/colonization-orders.test.ts).

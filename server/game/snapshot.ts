@@ -33,6 +33,7 @@ import {
   getKnownStarIds,
   getKnownSystemOwner,
 } from "./intelligence";
+import { VERSION_MANIFEST } from "../versionManifest";
 import type { RuntimeContext } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -390,7 +391,7 @@ export function createSnapshot(ctx: RuntimeContext, perspective: GalaxyPerspecti
 
   return {
     type: "snapshot",
-    protocolVersion: 6,
+    protocolVersion: VERSION_MANIFEST.protocolVersion,
     perspective,
     ...visibleState,
     stars: createVisibleStars(ctx, perspective, knownSet),
@@ -402,7 +403,7 @@ export function createUpdate(ctx: RuntimeContext, perspective: GalaxyPerspective
   const knownSet = getKnownSet(ctx, perspective);
   const update: GameUpdate = {
     type: "update",
-    protocolVersion: 6,
+    protocolVersion: VERSION_MANIFEST.protocolVersion,
     perspective,
     changed,
     intelligence: getGalaxyIntelligenceView(ctx.state, perspective),

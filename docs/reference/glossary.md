@@ -32,17 +32,22 @@ Domain terms used across the codebase and these docs.
 - **District** — a planetary land-use category (city, generator, mining, agriculture) with a build
   limit; provides base jobs and building slots.
 - **Building** — a structure occupying a district (or urban sub-district) slot that adds jobs/housing.
-  Some are **auto-placed** (the Planetary Capital) and can't be queued or demolished.
+  The five-tier planetary capital is **auto-placed** and cannot be queued, disabled, downgraded, or
+  demolished.
 - **Urban sub-district** — a specialization layer inside city space (residential, research campus,
   industry variants) with its own building slots and compatibility rules.
 - **Job** — work a unit of population performs (e.g. farmer, researcher, ruler), with output, upkeep,
   and amenity/crime effects, organized into upper/middle/lower **classes**.
+- **Job lock** — a persisted per-job snapshot of every species allocation working that productive
+  job. Targets reserve assignment and protect actually staffed workers from outbound migration.
 - **Amenities / happiness / crime / stability** — derived planet metrics that drive population growth
   and production multipliers. See [`../systems/population-and-planets.md`](../systems/population-and-planets.md).
 
 ### Fleets & combat
 
 - **Fleet** — a group of ships sharing a position, speed (the slowest member), and orders.
+- **Colonization order** — a persistent fleet order that moves to an eligible planet, revalidates on
+  arrival, and consumes one colonization ship only after successful founding.
 - **Phase** — a fleet's movement state (idle, departing, jumping, arriving); see `ShipTransitPhase`.
 - **Range band** — discrete distance bucket used to resolve weapon effectiveness in combat.
 - **Doctrine / stance / retreat policy** — tactical behavior settings governing how a fleet engages

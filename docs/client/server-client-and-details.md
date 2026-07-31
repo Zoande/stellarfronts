@@ -9,7 +9,7 @@ server side is documented in [`../server/protocol-and-snapshots.md`](../server/p
 
 `connect()` opens the WebSocket (`VITE_WS_URL` + `?gameId=…`, cookie auth), sends `{ type: "join" }`,
 and resolves with the first `GameSnapshot`. It validates `protocolVersion` against
-`SUPPORTED_SERVER_PROTOCOL_VERSIONS` (`[4]`) and rejects an unsupported server with a clear message.
+`SUPPORTED_SERVER_PROTOCOL_VERSIONS` (`[5, 6, 7]`) and rejects an unsupported server with a clear message.
 Connections reuse a cached snapshot if already connected.
 
 ## State caching

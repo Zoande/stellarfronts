@@ -5,7 +5,7 @@ import type { FactionInfo, GalaxyPerspective } from "../src/data/Factions";
 import { applyPlanetStatesToStars, createPlanetStateFromConfig } from "../src/data/StarMap";
 import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../src/data/SystemCoordinates";
-import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, completePlanetConstructionQueueItem, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getEffectiveSpeciesHabitability, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, NEW_COLONY_POPULATION, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
+import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, completePlanetConstructionQueueItem, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, JOB_FILL_ORDER, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
 import { isMarketResourceKind } from "../src/data/Market";
 import { countStarbaseShipyards, createStarbaseBuildingQueueItem, createStarbaseShipQueueItem, createStarbaseUpgradeQueueItem, getStarbaseShipConstructionCostMultiplier, hasQueuedStarbaseBuildingTarget, isStarbaseBuildingKind, isStarbaseShipKind, OUTPOST_CONSTRUCTION_COST, STARBASE_LEVEL_DEFINITIONS } from "../src/data/Starbase";
 import { getNebulaGatedBuildingKinds, nebulaEnablesBuildingAtStar } from "../src/data/Nebula";
@@ -24,6 +24,7 @@ import type {
   BuildingSlotArea,
   DistrictKind,
   FactionEconomyState,
+  JobKind,
   PlanetState,
   PlanetBuildingSlot,
   PlanetModifier,
@@ -202,7 +203,8 @@ import {
 } from "./game/population";
 import { processLeaderDays } from "./game/leader-lifecycle";
 import { isShipDesignUnlockedForFaction, getShipDesignMissingTechnologyName } from "./game/research";
-import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow, processFleetCommandLinkLoss, rescaleFleetMovementPlan } from "./game/fleet-combat";
+import { getFactionPlanetColonizationEligibility } from "./game/colonization";
+import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startColonizationOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow, processFleetCommandLinkLoss, rescaleFleetMovementPlan } from "./game/fleet-combat";
 
 // Probe mode: the orchestrator runs each worktree with `--print-version` to read
 // its committed identity (protocol/schema/migratesFrom) without booting a server.
@@ -458,68 +460,50 @@ function handleColonizePlanet(socket: WebSocket, perspective: GalaxyPerspective,
   const fleet = resolveFleetForCommand(fleetId, undefined);
   if (!fleet) return reject(socket, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
-
-  const planetState = getPlanetState(ctx, planetId);
-  if (!planetState) return reject(socket, "Planet not found.");
-  const planet = getPlanetConfig(ctx, planetState);
-  if (!planet) return reject(socket, "Planet details are unavailable.");
-  if (ctx.state.starOwnership[planetState.starId] !== factionId) {
-    return reject(socket, "Planet must be in an owned system.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
+  const eligibility = getFactionPlanetColonizationEligibility(ctx, factionId, planetId, fleet);
+  if (!eligibility) return reject(socket, "Planet not found.");
+  if (!eligibility.eligible) {
+    const messages = {
+      alreadyHabited: "Planet is already colonized.",
+      systemNotOwned: "Planet must be in an owned system.",
+      restrictedPlanetType: "This planet type cannot currently be colonized.",
+      zeroHabitability: "Founding species habitability is too low to colonize.",
+      noColonizationShip: "Requires a colonization ship.",
+      commandLinkUnavailable: "Fleet command link unavailable.",
+      fleetUnavailable: "Fleet cannot colonize in its current state.",
+      colonizable: "Planet cannot be colonized.",
+    } as const;
+    return reject(socket, messages[eligibility.reason]);
   }
-  if (planetState.isHabited || planet.isHabited === true) {
-    return reject(socket, "Planet is already colonized.");
+  const targetState = getPlanetState(ctx, planetId);
+  if (!targetState) return reject(socket, "Planet not found.");
+  if (targetState.starId !== fleet.currentStarId && !findRoute(ctx, fleet, targetState.starId)) {
+    return reject(socket, "No discovered safe route to planet.");
   }
-  if (fleet.currentStarId !== planetState.starId || fleet.orbitTargetPlanetId !== planetState.id) {
-    return reject(socket, "Fleet must be orbiting the target planet.");
+  if (
+    targetState.starId !== fleet.currentStarId
+    && fleet.shipIds.some((shipId) => {
+      const ship = ctx.state.ships.find((candidate) => candidate.id === shipId);
+      return ship?.subsystemState?.engineDisabled && !ship.subsystemState.emergencyMobility;
+    })
+  ) {
+    return reject(socket, "Fleet contains an engine-crippled ship that requires construction assistance.");
   }
-
-  const colonizationShip = getFleetColonizationShip(ctx, fleet);
-  if (!colonizationShip) return reject(socket, "Requires a colonization ship.");
-
-  const foundingSpeciesId = ctx.state.factions.find((faction) => faction.id === factionId)?.foundingSpeciesId
-    ?? getFactionFoundingSpeciesId(factionId);
-  const prospectiveState = createPlanetStateFromConfig(
-    planetState.starId,
-    planetState.planetIndex,
-    planet,
-    {
-      ...planetState,
-      ownerId: factionId,
-      isHabited: true,
-      population: NEW_COLONY_POPULATION,
-      speciesPopulations: [{ speciesId: foundingSpeciesId, population: NEW_COLONY_POPULATION }],
-      builtDistricts: { city: 0, generator: 0, mining: 0, agriculture: 0 },
-      buildings: undefined,
-      constructionQueue: [],
-    },
-    planetState.features,
-    { starterInfrastructure: false, startingPopulation: NEW_COLONY_POPULATION },
-  );
-  const habitability = getEffectiveSpeciesHabitability(
-    prospectiveState,
-    foundingSpeciesId,
-    getPlanetSpeciesContext(ctx.state, prospectiveState),
-  );
-  if (habitability <= 0) return reject(socket, "Planet habitability is too low to colonize.");
-
-  ctx.state.ships = ctx.state.ships.filter((ship) => ship.id !== colonizationShip.id);
-  const fleetChanged = syncFleetMembership(ctx, ctx.state);
-  ctx.state.planetStates = ctx.state.planetStates.map((candidate) => (
-    candidate.id === prospectiveState.id ? prospectiveState : candidate
-  ));
-  applyPlanetStatesToStars(ctx.state.stars, ctx.state.planetStates);
-  queuePlanetDetailRefresh(prospectiveState.id);
-  refreshFactionEconomyDeltas();
-  ctx.hasDirtyState = true;
-  accept(socket, `${planet.name} colonized.`);
-  broadcastUpdates([
-    "planetStates",
-    "habitedPlanetSystems",
-    "factionEconomies",
-    "ships",
-    ...(fleetChanged ? ["fleets" as const] : []),
-  ]);
+  const inhabitedBefore = ctx.state.planetStates.filter((planet) => planet.isHabited).length;
+  try {
+    prepareFleetForReplacementOrder(ctx, fleet);
+    startColonizationOrder(ctx, fleet, planetId);
+    const foundedImmediately = ctx.state.planetStates.filter((planet) => planet.isHabited).length > inhabitedBefore;
+    ctx.hasDirtyState = true;
+    refreshDiscovery();
+    accept(socket, foundedImmediately ? "Colony founded." : "Colonization order accepted.");
+    broadcastUpdates(foundedImmediately
+      ? ["clock", "fleets", "ships", "planetStates", "habitedPlanetSystems", "factionEconomies", "visibility"]
+      : ["clock", "fleets", "visibility"]);
+  } catch (error) {
+    reject(socket, error instanceof Error ? error.message : "Colonization order rejected.");
+  }
 }
 
 function handleMergeFleets(
@@ -1872,6 +1856,9 @@ function handleDowngradePlanetBuilding(
   const building = getPlanetBuildingAt(planetState, area, slotIndex, subDistrictIndex);
   const buildingKind = getPlanetBuildingKind(building);
   if (!buildingKind) return reject(socket, "Building slot is empty or invalid.");
+  if (buildingKind === "planetaryCapital") {
+    return reject(socket, "The planetary capital cannot be downgraded or demolished.");
+  }
   if (hasQueuedBuildingTarget(planetState, area, slotIndex, subDistrictIndex)) {
     return reject(socket, "Cancel this building's queued construction first.");
   }
@@ -1915,6 +1902,46 @@ function handleSetPlanetBuildingEnabled(
     enabled ? "Building enabled." : "Building disabled.",
     withPlanetBuildingAt(planetState, area, slotIndex, replacement, subDistrictIndex),
   );
+}
+
+function handleSetPlanetJobLock(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  job: Exclude<JobKind, "criminal" | "unemployed">,
+  locked: boolean,
+): void {
+  if (typeof locked !== "boolean" || !JOB_FILL_ORDER.includes(job)) {
+    return reject(socket, "Invalid job lock.");
+  }
+  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!planetState) return;
+  if (!locked) {
+    commitPlanetState(socket, perspective, "Job unlocked.", {
+      ...planetState,
+      jobLocks: (planetState.jobLocks ?? []).filter((candidate) => candidate.job !== job),
+    });
+    return;
+  }
+  const bySpecies = new Map<string, number>();
+  for (const group of planetState.economy.popGroups) {
+    if (group.job !== job || group.population <= 0) continue;
+    bySpecies.set(group.speciesId, (bySpecies.get(group.speciesId) ?? 0) + group.population);
+  }
+  if (bySpecies.size === 0) return reject(socket, "Only a staffed productive job can be locked.");
+  const lock = {
+    job,
+    allocations: Array.from(bySpecies.entries())
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([speciesId, population]) => ({ speciesId, population })),
+  };
+  commitPlanetState(socket, perspective, "Job locked.", {
+    ...planetState,
+    jobLocks: [
+      ...(planetState.jobLocks ?? []).filter((candidate) => candidate.job !== job),
+      lock,
+    ],
+  });
 }
 
 function handleCancelPlanetConstruction(
@@ -2203,6 +2230,8 @@ function advanceState(now: number): Set<ServerUpdateField> {
     return changed;
   }
   const previousFleetSignature = fleetUpdateSignature();
+  const habitedPlanetCountBefore = ctx.state.planetStates.filter((planet) => planet.isHabited).length;
+  const shipCountBeforeFleetAdvance = ctx.state.ships.length;
   const arrivingFleets: GameFleet[] = [];
   const elapsedRealSeconds = elapsedMs / 1000;
   const elapsedGameDays = elapsedRealSeconds * ctx.state.clock.tickSizeDays / Math.max(0.01, ctx.state.clock.tickSpeedSeconds);
@@ -2229,6 +2258,17 @@ function advanceState(now: number): Set<ServerUpdateField> {
     if (advanceFleet(ctx, fleet, scaledMs)) {
       arrivingFleets.push(fleet);
     }
+  }
+  if (
+    ctx.state.planetStates.filter((planet) => planet.isHabited).length !== habitedPlanetCountBefore
+    || ctx.state.ships.length !== shipCountBeforeFleetAdvance
+  ) {
+    changed.add("planetStates");
+    changed.add("habitedPlanetSystems");
+    changed.add("factionEconomies");
+    changed.add("ships");
+    changed.add("fleets");
+    changed.add("visibility");
   }
   if (processMissingInActionFleets(ctx)) {
     changed.add("fleets");
@@ -2921,6 +2961,16 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
       command.slotIndex,
       command.enabled,
       command.subDistrictIndex,
+    );
+    return;
+  }
+  if (command.type === "setPlanetJobLock") {
+    handleSetPlanetJobLock(
+      session.socket,
+      session.perspective,
+      command.planetId,
+      command.job,
+      command.locked,
     );
     return;
   }

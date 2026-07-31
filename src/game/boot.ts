@@ -403,20 +403,20 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
     if (factionId === null) return [];
     const ownerByStar = expandStarOwnership();
     return snapshot.planetStates
-      .filter((planetState) => planetState.isHabited && (ownerByStar[planetState.starId] ?? -1) === factionId)
-      .map((planetState) => {
+      .filter((planetState) => (ownerByStar[planetState.starId] ?? -1) === factionId)
+      .flatMap<PlanetManagerPlanetEntry>((planetState) => {
         const star = snapshot.stars[planetState.starId];
         const planet = star?.system.planets[planetState.planetIndex];
-        if (!star || !planet) return null;
-        return {
+        if (!star || !planet) return [];
+        return [{
           starId: planetState.starId,
           starName: star.name,
-          ownerId: ownerByStar[planetState.starId] ?? -1,
+          ownerId: planetState.ownerId ?? -1,
+          systemOwnerId: ownerByStar[planetState.starId] ?? -1,
           planet,
           planetState,
-        };
-      })
-      .filter((entry): entry is PlanetManagerPlanetEntry => entry !== null);
+        }];
+      });
   };
   const getPlanetOperationsData = () => ({
     planets: planetManagerDetail?.planets ?? getPlanetManagerFallbackPlanets(),
@@ -1430,6 +1430,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
           selectedFleetIds,
           planetStates: systemPayload.planetStates,
           leaders: snapshot.leaders,
+          species: snapshot.species,
           technology: systemPayload.technology,
           onPlanetCommand: sendPlanetCommand,
           onFleetCommand: (command) => server.send(command),

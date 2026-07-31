@@ -10,14 +10,14 @@ before you touch persisted state or the wire protocol.
 Both live in [`server/versionManifest.ts`](../../server/versionManifest.ts):
 
 ```ts
-export const CURRENT_SCHEMA_VERSION = 24;   // shape of the persisted GameState on disk
-export const CURRENT_PROTOCOL_VERSION = 4;  // shape of the client/server wire messages
+export const CURRENT_SCHEMA_VERSION = 27;   // shape of the persisted GameState on disk
+export const CURRENT_PROTOCOL_VERSION = 7;  // shape of the client/server wire messages
 ```
 
 - **`protocolVersion`** describes the **wire format** — the `GameSnapshot` / `GameUpdate` / `detail`
   messages in [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts). The client refuses to run
   against a server whose protocol it doesn't list in `SUPPORTED_SERVER_PROTOCOL_VERSIONS`
-  ([`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts), currently `[4]`).
+  ([`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts), currently `[5, 6, 7]`).
 - **`schemaVersion`** describes the **persisted `GameState`** on disk. It gates whether a build is
   allowed to load (and thus migrate) a given save.
 
@@ -25,12 +25,11 @@ The `VERSION_MANIFEST` object combines them with `migratesFromSchema` — the li
 versions this build can load:
 
 ```ts
-migratesFromSchema: [23, CURRENT_SCHEMA_VERSION]
+migratesFromSchema: [23, 24, 25, 26, CURRENT_SCHEMA_VERSION]
 ```
 
-This build accepts schemas **23 and 24 only**. Schema 24 introduced the current field-level
-intelligence model; older discovery/visibility saves deliberately start fresh instead of being
-silently converted into incomplete intelligence.
+This build accepts schemas **23 through 27** and normalizes accepted saves to schema 27. Schema 27
+adds persisted multi-species planet job locks and timed planet modifiers used by new colonies.
 
 ## How a build advertises itself: `--print-version`
 
@@ -98,9 +97,9 @@ orchestrator reason about compatibility.
 ## Current schema alignment
 
 `VERSION_MANIFEST.schemaVersion`, new-game initialization, and load normalization all write schema
-24. `GameState.schemaVersion` temporarily accepts the literal union `23 | 24` so the loader can type
-the one supported predecessor before normalizing it to 24. Keep these locations aligned whenever the
-schema changes.
+27. `GameState.schemaVersion` accepts the literal union `23 | 24 | 25 | 26 | 27` so the loader can
+type every supported predecessor before normalizing it to 27. Keep these locations aligned whenever
+the schema changes.
 
 ## See also
 

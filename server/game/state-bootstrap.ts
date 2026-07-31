@@ -168,7 +168,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 26,
+    schemaVersion: 27,
     stars,
     nebulae,
     planetStates,
@@ -238,7 +238,7 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
         `Game ${ctx.game.id} ctx.state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
       );
     }
-    parsed.schemaVersion = 26;
+    parsed.schemaVersion = 27;
     delete (parsed as GameState & { battles?: unknown }).battles;
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by

@@ -72,6 +72,7 @@ import {
 } from "./combat";
 import type { CombatLayerState } from "./combat";
 import type { GameFleet, GameShip, GameState, RuntimeContext } from "./types";
+import { foundColony } from "./colonization";
 import {
   getFleetSpeedMultiplier,
   getFleetAttackMultiplier,
@@ -911,6 +912,33 @@ export function startOrbitOrder(ctx: RuntimeContext, fleet: GameFleet, planetId:
   startPositionOrder(ctx, fleet, target.star.id, "orbit", orbitPosition, orbitTarget, route);
 }
 
+export function startColonizationOrder(ctx: RuntimeContext, fleet: GameFleet, planetId: string): void {
+  const target = getPlanetConfigById(ctx, planetId);
+  if (!target) throw new Error("Planet not found.");
+  const route = target.star.id === fleet.currentStarId ? [fleet.currentStarId] : findRoute(ctx, fleet, target.star.id);
+  if (!route) throw new Error("No discovered safe route to planet.");
+  const planetPosition = getPlanetSystemPositionAt(target.star, target.planet, target.planetIndex, ctx.state.clock.year);
+  const orbitPosition = {
+    x: planetPosition.x + SYSTEM_PLANET_ORBIT_DISTANCE,
+    y: SYSTEM_FLEET_Y,
+    z: planetPosition.z,
+  };
+  const orbitTarget: FleetOrbitTarget = {
+    kind: "planet",
+    starId: target.star.id,
+    planetId,
+    position: orbitPosition,
+  };
+  startPositionOrder(ctx, fleet, target.star.id, "colonize", orbitPosition, orbitTarget, route);
+  if (!fleet.movementPlan && fleet.phase === "orbitingPlanet") {
+    foundColony(ctx, fleet, planetId);
+    fleet.orderType = null;
+    fleet.targetStarId = null;
+    fleet.route = [fleet.currentStarId];
+    fleet.routeIndex = 0;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Merge helpers
 // ---------------------------------------------------------------------------
@@ -1141,6 +1169,20 @@ export function advanceFleet(ctx: RuntimeContext, fleet: GameFleet, scaledMs: nu
     if (fleet.orderType === "orbit" && plan.destinationOrbitTarget?.kind === "planet") {
       applyFleetOrbitTarget(fleet, plan.destinationOrbitTarget);
       fleet.orderType = "orbit";
+      fleet.targetStarId = null;
+      fleet.route = [fleet.currentStarId];
+      fleet.routeIndex = 0;
+      ctx.setFleetPhase(fleet, "orbitingPlanet");
+      fleet.phaseDurationDays = 0;
+      return true;
+    }
+
+    if (fleet.orderType === "colonize" && plan.destinationOrbitTarget?.kind === "planet") {
+      applyFleetOrbitTarget(fleet, plan.destinationOrbitTarget);
+      if (plan.destinationOrbitTarget.planetId) {
+        foundColony(ctx, fleet, plan.destinationOrbitTarget.planetId);
+      }
+      fleet.orderType = null;
       fleet.targetStarId = null;
       fleet.route = [fleet.currentStarId];
       fleet.routeIndex = 0;

@@ -23,7 +23,7 @@ with its own slots and compatibility rules.
 
 Population is assigned to jobs (`JobKind`) in `JOB_FILL_ORDER` (upper → lower priority): `ruler`,
 `administrator`, `researcher`, `enforcer`, `entertainer`, `artisan`, `metallurgist`, `farmer`,
-`miner`, `technician`, `clerk`, plus the derived `criminal` and `unemployed`. Each job has an `output`,
+`miner`, `technician`, `colonizer`, `clerk`, plus the derived `criminal` and `unemployed`. Each job has an `output`,
 `upkeep`, optional `amenities`, and optional `crimeReduction` in `JOB_DEFINITIONS`, and a class
 (upper/middle/lower) used for goods-upkeep tiers. Population is measured in people; economic math runs
 per `PEOPLE_PER_MONTHLY_UNIT` (1,000,000) unit.
@@ -43,6 +43,36 @@ jobs, housing) live in `BUILDING_DEFINITIONS`. Notable:
 - Most buildings are tech-gated via `unlock_building` / level-unlock effects in
   [`src/data/Technology.ts`](../../src/data/Technology.ts).
 
+The capital uses five authored, non-cumulative tiers:
+
+| Level | Name | Total jobs / housing | Local modifiers | Migration intake |
+| --- | --- | --- | --- | --- |
+| 1 | Colony Headquarters | 500M Colonizers; 750M housing | none | 5M/month |
+| 2 | Planetary Administration | 500M Rulers; 100M Enforcers; 100M Entertainers | none | 10M/month |
+| 3 | Planetary Capital | 900M Rulers; 150M Enforcers; 150M Entertainers | +5 stability; +10% construction | 20M/month |
+| 4 | Planetary Directorate | 1.5B Rulers; 200M Enforcers; 200M Entertainers | +8 stability; +15% construction | 40M/month |
+| 5 | Planetary Nexus | 2.4B Rulers; 250M Enforcers; 250M Entertainers | +12 stability; +25% construction | 80M/month |
+
+Every tier uses `planetaryCapitalSensors`; upgrade population gates are 5B/15B/35B/65B. Costs,
+upkeep, build times, and technologies remain the authored per-level definitions. Capitals cannot be
+disabled, downgraded, or demolished. Fresh homeworlds use tier 2; fresh colonies use tier 1.
+
+Colonizers are lower-class workers filled after Technicians and before Clerks. Each 1M produces
+0.016 food and 0.75 amenities, with ordinary lower-class/population upkeep and no mineral or energy
+production.
+
+## Exact job locks
+
+`PlanetState.jobLocks` stores one `PlanetJobLock` per productive job, containing the target
+allocation for every species working that job when it was locked. Assignment reserves eligible
+locked allocations first, proportionally and deterministically clamps them against population and
+capacity, then lets spare capacity hire normally. Unmet targets remain persisted through temporary
+capacity or rights changes. Criminal and Unemployed cannot be locked. A headquarters upgrade to
+tier 2 removes its Colonizer lock.
+
+Outbound migration protects only the amount actually staffed by the lock. Famine and other
+involuntary loss can reduce those workers, while preserving the target so it can refill later.
+
 ## The per-planet calculation
 
 `calculatePlanetEconomy(state, districtLimits, externalModifiers, speciesContext)` in
@@ -58,9 +88,11 @@ jobs, housing) live in `BUILDING_DEFINITIONS`. Notable:
 6. Compute the independent **population growth**, **famine decline**, and **migration** views. Details:
    [population-and-planets.md](population-and-planets.md).
 
-`PlanetModifier`s (from planet features, technologies, government laws, leaders) apply additive/
+`PlanetModifier`s (from planet features, technologies, government laws, leaders, colony support) apply additive/
 multiplicative adjustments to targeted things — housing, amenities, crime, stability, job
-output/upkeep/capacity, construction speed, per-species habitability, etc. (`PlanetModifierTarget`).
+output/upkeep/capacity, construction speed, migration attractiveness/intake, per-species
+habitability, etc. (`PlanetModifierTarget`). A modifier may have `expiresAtYear`; missing expiry
+means permanent. The economy tick removes expired modifiers and refreshes planet/economy detail.
 
 ## Per-tick flow (server)
 

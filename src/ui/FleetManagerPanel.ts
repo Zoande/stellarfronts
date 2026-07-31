@@ -1950,6 +1950,7 @@ export class FleetManagerPanel {
       case "jumpingHyperlane":
         return "In Transit";
       case "movingSystem":
+        if (fleet.orderType === "colonize") return "Colonizing";
         return fleet.orderType === "merge" ? "Merging" : "Maneuvering";
       case "orbiting":
       case "orbitingPlanet":
@@ -1969,9 +1970,13 @@ export class FleetManagerPanel {
           : this.getStarName(data, fleet.movementPlan.destinationStarId));
       const remainingDays = Math.max(0, (fleet.movementPlan.endsAtYear - data.clockYear) * GAME_DAYS_PER_YEAR);
       const remainingMinutes = remainingDays * REAL_MS_PER_GAME_DAY / 60_000;
-      return `${destination} | ${remainingDays.toFixed(1)}d | ${remainingMinutes.toFixed(1)}m`;
+      const orderLabel = fleet.orderType === "colonize" ? `Colonize ${destination}` : destination;
+      return `${orderLabel} | ${remainingDays.toFixed(1)}d | ${remainingMinutes.toFixed(1)}m`;
     }
     if (fleet.orderType === "build") return "Build Starbase";
+    if (fleet.orderType === "colonize" && fleet.orbitTargetPlanetId) {
+      return `Colonize ${this.findPlanetName(data, fleet.orbitTargetPlanetId)}`;
+    }
     if (fleet.orderType === "orbit" && fleet.orbitTargetPlanetId) return `Orbiting ${this.findPlanetName(data, fleet.orbitTargetPlanetId)}`;
     if (fleet.orbitTarget) return `Orbiting ${this.formatOrbitTarget(data, fleet.orbitTarget)}`;
     if (fleet.orderType === "merge") return "Merge rendezvous";
