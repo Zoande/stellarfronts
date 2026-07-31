@@ -99,6 +99,8 @@ export interface GameClock {
   paused: boolean;
   syncedAtMs: number;
   lastProcessedLeaderDay?: number;
+  lastProcessedPopulationWeek?: number;
+  lastProcessedPopulationMonth?: number;
 }
 
 export type ServerUpdateField =
@@ -322,6 +324,7 @@ export interface SocietyDetailPayload {
   laws: {
     civilRights: string;
     speciesPolicy: string;
+    migrationPolicy: string;
   };
 }
 
@@ -1047,7 +1050,7 @@ export type ClientCommand =
 
 export interface GameSnapshot {
   type: "snapshot";
-  protocolVersion?: 5;
+  protocolVersion?: 6;
   perspective: GalaxyPerspective;
   intelligence: GalaxyIntelligenceView;
   clock: GameClock;
@@ -1082,7 +1085,7 @@ export interface GameSnapshot {
 
 export interface GameUpdate {
   type: "update";
-  protocolVersion?: 5;
+  protocolVersion?: 6;
   perspective: GalaxyPerspective;
   intelligence?: GalaxyIntelligenceView;
   changed: ServerUpdateField[];

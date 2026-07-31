@@ -96,6 +96,7 @@ test("multi-game auth store claims generated countries per game", () => {
 
   const secondGame = store.createGame("Second Front");
   const secondGameMembership = store.joinGame(colorAccounts[0], secondGame.id, "Second Country");
+  assert.ok(secondGameMembership);
   assert.equal(
     store.getAccountIdForGameFaction(secondGame.id, secondGameMembership.factionId),
     colorAccounts[0].id,
@@ -109,11 +110,13 @@ test("multi-game auth store claims generated countries per game", () => {
   assert.throws(() => store.joinGame(signup, game.id, "Late Country"), /Game is full/);
 
   const summaries = store.getGameSummariesForAccount(colorAccounts[0]);
-  assert.equal(summaries[0].controlledCountries, 15);
-  assert.equal(summaries[0].isFull, true);
-  assert.equal(summaries[0].isJoined, true);
-  assert.equal(summaries[0].membership?.countryName, "Solar Assembly");
-  assert.deepEqual(summaries[0].membership?.speciesSetup, speciesSetup);
+  const alphaSummary = summaries.find((summary) => summary.id === game.id);
+  assert.ok(alphaSummary);
+  assert.equal(alphaSummary.controlledCountries, 15);
+  assert.equal(alphaSummary.isFull, true);
+  assert.equal(alphaSummary.isJoined, true);
+  assert.equal(alphaSummary.membership?.countryName, "Solar Assembly");
+  assert.deepEqual(alphaSummary.membership?.speciesSetup, speciesSetup);
 });
 
 test("auth store rejects invalid species trait payloads", () => {

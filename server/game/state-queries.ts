@@ -67,10 +67,9 @@ export function getFactionShortagePlanetModifiers(nextState: GameState, factionI
 
   if (food > 0) {
     modifiers.push(
-      shortageModifier("food", "happiness", "Food Shortage", "happiness", "add", -50 * food),
-      shortageModifier("food", "stability", "Food Shortage", "stability", "add", -28 * food),
-      shortageModifier("food", "growth", "Food Shortage", "populationGrowth", "multiply", -0.8 * food),
-      shortageModifier("food", "output", "Food Shortage", "jobOutput", "multiply", -0.2 * food),
+      shortageModifier("food", "happiness", "Food Shortage", "happiness", "add", -40 * food),
+      shortageModifier("food", "stability", "Food Shortage", "stability", "add", -22 * food),
+      shortageModifier("food", "output", "Food Shortage", "jobOutput", "multiply", -0.15 * food),
     );
   }
   if (goods > 0) {
@@ -111,8 +110,8 @@ export function getFactionFleetShortageEffects(nextState: GameState, factionId: 
 } {
   const { food, goods, energy, alloys } = getFactionShortageSeverities(nextState, factionId);
   return {
-    attackMultiplier: clamp(1 - energy * 0.35 - alloys * 0.3 - goods * 0.15 - food * 0.1, 0.35, 1),
-    speedMultiplier: clamp(1 - energy * 0.3 - alloys * 0.2 - food * 0.1, 0.4, 1),
+    attackMultiplier: clamp(1 - energy * 0.35 - alloys * 0.3 - goods * 0.15 - food * 0.08, 0.35, 1),
+    speedMultiplier: clamp(1 - energy * 0.3 - alloys * 0.2 - food * 0.08, 0.4, 1),
     shieldMultiplier: clamp(1 - energy * 0.75, 0.2, 1),
   };
 }
@@ -383,6 +382,7 @@ export function getSpeciesLawSelections(nextState: GameState, factionId: number)
   return {
     civilRights: selected.find((entry) => entry.law.id === "civilRights")?.option.id,
     speciesPolicy: selected.find((entry) => entry.law.id === "speciesPolicy")?.option.id,
+    migrationPolicy: selected.find((entry) => entry.law.id === "migrationPolicy")?.option.id,
   };
 }
 
@@ -408,6 +408,7 @@ export function getPlanetSpeciesContext(nextState: GameState, planetState: Plane
   return {
     species: nextState.species,
     rightsBySpeciesId: rightsState.rightsBySpeciesId,
+    foodShortageProgress: getFactionShortageSeverities(nextState, ownerId).food * 100,
   };
 }
 

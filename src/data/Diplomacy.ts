@@ -5,7 +5,7 @@ export type DiplomacyProposalStatus = "pending" | "accepted" | "declined" | "can
 export type PeaceMode = "whitePeace" | "statusQuo";
 
 export interface TreatyArticleEffect {
-  type: "marketMerge" | "migrationMultiplier";
+  type: "marketMerge" | "migrationAccess";
   multiplier?: number;
 }
 
@@ -110,10 +110,10 @@ export const TREATY_ARTICLE_DEFINITIONS: TreatyArticleDefinition[] = [
   {
     id: MIGRATION_PACT_ARTICLE_ID,
     name: "Migration Pact",
-    summary: "Greatly increases voluntary population movement between both empires.",
-    description: "Both countries allow managed civilian relocation. Stable, housed, job-rich planets become much stronger migration targets, while failing worlds lose population faster.",
+    summary: "Authorizes voluntary population movement between both empires.",
+    description: "Species with Free Migration rights in both countries may relocate through this pact. War suspends all movement until the pact becomes active again.",
     suspendOnWar: true,
-    effects: [{ type: "migrationMultiplier", multiplier: 4 }],
+    effects: [{ type: "migrationAccess" }],
   },
 ];
 

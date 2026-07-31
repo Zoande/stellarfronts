@@ -36,6 +36,7 @@ import {
   monthlyToRealMinute,
   quarterlyToRealMinute,
   realMinuteToGameHour,
+  weeklyToRealMinute,
 } from "../../src/game/ResourceRate";
 
 const DEFAULT_LIMITS: DistrictCounts = {
@@ -56,6 +57,7 @@ test("economy display rates consistently convert to real minutes", () => {
   assert.equal(dailyToRealMinute(24), 60);
   assert.equal(monthlyToRealMinute(120), 10);
   assert.equal(quarterlyToRealMinute(48), 1);
+  assert.equal(weeklyToRealMinute(168), 60);
   assert.equal(gameHourToRealMinute(2), 120);
   assert.equal(realMinuteToGameHour(120), 2);
 });
@@ -252,7 +254,7 @@ test("population growth increases managed planets under capacity", () => {
   const planet = createHabitedPlanet();
   const next = applyPopulationGrowth(planet, DEFAULT_LIMITS, 1);
 
-  assert.ok(planet.economy.populationGrowth.netPerQuarter > 0);
+  assert.ok(planet.economy.populationGrowth.netPerWeek > 0);
   assert.ok(next.population > planet.population);
 });
 
@@ -267,11 +269,11 @@ test("housing pressure slows growth without fully stopping it alone", () => {
     },
   }, DEFAULT_LIMITS);
 
-  assert.ok(cramped.economy.populationGrowth.netPerQuarter > 0);
-  assert.ok(cramped.economy.populationGrowth.netPerQuarter < baseline.economy.populationGrowth.netPerQuarter);
+  assert.ok(cramped.economy.populationGrowth.netPerWeek > 0);
+  assert.ok(cramped.economy.populationGrowth.netPerWeek < baseline.economy.populationGrowth.netPerWeek);
 });
 
-test("overcrowding and unemployment can cause population decline", () => {
+test("overcrowding and unemployment cannot turn natural growth negative", () => {
   const planet = createHabitedPlanet();
   const stressed = recalculatePlanetStateEconomy({
     ...planet,
@@ -295,8 +297,8 @@ test("overcrowding and unemployment can cause population decline", () => {
   }, DEFAULT_LIMITS);
   const next = applyPopulationGrowth(stressed, DEFAULT_LIMITS, 1);
 
-  assert.ok(stressed.economy.populationGrowth.netPerQuarter < 0);
-  assert.ok(next.population < stressed.population);
+  assert.ok(stressed.economy.populationGrowth.netPerWeek >= 0);
+  assert.ok(next.population >= stressed.population);
 });
 
 test("existing habited population below starter value persists during normalization", () => {
@@ -401,7 +403,7 @@ test("planet modifiers alter job output, capacity, and growth", () => {
 
   assert.ok(modified.economy.production.food > baseline.economy.production.food);
   assert.ok(modified.economy.populationGrowth.capacity > baseline.economy.populationGrowth.capacity);
-  assert.ok(modified.economy.populationGrowth.netPerQuarter > baseline.economy.populationGrowth.netPerQuarter);
+  assert.ok(modified.economy.populationGrowth.netPerWeek > baseline.economy.populationGrowth.netPerWeek);
   assert.equal(modified.economy.activeModifiers.length, 3);
 });
 
@@ -567,7 +569,7 @@ test("species traits and living standards feed habitability, happiness, growth, 
   assert.equal(getEffectiveSpeciesHabitability(modified, species.id, context), 90);
   assert.ok(modified.economy.happiness > baseline.economy.happiness);
   assert.ok(modified.economy.upkeep.goods > baseline.economy.upkeep.goods);
-  assert.ok(modified.economy.populationGrowth.netPerQuarter > baseline.economy.populationGrowth.netPerQuarter);
+  assert.ok(modified.economy.populationGrowth.netPerWeek > baseline.economy.populationGrowth.netPerWeek);
 });
 
 test("work eligibility filters job assignment by species rights", () => {
@@ -598,7 +600,7 @@ test("work eligibility filters job assignment by species rights", () => {
       [species.id]: {
         livingStandard: "basic",
         citizenship: "fullCitizenship",
-        migration: "controlled",
+        migration: "internalOnly",
         workEligibility: "allJobs",
       },
     },
@@ -609,7 +611,7 @@ test("work eligibility filters job assignment by species rights", () => {
       [species.id]: {
         livingStandard: "basic",
         citizenship: "limitedRights",
-        migration: "controlled",
+        migration: "internalOnly",
         workEligibility: "laborOnly",
       },
     },

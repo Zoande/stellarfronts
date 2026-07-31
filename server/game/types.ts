@@ -38,7 +38,7 @@ export interface GameFleet extends ServerFleet {
 export interface GameShip extends ServerShip {}
 
 export interface GameState {
-  schemaVersion: 23 | 24 | 25;
+  schemaVersion: 23 | 24 | 25 | 26;
   stars: StarData[];
   nebulae: NebulaRegion[];
   planetStates: PlanetState[];
@@ -66,7 +66,12 @@ export interface GameState {
   combatReports: CombatAfterActionReport[];
   intelligenceByFaction: IntelligenceByFaction;
   startingIntelligenceSeeded: boolean;
-  clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number; lastProcessedLeaderDay: number };
+  clock: GameClock & {
+    lastUpdatedAt: number;
+    lastProcessedPopulationWeek: number;
+    lastProcessedPopulationMonth: number;
+    lastProcessedLeaderDay: number;
+  };
 }
 
 export interface DetailSubscription {

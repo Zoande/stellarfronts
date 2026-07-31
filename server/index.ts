@@ -87,7 +87,7 @@ import {
   rollWeaponShot,
   weaponCanFireAtDistance,
 } from "./game/combat";
-import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_HOUR, elapsedHoursToGameYear, gameYearToHourIndex, gameYearToWeekIndex } from "../src/game/GameTime";
+import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_HOUR, elapsedHoursToGameYear, gameYearToHourIndex, gameYearToMonthIndex, gameYearToWeekIndex } from "../src/game/GameTime";
 import { DARK_MATTER_FLEET_COST_PER_MOVING_DAY, DARK_MATTER_FLEET_SPEED_MULTIPLIER, getConstructionDarkMatterCost, getFleetDarkMatterBillingPlan } from "../src/game/DarkMatter";
 import { gameHourToRealMinute } from "../src/game/ResourceRate";
 import { getFirstRequiredTechName, getMissingPrerequisites, getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel, getRequiredTechIdsForStarbaseBuilding, isTechnologyAvailable, isTechnologyCompleted, isUnlockedByAnyRequiredTech, TechId, TECHNOLOGY_BY_ID } from "../src/data/Technology";
@@ -198,9 +198,9 @@ import {
 import { systemCenterPosition, gameDaysToYears } from "./game/pure-helpers";
 import { expireFactionModifiers, fireSituationThresholds, processRandomEvents, resolveActiveEvent, processEventTimeouts } from "./game/leaders-events";
 import {
-  processPopulationWeeks,
-  processLeaderDays,
+  processPopulationPeriods,
 } from "./game/population";
+import { processLeaderDays } from "./game/leader-lifecycle";
 import { isShipDesignUnlockedForFaction, getShipDesignMissingTechnologyName } from "./game/research";
 import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow, processFleetCommandLinkLoss, rescaleFleetMovementPlan } from "./game/fleet-combat";
 
@@ -1905,6 +1905,9 @@ function handleSetPlanetBuildingEnabled(
   const building = getPlanetBuildingAt(planetState, area, slotIndex, subDistrictIndex);
   const buildingKind = getPlanetBuildingKind(building);
   if (!buildingKind) return reject(socket, "Building slot is empty or invalid.");
+  if (!enabled && buildingKind === "planetaryCapital") {
+    return reject(socket, "The mandatory planetary capital cannot be disabled.");
+  }
   const replacement = createPlanetBuildingState(buildingKind, getPlanetBuildingLevel(building), enabled);
   commitPlanetState(
     socket,
@@ -2348,7 +2351,8 @@ function advanceState(now: number): Set<ServerUpdateField> {
   }
 
   const nextPopulationWeek = gameYearToWeekIndex(ctx.state.clock.year);
-  if (processPopulationWeeks(ctx, nextPopulationWeek)) {
+  const nextPopulationMonth = gameYearToMonthIndex(ctx.state.clock.year);
+  if (processPopulationPeriods(ctx, nextPopulationWeek, nextPopulationMonth)) {
     changed.add("factionEconomies");
     changed.add("habitedPlanetSystems");
   }

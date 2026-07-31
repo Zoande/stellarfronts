@@ -9,7 +9,8 @@ in [`src/data/Diplomacy.ts`](../../src/data/Diplomacy.ts); command handling in
 `DiplomacyState` ([`src/data/Diplomacy.ts`](../../src/data/Diplomacy.ts)) holds:
 
 - **Border policies** (`DiplomacyBorderPolicy`, `BorderPolicy` = `open` | `closed`) — asymmetric:
-  A can close its borders to B without B reciprocating. Affects transit and migration.
+  A can close its borders to B without B reciprocating. They affect transit, but do not authorize
+  foreign population migration.
 - **Wars** (`DiplomacyWar`) — attacker/defender, start/end year, and a pre-war ownership snapshot used
   to restore territory on a status-quo peace.
 - **Treaties** (`DiplomacyTreaty`) — a faction pair, `TreatyArticleId` articles (`tradePrivilege`,
@@ -23,7 +24,8 @@ in [`src/data/Diplomacy.ts`](../../src/data/Diplomacy.ts); command handling in
 ## Article effects
 
 `TreatyArticleDefinition` describes what an article does (`TreatyArticleEffect`): e.g. `tradePrivilege`
-merges connected factions into one internal market bloc; `migrationPact` boosts cross-faction migration.
+merges connected factions into one internal market bloc; `migrationPact` is required for
+cross-faction migration. Both species must have Free Migration rights in their respective empires.
 War suspends these articles.
 
 ## Commands

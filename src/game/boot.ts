@@ -690,6 +690,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
       laws: societyDetail?.laws ?? {
         civilRights: "civicRegistry",
         speciesPolicy: "managedResidency",
+        migrationPolicy: "managedMigration",
       },
       factionName: getCurrentFactionName(),
       clockYear: getRenderClockYear(),

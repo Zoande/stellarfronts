@@ -168,7 +168,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 25,
+    schemaVersion: 26,
     stars,
     nebulae,
     planetStates,
@@ -210,6 +210,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
       syncedAtMs: now,
       lastUpdatedAt: now,
       lastProcessedPopulationWeek: startPopulationWeek,
+      lastProcessedPopulationMonth: startMonth,
       lastProcessedLeaderDay: startLeaderDay,
     },
   };
@@ -237,7 +238,7 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
         `Game ${ctx.game.id} ctx.state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
       );
     }
-    parsed.schemaVersion = 25;
+    parsed.schemaVersion = 26;
     delete (parsed as GameState & { battles?: unknown }).battles;
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
@@ -337,6 +338,14 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       parsed.factions.map((faction) => faction.homeStarId),
     );
     parsed.planetStates = normalizedPlanetStates.planetStates;
+    if (onDiskSchema < 26) {
+      const currentMonth = gameYearToMonthIndex(parsed.clock.year);
+      parsed.clock.lastProcessedPopulationMonth = currentMonth;
+      parsed.planetStates = parsed.planetStates.map((planet) => ({
+        ...planet,
+        populationMigration: { monthIndex: currentMonth, inbound: 0, outbound: 0, intakeCapacity: 0 },
+      }));
+    }
     const normalizedGovernments = normalizeGovernmentStatesForFactions(
       parsed.factions.map((faction) => faction.id),
       parsed.governments,

@@ -8,9 +8,37 @@ import {
   normalizeSpeciesRights,
 } from "./Species";
 import type { SpeciesId, SpeciesRights, SpeciesState } from "./Species";
+import {
+  MIN_HABITED_POPULATION,
+  calculateFamineProjection,
+  calculateBlendedPlanetCapacity,
+  calculateMigrationAttractiveness,
+  calculateMigrationIntakeCapacity,
+  calculatePopulationCapacityMultiplier,
+  calculatePopulationQuality,
+  calculateWeeklyNaturalGrowthRate,
+  createEmptyMigrationLedger,
+  createEmptyMigrationSummary,
+  createEmptyPopulationDecline,
+  createEmptyPopulationGrowth,
+} from "./Population";
+import type {
+  PlanetMigrationLedger,
+  PlanetMigrationSummary,
+  PlanetPopulationDecline,
+  PlanetPopulationGrowth,
+  PlanetPopulationGrowthFactors,
+} from "./Population";
 
 export type { DistrictCounts, DistrictKind } from "./StarMap";
 export type { SpeciesId } from "./Species";
+export type {
+  PlanetMigrationLedger,
+  PlanetMigrationSummary,
+  PlanetPopulationDecline,
+  PlanetPopulationGrowth,
+  PlanetPopulationGrowthFactors,
+} from "./Population";
 
 export type ResourceKind = "food" | "minerals" | "energy" | "goods" | "alloys" | "research";
 
@@ -229,30 +257,15 @@ export interface PlanetEconomySummary {
   crime: number;
   stability: number;
   populationGrowth: PlanetPopulationGrowth;
+  populationDecline: PlanetPopulationDecline;
+  migration: PlanetMigrationSummary;
   activeModifiers: PlanetModifier[];
-}
-
-export interface PlanetPopulationGrowthFactors {
-  housing: number;
-  amenities: number;
-  stability: number;
-  crime: number;
-  employment: number;
-  capacity: number;
-}
-
-export interface PlanetPopulationGrowth {
-  capacity: number;
-  capacityPressure: number;
-  ratePerQuarter: number;
-  netPerQuarter: number;
-  speciesChanges: Array<{ speciesId: SpeciesId; deltaPerQuarter: number }>;
-  factors: PlanetPopulationGrowthFactors;
 }
 
 export interface PlanetEconomySpeciesContext {
   species: SpeciesState[];
   rightsBySpeciesId?: Record<SpeciesId, SpeciesRights | undefined>;
+  foodShortageProgress?: number;
 }
 
 export interface PlanetState {
@@ -270,6 +283,7 @@ export interface PlanetState {
   urbanSubDistricts: UrbanSubDistrictState[];
   constructionQueue: PlanetConstructionQueueItem[];
   modifiers: PlanetModifier[];
+  populationMigration: PlanetMigrationLedger;
   economy: PlanetEconomySummary;
 }
 
@@ -306,7 +320,6 @@ export function getAmenityNeed(population: number): number {
 export const STARTING_HABITED_POPULATION = 10_000_000_000;
 export const NEW_COLONY_POPULATION = 500_000_000;
 export const BUILDING_MAX_LEVEL = 5;
-const BASE_POPULATION_GROWTH_RATE_PER_QUARTER = 0.01;
 const POP_FOOD_UPKEEP_PER_UNIT = 0.022;
 const UNEMPLOYED_GOODS_UPKEEP_PER_UNIT = 0.0005;
 const CRIMINAL_JOB_POPULATION_SHARE_AT_MAX_CRIME = 0.25;
@@ -968,7 +981,16 @@ export function ensureCapitalBuilding(buildings: DistrictBuildingSlots, isHabite
   if (!isHabited) return buildings;
   const city = buildings.city;
   const existingIndex = city.findIndex((slot) => getPlanetBuildingKind(slot) === CAPITAL_BUILDING_KIND);
-  if (existingIndex === 0) return buildings;
+  if (existingIndex === 0) {
+    if (isPlanetBuildingEnabled(city[0])) return buildings;
+    const nextCity = [...city];
+    nextCity[0] = createPlanetBuildingState(
+      CAPITAL_BUILDING_KIND,
+      getPlanetBuildingLevel(city[0]),
+      true,
+    );
+    return { ...buildings, city: nextCity };
+  }
 
   const nextCity = [...city];
   if (existingIndex > 0) {
@@ -1107,24 +1129,6 @@ function clampInt(value: number, min: number, max: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-function createEmptyPopulationGrowth(): PlanetPopulationGrowth {
-  return {
-    capacity: 0,
-    capacityPressure: 0,
-    ratePerQuarter: 0,
-    netPerQuarter: 0,
-    speciesChanges: [],
-    factors: {
-      housing: 0,
-      amenities: 0,
-      stability: 0,
-      crime: 0,
-      employment: 0,
-      capacity: 0,
-    },
-  };
 }
 
 function cloneModifier(modifier: PlanetModifier): PlanetModifier {
@@ -1492,6 +1496,12 @@ export function createPlanetStateFromSeed(
     urbanSubDistricts,
     constructionQueue: normalizeConstructionQueue(existing?.constructionQueue),
     modifiers: normalizeModifiers(existing?.modifiers),
+    populationMigration: {
+      monthIndex: Math.max(0, Math.floor(existing?.populationMigration?.monthIndex ?? 0)),
+      inbound: Math.max(0, Math.floor(existing?.populationMigration?.inbound ?? 0)),
+      outbound: Math.max(0, Math.floor(existing?.populationMigration?.outbound ?? 0)),
+      intakeCapacity: Math.max(0, Math.floor(existing?.populationMigration?.intakeCapacity ?? 0)),
+    },
     economy: createEmptyPlanetEconomySummary(),
   };
   state.economy = calculatePlanetEconomy(state, seed.districtLimits);
@@ -1514,6 +1524,8 @@ export function createEmptyPlanetEconomySummary(): PlanetEconomySummary {
     crime: 0,
     stability: 50,
     populationGrowth: createEmptyPopulationGrowth(),
+    populationDecline: createEmptyPopulationDecline(),
+    migration: createEmptyMigrationSummary(),
     activeModifiers: [],
   };
 }
@@ -2008,7 +2020,10 @@ export function calculatePlanetEconomy(
     deficit[resource] = Math.max(0, -net[resource]);
   }
 
-  const summaryWithoutGrowth: Omit<PlanetEconomySummary, "populationGrowth"> = {
+  const summaryWithoutDemographics: Omit<
+    PlanetEconomySummary,
+    "populationGrowth" | "populationDecline" | "migration"
+  > = {
     production,
     upkeep,
     net,
@@ -2026,111 +2041,225 @@ export function calculatePlanetEconomy(
   };
 
   return {
-    ...summaryWithoutGrowth,
-    populationGrowth: calculatePopulationGrowth(state, summaryWithoutGrowth, districtLimits, externalModifiers, speciesContext),
+    ...summaryWithoutDemographics,
+    populationGrowth: calculatePopulationGrowth(
+      state,
+      summaryWithoutDemographics,
+      districtLimits,
+      externalModifiers,
+      speciesContext,
+    ),
+    populationDecline: calculateFamineProjection({
+      population: state.population,
+      groups: popGroups,
+      foodProduction: production.food,
+      foodUpkeep: upkeep.food,
+      shortageProgress: speciesContext?.foodShortageProgress ?? 0,
+    }),
+    migration: calculatePlanetMigrationSummary(state, summaryWithoutDemographics),
   };
+}
+
+type PlanetEconomyDemographicInputs = Omit<
+  PlanetEconomySummary,
+  "populationGrowth" | "populationDecline" | "migration"
+>;
+
+const PRODUCTIVE_JOB_KINDS = JOB_KINDS.filter(
+  (job): job is Exclude<JobKind, "criminal" | "unemployed"> => job !== "criminal" && job !== "unemployed",
+);
+
+export function calculateVacantProductiveJobs(economy: Pick<PlanetEconomySummary, "jobCapacity" | "popGroups">): number {
+  const occupiedByJob = new Map<JobKind, number>();
+  for (const group of economy.popGroups) {
+    if (group.job === "criminal" || group.job === "unemployed") continue;
+    occupiedByJob.set(group.job, (occupiedByJob.get(group.job) ?? 0) + group.population);
+  }
+  return PRODUCTIVE_JOB_KINDS.reduce(
+    (total, job) => total + Math.max(0, economy.jobCapacity[job] - (occupiedByJob.get(job) ?? 0)),
+    0,
+  );
+}
+
+function getPotentialBuildingJobs(
+  area: BuildingSlotArea,
+  limits: DistrictCounts,
+  subDistrictKind?: UrbanSubDistrictKind,
+): number {
+  let best = 0;
+  for (const definition of Object.values(BUILDING_DEFINITIONS)) {
+    if (definition.kind === "planetaryCapital") continue;
+    const compatible = definition.compatibility.some((rule) => (
+      rule.area === area
+      && (
+        area !== "urbanSubDistrict"
+        || !rule.subDistrictKinds
+        || (subDistrictKind !== undefined && rule.subDistrictKinds.includes(subDistrictKind))
+      )
+    ));
+    if (!compatible) continue;
+    const jobs = (definition.jobs ?? []).reduce((total, effect) => {
+      if (effect.job === "criminal" || effect.job === "unemployed") return total;
+      return total + effect.amount * (effect.perDistrict ? limits[effect.perDistrict] : 1);
+    }, 0);
+    best = Math.max(best, jobs);
+  }
+  return best;
+}
+
+function calculatePotentialProductiveJobs(state: PlanetState, limits: DistrictCounts): number {
+  let total = limits.agriculture * 1_000_000_000
+    + limits.mining * 1_000_000_000
+    + limits.generator * 1_000_000_000
+    + limits.city * 100_000_000;
+
+  const citySlots = Math.max(1, state.buildings.city.length);
+  total += 900_000_000;
+  total += Math.max(0, citySlots - 1) * getPotentialBuildingJobs("city", limits);
+  for (const area of ["generator", "mining", "agriculture"] as DistrictKind[]) {
+    total += state.buildings[area].length * getPotentialBuildingJobs(area, limits);
+  }
+
+  const subDistrictSlots = state.urbanSubDistricts[0]?.buildings.length ?? 3;
+  for (let index = 0; index < state.urbanSubDistricts.length; index += 1) {
+    let best = 0;
+    for (const kind of URBAN_SUB_DISTRICT_KINDS) {
+      let baseJobs = 0;
+      if (kind === "residential") baseJobs = limits.city * 100_000_000;
+      if (kind === "researchCampus") baseJobs = limits.city * 500_000_000;
+      if (kind === "mixedIndustry" || kind === "civilianIndustry" || kind === "heavyIndustry") {
+        baseJobs = limits.city * 500_000_000;
+      }
+      best = Math.max(
+        best,
+        baseJobs + subDistrictSlots * getPotentialBuildingJobs("urbanSubDistrict", limits, kind),
+      );
+    }
+    total += best;
+  }
+  return Math.max(0, total);
+}
+
+function calculatePotentialHousing(state: PlanetState, limits: DistrictCounts): number {
+  const citySlots = Math.max(1, state.buildings.city.length);
+  const cityHousing = limits.city * 1_600_000_000
+    + Math.max(0, citySlots - 1) * (BUILDING_DEFINITIONS.housingComplex.housing ?? 0);
+  const subDistrictSlots = state.urbanSubDistricts[0]?.buildings.length ?? 3;
+  const residentialHousing = limits.city * 1_100_000_000
+    + subDistrictSlots * (BUILDING_DEFINITIONS.housingComplex.housing ?? 0);
+  return Math.max(0, cityHousing + state.urbanSubDistricts.length * residentialHousing);
 }
 
 export function calculatePlanetCapacity(
   state: PlanetState,
   districtLimits?: DistrictCounts,
   externalModifiers: PlanetModifier[] = [],
+  currentEconomy?: Pick<PlanetEconomySummary, "jobCapacity" | "popGroups">,
 ): number {
   if (!state.isHabited) return 0;
   const limits = districtLimits ?? state.builtDistricts;
-  const sizeProxy = Math.max(1, limits.city, state.builtDistricts.city);
-  const resourcePotential = Math.max(0, limits.generator + limits.mining + limits.agriculture);
-  const baseCapacity = sizeProxy * 1_750_000_000;
-  const resourceCapacity = resourcePotential * 260_000_000;
-  const urbanizedCapacity = state.builtDistricts.city * 520_000_000;
-  const infrastructureCapacity = calculateBuildingCapacityBonus(state);
+  const potentialJobs = calculatePotentialProductiveJobs(state, limits);
+  const potentialHousing = calculatePotentialHousing(state, limits);
+  const economy = currentEconomy ?? state.economy;
+  const vacantJobs = economy ? calculateVacantProductiveJobs(economy) : 0;
   const modifiedCapacity = applyModifiers(
-    baseCapacity + resourceCapacity + urbanizedCapacity + infrastructureCapacity,
+    calculateBlendedPlanetCapacity(potentialJobs, potentialHousing, vacantJobs),
     getActiveModifiers(state, externalModifiers),
     "planetCapacity",
   );
-  return Math.max(3_000_000_000, Math.floor(modifiedCapacity));
-}
-
-function calculateBuildingCapacityBonus(state: PlanetState): number {
-  let capacity = 0;
-  const add = (building: PlanetBuildingSlot): void => {
-    const kind = getPlanetBuildingKind(building);
-    if (!kind) return;
-    const levelMultiplier = getBuildingLevelEffectMultiplier(getPlanetBuildingLevel(building));
-    if (kind === "housingComplex") {
-      capacity += 650_000_000 * levelMultiplier;
-      return;
-    }
-    if (
-      kind === "administrativeComplex"
-      || kind === "commercialForum"
-      || kind === "entertainmentForum"
-      || kind === "securityOffice"
-    ) {
-      capacity += 120_000_000 * levelMultiplier;
-    }
-  };
-  for (const building of Object.values(state.buildings).flat()) add(building);
-  for (const subDistrict of state.urbanSubDistricts) {
-    for (const building of subDistrict.buildings) add(building);
-  }
-  return capacity;
+  return Math.max(MIN_HABITED_POPULATION, Math.floor(modifiedCapacity));
 }
 
 export function calculatePopulationGrowth(
   state: PlanetState,
-  economy: Omit<PlanetEconomySummary, "populationGrowth">,
+  economy: PlanetEconomyDemographicInputs,
   districtLimits?: DistrictCounts,
   externalModifiers: PlanetModifier[] = [],
   speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetPopulationGrowth {
   if (!state.isHabited || state.population <= 0) return createEmptyPopulationGrowth();
 
-  const capacity = calculatePlanetCapacity(state, districtLimits, externalModifiers);
+  const capacity = calculatePlanetCapacity(state, districtLimits, externalModifiers, economy);
   const capacityPressure = capacity > 0 ? state.population / capacity : 1;
-  const capacityCurve = clamp(1 - capacityPressure, -0.75, 1.15);
   const speciesPopulations = normalizeSpeciesPopulations(state.speciesPopulations, state.population, state.isHabited);
   const housingNeedPopulation = getSpeciesHousingNeedPopulation(speciesPopulations, speciesContext);
   const housingRatio = housingNeedPopulation > 0 ? economy.housing / housingNeedPopulation : 1;
   const amenityNeed = getAmenityNeed(state.population);
   const amenityRatio = amenityNeed > 0 ? economy.amenities / amenityNeed : 1;
-  const unemploymentRatio = state.population > 0 ? economy.unemployedPopulation / state.population : 0;
-
+  const quality = calculatePopulationQuality({
+    housingRatio,
+    amenityRatio,
+    stability: economy.stability,
+    crime: economy.crime,
+  });
+  const capacityMultiplier = calculatePopulationCapacityMultiplier(capacityPressure);
+  const modifierMultiplier = Math.max(
+    0,
+    getModifierMultiplier(getActiveModifiers(state, externalModifiers), "populationGrowth"),
+  );
+  const speciesMultiplier = Math.max(0, getWeightedSpeciesGrowthMultiplier(state.speciesPopulations, speciesContext));
   const factors: PlanetPopulationGrowthFactors = {
-    housing: clamp((housingRatio - 1) * 0.55, -0.35, 0.2),
-    amenities: clamp((amenityRatio - 1) * 0.18, -0.18, 0.08),
-    stability: clamp((economy.stability - 50) / 100 * 0.9, -0.45, 0.35),
-    crime: clamp(-economy.crime / 100 * 0.2, -0.2, 0),
-    employment: clamp(-unemploymentRatio * 0.72 + (unemploymentRatio <= 0.03 ? 0.04 : 0), -0.36, 0.04),
-    capacity: capacityCurve,
+    ...quality.factors,
+    qualityOfLifeMultiplier: quality.multiplier,
+    capacityMultiplier,
+    modifierMultiplier,
+    speciesMultiplier,
   };
-  const managementPressure = factors.housing + factors.amenities + factors.stability + factors.crime + factors.employment;
-  const managementMultiplier = factors.capacity < 0
-    ? clamp(1 - managementPressure, 0.35, 2.2)
-    : clamp(1 + managementPressure, -0.6, 1.8);
-  const ratePerQuarter = applyModifiers(
-    BASE_POPULATION_GROWTH_RATE_PER_QUARTER * factors.capacity * managementMultiplier,
-    getActiveModifiers(state, externalModifiers),
-    "populationGrowth",
-  ) * getWeightedSpeciesGrowthMultiplier(state.speciesPopulations, speciesContext);
-  const netPerQuarter = Math.round(state.population * ratePerQuarter);
-  const projectedPopulations = applyPopulationDeltaToSpecies(speciesPopulations, netPerQuarter, speciesContext);
+  const ratePerWeek = calculateWeeklyNaturalGrowthRate(
+    capacityMultiplier,
+    quality.multiplier,
+    modifierMultiplier,
+    speciesMultiplier,
+  );
+  const netPerWeek = Math.max(0, Math.round(state.population * ratePerWeek));
+  const projectedPopulations = applyPopulationDeltaToSpecies(speciesPopulations, netPerWeek, speciesContext);
   const projectedBySpecies = new Map(projectedPopulations.map((entry) => [entry.speciesId, entry.population]));
   const currentBySpecies = new Map(speciesPopulations.map((entry) => [entry.speciesId, entry.population]));
   const speciesIds = new Set([...currentBySpecies.keys(), ...projectedBySpecies.keys()]);
   const speciesChanges = [...speciesIds].map((speciesId) => ({
     speciesId,
-    deltaPerQuarter: (projectedBySpecies.get(speciesId) ?? 0) - (currentBySpecies.get(speciesId) ?? 0),
+    deltaPerWeek: (projectedBySpecies.get(speciesId) ?? 0) - (currentBySpecies.get(speciesId) ?? 0),
   }));
 
   return {
     capacity,
     capacityPressure,
-    ratePerQuarter,
-    netPerQuarter,
+    ratePerWeek,
+    netPerWeek,
     speciesChanges,
     factors,
+  };
+}
+
+function calculatePlanetMigrationSummary(
+  state: PlanetState,
+  economy: PlanetEconomyDemographicInputs,
+): PlanetMigrationSummary {
+  if (!state.isHabited) return createEmptyMigrationSummary();
+  const amenityNeed = getAmenityNeed(state.population);
+  const { attractiveness, factors } = calculateMigrationAttractiveness({
+    happiness: economy.happiness,
+    stability: economy.stability,
+    crime: economy.crime,
+    amenityRatio: amenityNeed > 0 ? economy.amenities / amenityNeed : 1,
+    vacantProductiveJobs: calculateVacantProductiveJobs(economy),
+    population: state.population,
+  });
+  const capital = state.buildings.city.find((building) => getPlanetBuildingKind(building) === "planetaryCapital");
+  const monthlyIntakeCapacity = calculateMigrationIntakeCapacity(
+    capital ? getPlanetBuildingLevel(capital) : 1,
+    state.builtDistricts.city,
+  );
+  const ledger = state.populationMigration ?? createEmptyMigrationLedger();
+  return {
+    attractiveness,
+    factors,
+    monthlyIntakeCapacity,
+    lastMonthIntakeCapacity: ledger.intakeCapacity,
+    lastMonthIndex: ledger.monthIndex,
+    lastMonthInbound: ledger.inbound,
+    lastMonthOutbound: ledger.outbound,
+    lastMonthNet: ledger.inbound - ledger.outbound,
   };
 }
 
@@ -2155,6 +2284,12 @@ export function recalculatePlanetStateEconomy(
     urbanSubDistricts: normalizeUrbanSubDistricts(state.urbanSubDistricts),
     constructionQueue: normalizeConstructionQueue(state.constructionQueue),
     modifiers: normalizeModifiers(state.modifiers),
+    populationMigration: {
+      monthIndex: Math.max(0, Math.floor(state.populationMigration?.monthIndex ?? 0)),
+      inbound: Math.max(0, Math.floor(state.populationMigration?.inbound ?? 0)),
+      outbound: Math.max(0, Math.floor(state.populationMigration?.outbound ?? 0)),
+      intakeCapacity: Math.max(0, Math.floor(state.populationMigration?.intakeCapacity ?? 0)),
+    },
   };
   return {
     ...normalized,
@@ -2165,15 +2300,15 @@ export function recalculatePlanetStateEconomy(
 export function applyPopulationGrowth(
   state: PlanetState,
   districtLimits?: DistrictCounts,
-  quarters = 1,
+  weeks = 1,
   externalModifiers: PlanetModifier[] = [],
   speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetState {
   let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers, speciesContext);
-  if (!next.isHabited || quarters <= 0) return next;
+  if (!next.isHabited || weeks <= 0) return next;
 
-  for (let i = 0; i < quarters; i++) {
-    const growth = next.economy.populationGrowth.netPerQuarter;
+  for (let i = 0; i < weeks; i++) {
+    const growth = next.economy.populationGrowth.netPerWeek;
     const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth, speciesContext);
     next = recalculatePlanetStateEconomy({
       ...next,
@@ -2188,14 +2323,14 @@ export function applyPopulationGrowth(
 export function applyPopulationGrowthFraction(
   state: PlanetState,
   districtLimits: DistrictCounts | undefined,
-  quarterFraction: number,
+  weekFraction: number,
   externalModifiers: PlanetModifier[] = [],
   speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetState {
   const next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers, speciesContext);
-  if (!next.isHabited || quarterFraction <= 0) return next;
+  if (!next.isHabited || weekFraction <= 0) return next;
 
-  const growth = Math.round(next.economy.populationGrowth.netPerQuarter * quarterFraction);
+  const growth = Math.round(next.economy.populationGrowth.netPerWeek * weekFraction);
   const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth, speciesContext);
   return recalculatePlanetStateEconomy({
     ...next,
@@ -2204,7 +2339,7 @@ export function applyPopulationGrowthFraction(
   }, districtLimits, externalModifiers, speciesContext);
 }
 
-function applyPopulationDeltaToSpecies(
+export function applyPopulationDeltaToSpecies(
   populations: SpeciesPopulation[],
   delta: number,
   speciesContext?: PlanetEconomySpeciesContext,

@@ -1,6 +1,7 @@
 import {
   GAME_HOURS_PER_MONTH,
   GAME_HOURS_PER_QUARTER,
+  GAME_HOURS_PER_WEEK,
   GAME_HOURS_PER_DAY,
   REAL_MS_PER_GAME_HOUR,
 } from "./GameTime";
@@ -16,6 +17,11 @@ export function monthlyToRealMinute(value: number): number {
 /** Converts a stored per-game-day value to its per-real-minute rate at standard speed. */
 export function dailyToRealMinute(value: number): number {
   return value * GAME_HOURS_PER_REAL_MINUTE / GAME_HOURS_PER_DAY;
+}
+
+/** Converts a stored per-game-week value to its per-real-minute rate at standard speed. */
+export function weeklyToRealMinute(value: number): number {
+  return value * GAME_HOURS_PER_REAL_MINUTE / GAME_HOURS_PER_WEEK;
 }
 
 /** Converts a per-game-quarter value to its per-real-minute rate at standard speed. */

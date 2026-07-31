@@ -55,7 +55,7 @@ jobs, housing) live in `BUILDING_DEFINITIONS`. Notable:
 4. Derive **amenities, happiness, crime, stability** from the assignment (and habitability, housing,
    employment).
 5. Produce **resources and upkeep** per pop group, scaled by habitability and stability multipliers.
-6. Compute **population growth** (`calculatePopulationGrowth`). Details:
+6. Compute the independent **population growth**, **famine decline**, and **migration** views. Details:
    [population-and-planets.md](population-and-planets.md).
 
 `PlanetModifier`s (from planet features, technologies, government laws, leaders) apply additive/

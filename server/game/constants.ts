@@ -45,17 +45,6 @@ export const FORMATION_EVASION_BONUS: Record<FleetFormation, number> = {
   echelon: 0.04,
   defensive: 0.02,
 };
-export const MIGRATION_BASE_WEEKLY_RATE = 0.00018;
-export const MIGRATION_PRESSURE_WEEKLY_RATE = 0.0034;
-// Cross-faction migration tiers. Foreign migration is gated on first contact ("met")
-// and scales up with diplomatic intimacy. Each tier is multiplied by the source/target
-// migration-policy factors before use.
-export const MIGRATION_FOREIGN_MET_MULTIPLIER = 0.02;
-export const MIGRATION_FOREIGN_OPEN_BORDER_MULTIPLIER = 0.08;
-export const MIGRATION_PACT_MULTIPLIER = 0.35;
-export const MIGRATION_MIN_SOURCE_POPULATION = 50_000_000;
-export const MIGRATION_MIN_FLOW_POPULATION = 10_000;
-export const MIGRATION_DESTINATION_CAPACITY_BUFFER = 1.02;
 // Distance falloff between the source and destination star (in hyperlane jumps).
 // Neighbouring systems exchange the most migrants; distant systems still trickle.
 export const MIGRATION_DISTANCE_DECAY = 0.78;

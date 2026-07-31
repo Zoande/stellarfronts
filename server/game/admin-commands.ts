@@ -51,7 +51,7 @@ import { getEventDefinition, LEADER_OFFER_EVENT_ID } from "../../src/data/Events
 import type { GalaxyPerspective } from "../../src/data/Factions";
 import { HUMAN_SPECIES_ID } from "../../src/data/Species";
 import { getFleetTacticalRadius } from "../../src/game/tacticalFormation";
-import { gameYearToWeekIndex } from "../../src/game/GameTime";
+import { gameYearToMonthIndex, gameYearToWeekIndex } from "../../src/game/GameTime";
 import {
   ADMIN_COMMAND_DEFINITIONS,
   formatAdminCommandHelp,
@@ -578,6 +578,7 @@ export async function executeAdminCommand(
       ctx.state.clock.lastUpdatedAt = Date.now();
       ctx.state.clock.syncedAtMs = ctx.state.clock.lastUpdatedAt;
       ctx.state.clock.lastProcessedPopulationWeek = gameYearToWeekIndex(ctx.state.clock.year);
+      ctx.state.clock.lastProcessedPopulationMonth = gameYearToMonthIndex(ctx.state.clock.year);
       ctx.state.clock.lastProcessedLeaderDay = getLeaderDayIndex(ctx.state.clock.year);
       return changedResult(ctx, `Year set to ${ctx.state.clock.year}.`, ["clock"]);
     }

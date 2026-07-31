@@ -77,7 +77,7 @@ function stateFixture(): GameState {
     intelligenceByFaction: {}, startingIntelligenceSeeded: false,
     clock: {
       year: 2100, tickSizeDays: 1, tickSpeedSeconds: 1, paused: false, speedMultiplier: 1,
-      syncedAtMs: 0, lastUpdatedAt: 0, lastProcessedPopulationWeek: 0, lastProcessedLeaderDay: 0,
+      syncedAtMs: 0, lastUpdatedAt: 0, lastProcessedPopulationWeek: 0, lastProcessedPopulationMonth: 0, lastProcessedLeaderDay: 0,
     },
   };
 }

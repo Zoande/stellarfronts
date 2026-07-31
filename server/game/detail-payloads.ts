@@ -475,10 +475,11 @@ export function createEligiblePeaceTransferSystems(
 export function createSocietyDetailPayload(ctx: RuntimeContext, perspective: GalaxyPerspective): SocietyDetailPayload {
   const playerFactionId = perspective.mode === "faction" ? perspective.factionId : null;
   const laws = playerFactionId === null
-    ? { civilRights: "civicRegistry", speciesPolicy: "managedResidency" }
+    ? { civilRights: "civicRegistry", speciesPolicy: "managedResidency", migrationPolicy: "managedMigration" }
     : {
       civilRights: getSpeciesLawSelections(ctx.state, playerFactionId).civilRights ?? "civicRegistry",
       speciesPolicy: getSpeciesLawSelections(ctx.state, playerFactionId).speciesPolicy ?? "managedResidency",
+      migrationPolicy: getSpeciesLawSelections(ctx.state, playerFactionId).migrationPolicy ?? "managedMigration",
     };
   const speciesIds = playerFactionId === null
     ? ctx.state.species.map((species) => species.id)

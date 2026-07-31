@@ -57,8 +57,8 @@ phases run in this order — each adds fields to the `changed` set:
    technologies.
 8. **Market** — `processMarketTicks` → market / tradeAlerts / factionEconomies.
 9. **Shortages** — `processShipShortageEffects` (resource deficits degrade ships/starbases).
-10. **Population** — `processPopulationWeeks` on the weekly index → factionEconomies /
-    habitedPlanetSystems.
+10. **Population** — `processPopulationPeriods` advances weekly births and monthly famine/migration
+    chronologically → factionEconomies / habitedPlanetSystems.
 11. **Situations & events** — `processSituations`, `processRandomEvents`, `processEventTimeouts`.
 
 The order matters: economy deltas feed situations (with a deliberate one-tick lag), research consumes
