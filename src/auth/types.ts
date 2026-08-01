@@ -158,6 +158,8 @@ export interface GameMembership {
   joinedAt: number;
 }
 
+export type GameAvailability = 'ready' | 'starting' | 'unavailable' | 'stopped';
+
 export interface GameSummary {
   id: string;
   name: string;
@@ -170,6 +172,7 @@ export interface GameSummary {
   joinable: boolean;
   lastEnteredAt: number | null;
   membership: GameMembership | null;
+  availability: GameAvailability;
 }
 
 export interface GamesResponse {

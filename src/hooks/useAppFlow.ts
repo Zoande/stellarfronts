@@ -23,6 +23,7 @@ export interface UseAppFlowResult {
   authLoadingDetail: string;
   authBackgroundReady: boolean;
   authSessionReady: boolean;
+  authStartupError: boolean;
   showAuthStartupLoading: boolean;
   auth: AuthState;
   homeTransition: HomeTransitionState;
@@ -82,6 +83,7 @@ export function useAppFlow(): UseAppFlowResult {
   const [authLoadingDetail, setAuthLoadingDetail] = useState('Preparing login assets');
   const [authBackgroundReady, setAuthBackgroundReady] = useState(false);
   const [authSessionReady, setAuthSessionReady] = useState(false);
+  const [authStartupError, setAuthStartupError] = useState(false);
   const [showAuthStartupLoading, setShowAuthStartupLoading] = useState(true);
   const [auth, setAuth] = useState<AuthState>({
     isLoggedIn: false,
@@ -127,7 +129,9 @@ export function useAppFlow(): UseAppFlowResult {
           mode: 'home',
         });
       })
-      .catch(() => undefined)
+      .catch(() => {
+        if (!cancelled) setAuthStartupError(true);
+      })
       .finally(() => {
         if (!cancelled) setAuthSessionReady(true);
       });
@@ -305,6 +309,7 @@ export function useAppFlow(): UseAppFlowResult {
     authLoadingDetail,
     authBackgroundReady,
     authSessionReady,
+    authStartupError,
     showAuthStartupLoading,
     auth,
     homeTransition,

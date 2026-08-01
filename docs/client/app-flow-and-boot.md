@@ -28,6 +28,14 @@ backdrop is [`src/components/BackgroundScene.tsx`](../../src/components/Backgrou
 Routes and the backdrop are code-split. The authentication backdrop intentionally uses BabylonJS
 and authored ship models, so its larger renderer/model chunk loads when the login experience starts.
 
+## Player-facing failure states
+
+[`src/components/UserErrorPage.tsx`](../../src/components/UserErrorPage.tsx) provides the shared,
+non-technical presentation for unavailable services, expired sessions, unknown routes, games that
+are starting/stopped/unavailable/full, unsupported backend protocols, failed page chunks, and lost
+in-game connections. Public game summaries expose only a coarse availability value; runtime errors,
+ports, versions, and stack details remain in `/dev`. Expected form validation stays inline.
+
 ## In-game boot
 
 Opening a game runs [`src/game/boot.ts`](../../src/game/boot.ts), which:

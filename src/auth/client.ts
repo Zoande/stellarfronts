@@ -33,6 +33,13 @@ import type { DevGameRuntimeRow } from './types';
 
 const AUTH_SERVER_URL = import.meta.env.VITE_AUTH_SERVER_URL ?? 'http://localhost:8788';
 
+export class ApiRequestError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
+
 async function requestJson<T>(path: string, body?: unknown, method = 'POST'): Promise<T> {
   const response = await fetch(`${AUTH_SERVER_URL}${path}`, {
     method,
@@ -43,7 +50,10 @@ async function requestJson<T>(path: string, body?: unknown, method = 'POST'): Pr
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error((payload as { error?: string }).error ?? 'Authentication request failed');
+    throw new ApiRequestError(
+      (payload as { error?: string }).error ?? 'Authentication request failed',
+      response.status,
+    );
   }
 
   return payload as T;
@@ -66,7 +76,8 @@ export async function getCurrentSession(): Promise<AuthAccount | null> {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    return null;
+    if (response.status === 401) return null;
+    throw new ApiRequestError('Account service unavailable', response.status);
   }
 
   return (payload as AuthMeResponse).account;

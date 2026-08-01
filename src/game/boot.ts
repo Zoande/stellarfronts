@@ -65,6 +65,7 @@ export interface BootOptions {
   adminCommandsEnabled?: boolean;
   gameId?: string;
   onProgress?: (progress: number, detail: string) => void;
+  onConnectionLost?: () => void;
 }
 
 export async function boot(container: HTMLDivElement, options: BootOptions = {}): Promise<() => void> {
@@ -77,6 +78,7 @@ export async function boot(container: HTMLDivElement, options: BootOptions = {})
 
   reportProgress(0.08, "Connecting to game server");
   const server = new GameServerClient(options.gameId);
+  server.onDisconnect(() => options.onConnectionLost?.());
   const profilePromise = getPlayerProfile().catch(() => null);
   let snapshot = await server.connect();
   const initialProfile = await profilePromise;

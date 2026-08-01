@@ -25,6 +25,7 @@ import {
 type SnapshotHandler = (snapshot: GameSnapshot, changed?: ServerUpdateField[]) => void;
 type MessageHandler = (message: string, ok: boolean) => void;
 type AccountResourcesHandler = (darkMatter: number) => void;
+type DisconnectHandler = () => void;
 type PlanetDetailsHandler = (event: PlanetDetailsEvent) => void;
 type DetailHandler<T extends GameDetailPayload = GameDetailPayload> = (event: GameDetailEvent & { payload?: T }) => void;
 type AdminCommandHandler = (event: AdminCommandResult) => void;
@@ -57,7 +58,12 @@ function withClientClockSync<T extends { clock?: GameSnapshot["clock"] }>(event:
  * server reports a protocol not listed here, the client refuses to connect with
  * a clear message rather than misbehaving.
  */
-export class ClientServerVersionError extends Error {}
+export class ClientServerVersionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ClientServerVersionError';
+  }
+}
 
 function getWebSocketUrl(gameId?: string): string {
   // Support VITE_WS_URL env var for production (set at build time by Vite)
@@ -84,12 +90,14 @@ export class GameServerClient {
   private snapshotHandlers = new Set<SnapshotHandler>();
   private messageHandlers = new Set<MessageHandler>();
   private accountResourcesHandlers = new Set<AccountResourcesHandler>();
+  private disconnectHandlers = new Set<DisconnectHandler>();
   private planetDetailsHandlers = new Set<PlanetDetailsHandler>();
   private detailHandlers = new Map<string, Set<DetailHandler>>();
   private adminCommandHandlers = new Set<AdminCommandHandler>();
   private detailRequests = new Map<string, PendingRequest<GameDetailEvent>>();
   private detailCache = new Map<string, CachedDetail>();
   private adminCommandRequests = new Map<string, PendingRequest<AdminCommandResult>>();
+  private intentionallyDisposed = false;
 
   constructor(private readonly gameId?: string, private readonly urlOverride?: string) {}
 
@@ -104,6 +112,7 @@ export class GameServerClient {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url);
       this.socket = socket;
+      this.intentionallyDisposed = false;
       let resolved = false;
       let negotiatedProtocol: number | undefined;
 
@@ -212,7 +221,14 @@ export class GameServerClient {
       });
 
       socket.addEventListener("close", () => {
-        if (!resolved) reject(new Error("Game server connection closed before snapshot arrived"));
+        if (!resolved) {
+          reject(new Error("Game server connection closed before snapshot arrived"));
+          return;
+        }
+        this.rejectAllPendingRequests(new Error("Game server connection was lost."));
+        if (!this.intentionallyDisposed) {
+          for (const handler of this.disconnectHandlers) handler();
+        }
       });
     });
   }
@@ -231,6 +247,11 @@ export class GameServerClient {
   onAccountResources(handler: AccountResourcesHandler): () => void {
     this.accountResourcesHandlers.add(handler);
     return () => this.accountResourcesHandlers.delete(handler);
+  }
+
+  onDisconnect(handler: DisconnectHandler): () => void {
+    this.disconnectHandlers.add(handler);
+    return () => this.disconnectHandlers.delete(handler);
   }
 
   onPlanetDetails(handler: PlanetDetailsHandler): () => void {
@@ -342,9 +363,11 @@ export class GameServerClient {
   }
 
   dispose(): void {
+    this.intentionallyDisposed = true;
     this.snapshotHandlers.clear();
     this.messageHandlers.clear();
     this.accountResourcesHandlers.clear();
+    this.disconnectHandlers.clear();
     this.planetDetailsHandlers.clear();
     this.detailHandlers.clear();
     this.adminCommandHandlers.clear();

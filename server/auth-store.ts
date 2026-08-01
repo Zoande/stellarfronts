@@ -984,7 +984,10 @@ export class AuthStore {
       GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.flag_design, own_members.species_setup, own_members.joined_at, visits.last_entered_at
       ORDER BY COALESCE(visits.last_entered_at, 0) DESC, g.created_at DESC, g.id ASC
     `).all(account.id, account.id) as GameSummaryRow[];
-    return rows.map((row) => this.toGameSummary(row, account));
+    const runtimeById = new Map(
+      this.getGameRuntimeStats(Date.now()).games.map((runtime) => [runtime.id, runtime]),
+    );
+    return rows.map((row) => this.toGameSummary(row, account, runtimeById.get(row.id)));
   }
 
   getGameSummaryForAccount(gameId: string, account: AuthAccount): GameSummary | null {
@@ -1020,6 +1023,7 @@ export class AuthStore {
     if (this.isPrivilegedGameAccount(account)) {
       const game = this.getGameById(gameId);
       if (!game || game.status === 'archived') throw new AuthError('Game not found', 404);
+      if (game.status !== 'active') throw new AuthError('Game is not currently available', 409);
       return null;
     }
 
@@ -1034,6 +1038,7 @@ export class AuthStore {
     const membership = this.db.transaction(() => {
       const game = this.getGameById(gameId);
       if (!game || game.status === 'archived') throw new AuthError('Game not found', 404);
+      if (game.status !== 'active') throw new AuthError('Game is not currently available', 409);
       const current = this.getGameMembership(game.id, account.id);
       if (current) return current;
 
@@ -1773,7 +1778,11 @@ export class AuthStore {
     };
   }
 
-  private toGameSummary(row: GameSummaryRow, account: AuthAccount): GameSummary {
+  private toGameSummary(
+    row: GameSummaryRow,
+    account: AuthAccount,
+    runtime?: DevGameRuntimeRow,
+  ): GameSummary {
     const game = this.toGame(row);
     const membership = row.faction_id === null || !row.country_name || row.joined_at === null
       ? null
@@ -1789,14 +1798,30 @@ export class AuthStore {
     const controlledCountries = Number(row.controlled_countries ?? 0);
     const isFull = controlledCountries >= game.countryCapacity;
     const isPrivileged = this.isPrivilegedGameAccount(account);
+    const availability = game.status === 'stopped'
+      ? 'stopped'
+      : runtime?.health === 'failed'
+        ? 'unavailable'
+        : runtime?.health === 'loading'
+          ? 'starting'
+          : runtime?.online
+            ? 'ready'
+            : game.schemaVersion === null
+              ? 'starting'
+              : 'unavailable';
     return {
-      ...game,
+      id: game.id,
+      name: game.name,
+      seed: game.seed,
+      countryCapacity: game.countryCapacity,
+      createdAt: game.createdAt,
       controlledCountries,
       isFull,
       isJoined: isPrivileged || membership !== null,
-      joinable: isPrivileged || membership !== null || !isFull,
+      joinable: availability === 'ready' && (isPrivileged || membership !== null || !isFull),
       lastEnteredAt: row.last_entered_at ?? null,
       membership,
+      availability,
     };
   }
 

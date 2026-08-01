@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { getGames, joinGame } from '@/auth/client';
+import { ApiRequestError, getGames, joinGame } from '@/auth/client';
 import type { AccountType } from '@/auth/types';
 import type { GameSummary } from '@/auth/types';
 import { GameLogoutButton } from '@/components/GameLogoutButton';
 import { FlagJoinForm } from '@/components/FlagJoinForm';
 import { LoadingScreen } from '@/components/LoadingScreen';
+import { UserErrorPage } from '@/components/UserErrorPage';
+import type { UserErrorKind } from '@/components/UserErrorPage';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
 import '../styles/Game.css';
@@ -25,12 +27,14 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
   const bootHideTimerRef = useRef<number | null>(null);
   const [isBooting, setIsBooting] = useState(false);
   const [showBootLoading, setShowBootLoading] = useState(false);
-  const [bootError, setBootError] = useState('');
+  const [bootError, setBootError] = useState<UserErrorKind | null>(null);
   const [bootProgress, setBootProgress] = useState(0);
   const [bootDetail, setBootDetail] = useState('Preparing galaxy map');
   const [entryMode, setEntryMode] = useState<EntryMode>('checking');
   const [entryGame, setEntryGame] = useState<GameSummary | null>(null);
   const [entryError, setEntryError] = useState('');
+  const [entryProblem, setEntryProblem] = useState<UserErrorKind | null>(null);
+  const [entryAttempt, setEntryAttempt] = useState(0);
   const [joinBusy, setJoinBusy] = useState(false);
 
   const clearBootHideTimer = () => {
@@ -44,6 +48,7 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
     let cancelled = false;
     setEntryMode('checking');
     setEntryError('');
+    setEntryProblem(null);
 
     void getGames()
       .then((games) => {
@@ -52,7 +57,22 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
         setEntryGame(game);
         if (!game) {
           setEntryMode('blocked');
-          setEntryError('Game not found.');
+          setEntryProblem('gameNotFound');
+          return;
+        }
+        if (game.availability === 'starting') {
+          setEntryMode('blocked');
+          setEntryProblem('gameStarting');
+          return;
+        }
+        if (game.availability === 'unavailable') {
+          setEntryMode('blocked');
+          setEntryProblem('gameUnavailable');
+          return;
+        }
+        if (game.availability === 'stopped') {
+          setEntryMode('blocked');
+          setEntryProblem('gameStopped');
           return;
         }
         if (game.isJoined) {
@@ -64,18 +84,20 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
           return;
         }
         setEntryMode('blocked');
-        setEntryError('This game is full.');
+        setEntryProblem('gameFull');
       })
       .catch((error) => {
         if (cancelled) return;
         setEntryMode('blocked');
-        setEntryError(error instanceof Error ? error.message : 'Could not check game access');
+        setEntryProblem(error instanceof ApiRequestError && error.status === 401
+          ? 'sessionExpired'
+          : 'serviceUnavailable');
       });
 
     return () => {
       cancelled = true;
     };
-  }, [gameId]);
+  }, [entryAttempt, gameId]);
 
   useEffect(() => {
     if (entryMode !== 'ready' || bootedRef.current || !containerRef.current) return;
@@ -87,7 +109,7 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
     bootStartedAtRef.current = window.performance.now();
     setIsBooting(true);
     setShowBootLoading(true);
-    setBootError('');
+    setBootError(null);
     setBootProgress(0);
     setBootDetail('Preparing galaxy map');
 
@@ -111,6 +133,9 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
             setBootProgress(progress * 100);
             setBootDetail(detail);
           },
+          onConnectionLost: () => {
+            if (!cancelled) setBootError('connectionLost');
+          },
         })
           .then((cleanup) => {
             cleanupBoot = cleanup;
@@ -122,7 +147,12 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
           .catch((error: unknown) => {
             if (cancelled) return;
             bootFailed = true;
-            setBootError(error instanceof Error ? error.message : 'Failed to start game');
+            const message = error instanceof Error ? error.message.toLowerCase() : '';
+            setBootError(
+              message.includes('protocol') || message.includes('unsupported')
+                ? 'updateRequired'
+                : 'gameUnavailable',
+            );
             bootedRef.current = false;
             hideBootLoading(0);
           })
@@ -133,7 +163,7 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
       .catch((error: unknown) => {
         if (cancelled) return;
         bootFailed = true;
-        setBootError(error instanceof Error ? error.message : 'Failed to load game boot module');
+        setBootError('unexpected');
         hideBootLoading(0);
       });
 
@@ -153,6 +183,16 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
       setEntryGame(result.game);
       setEntryMode('ready');
     } catch (error) {
+      if (error instanceof TypeError || (error instanceof ApiRequestError && error.status >= 500)) {
+        setEntryMode('blocked');
+        setEntryProblem('serviceUnavailable');
+        return;
+      }
+      if (error instanceof ApiRequestError && error.status === 401) {
+        setEntryMode('blocked');
+        setEntryProblem('sessionExpired');
+        return;
+      }
       setEntryError(error instanceof Error ? error.message : 'Could not join game');
     } finally {
       setJoinBusy(false);
@@ -176,7 +216,13 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
         />
       )}
       {bootError && (
-        <div className="game-error-banner">{bootError}</div>
+        <UserErrorPage
+          kind={bootError}
+          variant="overlay"
+          onPrimary={() => window.location.reload()}
+          secondaryLabel="Home"
+          onSecondary={() => window.location.assign('/home')}
+        />
       )}
       {entryMode === 'checking' && (
         <LoadingScreen
@@ -203,14 +249,16 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
               onSubmit={handleJoin}
             />
           ) : (
-            <section className="game-entry-panel">
-              <div className="game-entry-kicker">Game Access</div>
-              <h1>Cannot Enter Game</h1>
-              <p>{entryError}</p>
-              <div className="game-entry-actions">
-                <button type="button" onClick={() => window.location.assign('/home')}>Home</button>
-              </div>
-            </section>
+            <UserErrorPage
+              kind={entryProblem ?? 'unexpected'}
+              variant="overlay"
+              primaryLabel={entryProblem === 'sessionExpired' ? 'Sign In' : 'Try Again'}
+              onPrimary={entryProblem === 'sessionExpired'
+                ? () => window.location.assign('/')
+                : () => setEntryAttempt((attempt) => attempt + 1)}
+              secondaryLabel="Home"
+              onSecondary={() => window.location.assign('/home')}
+            />
           )}
         </div>
       )}

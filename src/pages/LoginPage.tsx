@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { ApiRequestError } from '@/auth/client';
+import { UserErrorPage } from '@/components/UserErrorPage';
 import '../styles/Auth.css';
 
 interface LoginPageProps {
@@ -70,6 +72,11 @@ function isAccountNotFoundError(error: unknown): boolean {
   return error.message.toLowerCase().includes('account not found');
 }
 
+function isServiceUnavailableError(error: unknown): boolean {
+  return error instanceof TypeError
+    || (error instanceof ApiRequestError && error.status >= 500);
+}
+
 export default function LoginPage({ onLoginSubmit, onSignupSubmit }: LoginPageProps) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -79,6 +86,7 @@ export default function LoginPage({ onLoginSubmit, onSignupSubmit }: LoginPagePr
   const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [accountNotFoundOpen, setAccountNotFoundOpen] = useState(false);
   const [error, setError] = useState('');
+  const [serviceUnavailable, setServiceUnavailable] = useState(false);
   const isTrustedOrigin = typeof window === 'undefined'
     ? true
     : isTrustedStellarfrontsHost(window.location.hostname);
@@ -111,6 +119,10 @@ export default function LoginPage({ onLoginSubmit, onSignupSubmit }: LoginPagePr
       setAccountNotFoundOpen(false);
       await onLoginSubmit(username, password, rememberMe);
     } catch (submitError) {
+      if (isServiceUnavailableError(submitError)) {
+        setServiceUnavailable(true);
+        return;
+      }
       if (isAccountNotFoundError(submitError)) {
         setAccountNotFoundOpen(true);
         setError('');
@@ -143,9 +155,23 @@ export default function LoginPage({ onLoginSubmit, onSignupSubmit }: LoginPagePr
       setError('');
       await onSignupSubmit(username, password);
     } catch (submitError) {
+      if (isServiceUnavailableError(submitError)) {
+        setServiceUnavailable(true);
+        return;
+      }
       setError(submitError instanceof Error ? submitError.message : 'Account creation failed');
     }
   };
+
+  if (serviceUnavailable) {
+    return (
+      <UserErrorPage
+        kind="serviceUnavailable"
+        variant="overlay"
+        onPrimary={() => window.location.reload()}
+      />
+    );
+  }
 
   return (
     <main className="auth-experience">

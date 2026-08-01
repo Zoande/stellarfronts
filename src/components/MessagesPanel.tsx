@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  ApiRequestError,
   getConversations,
   getMessagesWith,
   markConversationRead,
   sendMessage,
 } from '@/auth/client';
 import type { AuthAccount, DirectConversation, DirectMessage } from '@/auth/types';
+import { UserErrorPage } from '@/components/UserErrorPage';
+import type { UserErrorKind } from '@/components/UserErrorPage';
 
 interface MessagesPanelProps {
   account: AuthAccount;
@@ -36,6 +39,7 @@ export function MessagesPanel({ account }: MessagesPanelProps) {
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [newChatInput, setNewChatInput] = useState('');
   const [newChatError, setNewChatError] = useState('');
+  const [fatalError, setFatalError] = useState<UserErrorKind | null>(null);
 
   const bubblesRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -44,8 +48,11 @@ export function MessagesPanel({ account }: MessagesPanelProps) {
   const loadConversations = useCallback(async () => {
     try {
       setConversations(await getConversations());
-    } catch {
-      // silent
+      setFatalError(null);
+    } catch (error) {
+      setFatalError(error instanceof ApiRequestError && error.status === 401
+        ? 'sessionExpired'
+        : 'serviceUnavailable');
     } finally {
       setConvsLoading(false);
     }
@@ -57,11 +64,16 @@ export function MessagesPanel({ account }: MessagesPanelProps) {
     setMsgsLoading(true);
     try {
       const msgs = await getMessagesWith(partnerId);
+      setFatalError(null);
       setMessages(msgs);
       await markConversationRead(partnerId);
       setConversations((prev) =>
         prev.map((c) => (c.partnerId === partnerId ? { ...c, unreadCount: 0 } : c)),
       );
+    } catch (error) {
+      setFatalError(error instanceof ApiRequestError && error.status === 401
+        ? 'sessionExpired'
+        : 'serviceUnavailable');
     } finally {
       setMsgsLoading(false);
     }
@@ -165,6 +177,29 @@ export function MessagesPanel({ account }: MessagesPanelProps) {
   };
 
   const hasThread = activePartnerId !== null;
+
+  if (fatalError) {
+    return (
+      <UserErrorPage
+        kind={fatalError}
+        variant="compact"
+        title={fatalError === 'sessionExpired' ? undefined : 'Messages unavailable'}
+        message={fatalError === 'sessionExpired'
+          ? undefined
+          : 'Messages cannot be loaded right now. Please try again shortly.'}
+        primaryLabel={fatalError === 'sessionExpired' ? 'Sign In' : 'Try Again'}
+        onPrimary={() => {
+          if (fatalError === 'sessionExpired') {
+            window.location.assign('/');
+            return;
+          }
+          setFatalError(null);
+          void loadConversations();
+          if (activePartnerId !== null && activePartnerId >= 0) void loadMessages(activePartnerId);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="home-messages-view">

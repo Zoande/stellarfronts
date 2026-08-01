@@ -44,6 +44,26 @@ test("new games default to the dev version and active status", () => {
   assert.equal(game.schemaVersion, null);
 });
 
+test("player game summaries expose safe availability without runtime details", () => {
+  const store = freshStore();
+  const account = store.getAccountByUsername("color_1");
+  assert.ok(account);
+  const game = store.createGame("Availability");
+
+  const starting = store.getGameSummaryForAccount(game.id, account!);
+  assert.equal(starting?.availability, "starting");
+  assert.equal(starting?.joinable, false);
+  assert.equal(starting ? "versionId" in starting : true, false);
+  assert.equal(starting ? "schemaVersion" in starting : true, false);
+
+  store.recordGameStateVersions(game.id, 27, 7);
+  assert.equal(store.getGameSummaryForAccount(game.id, account!)?.availability, "unavailable");
+
+  store.setGameStatus(game.id, "stopped");
+  assert.equal(store.getGameSummaryForAccount(game.id, account!)?.availability, "stopped");
+  assert.throws(() => store.joinGame(account!, game.id, "Unavailable"), /not currently available/);
+});
+
 test("version registry round-trips and games can be assigned/filtered by version", () => {
   const store = freshStore();
   store.registerGameVersion(sampleVersion());
