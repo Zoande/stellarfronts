@@ -1,108 +1,99 @@
 # Local Development & Environments
 
-How to run StellarFronts locally and what the moving parts are.
-
 ## Quick start
+
+Copy [`.env.example`](../../.env.example) to `.env`, set unique values for
+`ADMIN_PASSWORD`, `DEV_PANEL_PASSWORD`, and `CONTROL_TOKEN`, then:
 
 ```bash
 npm install
-npm run dev:all     # client + auth server + game server together
-# open http://localhost:5173
+npm run dev:all
 ```
 
-`dev:all` runs three processes concurrently (via `concurrently`): the Vite client, the auth server,
-and the game server. See [`package.json`](../../package.json).
+`dev:all` starts the client, auth server, and orchestrator. The orchestrator owns the public
+WebSocket gateway and starts backend processes as needed. Use `dev:bare` only when deliberately
+testing one standalone game server without multi-version lifecycle management.
 
 ## Scripts
 
-| Script | What it runs |
+| Script | Purpose |
 | --- | --- |
-| `npm run dev` | Vite client only (`http://localhost:5173`). |
-| `npm run server:dev` | Game server (`tsx server/index.ts`) — WebSocket on `:8787`. |
-| `npm run auth:dev` | Auth server (`tsx server/auth-server.ts`) — HTTP on `:8788`. |
-| `npm run dev:all` | Client + auth + game server. |
-| `npm run orchestrator:dev` | The multi-version orchestrator (gateway `:8787`, control `:8790`). |
-| `npm run control` | CLI for the orchestrator control API (see below). |
-| `npm run server:test` | Node test suite (`server/tests/*.test.ts`). |
-| `npm run server:typecheck` | Type-check server + shared files (`tsconfig.server.json`). |
-| `npm run build` | Production build: `tsc` then `vite build`. |
-| `npm run preview` | Preview the built client. |
+| `npm run dev` | Vite client on `:5173`. |
+| `npm run auth:dev` | Auth server on `:8788`. |
+| `npm run orchestrator:dev` | Gateway on `:8787`, internal control API on `:8790`. |
+| `npm run dev:all` | Client + auth + orchestrator. |
+| `npm run dev:bare` | Client + auth + standalone game server. |
+| `npm run control` | Local diagnostic/control CLI. The `/dev` UI is preferred for routine work. |
+| `npm run server:test` | Server tests. |
+| `npm run server:typecheck` | Server/shared typecheck. |
+| `npm run build` | Client typecheck, production bundle, and initial-entry budget enforcement. |
 
-> There is no single client typecheck script; use `npx tsc --noEmit` (driven by `tsconfig.json`).
+## Service endpoints
 
-## Ports & endpoints
-
-Defaults from [`.env.example`](../../.env.example) and
-[`server/game/constants.ts`](../../server/game/constants.ts) /
-[`server/orchestrator.ts`](../../server/orchestrator.ts):
-
-| Service | URL | Env var |
+| Service | Default | Configuration |
 | --- | --- | --- |
-| Client (Vite) | `http://localhost:5173` | — |
-| Auth server | `http://localhost:8788` | `AUTH_SERVER_PORT`, client `VITE_AUTH_SERVER_URL` |
-| Game server (WebSocket) | `ws://localhost:8787` | `GAME_SERVER_PORT`, client `VITE_WS_URL` |
-| Orchestrator control API | `http://localhost:8790` | `CONTROL_PORT` |
-| Orchestrator game gateway | `ws://localhost:8787` | `PUBLIC_GAME_PORT` / `GAME_SERVER_PORT` |
-| Orchestrator dev-version process | internal `:8809` | `DEV_INTERNAL_PORT` |
-| Orchestrator tagged versions | internal from `:8810` up | `VERSION_PORT_BASE` |
+| Vite client | `http://localhost:5173` | Vite |
+| Auth HTTP | `127.0.0.1:8788` | `AUTH_SERVER_HOST`, `AUTH_SERVER_PORT` |
+| WebSocket gateway | `127.0.0.1:8787` | `GATEWAY_HOST`, `PUBLIC_GAME_PORT` |
+| Orchestrator control | `127.0.0.1:8790` | `CONTROL_HOST`, `CONTROL_PORT` |
+| Development backend | internal `:8809` | `DEV_INTERNAL_PORT` |
+| Immutable backends | internal from `:8810` | `VERSION_PORT_BASE` |
 
-Note the orchestrator gateway and a standalone game server both default to `:8787` — run one or the
-other, not both.
+Production should expose auth and the gateway through Cloudflare Tunnel. Keep the control API and
+backend ports loopback-only. The Cloudflare-hosted client uses `VITE_AUTH_SERVER_URL` and
+`VITE_WS_URL` to reach those public tunnel endpoints.
 
-## Environment configuration
+## Required security configuration
 
-Use [`.env.example`](../../.env.example) as a reference. The npm server scripts load `.env` from the
-repository root through Node's `--env-file=.env`; both password variables must be present. Values are
-literal, so punctuation, quotes, or parentheses become part of the password. Key vars:
+- `ADMIN_PASSWORD`: initial admin account password.
+- `DEV_PANEL_PASSWORD`: protects `/dev`.
+- `CONTROL_TOKEN`: shared only by auth and orchestrator; never expose it to the client.
+- `ALLOWED_ORIGINS`: allowed auth/CORS origins.
+- `WS_ALLOWED_ORIGINS`: allowed browser WebSocket origins.
+- `COOKIE_DOMAIN` and `COOKIE_SECURE`: production cookie scope and transport policy.
 
-- `VITE_AUTH_SERVER_URL`, `VITE_WS_URL` — where the client looks for the auth and game servers.
-- `ALLOWED_ORIGINS` (auth, CORS) and `WS_ALLOWED_ORIGINS` (game server, WebSocket origin allow-list).
-- `ADMIN_PASSWORD` — required; set it to a long, unique password before starting any server process.
-- `DEV_PANEL_PASSWORD` — required; controls access to the developer panel.
-- `COOKIE_DOMAIN`, `COOKIE_SECURE` — leave unset locally; set for cross-subdomain production.
+Auth and orchestrator refuse to start without the control token. Login endpoints are rate-limited,
+request bodies are bounded, gateway queues and payloads are bounded, and internal services bind to
+loopback unless explicitly configured otherwise.
 
-The production section of `.env.example` shows a split deploy (Cloudflare Pages client +
-Raspberry-Pi/Cloudflare-tunnel auth and WebSocket servers). `wrangler.jsonc` serves `dist/` as an SPA
-with client-side routing fallback.
+## Pi operation
 
-## Accounts (seeded automatically)
+Run auth and orchestrator as supervised services with automatic restart. Once running, normal
+maintenance is available from `/dev`:
 
-The auth store seeds accounts on first run ([`server/auth-store.ts`](../../server/auth-store.ts),
-`seedAccounts`):
+- health and process inspection;
+- immutable version registration and artifact status;
+- game creation, start, stop, retry, update, archive, reset, rollback, and deletion;
+- manual backup creation and exact verified-backup selection;
+- crash/quarantine, owner-lock, save, and tick diagnostics.
 
-- `observer` / `observer` — read-only spectator; can enter any game without claiming a country.
-- `admin` / `$ADMIN_PASSWORD` — privileged; observer-style access plus admin commands. The variable
-  is required; startup fails if it is unset or empty.
-- `color_1` … `color_15` (password = username) — ordinary player accounts, one per faction slot.
+SSH access should only be needed for host-level work such as OS/package upgrades, service-unit
+changes, disk recovery, or deeper debugging.
 
-Observer and admin accounts join in **observer mode** (read-only). Ordinary accounts join by claiming
-one generated country (faction).
+## State
 
-## On-disk state
+- Auth catalog: `server/state/auth.sqlite`
+- Game saves: `server/state/games/<gameId>/game-state.json`
+- Owner token: adjacent `.owner` file
+- Verified backups: game backup directory under the state root
+- Immutable worktrees/dependency stamps: orchestrator version directory
+- Orchestrator crash/quarantine health: persisted control-plane health file
 
-- Game saves: `server/state/games/<gameId>/game-state.json` (+ a `.owner` lock file).
-- Accounts, sessions, game catalog, versions, news/messages, and account progression:
-  `server/state/auth.sqlite`.
-- `SF_STATE_DIR` overrides the state root (the orchestrator sets it for child version processes); see
-  [`server/game-state-path.ts`](../../server/game-state-path.ts).
+`SF_STATE_DIR` relocates runtime state. Backups are retained according to
+`GAME_BACKUP_RETENTION_COUNT`.
 
-## Running with the orchestrator (multi-version)
+## Verification
 
-Start it with `npm run orchestrator:dev`, then drive it with the control CLI:
+Before deploying:
 
 ```bash
-npm run control versions
-npm run control register-version <gitRef> [--id name] [--port n]
-npm run control create-game --name "…" [--version <id>]
-npm run control compat --to <versionId>
-npm run control update-game <id> --to <versionId>
-npm run control stop-game | start-game | archive-game | rollback-game <id>
+npm run server:test
+npm run server:typecheck
+npm run build
 ```
 
-The control API is token-gated (`CONTROL_TOKEN`). Full lifecycle details:
-[`server/orchestrator-and-lifecycle.md`](../server/orchestrator-and-lifecycle.md).
+The build fails if the initial client entry exceeds its budget. The authored BabylonJS
+authentication background is intentionally excluded from that limit.
 
-## Known limitations (current)
-
-- OAuth login endpoints return `501` (not enabled).
-- Email verification is a UI shell with no backend flow.
+Known product limitations remain unchanged: OAuth endpoints return `501`, and email verification is
+still a UI shell.

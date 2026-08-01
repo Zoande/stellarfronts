@@ -1,122 +1,77 @@
 # Architecture & Data Flow
 
-This is the end-to-end picture: how a player's action becomes a server state change and comes back as
-pixels. Read [`01-project-overview.md`](01-project-overview.md) first for the process map.
+The production topology deliberately has one current client and potentially many backend versions:
 
-## The big picture
-
-```
-Browser (React + BabylonJS)
-   │  HTTP (login, /me, game list, join)
-   ▼
-Auth server  ──────────────►  SQLite (accounts, sessions, games, versions, progression)
-   │  issues sf_session cookie
-   │
-   │  WebSocket (?gameId=…, cookie auth)
-   ▼
-[ Orchestrator gateway :8787 ]  ──proxies──►  Game server process for the game's version
-                                                   │
-                                                   ▼
-                                          RuntimeContext + GameState (in memory)
-                                                   │  tick loop ~every 100ms
-                                                   │  save when dirty (every 5s)
-                                                   ▼
-                                          server/state/games/<id>/game-state.json
+```text
+Cloudflare-hosted React client
+       │ HTTPS auth / developer operations
+       ▼
+Raspberry Pi auth server ───────────────► SQLite control-plane catalog
+       │ internal control requests
+       ▼
+Raspberry Pi orchestrator
+       ├── WebSocket gateway :8787 ─────► version A game process
+       │                                ► version B game process
+       └── control API :8790
+                                          │
+                                          ▼
+                              isolated per-game JSON state
 ```
 
-The orchestrator is optional: in plain dev the client's WebSocket talks to the game server directly
-on `:8787`. With the orchestrator running, `:8787` is a gateway that forwards to the correct
-version's internal process. Clients don't know the difference.
+The client deployment remains singular. Protocol adapters let that client communicate with the
+supported backend protocols. The orchestrator selects a backend from the game's catalog entry, so
+players never select an internal version endpoint.
 
-## Client connect & session
+## Operational boundary
 
-1. The React app boots ([`src/App.tsx`](../../src/App.tsx)) and checks the session via the auth
-   server ([`src/auth/client.ts`](../../src/auth/client.ts) → `getCurrentSession()`).
-2. The player picks/joins a game on the home page; the auth server records membership and the game in
-   SQLite ([`server/auth-store.ts`](../../server/auth-store.ts)).
-3. Navigating to a game runs [`src/game/boot.ts`](../../src/game/boot.ts), which opens a
-   `GameServerClient` ([`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts)) WebSocket
-   to the game server (`VITE_WS_URL`, default `ws://localhost:8787`), carrying the `sf_session`
-   cookie.
-4. The game server validates the cookie (against the auth store) and origin, then attaches a client
-   session and immediately sends the account balance plus a full **snapshot** (`attachClient` in
-   [`server/index.ts`](../../server/index.ts)).
+Only auth is publicly exposed over HTTP. The orchestrator control API and game-version processes bind
+to loopback by default. Auth forwards authenticated developer operations using `CONTROL_TOKEN`; the
+browser never receives that token. Cloudflare Tunnel should expose auth and the WebSocket gateway,
+not the internal control port.
 
-## The authoritative loop (server)
+The `/dev` panel is the normal operating surface. It reports orchestrator and gateway health,
+immutable artifacts, process crashes/quarantine, runtime tick and save state, owner locks, and
+verified backups. It also supports version registration and game create/start/stop/retry/update/
+rollback/reset/archive/delete operations. Routine administration therefore does not require shell
+access to the Pi.
 
-The game server is the single source of truth. Each game is one `RuntimeContext` holding a mutable
-`GameState`. A timer drives `tick(now)` roughly every `SERVER_TICK_INTERVAL_MS` (100ms,
-[`server/game/constants.ts`](../../server/game/constants.ts)):
+## Client connection
 
-1. `advanceState(now)` ([`server/index.ts`](../../server/index.ts)) advances the clock and runs every
-   simulation phase (fleet movement, combat, leaders/government, construction, economy, market,
-   shortages, population, situations, events). It returns a `Set<ServerUpdateField>` naming what
-   changed.
-2. `broadcastUpdates(...)` sends each connected client an **update** containing only the changed
-   fields, **filtered to that client's perspective** (fog of war / ownership redaction).
-3. If state is dirty and at least 5s have passed since the last save, it persists to disk.
+1. [`src/App.tsx`](../../src/App.tsx) checks the auth session.
+2. A player selects a game from the auth catalog.
+3. [`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts) opens the gateway WebSocket
+   with the session cookie and game ID.
+4. The gateway resolves the currently assigned version and proxies with bounded retry, queue, and
+   backpressure limits.
+5. The game server authenticates the session and sends a snapshot.
+6. [`src/game/ProtocolAdapter.ts`](../../src/game/ProtocolAdapter.ts) validates and converts the
+   negotiated protocol to the current client model.
 
-See [`server/runtime-and-tick.md`](../server/runtime-and-tick.md) for the full phase ordering and
-[`server/protocol-and-snapshots.md`](../server/protocol-and-snapshots.md) for snapshot/update shapes.
+## Authoritative runtime
 
-## The render loop (client)
+Each game has one `RuntimeContext` and one exclusive owner token. The version process ticks every
+active game independently. A load or tick failure quarantines only that game; siblings continue.
+State-changing commands pass through the mutation coordinator so persistence dirtiness and ordered
+refresh effects cannot be forgotten.
 
-`GameServerClient` caches the latest snapshot and merges updates into it. Two BabylonJS scenes
-consume that state:
+Snapshots carry broadly useful state. Large panel-specific state travels through detail
+subscriptions and revision hashes. This keeps routine updates small and avoids recomputing details
+that no connected client requested.
 
-- **GalaxyScene** ([`src/scenes/GalaxyScene.ts`](../../src/scenes/GalaxyScene.ts)) — the galaxy map:
-  stars, hyperlanes, ownership overlay, fleet/starbase icons.
-- **SystemScene** ([`src/scenes/SystemScene.ts`](../../src/scenes/SystemScene.ts)) — a single system
-  in 3D: planets, starbases, fleet movement and combat.
+## Persistence and versions
 
-`SceneManager` ([`src/SceneManager.ts`](../../src/SceneManager.ts)) owns the engine and the render
-loop. On top of the canvas sits a set of **DOM overlay panels** (`src/ui/*Panel.ts`) — the HUD,
-planet operations, fleet manager, market, tech tree, etc. — which are plain HTML, not React. See
-[`client/scenes-and-rendering.md`](../client/scenes-and-rendering.md) and
-[`client/ui-panels.md`](../client/ui-panels.md).
+Saves use exclusive ownership, unique temporary files, fsync, and atomic rename. Corrupt files fail
+closed rather than being replaced. Explicit schema migrations run before normalization. Destructive
+lifecycle operations create checksummed, version-aware backups.
 
-## Commands back to the server
+Registered versions are commit-pinned worktrees with lockfile-pinned dependencies and static version
+manifests. Historical runtime code is prevented from initializing or migrating the shared auth
+catalog. See [`03-versioning-and-schema.md`](03-versioning-and-schema.md) and
+[`server/orchestrator-and-lifecycle.md`](../server/orchestrator-and-lifecycle.md).
 
-User actions become `ClientCommand` messages
-([`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts)) sent over the same WebSocket
-(`GameServerClient.send`). The server validates each command against the sender's perspective
-(observers are read-only; faction players can only act on what they own/can see), mutates state,
-marks it dirty, and broadcasts the resulting field changes. The client then sees the effect on the
-next update.
+## Client rendering and payload
 
-```
-click "move fleet" ──► ClientCommand { type: "move", … } ──► server handleCommand
-                                                                  │ validate perspective + ownership
-                                                                  │ mutate GameState, mark dirty
-                                                                  ▼
-                                              broadcastUpdates(["fleets","visibility", …])
-                                                                  │
-clientside scene updates ◄── GameUpdate { changed:[…] } ◄─────────┘
-```
-
-## Detail subscriptions (the "second channel")
-
-Big or panel-specific payloads (a planet's full economy breakdown, a starbase's queues, ship design
-catalogs, market history) are **not** in the main snapshot. Panels **subscribe** to a scope+id and
-the server sends a `detail` payload, re-sending only when a revision hash changes
-(`subscribeDetail` in [`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts);
-server side in [`server/game/detail-payloads.ts`](../../server/game/detail-payloads.ts)). This keeps
-the per-tick update small. See [`client/server-client-and-details.md`](../client/server-client-and-details.md).
-
-Account-scoped values use a small third path: the auth profile supplies XP/quests/achievements and
-the initial Dark Matter balance, while game-server debits emit `accountResources` events directly to
-all connected sessions for that account. They are not part of faction `GameState`.
-
-## Persistence & versioning at a glance
-
-- State persists to `server/state/games/<gameId>/game-state.json` and is stamped with the writing
-  build's identity ([`server/game/persistence.ts`](../../server/game/persistence.ts)).
-- On load, state is **normalized** rather than migrated by hand: normalizers backfill defaults and
-  coerce shapes, which *is* the migration mechanism
-  ([`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts),
-  [`src/data/Economy.ts`](../../src/data/Economy.ts) and friends).
-- Each build advertises a `schemaVersion`/`protocolVersion` via
-  [`server/versionManifest.ts`](../../server/versionManifest.ts). The orchestrator uses these to gate
-  version updates. **This is the part most likely to bite you — read
-  [`03-versioning-and-schema.md`](03-versioning-and-schema.md) and
-  [`04-backward-compatibility.md`](04-backward-compatibility.md).**
+The auth/home/dev routes and game route are split into separate chunks. The authored BabylonJS
+authentication background remains part of the login experience and intentionally carries its
+renderer and model-loading cost. The production build enforces a budget only for the initial
+application entry so unrelated route code cannot silently return to that entry.

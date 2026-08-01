@@ -15,8 +15,12 @@ import type {
   SystemDetailPayload,
   SystemDetailsEvent,
 } from "./GameProtocol";
-import { SUPPORTED_SERVER_PROTOCOL_VERSIONS } from "./GameProtocol";
 import { mergeClientIntelEntities, setClientIntelligence } from "./ClientIntelligence";
+import {
+  decodeServerEvent,
+  ProtocolValidationError,
+  reduceSnapshot,
+} from "./ProtocolAdapter";
 
 type SnapshotHandler = (snapshot: GameSnapshot, changed?: ServerUpdateField[]) => void;
 type MessageHandler = (message: string, ok: boolean) => void;
@@ -101,23 +105,32 @@ export class GameServerClient {
       const socket = new WebSocket(url);
       this.socket = socket;
       let resolved = false;
+      let negotiatedProtocol: number | undefined;
 
       socket.addEventListener("open", () => {
         this.send({ type: "join" });
       });
 
       socket.addEventListener("message", (event) => {
-        const parsed = JSON.parse(String(event.data)) as ServerEvent;
-        if (parsed.type === "snapshot") {
-          const serverProtocol = parsed.protocolVersion;
-          if (typeof serverProtocol === "number" && !SUPPORTED_SERVER_PROTOCOL_VERSIONS.includes(serverProtocol)) {
-            const error = new ClientServerVersionError(
-              `This client doesn't support this game's server (protocol v${serverProtocol}). Supported: ${SUPPORTED_SERVER_PROTOCOL_VERSIONS.join(", ")}.`,
-            );
-            socket.close(1011, "Unsupported server protocol");
-            if (!resolved) { resolved = true; reject(error); }
-            return;
+        let parsed: ServerEvent;
+        try {
+          const decoded: unknown = JSON.parse(String(event.data));
+          parsed = decodeServerEvent(decoded, negotiatedProtocol);
+        } catch (error) {
+          const protocolError = error instanceof ProtocolValidationError
+            ? new ClientServerVersionError(error.message)
+            : new Error("Game server sent an invalid message.");
+          socket.close(1002, "Invalid server protocol");
+          if (!resolved) {
+            resolved = true;
+            reject(protocolError);
+          } else {
+            console.error("[GameClient] Rejected server message", error);
           }
+          return;
+        }
+        if (parsed.type === "snapshot") {
+          negotiatedProtocol = parsed.protocolVersion;
           this.latestSnapshot = withClientClockSync(parsed);
           setClientIntelligence(this.latestSnapshot.intelligence, this.latestSnapshot.clock.year);
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot);
@@ -131,44 +144,7 @@ export class GameServerClient {
         if (parsed.type === "update") {
           if (!this.latestSnapshot) return;
           const update = withClientClockSync(parsed);
-          const visibleStarIds = Object.prototype.hasOwnProperty.call(parsed, "visibleStarIds")
-            ? parsed.visibleStarIds!
-            : this.latestSnapshot.visibleStarIds;
-          const knownStarIds = Object.prototype.hasOwnProperty.call(parsed, "knownStarIds")
-            ? parsed.knownStarIds!
-            : this.latestSnapshot.knownStarIds;
-          this.latestSnapshot = {
-            ...this.latestSnapshot,
-            type: "snapshot",
-            perspective: parsed.perspective,
-            clock: update.clock ?? this.latestSnapshot.clock,
-            stars: parsed.stars ?? this.latestSnapshot.stars,
-            nebulae: parsed.nebulae ?? this.latestSnapshot.nebulae,
-            planetStates: parsed.planetStates ?? this.latestSnapshot.planetStates,
-            factionEconomies: parsed.factionEconomies ?? this.latestSnapshot.factionEconomies,
-            habitedPlanetSystemIds: parsed.habitedPlanetSystemIds ?? this.latestSnapshot.habitedPlanetSystemIds,
-            hyperlanes: parsed.hyperlanes ?? this.latestSnapshot.hyperlanes,
-            factions: parsed.factions ?? this.latestSnapshot.factions,
-            starOwnership: parsed.starOwnership ?? this.latestSnapshot.starOwnership,
-            visibleStarIds,
-            knownStarIds,
-            ships: parsed.ships ?? this.latestSnapshot.ships,
-            shipDesigns: parsed.shipDesigns ?? this.latestSnapshot.shipDesigns,
-            fleets: parsed.fleets ?? this.latestSnapshot.fleets,
-            starbases: parsed.starbases ?? this.latestSnapshot.starbases,
-            technologies: parsed.technologies ?? this.latestSnapshot.technologies,
-            leaders: parsed.leaders ?? this.latestSnapshot.leaders,
-            governments: parsed.governments ?? this.latestSnapshot.governments,
-            species: parsed.species ?? this.latestSnapshot.species,
-            recentCombatContacts: parsed.recentCombatContacts ?? this.latestSnapshot.recentCombatContacts,
-            combatProjectiles: parsed.combatProjectiles ?? this.latestSnapshot.combatProjectiles,
-            combatReports: parsed.combatReports ?? this.latestSnapshot.combatReports,
-            diplomacy: parsed.diplomacy ?? this.latestSnapshot.diplomacy,
-            intelligence: parsed.intelligence ?? this.latestSnapshot.intelligence,
-            situations: parsed.situations ?? this.latestSnapshot.situations,
-            events: parsed.events ?? this.latestSnapshot.events,
-            tradeAlerts: parsed.tradeAlerts ?? this.latestSnapshot.tradeAlerts,
-          };
+          this.latestSnapshot = reduceSnapshot(this.latestSnapshot, update);
           setClientIntelligence(this.latestSnapshot.intelligence, this.latestSnapshot.clock.year);
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);
           return;

@@ -1,7 +1,8 @@
 # Runtime & Tick
 
-The game server runs one `RuntimeContext` per game and advances it on a fast timer. This doc is the
-authoritative description of the loop and time model.
+The game server runs one `RuntimeContext` per game and advances it on a fast timer. Games sharing a
+version process are failure-isolated. This doc is the authoritative description of the loop and time
+model.
 
 ## `RuntimeContext`
 
@@ -21,6 +22,11 @@ tick:
 2. `broadcastUpdates(Array.from(changed))` — send each client a perspective-filtered update.
 3. `flushPlanetDetailRefreshes()` — push any queued planet detail updates to subscribers.
 4. Save if dirty and `now - lastSaveAt >= SAVE_INTERVAL_MS` (5s).
+
+The version host catches failures per game. A load or tick failure releases that game's ownership,
+disconnects its clients, records a diagnostic heartbeat, and quarantines only that game. Healthy
+games on the same version continue. The dev panel exposes load failures, last-save time, and
+current/maximum tick duration.
 
 ## Time model
 
@@ -69,8 +75,9 @@ economy output, and intelligence is refreshed whenever movement/combat changes t
 - Add a phase as `processX(ctx, …)` in `server/game/` and call it from `advanceState` at the right
   point, adding the right `ServerUpdateField`s.
 - Gate periodic work on the game-time **index**, not wall-clock, so it fires deterministically.
-- Mutating state in a command handler must set `ctx.hasDirtyState = true` and broadcast the affected
-  fields; otherwise clients won't see it and it may not save.
+- Authoritative commands run through `runAuthoritativeCommand`, which guarantees mutating commands
+  become durable. Use `applyMutationEffects` for ordered recalculation, discovery/intelligence,
+  detail invalidation, dirty state, and broadcasts.
 
 ## Key files
 

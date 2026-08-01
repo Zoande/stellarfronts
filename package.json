@@ -8,12 +8,15 @@
     "server:dev": "node --env-file=.env --import tsx server/index.ts",
     "auth:dev": "node --env-file=.env --import tsx server/auth-server.ts",
     "orchestrator:dev": "node --env-file=.env --import tsx server/orchestrator.ts",
+    "start:auth": "node --env-file=.env --import tsx server/auth-server.ts",
+    "start:orchestrator": "node --env-file=.env --import tsx server/orchestrator.ts",
     "control": "node --env-file=.env --import tsx scripts/control.ts",
     "server:test": "node --import tsx --import ./server/tests/setup.mjs --test server/tests/*.test.ts",
     "combat:balance": "node --import tsx server/game/combat-balance-matrix.ts",
-    "dev:all": "concurrently \"npm run server:dev\" \"npm run auth:dev\" \"npm run dev\"",
+    "dev:all": "concurrently \"npm run orchestrator:dev\" \"npm run auth:dev\" \"npm run dev\"",
+    "dev:bare": "concurrently \"npm run server:dev\" \"npm run auth:dev\" \"npm run dev\"",
     "server:typecheck": "tsc -p tsconfig.server.json --noEmit",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && node scripts/check-client-bundle.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -565,7 +565,11 @@ export class AuthStore {
     // Several processes share this catalog (auth + orchestrator + each version's
     // game server). Wait out brief write contention instead of throwing SQLITE_BUSY.
     this.db.pragma('busy_timeout = 5000');
-    this.initialize();
+    // Version game processes use the stable catalog but must never run control-
+    // plane DDL, migrations, or seed mutations from historical code.
+    if (process.env.SF_AUTH_STORE_MODE !== 'runtime') {
+      this.initialize();
+    }
   }
 
   private initialize(): void {
@@ -887,6 +891,11 @@ export class AuthStore {
   recordGameStateVersions(gameId: string, schemaVersion: number, protocolVersion: number): void {
     this.db.prepare(`UPDATE games SET schema_version = ?, protocol_version = ? WHERE id = ?`)
       .run(schemaVersion, protocolVersion, gameId);
+  }
+
+  clearGameStateVersions(gameId: string): void {
+    this.db.prepare(`UPDATE games SET schema_version = NULL, protocol_version = NULL WHERE id = ?`)
+      .run(gameId);
   }
 
   listGamesByVersion(versionId: string): StoredGame[] {
@@ -1611,6 +1620,8 @@ export class AuthStore {
       combatContactCount: 0,
       gameCount: offlineGames.length,
       games: offlineGames,
+      processes: [],
+      failures: [],
     };
 
     // Gather every version process's heartbeat row (key "game:<versionId>") and
@@ -1640,6 +1651,8 @@ export class AuthStore {
     // heartbeat winning if a game id somehow appears twice (it shouldn't — each
     // game is hosted by exactly one version at a time).
     const runtimeById = new Map<string, DevGameRuntimeRow>();
+    const processHealth = freshProcesses.flatMap(({ stats }) => Array.isArray(stats.processes) ? stats.processes : []);
+    const failures = freshProcesses.flatMap(({ stats }) => Array.isArray(stats.failures) ? stats.failures : []);
     for (const { stats } of freshProcesses) {
       if (!Array.isArray(stats.games)) continue;
       for (const game of stats.games as DevGameRuntimeRow[]) {
@@ -1653,7 +1666,16 @@ export class AuthStore {
     // Overlay onto the full catalog so unhosted games still show as offline, then
     // recompute the top-level aggregate FROM the merged online games — this stays
     // correct no matter how many version processes are reporting.
-    const games = this.mergeGameRuntimeRows(Array.from(runtimeById.values()), now);
+    const failureByGameId = new Map(failures.map((failure) => [failure.gameId, failure]));
+    const games = this.mergeGameRuntimeRows(Array.from(runtimeById.values()), now).map((game) => {
+      const failure = failureByGameId.get(game.id);
+      return failure ? {
+        ...game,
+        versionId: failure.versionId,
+        health: 'failed' as const,
+        error: failure.message,
+      } : game;
+    });
     const onlineGames = games.filter((game) => game.online);
     const activeAccounts = Array.from(new Set(onlineGames.flatMap((game) => game.activeAccounts)))
       .sort((a, b) => a.localeCompare(b));
@@ -1683,6 +1705,8 @@ export class AuthStore {
       habitedPlanetCount: sum((game) => game.habitedPlanetCount),
       gameCount: games.length,
       games,
+      processes: processHealth,
+      failures,
     };
   }
 
@@ -1954,6 +1978,12 @@ export class AuthStore {
       starbaseCount: 0,
       habitedPlanetCount: 0,
       lastHeartbeatAt: null,
+      versionId: row.version_id ?? DEFAULT_VERSION_ID,
+      health: 'offline',
+      error: null,
+      lastSaveAt: null,
+      lastTickDurationMs: 0,
+      maxTickDurationMs: 0,
     }));
   }
 
@@ -1973,6 +2003,7 @@ export class AuthStore {
         seed: offline.seed,
         lastHeartbeatAt,
         online: !!lastHeartbeatAt && now - lastHeartbeatAt <= GAME_RUNTIME_STALE_MS,
+        health: runtime.health ?? (!!lastHeartbeatAt && now - lastHeartbeatAt <= GAME_RUNTIME_STALE_MS ? 'healthy' : 'offline'),
       };
     });
   }

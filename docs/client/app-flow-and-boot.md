@@ -25,6 +25,8 @@ session (via [`src/auth/client.ts`](../../src/auth/client.ts)), drives loading s
 login→home transition, and coordinates asset warm-up. Auth assets are preloaded in
 [`src/utils/preloadAuthAssets.ts`](../../src/utils/preloadAuthAssets.ts); the procedural login
 backdrop is [`src/components/BackgroundScene.tsx`](../../src/components/BackgroundScene.tsx).
+Routes and the backdrop are code-split. The authentication backdrop intentionally uses BabylonJS
+and authored ship models, so its larger renderer/model chunk loads when the login experience starts.
 
 ## In-game boot
 

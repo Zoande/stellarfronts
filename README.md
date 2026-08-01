@@ -20,6 +20,7 @@ Create `.env` in the repository root:
 ```env
 ADMIN_PASSWORD=replace-with-a-local-admin-password
 DEV_PANEL_PASSWORD=replace-with-a-local-dev-panel-password
+CONTROL_TOKEN=replace-with-a-long-random-shared-control-token
 ```
 
 Both variables are required; startup fails instead of falling back to a built-in password. Values are
@@ -35,22 +36,23 @@ Open `http://localhost:5173`. The local stack uses:
 | --- | --- |
 | Vite client | `http://localhost:5173` |
 | Auth HTTP server | `http://localhost:8788` |
-| Game WebSocket server | `ws://localhost:8787` |
+| Orchestrator game gateway | `ws://localhost:8787` |
 
 See [the local development guide](docs/must-read/06-local-dev-and-environments.md) and
 [`.env.example`](.env.example) for all environment variables and production examples.
 
 ## Architecture
 
-StellarFronts normally runs as three processes:
+StellarFronts normally runs as three long-lived processes:
 
 - `src/`: React pages, BabylonJS scenes, DOM HUD/panels, and gameplay modules shared with the server.
 - `server/auth-server.ts`: account, profile, news, messaging, game-catalog, and developer HTTP APIs.
-- `server/index.ts`: the authoritative real-time game simulation and WebSocket protocol.
+- `server/orchestrator.ts`: the supervised multi-version host and public WebSocket gateway.
 
-An optional orchestrator in `server/orchestrator.ts` can host games on different git-backed code
-versions simultaneously and proxy each client to the correct runtime. Game state is saved per game;
-accounts and cross-game progression live in SQLite.
+The orchestrator launches `server/index.ts` once per active code version and proxies each client to
+the correct runtime. Game state is saved per game; accounts and cross-game progression live in
+SQLite. The `/dev` panel is the normal operations surface for versions, lifecycle, failures,
+verified backups, rollback, and gateway/process health.
 
 `src/data/` and `src/game/` are imported by both browser and server code. Changes there affect both
 builds and must remain compatible with persisted state and the supported wire protocol. Start with
@@ -122,7 +124,9 @@ are stored under `server/state/games/<gameId>/game-state.json`.
 
 The current build advertises protocol version 7 and schema version 27. It normalizes schemas
 23–26 into schema 27, while the browser client accepts wire protocols 5, 6, and 7. The orchestrator
-checks compatibility before moving a game and creates backups around reset/update operations.
+checks compatibility before moving a game and creates checksummed, version-aware backups around
+destructive operations. Corrupt or incompatible saves are quarantined and preserved rather than
+being replaced with a fresh galaxy.
 
 See [Versioning & Schema](docs/must-read/03-versioning-and-schema.md) before changing persisted or
 wire state.
@@ -134,7 +138,8 @@ wire state.
 | `npm run dev` | Start the Vite client. |
 | `npm run auth:dev` | Start the auth HTTP server. |
 | `npm run server:dev` | Start the standalone game WebSocket server. |
-| `npm run dev:all` | Start client, auth, and standalone game server together. |
+| `npm run dev:all` | Start client, auth, and the multi-version orchestrator/gateway. |
+| `npm run dev:bare` | Start client, auth, and one standalone game server. |
 | `npm run orchestrator:dev` | Start the multi-version gateway/orchestrator. |
 | `npm run control` | Call orchestrator version/game lifecycle commands. |
 | `npx tsc --noEmit` | Type-check client and shared TypeScript. |

@@ -1,12 +1,18 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter as Router } from 'react-router-dom';
-import LoginPage from './pages/LoginPage';
-import GamePage from './pages/GamePage';
-import HomePage from './pages/HomePage';
-import DevPage from './pages/DevPage';
-import NewsPage from './pages/NewsPage';
 import { LoadingScreen } from './components/LoadingScreen';
-import BackgroundScene from './components/BackgroundScene';
 import { useAppFlow } from './hooks/useAppFlow';
+
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const GamePage = lazy(() => import('./pages/GamePage'));
+const HomePage = lazy(() => import('./pages/HomePage'));
+const DevPage = lazy(() => import('./pages/DevPage'));
+const NewsPage = lazy(() => import('./pages/NewsPage'));
+const BackgroundScene = lazy(() => import('./components/BackgroundScene'));
+
+function RouteFallback() {
+  return <div className="auth-container" aria-busy="true" />;
+}
 
 function MainAppFlow() {
   const {
@@ -35,12 +41,14 @@ function MainAppFlow() {
   if (gameId && auth.isLoggedIn && auth.account) {
     return (
       <Router>
-        <GamePage
-          gameId={gameId}
-          username={auth.account.username}
-          accountType={auth.account.accountType}
-          onLogout={handleLogout}
-        />
+        <Suspense fallback={<RouteFallback />}>
+          <GamePage
+            gameId={gameId}
+            username={auth.account.username}
+            accountType={auth.account.accountType}
+            onLogout={handleLogout}
+          />
+        </Suspense>
       </Router>
     );
   }
@@ -51,17 +59,19 @@ function MainAppFlow() {
     return (
       <Router>
         {shouldRenderHomeBehindLoader && (
-          <HomePage
-            account={auth.account ?? {
-              id: 0,
-              username: homeTransition.username,
-              accountType: 'observer',
-              factionId: null,
-              createdAt: 0,
-              updatedAt: 0,
-            }}
-            onContinuePlaying={handleStartGameFromHome}
-          />
+          <Suspense fallback={<RouteFallback />}>
+            <HomePage
+              account={auth.account ?? {
+                id: 0,
+                username: homeTransition.username,
+                accountType: 'observer',
+                factionId: null,
+                createdAt: 0,
+                updatedAt: 0,
+              }}
+              onContinuePlaying={handleStartGameFromHome}
+            />
+          </Suspense>
         )}
         <LoadingScreen
           theme="auth"
@@ -80,10 +90,12 @@ function MainAppFlow() {
   if (auth.isLoggedIn && auth.mode === 'home') {
     return (
       <Router>
-        <HomePage
-          account={auth.account ?? { id: 0, username: '', accountType: 'observer', factionId: null, createdAt: 0, updatedAt: 0 }}
-          onContinuePlaying={handleStartGameFromHome}
-        />
+        <Suspense fallback={<RouteFallback />}>
+          <HomePage
+            account={auth.account ?? { id: 0, username: '', accountType: 'observer', factionId: null, createdAt: 0, updatedAt: 0 }}
+            onContinuePlaying={handleStartGameFromHome}
+          />
+        </Suspense>
       </Router>
     );
   }
@@ -91,10 +103,12 @@ function MainAppFlow() {
   return (
     <Router>
       <div className="auth-container">
-        <BackgroundScene
-          onLoadProgress={handleAuthBackgroundProgress}
-          onReady={handleAuthBackgroundReady}
-        />
+        <Suspense fallback={null}>
+          <BackgroundScene
+            onLoadProgress={handleAuthBackgroundProgress}
+            onReady={handleAuthBackgroundReady}
+          />
+        </Suspense>
 
         {showAuthStartupLoading && (
           <LoadingScreen
@@ -110,10 +124,12 @@ function MainAppFlow() {
         )}
 
         {authBackgroundReady && (
-          <LoginPage
-            onLoginSubmit={handleLoginSubmit}
-            onSignupSubmit={handleSignupSubmit}
-          />
+          <Suspense fallback={null}>
+            <LoginPage
+              onLoginSubmit={handleLoginSubmit}
+              onSignupSubmit={handleSignupSubmit}
+            />
+          </Suspense>
         )}
       </div>
     </Router>
@@ -128,7 +144,9 @@ function App() {
   if (isDevRoute) {
     return (
       <Router>
-        <DevPage />
+        <Suspense fallback={<RouteFallback />}>
+          <DevPage />
+        </Suspense>
       </Router>
     );
   }
@@ -136,7 +154,9 @@ function App() {
   if (isNewsRoute) {
     return (
       <Router>
-        <NewsPage />
+        <Suspense fallback={<RouteFallback />}>
+          <NewsPage />
+        </Suspense>
       </Router>
     );
   }

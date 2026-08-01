@@ -182,6 +182,8 @@ import {
   processStarbaseShipQueues,
 } from "./game/economy-tick";
 import { normalizeResourceCounts, normalizeStarbase, syncFleetMembership, syncSystemOwnershipFromStarbases, fleetHasConstructionShip, getFleetColonizationShip, syncShipsForDesign, normalizeSpeciesRightsForFactions, assignFoundingSpeciesToOwnedPops, getFactionFoundingSpeciesId } from "./game/state-normalization";
+import { decodeClientCommand } from "./game/client-command-codec";
+import { applyMutationEffects, runAuthoritativeCommand } from "./game/mutation-coordinator";
 import { initServer } from "./game/server-bootstrap";
 import { executeAdminCommand } from "./game/admin-commands";
 import { createInitialState, loadState } from "./game/state-bootstrap";
@@ -226,6 +228,7 @@ const ctx: RuntimeContext = {
   lastSaveAt: 0,
   saveInFlight: null,
   saveQueued: false,
+  ownershipToken: null,
   runtimeIdCounter: 0,
   eventInstanceSeq: 0,
   setFleetPhase, // hoisted function declaration â€” safe to reference here
@@ -2787,7 +2790,7 @@ function handleDismissLeader(socket: WebSocket, perspective: GalaxyPerspective, 
 }
 
 
-function handleCommand(session: ClientSession, command: ClientCommand): void {
+function dispatchCommand(session: ClientSession, command: ClientCommand): void {
   if (command.type === "join") {
     if (!session.sentInitialSnapshot) {
       sendEvent(session.socket, createSnapshot(ctx, session.perspective));
@@ -3079,10 +3082,13 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
     ctx.state.clock.paused = multiplier <= 0;
     syncClockSpeedFields();
     ctx.state.clock.syncedAtMs = Date.now();
-    ctx.hasDirtyState = true;
     accept(session.socket, `Speed set to ${ctx.state.clock.speedMultiplier}x.`);
-    broadcastUpdates(["clock"]);
+    applyMutationEffects(ctx, { changed: ["clock"] });
   }
+}
+
+function handleCommand(session: ClientSession, command: ClientCommand): void {
+  runAuthoritativeCommand(ctx, command, () => dispatchCommand(session, command));
 }
 
 function touchMembershipNames(): void {
@@ -3133,10 +3139,15 @@ function touchMembershipNames(): void {
 }
 
 await acquireOwnership(ctx);
-ctx.state = await loadState(ctx);
-touchMembershipNames();
-advanceState(Date.now());
-await saveState(ctx);
+try {
+  ctx.state = await loadState(ctx);
+  touchMembershipNames();
+  advanceState(Date.now());
+  await saveState(ctx);
+} catch (error) {
+  await releaseOwnership(ctx);
+  throw error;
+}
 
 function attachClient(socket: WebSocket, account: AuthAccount, perspective: GalaxyPerspective): void {
   const session: ClientSession = {
@@ -3164,7 +3175,7 @@ function attachClient(socket: WebSocket, account: AuthAccount, perspective: Gala
 
   socket.on("message", (data) => {
     try {
-      const command = JSON.parse(String(data)) as ClientCommand;
+      const command = decodeClientCommand(JSON.parse(String(data)) as unknown);
       handleCommand(session, command);
       flushPlanetDetailRefreshes();
     } catch (error) {
@@ -3210,10 +3221,14 @@ function getStats(): DevGameRuntimeRow {
     starbaseCount: ctx.state.starbases.length,
     habitedPlanetCount: ctx.state.planetStates.filter((planetState) => planetState.isHabited).length,
     lastHeartbeatAt: Date.now(),
+    versionId: VERSION_MANIFEST.versionId,
+    health: "healthy",
+    error: null,
+    lastSaveAt: ctx.lastSaveAt || null,
   };
 }
 
-async function dispose(message = "Game runtime stopped.", deleteState = false): Promise<void> {
+async function dispose(message = "Game runtime stopped.", deleteState = false, saveBeforeRelease = true): Promise<void> {
   for (const client of ctx.clients) {
     sendEvent(client.socket, { type: "serverInfo", message });
     client.socket.close(1001, message);
@@ -3223,7 +3238,7 @@ async function dispose(message = "Game runtime stopped.", deleteState = false): 
     await rm(getGameStateDirectory(ctx.game.id), { recursive: true, force: true });
     return;
   }
-  await saveState(ctx);
+  if (saveBeforeRelease) await saveState(ctx);
   await releaseOwnership(ctx);
 }
 

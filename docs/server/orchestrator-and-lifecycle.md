@@ -1,85 +1,90 @@
 # Orchestrator & Version Lifecycle
 
-The orchestrator hosts **multiple code versions at once** and routes clients to the right one, so a
-new game can run updated code while an older game keeps running its original code. It is optional
-(plain dev runs a single game server), but it is how the project does zero-downtime upgrades. Source:
-[`server/orchestrator.ts`](../../server/orchestrator.ts); CLI: [`scripts/control.ts`](../../scripts/control.ts).
-Read [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md) first.
+The Raspberry Pi runs one auth service and one orchestrator. Cloudflare continues to serve one
+browser client and tunnel the fixed auth/WebSocket endpoints. The orchestrator can host several
+backend versions without changing either public endpoint.
 
-## What a "version" is
+## Immutable version artifacts
 
-A version is a **git ref checked out as an isolated worktree** under `versions/<id>/`, run as its own
-game-server child process on an internal port. The special `dev` version is the current working tree
-(`DEV_VERSION_ID`, internal port `DEV_INTERNAL_PORT` = 8809); tagged versions get ports from
-`VERSION_PORT_BASE` = 8810 up.
+Registering a version from `/dev`:
 
-Registration (`register-version`):
-1. `git fetch` from `GIT_REMOTE` (default `origin`) and resolve the ref (branch → tag → commit) to an
-   immutable **SHA** (`revCommit`).
-2. `git worktree add --detach <path> <sha>` so a later branch move never changes this version
-   (`ensureWorktreeAt`).
-3. Probe the build's identity by running its server with `--print-version` (`probeManifest`) to read
-   `protocolVersion` / `schemaVersion` / `migratesFromSchema`.
-4. Store the version (worktree path, port, manifest) in the auth-store catalog.
+1. Fetches the selected git ref and resolves it to an immutable commit SHA.
+2. Creates a detached worktree under `versions/<id>`.
+3. Reads `server/version-manifest.json` without importing or executing historical server code.
+   Legacy commits are parsed statically from `versionManifest.ts`.
+4. Runs `npm ci` inside that worktree and stamps the lockfile hash. Each backend therefore resolves
+   its own pinned dependencies rather than the current root `node_modules`.
+5. Stores the version and starts it when an active game needs it.
 
-## The gateway
+Historical backend imports of `server/auth-store` are redirected to the deployed control-plane
+module. Game processes run it in runtime mode, which cannot execute database DDL, migrations, or
+account seeding. This keeps old application code away from old control-plane initialization logic.
 
-The orchestrator listens on two ports (defaults): the **control API** on `CONTROL_PORT` (8790) and the
-public **game WS gateway** on `GATEWAY_PORT` (8787). The gateway proxies each client WebSocket to the
-internal process for that game's assigned version — so the public endpoint and tunnel config never
-change as versions come and go. (Run the orchestrator *or* a standalone game server on 8787, not
-both.)
+## Public gateway
 
-## Process supervision
+The public WebSocket address never changes. The gateway resolves `gameId` to the assigned internal
+version port and uses a bounded proxy state machine:
 
-A single reconcile loop is the spawn authority: it loads active games, ensures each version with
-active games has a running child (`GAME_SERVER_PORT=<internal>`, `SF_VERSION_ID=<id>`,
-`SF_STATE_DIR=<shared root>`), and disposes processes whose games moved away. Crash handling:
-exponential backoff on rapid crashes up to a cap, and after too many in a row a version is
-**quarantined** (no auto-restart) until re-registered or explicitly started. Crash history clears on a
-healthy run, on (re)registration, and on orchestrator restart.
+- cold version starts retry without closing the browser connection;
+- queued startup messages have count and byte limits;
+- downstream and upstream buffered amounts are bounded;
+- target availability is rechecked on every attempt;
+- invalid, oversized, or congested connections fail explicitly.
 
-## Game lifecycle & the control CLI
+Gateway connection, retry, rejection, and queued-byte metrics appear in `/dev`.
 
-Drive the control API with `npm run control <cmd>` ([`scripts/control.ts`](../../scripts/control.ts);
-token-gated by `CONTROL_TOKEN`):
+## Failure containment and supervision
 
-| Command | Effect |
-| --- | --- |
-| `versions` / `register-version <ref> [--id x] [--port n]` / `unregister-version <id>` | List / pin / remove versions (a version with games can't be removed). |
-| `games` / `create-game --name … [--version <id>]` | List / create a game pinned to a version. |
-| `compat --to <versionId>` | Dry-run: can the target version load this game's schema? |
-| `update-game <id> --to <versionId>` | Move a game to another version (gated on compatibility). |
-| `reset-game <id>` | Reset to a fresh galaxy (state backed up first). |
-| `stop-game` / `start-game` / `archive-game` / `rollback-game <id>` | Lifecycle controls. |
-| `endpoint` | Show the public game endpoint. |
+One process hosts the games assigned to one version, but each game loads and ticks independently. A
+bad save or thrown tick quarantines only that game and releases its lock. Healthy games continue.
+The dev panel shows the failure and provides Retry.
 
-## Compatibility gate
+Version crashes use exponential backoff and quarantine. Crash state is persisted in
+`orchestrator-health.json`, so restarting the orchestrator does not erase a crash loop. An explicit
+Start/Retry or re-registration clears the quarantine.
 
-Moving a game to a version is allowed only if the target accepts the game's recorded schema
-([`server/orchestrator.ts`](../../server/orchestrator.ts)):
+## Safe lifecycle
 
-```ts
-// dev accepts everything; a tagged version gates on its migratesFromSchema.
-return target.migratesFromSchema.includes(game.schemaVersion);
-```
+All lifecycle operations are exposed through the auth-gated `/dev` panel:
 
-State is backed up before resets/updates, enabling `rollback-game`.
+- create, start, stop, retry, archive, and delete;
+- register/unregister immutable versions;
+- compatibility check and version update;
+- manual verified backup, backup listing, exact rollback selection, and reset.
 
-## How to extend / rules
+Stop changes catalog state, waits for the runtime to save and release ownership, and fails closed on
+timeout. A version process receives `SIGTERM`, drains all runtimes, and must exit before lifecycle
+work continues; `SIGKILL` is only a timed fallback and is reported as an error.
 
-- A new build that changes persisted shape must keep `migratesFromSchema` covering the schemas of
-  games you intend to upgrade — don't narrow it casually.
-- The schema/protocol numbers a version advertises come straight from
-  [`server/versionManifest.ts`](../../server/versionManifest.ts) via `--print-version`; keep that
-  accurate and aligned with bootstrap/load normalization; see
-  [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md).
-- Worktrees are detached at a SHA on purpose; don't point a version at a moving branch and expect it
-  to track.
+Update backs up the quiesced save before changing version assignment. Rollback verifies the selected
+backup checksum and restores its recorded source backend as well as its state. Reset and deletion
+also retain a final verified backup.
+
+## Health and unattended operation
+
+The control API binds to `127.0.0.1` by default and requires `CONTROL_TOKEN`; auth proxies it without
+exposing the token to the browser. `/dev` displays:
+
+- gateway state;
+- artifact/dependency readiness;
+- version PID, uptime, crash count, retry/quarantine, and last error;
+- game runtime state, tick timing, last save, current lock owner, schema/protocol, and backups.
+
+Once auth and orchestrator are supervised by the Pi's service manager, normal operation requires no
+shell access. SSH is only needed for host-level failures such as power, disk, networking, or service
+manager debugging.
+
+## Required configuration
+
+`ADMIN_PASSWORD`, `DEV_PANEL_PASSWORD`, and `CONTROL_TOKEN` are mandatory. Auth and orchestrator must
+receive the same control token. See [`.env.example`](../../.env.example) for ports, state root,
+origins, retention, and host binding.
 
 ## Key files
 
-- Orchestrator: [`server/orchestrator.ts`](../../server/orchestrator.ts).
-- Control CLI: [`scripts/control.ts`](../../scripts/control.ts).
-- Manifest: [`server/versionManifest.ts`](../../server/versionManifest.ts).
-- Tests: [`server/tests/versioning.test.ts`](../../server/tests/versioning.test.ts).
+- Control plane: [`server/orchestrator.ts`](../../server/orchestrator.ts)
+- Version artifacts: [`server/version-artifacts.ts`](../../server/version-artifacts.ts)
+- Runtime catalog guard: [`server/runtime-module-guard.mjs`](../../server/runtime-module-guard.mjs)
+- Gateway: [`server/ws-gateway.ts`](../../server/ws-gateway.ts)
+- Backups: [`server/game-backups.ts`](../../server/game-backups.ts)
+- Dev operations UI: [`src/pages/DevVersionPanel.tsx`](../../src/pages/DevVersionPanel.tsx)

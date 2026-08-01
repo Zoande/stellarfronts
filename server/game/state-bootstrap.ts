@@ -1,8 +1,9 @@
 // =============================================================================
 // Game state birth & rehydration — extracted from server/index.ts
 //
-// createInitialState builds a fresh galaxy; loadState reads persisted JSON,
-// migrates/normalizes it (falling back to a fresh galaxy on any read failure).
+// createInitialState builds a fresh galaxy; loadState reads persisted JSON and
+// migrates/normalizes it. Only a genuinely missing file creates a fresh state;
+// unreadable, malformed, or incompatible saves fail closed and are preserved.
 // Both take RuntimeContext for game config (seed, statePath) and dirty-flagging;
 // they delegate all shaping to the already-extracted normalizer modules.
 // =============================================================================
@@ -47,13 +48,13 @@ import {
   gameYearToWeekIndex,
 } from "../../src/game/GameTime";
 import type { ServerShip, ServerStarbase } from "../../src/game/GameProtocol";
-import { VERSION_MANIFEST, canMigrateFromSchema } from "../versionManifest";
+import { VERSION_MANIFEST } from "../versionManifest";
 import {
   DEFAULT_TICK_SIZE_DAYS,
   DEFAULT_TICK_SPEED_SECONDS,
 } from "./constants";
 import { computeSpeedMultiplier, normalizeClock } from "./clock";
-import { saveState } from "./persistence";
+import { GameStateLoadError, migrateGameStateEnvelope } from "./state-migrations";
 import { getLeaderDayIndex } from "./state-queries";
 import { resolveShipDesign } from "./ship-designs";
 import { createFleet, createShipFromDesign } from "./fleet-factory";
@@ -226,19 +227,24 @@ export function createInitialState(ctx: RuntimeContext): GameState {
 }
 
 export async function loadState(ctx: RuntimeContext): Promise<GameState> {
+  let raw: string;
   try {
-    const raw = await readFile(ctx.statePath, "utf8");
-    const parsed = JSON.parse(raw) as GameState;
-    // Refuse to load a ctx.state this build cannot migrate (e.g. a newer schema
-    // opened by an older version). The orchestrator gates updates so this is a
-    // last-line guard against save corruption.
-    const onDiskSchema = Number(parsed.schemaVersion);
-    if (!canMigrateFromSchema(VERSION_MANIFEST, onDiskSchema)) {
-      throw new Error(
-        `Game ${ctx.game.id} ctx.state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
-      );
+    raw = await readFile(ctx.statePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return createInitialState(ctx);
     }
-    parsed.schemaVersion = 27;
+    throw new GameStateLoadError(
+      ctx.game.id,
+      ctx.statePath,
+      `Could not read save for game ${ctx.game.id}. The existing file was preserved.`,
+      { cause: error },
+    );
+  }
+
+  try {
+    const decoded: unknown = JSON.parse(raw);
+    const { state: parsed, originalSchema: onDiskSchema } = migrateGameStateEnvelope(decoded);
     delete (parsed as GameState & { battles?: unknown }).battles;
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
@@ -386,9 +392,13 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     }
     refreshDiscovery(parsed);
     return parsed;
-  } catch {
-    const initial = createInitialState(ctx);
-    await saveState(ctx, initial);
-    return initial;
+  } catch (error) {
+    throw new GameStateLoadError(
+      ctx.game.id,
+      ctx.statePath,
+      `Save for game ${ctx.game.id} could not be validated or migrated by version ${SF_VERSION_ID}. `
+      + "The existing file was preserved.",
+      { cause: error },
+    );
   }
 }

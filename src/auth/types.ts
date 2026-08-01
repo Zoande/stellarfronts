@@ -89,6 +89,8 @@ export interface DevGameRuntimeStats {
   combatContactCount: number;
   gameCount: number;
   games: DevGameRuntimeRow[];
+  processes?: DevVersionProcessHealth[];
+  failures?: DevRuntimeFailure[];
 }
 
 export interface DevGameRuntimeRow {
@@ -111,6 +113,32 @@ export interface DevGameRuntimeRow {
   starbaseCount: number;
   habitedPlanetCount: number;
   lastHeartbeatAt: number | null;
+  versionId?: string;
+  health?: 'healthy' | 'loading' | 'failed' | 'offline';
+  error?: string | null;
+  lastSaveAt?: number | null;
+  lastTickDurationMs?: number;
+  maxTickDurationMs?: number;
+}
+
+export interface DevRuntimeFailure {
+  gameId: string;
+  gameName: string;
+  versionId: string;
+  message: string;
+  failedAt: number;
+}
+
+export interface DevVersionProcessHealth {
+  versionId: string;
+  pid: number;
+  startedAt: number;
+  lastHeartbeatAt: number;
+  loadedGames: number;
+  loadingGames: number;
+  failedGames: number;
+  lastLoopDurationMs: number;
+  maxLoopDurationMs: number;
 }
 
 export interface DevStatsResponse {

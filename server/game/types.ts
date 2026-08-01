@@ -94,7 +94,7 @@ export interface GameRuntime {
   touchMembershipNames: () => void;
   tick: (now: number) => void;
   save: () => Promise<void>;
-  dispose: (message?: string, deleteState?: boolean) => Promise<void>;
+  dispose: (message?: string, deleteState?: boolean, saveBeforeRelease?: boolean) => Promise<void>;
   getStats: () => DevGameRuntimeRow;
 }
 
@@ -108,6 +108,7 @@ export interface RuntimeContext {
   lastSaveAt: number;
   saveInFlight: Promise<void> | null;
   saveQueued: boolean;
+  ownershipToken: string | null;
   runtimeIdCounter: number;
   eventInstanceSeq: number;
   // Method fields wired up inside createGameRuntime (hoisted declarations, so safe to reference at ctx init).

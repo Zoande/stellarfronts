@@ -7,10 +7,12 @@ import { AuthStore } from "../auth-store";
 import type { StoredGameVersion } from "../auth-store";
 import {
   CURRENT_PROTOCOL_VERSION,
+  CURRENT_RUNTIME_API_VERSION,
   CURRENT_SCHEMA_VERSION,
   VERSION_MANIFEST,
   canMigrateFromSchema,
 } from "../versionManifest";
+import { readStaticVersionManifest } from "../version-artifacts";
 import { SUPPORTED_SERVER_PROTOCOL_VERSIONS } from "../../src/game/GameProtocol";
 
 function freshStore(): AuthStore {
@@ -120,4 +122,13 @@ test("schema and wire protocol manifests stay aligned with current compatibility
   assert.equal(CURRENT_PROTOCOL_VERSION, 7);
   assert.equal(VERSION_MANIFEST.protocolVersion, CURRENT_PROTOCOL_VERSION);
   assert.deepEqual(SUPPORTED_SERVER_PROTOCOL_VERSIONS, [5, 6, 7]);
+  assert.equal(CURRENT_RUNTIME_API_VERSION, 1);
+});
+
+test("static version manifest matches executable constants without importing a server entry", async () => {
+  const manifest = await readStaticVersionManifest(process.cwd());
+  assert.equal(manifest.protocolVersion, CURRENT_PROTOCOL_VERSION);
+  assert.equal(manifest.schemaVersion, CURRENT_SCHEMA_VERSION);
+  assert.deepEqual(manifest.migratesFromSchema, VERSION_MANIFEST.migratesFromSchema);
+  assert.equal(manifest.runtimeApiVersion, CURRENT_RUNTIME_API_VERSION);
 });

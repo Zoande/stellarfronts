@@ -1,58 +1,52 @@
 # Server Client & Detail Subscriptions
 
-[`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts) is the client's single connection
-to the game server: it owns the WebSocket, caches state, and exposes subscriptions and a command
-sender. The wire types are shared in [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts); the
-server side is documented in [`../server/protocol-and-snapshots.md`](../server/protocol-and-snapshots.md).
+[`GameServerClient`](../../src/game/GameServerClient.ts) owns the browser's one WebSocket connection,
+canonical snapshot cache, detail subscriptions, and command sender.
 
-## Connecting
+## Connection and protocol adaptation
 
-`connect()` opens the WebSocket (`VITE_WS_URL` + `?gameId=…`, cookie auth), sends `{ type: "join" }`,
-and resolves with the first `GameSnapshot`. It validates `protocolVersion` against
-`SUPPORTED_SERVER_PROTOCOL_VERSIONS` (`[5, 6, 7]`) and rejects an unsupported server with a clear message.
-Connections reuse a cached snapshot if already connected.
+The client connects to the fixed public gateway with `?gameId=...` and sends `join`. The first
+snapshot must declare protocol 5, 6, or 7.
 
-## State caching
+[`ProtocolAdapter`](../../src/game/ProtocolAdapter.ts) runtime-validates message envelopes and
+converts every supported protocol into the current canonical `GameSnapshot`. Collections introduced
+after an older protocol default centrally in the adapter. Unsupported, undeclared, malformed, or
+mid-session protocol changes close the connection with a clear error.
 
-The client keeps `latestSnapshot` and merges each incremental `update` into it field-by-field (only
-the fields the update carries, defaulting to the prior value). Snapshot handlers
-(`snapshotHandlers`) are notified on each snapshot/merge so scenes and panels can re-render. Clock
-fields are synced for smooth local interpolation (`withClientClockSync`).
+## Canonical snapshot reducer
 
-Account-scoped resources do not belong in `GameSnapshot`: `accountResources` events update the live
-Dark Matter balance, while the periodic player-profile refresh in `boot.ts` remains a fallback.
+Updates pass through one reducer. It copies only fields actually present on the update, preserves
+omitted fields, and respects explicit `null` values such as visibility sets. Panels and scenes never
+need protocol-specific branches.
+
+When adding or retaining a protocol:
+
+- add its defaults/transform in `ProtocolAdapter`;
+- add a recorded fixture test;
+- keep `SUPPORTED_SERVER_PROTOCOL_VERSIONS` aligned with tested adapters.
 
 ## Detail subscriptions
 
-The main snapshot stays small; panels pull large/scoped data on demand:
+Large or scoped panel data stays out of the main snapshot:
 
-- `subscribeDetail(scope, id, handler)` registers a handler and tells the server to start sending that
-  scope's `detail` payload (`subscribeDetails` command). The server attaches a revision hash and
-  re-sends only when it changes; the client serves the cached payload otherwise.
-- The returned releaser unsubscribes; when the last subscriber for a scope/id goes away, the client
-  sends `unsubscribeDetails`.
+- `subscribeDetail(scope, id, handler)` opens a server subscription;
+- revisions suppress unchanged payloads;
+- `notModified` reuses the canonical cached payload;
+- releasing the final local subscriber sends `unsubscribeDetails`.
 
-Scopes include `system`, `planet`, `starbase`, `fleet`, `fleetManager`, `planetManager`, `market`,
-`technology`, and more (`GameDetailScope`). This is the channel each UI panel uses for its data — see
-[ui-panels.md](ui-panels.md).
+Scopes include systems, planets, starbases, fleets, management panels, market, technology,
+government, leaders, society, and diplomacy.
 
-## Sending commands
+## Commands
 
-`send(command)` serializes a `ClientCommand` to the socket. Commands are **requests**: the server
-validates, applies, and broadcasts the result; the client observes the effect on the next
-snapshot/update/detail. There is no optimistic authoritative mutation (local previews are fine).
-
-## How to extend / rules
-
-- A new panel data feed = a new detail scope (server side) + a `subscribeDetail` call (client side),
-  not a new top-level snapshot field, unless the data is small and globally relevant.
-- Read merged snapshot fields defensively — an older server won't send your new field (default it; see
-  [`../must-read/04-backward-compatibility.md`](../must-read/04-backward-compatibility.md)).
-- Always release detail subscriptions on panel close to avoid leaks and unnecessary server work.
+The client sends typed requests but never owns authoritative state. The server runtime-validates the
+command envelope, checks perspective and ownership, performs the mutation, marks mutating commands
+durable through the mutation coordinator, and broadcasts canonical changes.
 
 ## Key files
 
-- Client: [`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts).
-- Protocol types: [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts).
-- Server builders: [`server/game/detail-payloads.ts`](../../server/game/detail-payloads.ts),
-  [`server/game/snapshot.ts`](../../server/game/snapshot.ts).
+- Client/cache: [`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts)
+- Adapter/reducer: [`src/game/ProtocolAdapter.ts`](../../src/game/ProtocolAdapter.ts)
+- Wire types: [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts)
+- Server command codec: [`server/game/client-command-codec.ts`](../../server/game/client-command-codec.ts)
+- Server detail builders: [`server/game/detail-payloads.ts`](../../server/game/detail-payloads.ts)

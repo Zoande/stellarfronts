@@ -12,6 +12,7 @@
 // Bump these in lockstep with GameState.schemaVersion and the snapshot protocol.
 export const CURRENT_SCHEMA_VERSION = 27;
 export const CURRENT_PROTOCOL_VERSION = 7;
+export const CURRENT_RUNTIME_API_VERSION = 1;
 
 export interface VersionManifest {
   versionId: string;
@@ -19,6 +20,7 @@ export interface VersionManifest {
   schemaVersion: number;
   /** Prior state schemaVersions this build can load/migrate from. */
   migratesFromSchema: number[];
+  runtimeApiVersion: number;
 }
 
 export const VERSION_MANIFEST: VersionManifest = {
@@ -27,6 +29,7 @@ export const VERSION_MANIFEST: VersionManifest = {
   schemaVersion: CURRENT_SCHEMA_VERSION,
   // Intelligence v3 deliberately starts new games; legacy saves are not migrated.
   migratesFromSchema: [23, 24, 25, 26, CURRENT_SCHEMA_VERSION],
+  runtimeApiVersion: CURRENT_RUNTIME_API_VERSION,
 };
 
 export function canMigrateFromSchema(manifest: VersionManifest, fromSchema: number): boolean {

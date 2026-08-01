@@ -1,72 +1,67 @@
 # State Persistence & Normalization
 
-How a game's `GameState` is created, loaded, saved, and kept consistent across code changes. The
-versioning *rules* are in [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md);
-this doc is the mechanism.
+How a game's `GameState` is created, migrated, saved, and protected. Versioning policy is in
+[`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md).
 
-## Where state lives
+## Storage
 
-- Saves: `server/state/games/<gameId>/game-state.json` (one JSON file per game) plus a `.owner` lock.
-- The directory is resolved by [`server/game-state-path.ts`](../../server/game-state-path.ts)
-  (`getGameStateDirectory`), honoring `SF_STATE_DIR` (the orchestrator sets it for child processes).
+- Live save: `server/state/games/<gameId>/game-state.json`.
+- Exclusive owner: `server/state/games/<gameId>/.owner`.
+- Verified backups: `server/state/games/<gameId>/backups/*.state.json` plus matching manifests.
+- `SF_STATE_DIR` overrides the root for the Raspberry Pi deployment.
 
-## Creating a fresh game
+## Fresh state versus failed state
 
-`createInitialState` ([`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts))
-generates a new galaxy (stars, planets, factions, home starbases + starter ships) and initializes
-every subsystem's state (economies, technologies, governments, species/rights, diplomacy, market,
-leaders), stamping schema 27 and aligning the clock to `GAME_START_YEAR`.
+`createInitialState` creates schema 27 only when the save file does not exist. `loadState` never
+turns a parse, validation, normalization, or compatibility error into a new galaxy. Instead it throws
+a `GameStateLoadError`; the version host releases ownership, quarantines that game, reports the
+failure to the dev panel, and leaves the original bytes untouched.
 
-## Loading & normalization (the migration mechanism)
+## Migration pipeline
 
-On load, [`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts):
+Loading proceeds in this order:
 
-1. Reads and JSON-parses the save (falling back to a fresh galaxy on parse failure).
-2. **Schema gate:** rejects the save if `canMigrateFromSchema(VERSION_MANIFEST, parsed.schemaVersion)`
-   is false (a last-line guard; the orchestrator gates updates up front).
-3. **Normalizes:** drops removed fields (e.g. legacy `battles`), backfills missing collections
-   (`adjacency`, `intelligenceByFaction`, `startingIntelligenceSeeded`, …), and re-runs the shared normalizers
-   (`createPlanetStateFromConfig`/`createPlanetStateFromSeed`, fleet/starbase/government/species/
-   market normalizers).
-4. **Derived sync:** `syncFleetMembership`, `syncSystemOwnershipFromStarbases`, `refreshDiscovery`,
-   and economy recalculation.
-5. Marks state dirty if anything changed, so the next save persists the normalized shape.
+1. Read and decode JSON.
+2. Validate the durable envelope (`schemaVersion`, clock, and required root collections).
+3. Check `VERSION_MANIFEST.migratesFromSchema`.
+4. Run explicit envelope steps `23 -> 24 -> 25 -> 26 -> 27`.
+5. Run domain normalizers for planets, fleets, starbases, species, governments, markets, leaders,
+   intelligence, and other entity details.
+6. Rebuild derived adjacency, ownership, discovery, and economies.
+7. Mark normalized state dirty so it is persisted in the current shape.
 
-There are **no hand-written migration functions** — normalization *is* migration. Every persisted
-field must have a normalizer default; that is what lets old saves (and an older server's data) load
-on new code. See [`../must-read/04-backward-compatibility.md`](../must-read/04-backward-compatibility.md).
+Explicit steps make supported version paths auditable. Domain normalization remains responsible for
+entity-level defaults and derived data.
 
-The current build accepts schemas 23–27. Missing `PlanetState.jobLocks` normalize to `[]`; legacy
-planet modifiers without `expiresAtYear` remain permanent. Tier-1 saved homeworld capitals normalize
-to tier 2, while non-homeworld capital levels and all already-built district counts are retained.
+## Durable saves
 
-## Saving
+`saveState` is single-flight. It stamps `codeVersion` and `protocolVersion`, writes a unique temporary
+file, fsyncs it, atomically renames it over the live save, and fsyncs the containing directory on
+Linux. The catalog stamp is updated only after the file replacement succeeds.
 
-`saveState` ([`server/game/persistence.ts`](../../server/game/persistence.ts)) writes the state plus
-the writing build's identity (`codeVersion`, `protocolVersion`) and records the game's schema/protocol
-into the auth-store catalog. The tick loop saves at most every `SAVE_INTERVAL_MS` (5s) and only when
-`hasDirtyState`. `dispose` flushes a final save on shutdown.
+Dirty games save at most every five seconds. A graceful version shutdown stops ticks, closes clients,
+flushes every healthy runtime, and releases ownership before exiting.
 
 ## Exclusive ownership
 
-`acquireOwnership` / `releaseOwnership` ([`server/game/persistence.ts`](../../server/game/persistence.ts))
-write a `.owner` lock (`{ versionId, pid, startedAt }`). A different *live* version's process is
-refused ownership of the same game — belt-and-suspenders during the brief window of a version update,
-on top of the orchestrator's version filter.
+Ownership uses atomic exclusive file creation. The record contains `{ versionId, pid, token,
+startedAt }`. A second live owner is rejected even when it has the same version ID or operating-system
+process. Release requires the matching random token. Dead or invalid locks may be reclaimed.
 
-## How to extend / rules
+## Backups and rollback
 
-- New persisted field → type it, initialize it in `createInitialState`, and **backfill it on load**.
-- Decide on a schema bump per [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md)
-  and keep the manifest, `GameState` type, fresh-state value, and load normalization aligned.
-- Don't read a persisted field without a fallback; old saves may predate it.
+Backups contain the state plus a manifest with game ID, reason, source backend version, schema,
+protocol, byte size, SHA-256 checksum, and creation time. Retention defaults to 30 per game and is
+configured with `GAME_BACKUP_RETENTION`.
+
+Reset, update, rollback, deletion, and manual backup first quiesce the game and wait for ownership to
+be released. Rollback verifies the checksum and schema, requires the source backend to be registered,
+restores both state and backend assignment, and creates a backup of the state being replaced.
 
 ## Key files
 
-- Bootstrap/load/normalize: [`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts),
-  [`server/game/state-normalization.ts`](../../server/game/state-normalization.ts).
-- Save/ownership: [`server/game/persistence.ts`](../../server/game/persistence.ts).
-- Paths: [`server/game-state-path.ts`](../../server/game-state-path.ts).
-- Manifest: [`server/versionManifest.ts`](../../server/versionManifest.ts).
-- Tests: [`server/tests/state.test.ts`](../../server/tests/state.test.ts),
-  [`server/tests/versioning.test.ts`](../../server/tests/versioning.test.ts).
+- Bootstrap and load: [`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts)
+- Explicit migrations: [`server/game/state-migrations.ts`](../../server/game/state-migrations.ts)
+- Saving and ownership: [`server/game/persistence.ts`](../../server/game/persistence.ts)
+- Backups: [`server/game-backups.ts`](../../server/game-backups.ts)
+- Lifecycle: [`server/orchestrator.ts`](../../server/orchestrator.ts)
