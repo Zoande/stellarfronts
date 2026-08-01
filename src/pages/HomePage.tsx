@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiRequestError, getGames, getPlayerProfile, joinGame, claimQuestReward } from '@/auth/client';
+import { getGames, getPlayerProfile, joinGame, claimQuestReward } from '@/auth/client';
 import type { AuthAccount, GameSummary, PlayerProfile, QuestInfo, AchievementInfo } from '@/auth/types';
 import { MessagesPanel } from '@/components/MessagesPanel';
 import { FlagJoinForm } from '@/components/FlagJoinForm';
 import { UserErrorPage } from '@/components/UserErrorPage';
 import type { UserErrorKind } from '@/components/UserErrorPage';
+import { classifyRequestFailure } from '@/errors/UserFacingErrors';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
 import '../styles/Home.css';
@@ -336,9 +337,8 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
       setGamesError('');
       setGames(await getGames());
     } catch (error) {
-      if (error instanceof ApiRequestError && error.status === 401) {
-        setFatalError('sessionExpired');
-      }
+      const failure = classifyRequestFailure(error);
+      if (failure) setFatalError(failure);
       setGamesError(error instanceof Error ? error.message : 'Could not load games');
     } finally {
       if (showLoading) setGamesLoading(false);
@@ -422,14 +422,10 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
       void loadProfile();
       onContinuePlaying(result.game.id);
     } catch (error) {
-      if (error instanceof TypeError || (error instanceof ApiRequestError && error.status >= 500)) {
+      const failure = classifyRequestFailure(error);
+      if (failure) {
         setJoinTarget(null);
-        setFatalError('serviceUnavailable');
-        return;
-      }
-      if (error instanceof ApiRequestError && error.status === 401) {
-        setJoinTarget(null);
-        setFatalError('sessionExpired');
+        setFatalError(failure);
         return;
       }
       setJoinError(error instanceof Error ? error.message : 'Could not join game');

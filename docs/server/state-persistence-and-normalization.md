@@ -52,7 +52,8 @@ process. Release requires the matching random token. Dead or invalid locks may b
 
 Backups contain the state plus a manifest with game ID, reason, source backend version, schema,
 protocol, byte size, SHA-256 checksum, and creation time. Retention defaults to 30 per game and is
-configured with `GAME_BACKUP_RETENTION`.
+configured with `GAME_BACKUP_RETENTION_COUNT`. The legacy
+`GAME_BACKUP_RETENTION` name remains accepted for older deployments.
 
 Reset, update, rollback, deletion, and manual backup first quiesce the game and wait for ownership to
 be released. Rollback verifies the checksum and schema, requires the source backend to be registered,

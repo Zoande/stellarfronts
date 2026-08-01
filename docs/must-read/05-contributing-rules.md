@@ -19,6 +19,7 @@ How to make changes that compile, stay backward compatible, and pass the test su
   - `npm run server:test` — the Node test suite. Several tests assert exact economy/building layouts,
     so behavior changes legitimately require test updates — update them deliberately, don't delete
     them.
+  - `npm run server:test:coverage` — the same suite with minimum line, branch, and function coverage.
 
 ## Recipe: add a planetary building
 

@@ -12,6 +12,7 @@
     "start:orchestrator": "node --env-file=.env --import tsx server/orchestrator.ts",
     "control": "node --env-file=.env --import tsx scripts/control.ts",
     "server:test": "node --import tsx --import ./server/tests/setup.mjs --test server/tests/*.test.ts",
+    "server:test:coverage": "node --experimental-test-coverage --test-coverage-lines=80 --test-coverage-branches=70 --test-coverage-functions=70 --import tsx --import ./server/tests/setup.mjs --test server/tests/*.test.ts",
     "combat:balance": "node --import tsx server/game/combat-balance-matrix.ts",
     "dev:all": "concurrently \"npm run orchestrator:dev\" \"npm run auth:dev\" \"npm run dev\"",
     "dev:bare": "concurrently \"npm run server:dev\" \"npm run auth:dev\" \"npm run dev\"",

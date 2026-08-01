@@ -25,6 +25,7 @@ testing one standalone game server without multi-version lifecycle management.
 | `npm run dev:bare` | Client + auth + standalone game server. |
 | `npm run control` | Local diagnostic/control CLI. The `/dev` UI is preferred for routine work. |
 | `npm run server:test` | Server tests. |
+| `npm run server:test:coverage` | Server tests plus regression coverage floors. |
 | `npm run server:typecheck` | Server/shared typecheck. |
 | `npm run build` | Client typecheck, production bundle, and initial-entry budget enforcement. |
 

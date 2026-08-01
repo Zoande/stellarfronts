@@ -19,6 +19,17 @@ export interface GameBackupManifest {
 
 const DEFAULT_RETENTION = 30;
 
+function assertBackupId(backupId: string): void {
+  if (
+    backupId.length === 0
+    || backupId.length > 160
+    || backupId.includes("..")
+    || !/^[A-Za-z0-9._-]+$/.test(backupId)
+  ) {
+    throw new Error("Backup id is invalid.");
+  }
+}
+
 function backupDirectory(gameId: string): string {
   return path.join(getGameStateDirectory(gameId), "backups");
 }
@@ -69,7 +80,10 @@ export async function listGameBackups(gameId: string): Promise<GameBackupManifes
 }
 
 async function pruneBackups(gameId: string): Promise<void> {
-  const retention = Math.max(1, Number(process.env.GAME_BACKUP_RETENTION ?? DEFAULT_RETENTION) || DEFAULT_RETENTION);
+  const configured = process.env.GAME_BACKUP_RETENTION_COUNT
+    ?? process.env.GAME_BACKUP_RETENTION
+    ?? DEFAULT_RETENTION;
+  const retention = Math.max(1, Number(configured) || DEFAULT_RETENTION);
   const backups = await listGameBackups(gameId);
   await Promise.all(backups.slice(retention).flatMap((backup) => [
     rm(manifestPath(gameId, backup.id), { force: true }),
@@ -113,6 +127,7 @@ export async function createGameBackup(game: StoredGame, reason: string): Promis
 }
 
 export async function verifyGameBackup(gameId: string, backupId: string): Promise<GameBackupManifest> {
+  assertBackupId(backupId);
   const parsed: unknown = JSON.parse(await readFile(manifestPath(gameId, backupId), "utf8"));
   if (!isBackupManifest(parsed) || parsed.gameId !== gameId || parsed.id !== backupId) {
     throw new Error("Backup manifest is invalid.");

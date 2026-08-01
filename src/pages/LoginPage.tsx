@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { ApiRequestError } from '@/auth/client';
 import { UserErrorPage } from '@/components/UserErrorPage';
+import { classifyRequestFailure } from '@/errors/UserFacingErrors';
 import '../styles/Auth.css';
 
 interface LoginPageProps {
@@ -73,8 +73,7 @@ function isAccountNotFoundError(error: unknown): boolean {
 }
 
 function isServiceUnavailableError(error: unknown): boolean {
-  return error instanceof TypeError
-    || (error instanceof ApiRequestError && error.status >= 500);
+  return classifyRequestFailure(error) === 'serviceUnavailable';
 }
 
 export default function LoginPage({ onLoginSubmit, onSignupSubmit }: LoginPageProps) {

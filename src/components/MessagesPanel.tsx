@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ApiRequestError,
   getConversations,
   getMessagesWith,
   markConversationRead,
@@ -9,6 +8,7 @@ import {
 import type { AuthAccount, DirectConversation, DirectMessage } from '@/auth/types';
 import { UserErrorPage } from '@/components/UserErrorPage';
 import type { UserErrorKind } from '@/components/UserErrorPage';
+import { classifyRequestFailure } from '@/errors/UserFacingErrors';
 
 interface MessagesPanelProps {
   account: AuthAccount;
@@ -50,9 +50,7 @@ export function MessagesPanel({ account }: MessagesPanelProps) {
       setConversations(await getConversations());
       setFatalError(null);
     } catch (error) {
-      setFatalError(error instanceof ApiRequestError && error.status === 401
-        ? 'sessionExpired'
-        : 'serviceUnavailable');
+      setFatalError(classifyRequestFailure(error) ?? 'serviceUnavailable');
     } finally {
       setConvsLoading(false);
     }
@@ -71,9 +69,7 @@ export function MessagesPanel({ account }: MessagesPanelProps) {
         prev.map((c) => (c.partnerId === partnerId ? { ...c, unreadCount: 0 } : c)),
       );
     } catch (error) {
-      setFatalError(error instanceof ApiRequestError && error.status === 401
-        ? 'sessionExpired'
-        : 'serviceUnavailable');
+      setFatalError(classifyRequestFailure(error) ?? 'serviceUnavailable');
     } finally {
       setMsgsLoading(false);
     }

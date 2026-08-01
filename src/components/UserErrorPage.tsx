@@ -1,75 +1,8 @@
 import '../styles/UserErrorPage.css';
+import { getUserErrorCopy } from '../errors/UserFacingErrors';
+import type { UserErrorKind } from '../errors/UserFacingErrors';
 
-export type UserErrorKind =
-  | 'serviceUnavailable'
-  | 'sessionExpired'
-  | 'pageNotFound'
-  | 'gameStarting'
-  | 'gameUnavailable'
-  | 'gameStopped'
-  | 'gameNotFound'
-  | 'gameFull'
-  | 'connectionLost'
-  | 'updateRequired'
-  | 'unexpected';
-
-const ERROR_COPY: Record<UserErrorKind, { label: string; title: string; message: string }> = {
-  serviceUnavailable: {
-    label: 'Connection unavailable',
-    title: 'Cannot reach StellarFronts',
-    message: 'The service is temporarily unavailable. Please come back in a few minutes.',
-  },
-  sessionExpired: {
-    label: 'Session ended',
-    title: 'Please sign in again',
-    message: 'Your session is no longer active. Sign in again to continue.',
-  },
-  pageNotFound: {
-    label: 'Unknown destination',
-    title: 'Page not found',
-    message: 'This page does not exist or may have moved.',
-  },
-  gameStarting: {
-    label: 'Game preparing',
-    title: 'This game is getting ready',
-    message: 'The game is still starting. Please come back in a moment.',
-  },
-  gameUnavailable: {
-    label: 'Game unavailable',
-    title: 'This game cannot be reached',
-    message: 'The game is temporarily unavailable. Please come back later.',
-  },
-  gameStopped: {
-    label: 'Game offline',
-    title: 'This game is not running',
-    message: 'The game is currently offline. Please come back later.',
-  },
-  gameNotFound: {
-    label: 'Game unavailable',
-    title: 'Game not found',
-    message: 'This game no longer exists or is not available to your account.',
-  },
-  gameFull: {
-    label: 'No space available',
-    title: 'This game is full',
-    message: 'There are no countries available to claim in this game.',
-  },
-  connectionLost: {
-    label: 'Connection interrupted',
-    title: 'Connection to the game was lost',
-    message: 'The game may be restarting. Please wait a moment and try again.',
-  },
-  updateRequired: {
-    label: 'Version unavailable',
-    title: 'This game cannot open yet',
-    message: 'This game is temporarily incompatible with the current client. Please come back later.',
-  },
-  unexpected: {
-    label: 'Something went wrong',
-    title: 'StellarFronts hit an error',
-    message: 'The request could not be completed. Please try again later.',
-  },
-};
+export type { UserErrorKind } from '../errors/UserFacingErrors';
 
 interface UserErrorPageProps {
   kind?: UserErrorKind;
@@ -92,7 +25,7 @@ export function UserErrorPage({
   secondaryLabel,
   onSecondary,
 }: UserErrorPageProps) {
-  const copy = ERROR_COPY[kind];
+  const copy = getUserErrorCopy(kind);
   return (
     <div className={`user-error user-error--${variant}`} role="alert">
       <div className="user-error__stars" aria-hidden="true" />
@@ -122,4 +55,3 @@ export function UserErrorPage({
     </div>
   );
 }
-

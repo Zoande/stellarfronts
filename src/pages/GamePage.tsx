@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ApiRequestError, getGames, joinGame } from '@/auth/client';
+import { getGames, joinGame } from '@/auth/client';
 import type { AccountType } from '@/auth/types';
 import type { GameSummary } from '@/auth/types';
 import { GameLogoutButton } from '@/components/GameLogoutButton';
@@ -7,6 +7,7 @@ import { FlagJoinForm } from '@/components/FlagJoinForm';
 import { LoadingScreen } from '@/components/LoadingScreen';
 import { UserErrorPage } from '@/components/UserErrorPage';
 import type { UserErrorKind } from '@/components/UserErrorPage';
+import { classifyGameBootFailure, classifyRequestFailure } from '@/errors/UserFacingErrors';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
 import '../styles/Game.css';
@@ -89,9 +90,7 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
       .catch((error) => {
         if (cancelled) return;
         setEntryMode('blocked');
-        setEntryProblem(error instanceof ApiRequestError && error.status === 401
-          ? 'sessionExpired'
-          : 'serviceUnavailable');
+        setEntryProblem(classifyRequestFailure(error) ?? 'serviceUnavailable');
       });
 
     return () => {
@@ -147,12 +146,7 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
           .catch((error: unknown) => {
             if (cancelled) return;
             bootFailed = true;
-            const message = error instanceof Error ? error.message.toLowerCase() : '';
-            setBootError(
-              message.includes('protocol') || message.includes('unsupported')
-                ? 'updateRequired'
-                : 'gameUnavailable',
-            );
+            setBootError(classifyGameBootFailure(error));
             bootedRef.current = false;
             hideBootLoading(0);
           })
@@ -183,14 +177,10 @@ export default function GamePage({ gameId, username, accountType, onLogout }: Ga
       setEntryGame(result.game);
       setEntryMode('ready');
     } catch (error) {
-      if (error instanceof TypeError || (error instanceof ApiRequestError && error.status >= 500)) {
+      const failure = classifyRequestFailure(error);
+      if (failure) {
         setEntryMode('blocked');
-        setEntryProblem('serviceUnavailable');
-        return;
-      }
-      if (error instanceof ApiRequestError && error.status === 401) {
-        setEntryMode('blocked');
-        setEntryProblem('sessionExpired');
+        setEntryProblem(failure);
         return;
       }
       setEntryError(error instanceof Error ? error.message : 'Could not join game');

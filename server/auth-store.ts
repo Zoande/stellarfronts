@@ -72,7 +72,13 @@ const GAME_RUNTIME_STALE_MS = 20_000;
 const ADMIN_USERNAME = 'admin';
 const SESSION_COOKIE_NAME = 'sf_session';
 const DEV_SESSION_COOKIE_NAME = 'sf_dev_session';
-const PASSWORD_ITERATIONS = 210_000;
+// Keep production password work intentionally expensive while allowing the
+// isolated test databases to seed accounts quickly. Both guards are required
+// so one accidentally-set environment variable cannot weaken a live service.
+const PASSWORD_ITERATIONS = process.env.NODE_ENV === "test"
+  && process.env.SF_TEST_FAST_PASSWORDS === "1"
+  ? 1_000
+  : 210_000;
 const PASSWORD_KEY_LENGTH = 64;
 const PASSWORD_DIGEST = 'sha512';
 

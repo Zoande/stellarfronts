@@ -1,6 +1,6 @@
 import type { ClientCommand } from "../../src/game/GameProtocol";
 
-const COMMAND_TYPES = new Set<ClientCommand["type"]>([
+export const CLIENT_COMMAND_TYPES = [
   "join",
   "adminCommand",
   "moveShip",
@@ -56,7 +56,9 @@ const COMMAND_TYPES = new Set<ClientCommand["type"]>([
   "setFleetCombatSettings",
   "issueFleetTacticalOrder",
   "repairFleet",
-]);
+] as const satisfies readonly ClientCommand["type"][];
+
+const COMMAND_TYPES = new Set<ClientCommand["type"]>(CLIENT_COMMAND_TYPES);
 
 export function decodeClientCommand(input: unknown): ClientCommand {
   if (!input || typeof input !== "object" || Array.isArray(input)) {

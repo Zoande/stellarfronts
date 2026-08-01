@@ -145,6 +145,7 @@ wire state.
 | `npx tsc --noEmit` | Type-check client and shared TypeScript. |
 | `npm run server:typecheck` | Type-check server and shared TypeScript. |
 | `npm run server:test` | Run the Node server test suite. |
+| `npm run server:test:coverage` | Run server tests with enforced line, branch, and function coverage floors. |
 | `npm run build` | Type-check and build the production client. |
 | `npm run preview` | Preview the production client build. |
 
