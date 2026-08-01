@@ -1,9 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
-  authStore,
+  AuthStore,
   clearDevSessionCookie,
   clearSessionCookie,
   isAuthError,
@@ -12,14 +14,12 @@ import {
   serializeDevSessionCookie,
   serializeSessionCookie,
 } from './auth-store';
+import type { AuthStorePort } from './auth-store';
 import type { AuthAccount, Credentials, LoginCredentials, NewsContentBlock, NewsPost } from '../src/auth/types';
 
 const PORT = Number(process.env.AUTH_SERVER_PORT ?? 8788);
 const HOST = process.env.AUTH_SERVER_HOST ?? '127.0.0.1';
-const CONTROL_TOKEN = process.env.CONTROL_TOKEN;
-if (!CONTROL_TOKEN) {
-  throw new Error('CONTROL_TOKEN is required. Set the same long random value for auth and orchestrator.');
-}
+const CONTROL_TOKEN = process.env.CONTROL_TOKEN ?? '';
 const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES ?? 8 * 1024 * 1024);
 const NEWS_MEDIA_DIR = path.join(process.cwd(), 'server', 'state', 'news-media');
 const NEWS_MEDIA_ROUTE = '/news-media/';
@@ -30,6 +30,15 @@ const NEWS_MEDIA_TYPES: Record<string, { extension: string; contentType: string 
   'image/webp': { extension: 'webp', contentType: 'image/webp' },
   'image/gif': { extension: 'gif', contentType: 'image/gif' },
 };
+const requestStore = new AsyncLocalStorage<AuthStorePort>();
+const authStore = new Proxy({} as AuthStorePort, {
+  get(_target, property) {
+    const store = requestStore.getStore();
+    if (!store) throw new Error('Auth request store is unavailable.');
+    const value = Reflect.get(store, property, store) as unknown;
+    return typeof value === 'function' ? value.bind(store) : value;
+  },
+});
 
 class HttpRequestError extends Error {
   constructor(message: string, readonly statusCode: number) {
@@ -910,22 +919,48 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   writeJson(response, 404, { error: 'Not found' });
 }
 
-const server = createServer((request, response) => {
-  void handleRequest(request, response).catch((error: unknown) => {
-    if (error instanceof HttpRequestError) {
-      if (!response.headersSent) writeJson(response, error.statusCode, { error: error.message });
-      return;
-    }
-    if (isAuthError(error)) {
-      writeJson(response, error.statusCode, { error: error.message });
-      return;
-    }
+export function createAuthRequestHandler(store: AuthStorePort) {
+  return (request: IncomingMessage, response: ServerResponse): void => {
+    requestStore.run(store, () => {
+      void handleRequest(request, response).catch((error: unknown) => {
+        if (error instanceof HttpRequestError) {
+          if (!response.headersSent) writeJson(response, error.statusCode, { error: error.message });
+          return;
+        }
+        if (isAuthError(error)) {
+          writeJson(response, error.statusCode, { error: error.message });
+          return;
+        }
 
-    console.error('[AuthServer] Unhandled error', error);
-    writeJson(response, 500, { error: 'Internal server error' });
+        console.error('[AuthServer] Unhandled error', error);
+        writeJson(response, 500, { error: 'Internal server error' });
+      });
+    });
+  };
+}
+
+export function startAuthServer(store: AuthStorePort = new AuthStore()) {
+  if (!CONTROL_TOKEN) {
+    store.close();
+    throw new Error('CONTROL_TOKEN is required. Set the same long random value for auth and orchestrator.');
+  }
+  const server = createServer(createAuthRequestHandler(store));
+  server.once('error', () => store.close());
+  server.listen(PORT, HOST, () => {
+    console.log(`[AuthServer] Listening on http://${HOST}:${PORT}`);
   });
-});
 
-server.listen(PORT, HOST, () => {
-  console.log(`[AuthServer] Listening on http://${HOST}:${PORT}`);
-});
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => {
+      server.close(() => {
+        store.close();
+        process.exit(0);
+      });
+    });
+  }
+  return server;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  startAuthServer();
+}

@@ -27,7 +27,7 @@ import type {
   ServerUpdateField,
   ShipTransitPhase,
 } from "../../src/game/GameProtocol";
-import type { StoredGame } from "../auth-store";
+import type { GameRuntimeAuthPort, StoredGame } from "../auth-store";
 
 export interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
@@ -111,6 +111,10 @@ export interface RuntimeContext {
   ownershipToken: string | null;
   runtimeIdCounter: number;
   eventInstanceSeq: number;
+  services: {
+    authStore: GameRuntimeAuthPort;
+    now: () => number;
+  };
   // Method fields wired up inside createGameRuntime (hoisted declarations, so safe to reference at ctx init).
   setFleetPhase: (fleet: GameFleet, phase: ShipTransitPhase) => void;
   // Infrastructure callbacks — defined late in createGameRuntime but safe to reference here because

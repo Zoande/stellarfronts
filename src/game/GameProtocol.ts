@@ -24,7 +24,7 @@ import type {
 } from "../data/Market";
 
 /** Wire protocols accepted by the current browser client, newest last. */
-export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7];
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8];
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
@@ -1010,7 +1010,7 @@ export interface AdminCommandCommand {
   requestId?: string;
 }
 
-export type ClientCommand =
+type ClientCommandPayload =
   | JoinCommand
   | AdminCommandCommand
   | MoveCommand
@@ -1065,6 +1065,15 @@ export type ClientCommand =
   | SetFleetCombatSettingsCommand
   | IssueFleetTacticalOrderCommand
   | RepairFleetCommand;
+
+/**
+ * Protocol 8 correlates normal command results with the command that produced
+ * them. The field remains optional so the same client types can adapt protocols
+ * 5-7 and the specialized join/detail/admin flows.
+ */
+export type ClientCommand = ClientCommandPayload & {
+  requestId?: string;
+};
 
 export interface GameSnapshot {
   type: "snapshot";
@@ -1139,6 +1148,7 @@ export interface CommandResultEvent {
   type: "commandResult";
   ok: boolean;
   message: string;
+  requestId?: string;
 }
 
 export interface AccountResourcesEvent {

@@ -4,6 +4,7 @@ import type {
 } from "./AdminCommands";
 import type {
   ClientCommand,
+  CommandResultEvent,
   GameDetailEvent,
   GameDetailPayload,
   GameDetailScope,
@@ -33,6 +34,14 @@ type PendingRequest<T> = {
   resolve: (event: T) => void;
   reject: (error: Error) => void;
 };
+
+const SPECIALIZED_COMMAND_TYPES = new Set<ClientCommand["type"]>([
+  "join",
+  "adminCommand",
+  "requestDetails",
+  "subscribeDetails",
+  "unsubscribeDetails",
+]);
 
 interface CachedDetail {
   event: GameDetailEvent;
@@ -97,7 +106,10 @@ export class GameServerClient {
   private detailRequests = new Map<string, PendingRequest<GameDetailEvent>>();
   private detailCache = new Map<string, CachedDetail>();
   private adminCommandRequests = new Map<string, PendingRequest<AdminCommandResult>>();
+  private commandRequests = new Map<string, PendingRequest<CommandResultEvent>>();
   private intentionallyDisposed = false;
+  private negotiatedProtocol: number | undefined;
+  private requestSequence = 0;
 
   constructor(private readonly gameId?: string, private readonly urlOverride?: string) {}
 
@@ -140,6 +152,7 @@ export class GameServerClient {
         }
         if (parsed.type === "snapshot") {
           negotiatedProtocol = parsed.protocolVersion;
+          this.negotiatedProtocol = parsed.protocolVersion;
           this.latestSnapshot = withClientClockSync(parsed);
           setClientIntelligence(this.latestSnapshot.intelligence, this.latestSnapshot.clock.year);
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot);
@@ -193,8 +206,12 @@ export class GameServerClient {
 
         if (parsed.type === "commandResult") {
           for (const handler of this.messageHandlers) handler(parsed.message, parsed.ok);
-          if (!parsed.ok) {
-            this.rejectOldestPendingRequest(new Error(parsed.message));
+          if (parsed.requestId) {
+            const pending = this.commandRequests.get(parsed.requestId);
+            if (pending) {
+              this.commandRequests.delete(parsed.requestId);
+              pending.resolve(parsed);
+            }
           }
           return;
         }
@@ -265,6 +282,35 @@ export class GameServerClient {
   }
 
   send(command: ClientCommand): void {
+    if (
+      this.negotiatedProtocol === 8
+      && !SPECIALIZED_COMMAND_TYPES.has(command.type)
+      && !command.requestId
+    ) {
+      this.sendRaw({ ...command, requestId: this.createRequestId() });
+      return;
+    }
+    this.sendRaw(command);
+  }
+
+  executeCommand(command: ClientCommand): Promise<CommandResultEvent> {
+    if (SPECIALIZED_COMMAND_TYPES.has(command.type)) {
+      return Promise.reject(new Error("This command uses a specialized response flow."));
+    }
+    if (this.negotiatedProtocol !== 8) {
+      this.send(command);
+      return Promise.reject(new Error("Correlated commands require server protocol 8."));
+    }
+    const requestId = this.createRequestId();
+    return this.requestWithTimeout(
+      this.commandRequests,
+      requestId,
+      { ...command, requestId },
+      "Timed out waiting for command result.",
+    );
+  }
+
+  private sendRaw(command: ClientCommand): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify(command));
   }
@@ -374,6 +420,7 @@ export class GameServerClient {
     this.rejectAllPendingRequests(new Error("Game server client disposed."));
     this.socket?.close();
     this.socket = null;
+    this.negotiatedProtocol = undefined;
   }
 
   private requestDetails<K, T>(
@@ -397,10 +444,24 @@ export class GameServerClient {
       });
     }
 
+    return this.requestWithTimeout(
+      requests,
+      key,
+      command,
+      "Timed out waiting for server details.",
+    );
+  }
+
+  private requestWithTimeout<K, T>(
+    requests: Map<K, PendingRequest<T>>,
+    key: K,
+    command: ClientCommand,
+    timeoutMessage: string,
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
       const timeout = window.setTimeout(() => {
         requests.delete(key);
-        reject(new Error("Timed out waiting for server details."));
+        reject(new Error(timeoutMessage));
       }, 8_000);
       requests.set(key, {
         resolve: (event) => {
@@ -412,28 +473,21 @@ export class GameServerClient {
           reject(error);
         },
       });
-      this.send(command);
+      this.sendRaw(command);
     });
   }
 
-  private rejectOldestPendingRequest(error: Error): void {
-    const adminEntry = this.adminCommandRequests.entries().next();
-    if (!adminEntry.done) {
-      this.adminCommandRequests.delete(adminEntry.value[0]);
-      adminEntry.value[1].reject(error);
-      return;
-    }
-    const detailEntry = this.detailRequests.entries().next();
-    if (!detailEntry.done) {
-      this.detailRequests.delete(detailEntry.value[0]);
-      detailEntry.value[1].reject(error);
-    }
+  private createRequestId(): string {
+    this.requestSequence = (this.requestSequence + 1) % Number.MAX_SAFE_INTEGER;
+    return `cmd-${Date.now().toString(36)}-${this.requestSequence.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
   private rejectAllPendingRequests(error: Error): void {
     for (const [, pending] of this.detailRequests) pending.reject(error);
     for (const [, pending] of this.adminCommandRequests) pending.reject(error);
+    for (const [, pending] of this.commandRequests) pending.reject(error);
     this.detailRequests.clear();
     this.adminCommandRequests.clear();
+    this.commandRequests.clear();
   }
 }

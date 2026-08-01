@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import { authStore, parseSessionTokenFromCookie } from "../auth-store";
-import type { StoredGame } from "../auth-store";
+import { parseSessionTokenFromCookie } from "../auth-store";
+import type { GameCatalogPort, StoredGame } from "../auth-store";
 import { VERSION_MANIFEST } from "../versionManifest";
 import {
   SERVER_TICK_INTERVAL_MS,
@@ -27,6 +27,7 @@ function errorMessage(error: unknown): string {
 
 export async function initServer(
   createGameRuntime: (game: StoredGame) => Promise<GameRuntime>,
+  authStore: GameCatalogPort,
 ): Promise<void> {
   const PORT = Number(process.env.GAME_SERVER_PORT ?? 8787);
   const GAME_SERVER_STARTED_AT = Date.now();
@@ -347,11 +348,18 @@ export async function initServer(
           disposeRuntime(gameId, runtime, "Version server stopped.", false, true)),
       );
       const failed = results.filter((result) => result.status === "rejected");
-      if (failed.length > 0) throw new Error(`${failed.length} game runtime(s) failed to save during shutdown.`);
-      await new Promise<void>((resolve, reject) => {
-        httpServer.close((error) => error ? reject(error) : resolve());
-      });
-      publishRuntimeStats(true);
+      if (failed.length > 0) {
+        authStore.close();
+        throw new Error(`${failed.length} game runtime(s) failed to save during shutdown.`);
+      }
+      try {
+        await new Promise<void>((resolve, reject) => {
+          httpServer.close((error) => error ? reject(error) : resolve());
+        });
+        publishRuntimeStats(true);
+      } finally {
+        authStore.close();
+      }
     })();
     return shutdownPromise;
   }

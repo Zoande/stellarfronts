@@ -8,13 +8,13 @@ model.
 
 Defined in [`server/game/types.ts`](../../server/game/types.ts), `RuntimeContext` holds the mutable
 `state: GameState`, the connected `clients`, dirty/save bookkeeping (`hasDirtyState`, `lastSaveAt`),
-and a set of hoisted callbacks wired up in `createGameRuntime` (e.g. `recalculatePlanetEconomies`,
+and injected auth/catalog and time services plus callbacks wired up in `createGameRuntime` (e.g. `recalculatePlanetEconomies`,
 `refreshFactionEconomyDeltas`, `refreshDiscovery`, `broadcastUpdates`, `createInitialState`). The
 runtime exposes the `GameRuntime` interface: `attachClient`, `tick`, `save`, `dispose`, `getStats`.
 
 ## The timer
 
-`tick(now)` ([`server/index.ts`](../../server/index.ts)) runs roughly every
+`tick(now)` ([`server/game-runtime.ts`](../../server/game-runtime.ts)) runs roughly every
 `SERVER_TICK_INTERVAL_MS` (100ms, [`server/game/constants.ts`](../../server/game/constants.ts)). Each
 tick:
 
@@ -44,7 +44,7 @@ normalization in [`server/game/clock.ts`](../../server/game/clock.ts).
 
 ## The `advanceState` pipeline
 
-`advanceState(now)` ([`server/index.ts`](../../server/index.ts)) returns a
+`advanceState(now)` ([`server/game-runtime.ts`](../../server/game-runtime.ts)) returns a
 `Set<ServerUpdateField>` of what changed. If paused, it just syncs clock timestamps and returns. The
 phases run in this order — each adds fields to the `changed` set:
 
@@ -81,7 +81,8 @@ economy output, and intelligence is refreshed whenever movement/combat changes t
 
 ## Key files
 
-- Loop + pipeline: [`server/index.ts`](../../server/index.ts).
+- Composition entrypoint: [`server/index.ts`](../../server/index.ts).
+- Runtime + pipeline: [`server/game-runtime.ts`](../../server/game-runtime.ts).
 - Clock: [`server/game/clock.ts`](../../server/game/clock.ts),
   [`src/game/GameTime.ts`](../../src/game/GameTime.ts).
 - Constants: [`server/game/constants.ts`](../../server/game/constants.ts).

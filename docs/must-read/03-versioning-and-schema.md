@@ -10,7 +10,7 @@ The checked-in [`server/version-manifest.json`](../../server/version-manifest.js
 artifact metadata:
 
 - `schemaVersion: 27` describes the persisted `GameState`.
-- `protocolVersion: 7` describes WebSocket messages.
+- `protocolVersion: 8` describes WebSocket messages.
 - `runtimeApiVersion: 1` describes the stable control-plane/runtime integration.
 - `migratesFromSchema: [23, 24, 25, 26, 27]` lists schemas this build can load.
 
@@ -52,10 +52,12 @@ locks, and verified backups are described in
 
 ## Wire compatibility
 
-The current client accepts server protocols 5, 6, and 7 through
+The current client accepts server protocols 5, 6, 7, and 8 through
 [`src/game/ProtocolAdapter.ts`](../../src/game/ProtocolAdapter.ts). Every initial snapshot is
 validated and adapted to the current canonical client model before entering the UI. Updates are
 validated against the negotiated protocol and reduced with explicit missing-versus-null semantics.
+Protocol 8 correlates normal command results by request ID; older protocols retain their legacy
+fire-and-forget behavior.
 
 Compatibility is never bypassed for the development version. The same static manifest and migration
 checks apply to `dev` and immutable versions.

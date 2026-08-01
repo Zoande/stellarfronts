@@ -1,8 +1,9 @@
 import type { ClientCommand, ServerUpdateField } from "../../src/game/GameProtocol";
 import type { RuntimeContext } from "./types";
 
-const READ_ONLY_COMMANDS = new Set<ClientCommand["type"]>([
+export const SPECIALIZED_OR_READ_ONLY_COMMANDS = new Set<ClientCommand["type"]>([
   "join",
+  "adminCommand",
   "requestDetails",
   "subscribeDetails",
   "unsubscribeDetails",
@@ -18,6 +19,10 @@ export interface MutationEffects {
   dirty?: boolean;
 }
 
+export type CommandOutcome =
+  | { ok: true; message?: string; effects: MutationEffects }
+  | { ok: false; message: string };
+
 /**
  * The central persistence invariant for authoritative commands. Domain handlers
  * may reject or produce no change, but a successful mutating command can no
@@ -26,10 +31,16 @@ export interface MutationEffects {
 export function runAuthoritativeCommand(
   ctx: RuntimeContext,
   command: ClientCommand,
-  execute: () => void,
+  execute: () => CommandOutcome,
 ): void {
-  execute();
-  if (!READ_ONLY_COMMANDS.has(command.type)) ctx.hasDirtyState = true;
+  const outcome = execute();
+  if (!outcome.ok) return;
+  applyMutationEffects(ctx, {
+    ...outcome.effects,
+    dirty: !SPECIALIZED_OR_READ_ONLY_COMMANDS.has(command.type)
+      ? outcome.effects.dirty
+      : false,
+  });
 }
 
 /** Apply the common cross-domain aftermath in one deterministic order. */

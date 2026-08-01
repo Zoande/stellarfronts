@@ -15,7 +15,7 @@ import http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { WebSocketServer } from "ws";
-import { authStore } from "./auth-store";
+import { AuthStore } from "./auth-store";
 import type { GameVersionRefType, StoredGame, StoredGameVersion } from "./auth-store";
 import {
   createGameBackup,
@@ -48,6 +48,8 @@ const PORT_BASE = Number(process.env.VERSION_PORT_BASE ?? 8810);
 const GIT_REMOTE = process.env.GIT_REMOTE ?? "origin";
 const RESTART_DELAY_MS = 2_000;
 const RECONCILE_INTERVAL_MS = 5_000;
+const authStore = new AuthStore();
+process.once("exit", () => authStore.close());
 const HEALTHY_UPTIME_MS = 60_000;
 const MAX_RAPID_RESTARTS = 5;
 const MAX_RESTART_BACKOFF_MS = 30_000;
@@ -823,6 +825,7 @@ async function shutdown(signal: string): Promise<void> {
   gateway.close();
   const results = await Promise.allSettled(Array.from(processes.keys()).map(stopVersionProcess));
   const failed = results.filter((result) => result.status === "rejected");
+  authStore.close();
   if (failed.length > 0) throw new Error(`${failed.length} version process(es) failed to stop.`);
 }
 

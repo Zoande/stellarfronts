@@ -11,7 +11,7 @@ reject helpers are in [`server/game/socket-io.ts`](../../server/game/socket-io.t
 Server → client:
 
 - **`snapshot`** (`GameSnapshot`) — the full, perspective-filtered state, sent once on connect
-  (`attachClient` in [`server/index.ts`](../../server/index.ts)). Carries `protocolVersion` (7),
+  (`attachClient` in [`server/game-runtime.ts`](../../server/game-runtime.ts)). Carries `protocolVersion` (8),
   sourced from `VERSION_MANIFEST` rather than a snapshot-local literal.
 - **`update`** (`GameUpdate`) — an incremental message with `changed: ServerUpdateField[]` and only
   those fields. Sent every tick that changes something.
@@ -23,9 +23,11 @@ Client → server: `ClientCommand` (the union in
 [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts)) — movement, building, diplomacy,
 research, leaders, market, detail subscriptions, admin, etc.
 
-Protocol 7 adds the persistent `colonize` fleet order, `setPlanetJobLock`, timed planet modifiers,
-and colonization metadata in the Planet Operations detail payload. The browser accepts protocols
-`[5, 6, 7]` and defaults absent protocol-5/6 fields defensively.
+Protocol 8 adds optional `requestId` correlation to normal gameplay commands and command results.
+The protocol-8 server requires a 1-128 character ID before executing a normal mutation. Join,
+detail-subscription, and admin flows retain their specialized response mechanisms. The browser
+accepts protocols `[5, 6, 7, 8]`; protocols 5-7 remain fire-and-forget and absent legacy fields are
+defaulted defensively.
 
 ## `ServerUpdateField`
 

@@ -123,7 +123,7 @@ are stored under `server/state/games/<gameId>/game-state.json`.
 ## Versioning
 
 The current build advertises protocol version 7 and schema version 27. It normalizes schemas
-23–26 into schema 27, while the browser client accepts wire protocols 5, 6, and 7. The orchestrator
+23–26 into schema 27, while the browser client accepts wire protocols 5, 6, 7, and 8. The orchestrator
 checks compatibility before moving a game and creates checksummed, version-aware backups around
 destructive operations. Corrupt or incompatible saves are quarantined and preserved rather than
 being replaced with a fresh galaxy.

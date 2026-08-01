@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import { authStore } from "../auth-store";
 import { getGameStateDirectory } from "../game-state-path";
 import { VERSION_MANIFEST } from "../versionManifest";
 import type { RuntimeContext } from "./types";
@@ -47,8 +46,8 @@ async function writeStateSnapshot(ctx: RuntimeContext, nextState: RuntimeContext
     await rm(temporaryPath, { force: true }).catch(() => undefined);
     throw error;
   }
-  authStore.recordGameStateVersions(ctx.game.id, nextState.schemaVersion, VERSION_MANIFEST.protocolVersion);
-  ctx.lastSaveAt = Date.now();
+  ctx.services.authStore.recordGameStateVersions(ctx.game.id, nextState.schemaVersion, VERSION_MANIFEST.protocolVersion);
+  ctx.lastSaveAt = ctx.services.now();
 }
 
 async function runSaveQueue(ctx: RuntimeContext, initialState: RuntimeContext["state"]): Promise<void> {

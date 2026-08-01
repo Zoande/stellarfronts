@@ -38,7 +38,10 @@ ports, versions, and stack details remain in `/dev`. Expected form validation st
 
 ## In-game boot
 
-Opening a game runs [`src/game/boot.ts`](../../src/game/boot.ts), which:
+Opening a game runs the small composition root [`src/game/boot.ts`](../../src/game/boot.ts), which
+constructs a [`GameSessionController`](../../src/game/GameSessionController.ts), its canonical
+[`GameSessionStore`](../../src/game/GameSessionStore.ts), and the
+[`GameUiCoordinator`](../../src/game/GameUiCoordinator.ts):
 
 1. **Loads account resources and connects** a `GameServerClient`
    ([`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts)) over WebSocket, awaiting the
@@ -51,13 +54,14 @@ Opening a game runs [`src/game/boot.ts`](../../src/game/boot.ts), which:
 4. **Builds the HUD and panels** ([`src/ui/HudOverlay.ts`](../../src/ui/HudOverlay.ts) plus the
    `src/ui/*Panel.ts` family and `EventModal`/`SituationModal`), wiring each panel's data subscription
    and command callbacks.
-5. **Returns a cleanup function** that disposes the scene manager, panels, and subscriptions.
+5. **Returns a cleanup function** backed by an idempotent reverse-order registry. Partial startup
+   also closes the socket and every resource already registered.
 
 ## How to extend / rules
 
 - New pages are React under `src/pages/` and a route in `src/App.tsx`.
-- New in-game UI/scene wiring is registered in `src/game/boot.ts` (it's the composition root for the
-  game view).
+- New in-game UI/scene wiring belongs in `GameUiCoordinator`; session state and indexed selectors
+  belong in `GameSessionStore`. Keep `boot.ts` limited to composition and lifecycle.
 - Keep React out of the in-game view; use the DOM-panel pattern instead (see
   [ui-panels.md](ui-panels.md)).
 

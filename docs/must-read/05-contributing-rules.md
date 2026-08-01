@@ -38,7 +38,7 @@ Worked end-to-end by the Planetary Capital change; see
    [`server/tests/technology.test.ts`](../../server/tests/technology.test.ts) requires one unless the
    building is `autoPlaced`.
 4. **Server validation** already iterates `BUILDING_KINDS` in `handleBuildPlanetBuilding`
-   ([`server/index.ts`](../../server/index.ts)) — confirm cost/compatibility/tech checks behave. If
+   ([`server/game-runtime.ts`](../../server/game-runtime.ts)) — confirm cost/compatibility/tech checks behave. If
    the building is special (auto-placed, non-buildable), add the guard there.
 5. **Tests:** update economy/state tests that assert starter layouts if your building shifts them.
 
@@ -56,7 +56,7 @@ Worked end-to-end by the Planetary Capital change; see
 
 1. **Define the message** as a new `*Command` interface and add it to the `ClientCommand` union in
    [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts).
-2. **Dispatch it** in `handleCommand` ([`server/index.ts`](../../server/index.ts)) — add an
+2. **Dispatch it** in `handleCommand` ([`server/game-runtime.ts`](../../server/game-runtime.ts)) — add an
    `if (command.type === "yourCommand")` branch that calls your handler.
 3. **In the handler:** resolve and validate the faction perspective (observers are read-only — see
    `validateCommandPerspective`/`validatePlanetCommand`), check ownership/visibility via

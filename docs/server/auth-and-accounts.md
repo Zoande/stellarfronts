@@ -6,16 +6,17 @@ of the game-server WebSocket. Source: [`server/auth-server.ts`](../../server/aut
 
 ## Storage
 
-Everything persists to `server/state/auth.sqlite` via the `authStore` singleton
-([`server/auth-store.ts`](../../server/auth-store.ts)): accounts, sessions, game memberships, the game
-catalog, registered versions, news/messages, and account progression. Passwords are hashed with
-**PBKDF2**.
+Everything persists to `server/state/auth.sqlite`. Each process explicitly constructs one
+[`AuthStore`](../../server/auth-store.ts) facade and closes it during shutdown; there is no eager
+module singleton. [`AuthDatabase`](../../server/auth-database.ts) owns the connection, while
+domain repositories share that connection for accounts/sessions, games/runtime catalog, news,
+progression, and direct messages. Passwords are hashed with **PBKDF2**.
 
 ## Sessions
 
 Login issues an HttpOnly cookie `sf_session`. The game server validates the WebSocket connection by
-resolving that cookie against the auth store (see `attachClient` /
-[`server/index.ts`](../../server/index.ts)). The dev panel uses a separate dev-session cookie.
+resolving that cookie against the injected auth-store port (see `attachClient` /
+[`server/game-runtime.ts`](../../server/game-runtime.ts)). The dev panel uses a separate dev-session cookie.
 
 ## HTTP endpoints
 
@@ -81,5 +82,7 @@ boost. Gameplay details are in
 
 - HTTP server: [`server/auth-server.ts`](../../server/auth-server.ts).
 - Store: [`server/auth-store.ts`](../../server/auth-store.ts).
+- Database/repositories: [`server/auth-database.ts`](../../server/auth-database.ts),
+  [`server/auth-repositories.ts`](../../server/auth-repositories.ts).
 - Client: [`src/auth/client.ts`](../../src/auth/client.ts), [`src/auth/types.ts`](../../src/auth/types.ts).
 - Tests: [`server/tests/auth-store.test.ts`](../../server/tests/auth-store.test.ts).

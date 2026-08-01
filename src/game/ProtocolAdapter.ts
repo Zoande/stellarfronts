@@ -119,6 +119,13 @@ export function decodeServerEvent(input: unknown, negotiatedProtocol?: number): 
   if (raw.type === "commandResult" && (typeof raw.ok !== "boolean" || typeof raw.message !== "string")) {
     throw new ProtocolValidationError("Malformed commandResult message.");
   }
+  if (
+    raw.type === "commandResult"
+    && raw.requestId !== undefined
+    && (typeof raw.requestId !== "string" || raw.requestId.length < 1 || raw.requestId.length > 128)
+  ) {
+    throw new ProtocolValidationError("Malformed commandResult requestId.");
+  }
   if (raw.type === "accountResources" && !Number.isFinite(Number(raw.darkMatter))) {
     throw new ProtocolValidationError("Malformed accountResources message.");
   }

@@ -11,19 +11,17 @@ function command(type: ClientCommand["type"]): ClientCommand {
 test("successful authoritative mutations become durable while read-only commands do not", () => {
   for (const type of ["join", "requestDetails", "subscribeDetails", "unsubscribeDetails"] as const) {
     const ctx = { hasDirtyState: false } as RuntimeContext;
-    runAuthoritativeCommand(ctx, command(type), () => undefined);
+    runAuthoritativeCommand(ctx, command(type), () => ({ ok: true, effects: {} }));
     assert.equal(ctx.hasDirtyState, false, type);
   }
   const ctx = { hasDirtyState: false } as RuntimeContext;
-  runAuthoritativeCommand(ctx, command("moveFleet"), () => undefined);
+  runAuthoritativeCommand(ctx, command("moveFleet"), () => ({ ok: true, effects: {} }));
   assert.equal(ctx.hasDirtyState, true);
 });
 
 test("rejected mutations do not dirty state", () => {
   const ctx = { hasDirtyState: false } as RuntimeContext;
-  assert.throws(() => runAuthoritativeCommand(ctx, command("buildDistrict"), () => {
-    throw new Error("rejected");
-  }), /rejected/);
+  runAuthoritativeCommand(ctx, command("buildDistrict"), () => ({ ok: false, message: "rejected" }));
   assert.equal(ctx.hasDirtyState, false);
 });
 

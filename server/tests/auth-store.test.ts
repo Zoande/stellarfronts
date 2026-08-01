@@ -1,5 +1,5 @@
 ﻿import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -189,4 +189,25 @@ test("auth store manages public news posts comments and votes", () => {
   const cleared = store.voteNewsComment(voter, comment.id, 0);
   assert.equal(cleared.score, 0);
   assert.equal(cleared.userVote, 0);
+});
+test("auth store data remains visible across connections and reopening", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-auth-reopen-"));
+  const databasePath = path.join(directory, "auth.sqlite");
+  const first = new AuthStore(databasePath);
+  const second = new AuthStore(databasePath);
+  try {
+    first.signup({ username: "shared_connection_user", password: "test-password" });
+    assert.equal(second.getAccountByUsername("shared_connection_user")?.username, "shared_connection_user");
+    first.close();
+    const reopened = new AuthStore(databasePath);
+    try {
+      assert.equal(reopened.getAccountByUsername("shared_connection_user")?.username, "shared_connection_user");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    first.close();
+    second.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

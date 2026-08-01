@@ -1,7 +1,10 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes, pbkdf2Sync, timingSafeEqual, createHash } from 'node:crypto';
-import Database from 'better-sqlite3';
+import { AuthDatabase } from './auth-database';
+import type { AuthDatabaseConnection } from './auth-database';
+import { createAuthRepositories } from './auth-repositories';
+import type { AuthRepositories } from './auth-repositories';
 import { STATE_ROOT } from './game-state-path';
 import { buildFactions } from '../src/data/Factions';
 import { FACTION_COUNT } from '../src/data/Factions';
@@ -82,7 +85,7 @@ const PASSWORD_ITERATIONS = process.env.NODE_ENV === "test"
 const PASSWORD_KEY_LENGTH = 64;
 const PASSWORD_DIGEST = 'sha512';
 
-type DatabaseInstance = InstanceType<typeof Database>;
+type DatabaseInstance = AuthDatabaseConnection;
 type DevEventType = 'login' | 'signup' | 'game_enter';
 
 interface AccountRow {
@@ -557,253 +560,36 @@ function buildSeedAccounts(): Array<{ username: string; password: string; accoun
 }
 
 export class AuthStore {
+  private readonly database: AuthDatabase;
   private readonly db: DatabaseInstance;
+  private readonly repositories: AuthRepositories;
   private readonly adminPassword: string;
   private readonly devPanelPassword: string;
 
   constructor(dbPath = path.join(STATE_ROOT, 'auth.sqlite')) {
     this.adminPassword = getAdminPassword();
     this.devPanelPassword = getDevPanelPassword();
-    mkdirSync(path.dirname(dbPath), { recursive: true });
-    this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
-    this.db.pragma('foreign_keys = ON');
-    // Several processes share this catalog (auth + orchestrator + each version's
-    // game server). Wait out brief write contention instead of throwing SQLITE_BUSY.
-    this.db.pragma('busy_timeout = 5000');
+    this.database = new AuthDatabase(dbPath);
+    this.db = this.database.connection;
+    this.repositories = createAuthRepositories(this.db);
     // Version game processes use the stable catalog but must never run control-
     // plane DDL, migrations, or seed mutations from historical code.
     if (process.env.SF_AUTH_STORE_MODE !== 'runtime') {
-      this.initialize();
+      try {
+        this.initialize();
+      } catch (error) {
+        this.database.close();
+        throw error;
+      }
     }
   }
 
+  close(): void {
+    this.database.close();
+  }
+
   private initialize(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS accounts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT NOT NULL UNIQUE,
-        password_salt TEXT NOT NULL,
-        password_hash TEXT NOT NULL,
-        account_type TEXT NOT NULL,
-        faction_id INTEGER,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS sessions (
-        token_hash TEXT PRIMARY KEY,
-        account_id INTEGER NOT NULL,
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);
-      CREATE INDEX IF NOT EXISTS idx_accounts_username ON accounts(username);
-
-      CREATE TABLE IF NOT EXISTS dev_sessions (
-        token_hash TEXT PRIMARY KEY,
-        created_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS dev_events (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        event_type TEXT NOT NULL,
-        account_id INTEGER,
-        username TEXT,
-        occurred_at INTEGER NOT NULL,
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE SET NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS game_runtime_stats (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS games (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-        seed INTEGER NOT NULL,
-        country_capacity INTEGER NOT NULL,
-        created_at INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS game_versions (
-        id TEXT PRIMARY KEY,
-        git_ref TEXT NOT NULL,
-        commit_sha TEXT,
-        ref_type TEXT,
-        worktree_path TEXT NOT NULL,
-        port INTEGER NOT NULL,
-        protocol_version INTEGER NOT NULL,
-        schema_version INTEGER NOT NULL,
-        migrates_from_schema TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS game_memberships (
-        game_id TEXT NOT NULL,
-        account_id INTEGER NOT NULL,
-        faction_id INTEGER NOT NULL,
-        country_name TEXT NOT NULL,
-        flag_design TEXT,
-        species_setup TEXT,
-        joined_at INTEGER NOT NULL,
-        PRIMARY KEY(game_id, account_id),
-        UNIQUE(game_id, faction_id),
-        FOREIGN KEY(game_id) REFERENCES games(id) ON DELETE CASCADE,
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS game_visits (
-        game_id TEXT NOT NULL,
-        account_id INTEGER NOT NULL,
-        last_entered_at INTEGER NOT NULL,
-        PRIMARY KEY(game_id, account_id),
-        FOREIGN KEY(game_id) REFERENCES games(id) ON DELETE CASCADE,
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS news_posts (
-        id TEXT PRIMARY KEY,
-        slug TEXT NOT NULL UNIQUE COLLATE NOCASE,
-        title TEXT NOT NULL,
-        summary TEXT NOT NULL,
-        cover_image_url TEXT,
-        blocks TEXT NOT NULL,
-        status TEXT NOT NULL,
-        author_account_id INTEGER NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        published_at INTEGER,
-        FOREIGN KEY(author_account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS news_comments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        post_id TEXT NOT NULL,
-        account_id INTEGER NOT NULL,
-        body TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        FOREIGN KEY(post_id) REFERENCES news_posts(id) ON DELETE CASCADE,
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS news_comment_votes (
-        comment_id INTEGER NOT NULL,
-        account_id INTEGER NOT NULL,
-        vote INTEGER NOT NULL,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL,
-        PRIMARY KEY(comment_id, account_id),
-        FOREIGN KEY(comment_id) REFERENCES news_comments(id) ON DELETE CASCADE,
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS player_progression (
-        account_id INTEGER PRIMARY KEY,
-        total_xp INTEGER NOT NULL DEFAULT 0,
-        dark_matter INTEGER NOT NULL DEFAULT 0,
-        updated_at INTEGER NOT NULL,
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS player_stats (
-        account_id INTEGER PRIMARY KEY,
-        comment_count INTEGER NOT NULL DEFAULT 0,
-        vote_count INTEGER NOT NULL DEFAULT 0,
-        upvote_count INTEGER NOT NULL DEFAULT 0,
-        downvote_count INTEGER NOT NULL DEFAULT 0,
-        quests_claimed INTEGER NOT NULL DEFAULT 0,
-        game_damage_dealt REAL NOT NULL DEFAULT 0,
-        game_profit_earned REAL NOT NULL DEFAULT 0,
-        game_stability_ticks INTEGER NOT NULL DEFAULT 0,
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS player_achievements (
-        account_id INTEGER NOT NULL,
-        achievement_id TEXT NOT NULL,
-        unlocked_at INTEGER NOT NULL,
-        PRIMARY KEY(account_id, achievement_id),
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE TABLE IF NOT EXISTS player_quests (
-        account_id INTEGER NOT NULL,
-        quest_id TEXT NOT NULL,
-        window_key TEXT NOT NULL,
-        progress INTEGER NOT NULL DEFAULT 0,
-        completed_at INTEGER,
-        claimed_at INTEGER,
-        PRIMARY KEY(account_id, quest_id, window_key),
-        FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_dev_sessions_expires_at ON dev_sessions(expires_at);
-      CREATE INDEX IF NOT EXISTS idx_dev_events_type_time ON dev_events(event_type, occurred_at);
-      CREATE INDEX IF NOT EXISTS idx_dev_events_account_id ON dev_events(account_id);
-      CREATE INDEX IF NOT EXISTS idx_game_memberships_account_id ON game_memberships(account_id);
-      CREATE INDEX IF NOT EXISTS idx_game_visits_account_id ON game_visits(account_id, last_entered_at);
-      CREATE INDEX IF NOT EXISTS idx_news_posts_status_time ON news_posts(status, published_at, updated_at);
-      CREATE INDEX IF NOT EXISTS idx_news_comments_post_time ON news_comments(post_id, created_at);
-      CREATE INDEX IF NOT EXISTS idx_news_votes_comment ON news_comment_votes(comment_id);
-      CREATE INDEX IF NOT EXISTS idx_player_achievements_account ON player_achievements(account_id);
-      CREATE INDEX IF NOT EXISTS idx_player_quests_account ON player_quests(account_id, window_key);
-
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sender_id INTEGER NOT NULL,
-        recipient_id INTEGER NOT NULL,
-        body TEXT NOT NULL,
-        sent_at INTEGER NOT NULL,
-        read_at INTEGER,
-        FOREIGN KEY(sender_id) REFERENCES accounts(id) ON DELETE CASCADE,
-        FOREIGN KEY(recipient_id) REFERENCES accounts(id) ON DELETE CASCADE
-      );
-      CREATE INDEX IF NOT EXISTS idx_messages_pair ON messages(sender_id, recipient_id, sent_at);
-      CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id, read_at);
-    `);
-
-    const membershipColumns = this.db.prepare(`PRAGMA table_info(game_memberships)`).all() as Array<{ name: string }>;
-    if (!membershipColumns.some((column) => column.name === 'flag_design')) {
-      this.db.exec(`ALTER TABLE game_memberships ADD COLUMN flag_design TEXT`);
-    }
-    if (!membershipColumns.some((column) => column.name === 'species_setup')) {
-      this.db.exec(`ALTER TABLE game_memberships ADD COLUMN species_setup TEXT`);
-    }
-
-    const gameColumns = this.db.prepare(`PRAGMA table_info(games)`).all() as Array<{ name: string }>;
-    if (!gameColumns.some((column) => column.name === 'version_id')) {
-      this.db.exec(`ALTER TABLE games ADD COLUMN version_id TEXT NOT NULL DEFAULT 'dev'`);
-    }
-    if (!gameColumns.some((column) => column.name === 'status')) {
-      this.db.exec(`ALTER TABLE games ADD COLUMN status TEXT NOT NULL DEFAULT 'active'`);
-    }
-    if (!gameColumns.some((column) => column.name === 'schema_version')) {
-      this.db.exec(`ALTER TABLE games ADD COLUMN schema_version INTEGER`);
-    }
-    if (!gameColumns.some((column) => column.name === 'protocol_version')) {
-      this.db.exec(`ALTER TABLE games ADD COLUMN protocol_version INTEGER`);
-    }
-
-    const versionColumns = this.db.prepare(`PRAGMA table_info(game_versions)`).all() as Array<{ name: string }>;
-    if (!versionColumns.some((column) => column.name === 'commit_sha')) {
-      this.db.exec(`ALTER TABLE game_versions ADD COLUMN commit_sha TEXT`);
-    }
-    if (!versionColumns.some((column) => column.name === 'ref_type')) {
-      this.db.exec(`ALTER TABLE game_versions ADD COLUMN ref_type TEXT`);
-    }
-
-    this.db.prepare(`
-      UPDATE accounts
-      SET account_type = 'user', faction_id = NULL, updated_at = ?
-      WHERE account_type = 'seeded-faction'
-    `).run(Date.now());
+    this.database.initializeControlPlaneSchema();
     this.seedAccounts();
   }
 
@@ -962,12 +748,12 @@ export class AuthStore {
   }
 
   getGameById(gameId: string): StoredGame | null {
-    const row = this.db.prepare(`SELECT * FROM games WHERE id = ?`).get(gameId) as GameRow | undefined;
+    const row = this.repositories.games.findGame(gameId) as GameRow | undefined;
     return row ? this.toGame(row) : null;
   }
 
   listGames(): StoredGame[] {
-    const rows = this.db.prepare(`SELECT * FROM games ORDER BY created_at DESC, id ASC`).all() as GameRow[];
+    const rows = this.repositories.games.listGames() as GameRow[];
     return rows.map((row) => this.toGame(row));
   }
 
@@ -1041,7 +827,7 @@ export class AuthStore {
       throw new AuthError('Country name must be 48 characters or fewer', 400);
     }
 
-    const membership = this.db.transaction(() => {
+    const membership = this.repositories.games.transaction(() => {
       const game = this.getGameById(gameId);
       if (!game || game.status === 'archived') throw new AuthError('Game not found', 404);
       if (game.status !== 'active') throw new AuthError('Game is not currently available', 409);
@@ -1070,7 +856,7 @@ export class AuthStore {
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(game.id, account.id, factionId, countryName, JSON.stringify(flagDesign), JSON.stringify(speciesSetup), joinedAt);
       return this.getGameMembership(game.id, account.id);
-    })();
+    });
     if (!membership) {
       throw new AuthError('Could not create game membership', 500);
     }
@@ -1086,18 +872,7 @@ export class AuthStore {
 
   listNewsPosts(options?: { includeDrafts?: boolean }): NewsPostListItem[] {
     const includeDrafts = options?.includeDrafts === true;
-    const rows = this.db.prepare(`
-      SELECT
-        p.*,
-        a.username AS author_username,
-        COUNT(c.id) AS comment_count
-      FROM news_posts p
-      JOIN accounts a ON a.id = p.author_account_id
-      LEFT JOIN news_comments c ON c.post_id = p.id
-      ${includeDrafts ? '' : `WHERE p.status = 'published'`}
-      GROUP BY p.id
-      ORDER BY COALESCE(p.published_at, p.updated_at) DESC, p.created_at DESC
-    `).all() as NewsPostRow[];
+    const rows = this.repositories.news.listPosts(includeDrafts) as NewsPostRow[];
     return rows.map((row) => this.toNewsPostListItem(row));
   }
 
@@ -1256,23 +1031,23 @@ export class AuthStore {
   }
 
   getAccountByUsername(username: string): AuthAccount | null {
-    const row = this.db.prepare(`SELECT * FROM accounts WHERE username = ?`).get(normalizeUsername(username)) as AccountRow | undefined;
+    const row = this.repositories.accounts.findAccountByUsername(
+      normalizeUsername(username),
+    ) as AccountRow | undefined;
     return row ? this.toAccount(row) : null;
   }
 
   getAccountById(accountId: number): AuthAccount | null {
-    const row = this.db.prepare(`SELECT * FROM accounts WHERE id = ?`).get(accountId) as AccountRow | undefined;
+    const row = this.repositories.accounts.findAccountById(accountId) as AccountRow | undefined;
     return row ? this.toAccount(row) : null;
   }
 
   getAccountFromSessionToken(token: string): AuthAccount | null {
     const tokenHash = hashSessionToken(token);
-    const row = this.db.prepare(`
-      SELECT a.*
-      FROM sessions s
-      JOIN accounts a ON a.id = s.account_id
-      WHERE s.token_hash = ? AND s.expires_at > ?
-    `).get(tokenHash, Date.now()) as AccountRow | undefined;
+    const row = this.repositories.accounts.findAccountBySessionHash(
+      tokenHash,
+      Date.now(),
+    ) as AccountRow | undefined;
 
     if (!row) return null;
     return this.toAccount(row);
@@ -1338,7 +1113,7 @@ export class AuthStore {
   }
 
   clearSession(token: string): void {
-    this.db.prepare(`DELETE FROM sessions WHERE token_hash = ?`).run(hashSessionToken(token));
+    this.repositories.accounts.deleteSession(hashSessionToken(token));
   }
 
   validateDevPassword(password: string): boolean {
@@ -2042,13 +1817,7 @@ export class AuthStore {
   // ─── Player Progression ──────────────────────────────────────────────────────
 
   private ensurePlayerRow(accountId: number): void {
-    const now = Date.now();
-    this.db.prepare(
-      `INSERT OR IGNORE INTO player_progression (account_id, total_xp, dark_matter, updated_at) VALUES (?, 0, 0, ?)`,
-    ).run(accountId, now);
-    this.db.prepare(
-      `INSERT OR IGNORE INTO player_stats (account_id, comment_count, vote_count, upvote_count, downvote_count, quests_claimed, game_damage_dealt, game_profit_earned, game_stability_ticks) VALUES (?, 0, 0, 0, 0, 0, 0, 0, 0)`,
-    ).run(accountId);
+    this.repositories.progression.ensurePlayer(accountId, Date.now());
   }
 
   private getProgressionStats(accountId: number): ProgressionStats {
@@ -2085,7 +1854,7 @@ export class AuthStore {
 
   getPlayerXp(accountId: number): number {
     this.ensurePlayerRow(accountId);
-    return (this.db.prepare(`SELECT total_xp FROM player_progression WHERE account_id = ?`).get(accountId) as { total_xp: number }).total_xp;
+    return this.repositories.progression.getXp(accountId);
   }
 
   addPlayerDarkMatter(accountId: number, amount: number): number {
@@ -2099,9 +1868,7 @@ export class AuthStore {
 
   getPlayerDarkMatter(accountId: number): number {
     this.ensurePlayerRow(accountId);
-    return (this.db.prepare(
-      `SELECT dark_matter FROM player_progression WHERE account_id = ?`,
-    ).get(accountId) as { dark_matter: number }).dark_matter;
+    return this.repositories.progression.getDarkMatter(accountId);
   }
 
   spendPlayerDarkMatter(accountId: number, amount: number): number | null {
@@ -2439,9 +2206,7 @@ export class AuthStore {
   }
 
   markConversationRead(accountId: number, partnerId: number): void {
-    this.db.prepare(
-      `UPDATE messages SET read_at = ? WHERE recipient_id = ? AND sender_id = ? AND read_at IS NULL`,
-    ).run(Date.now(), accountId, partnerId);
+    this.repositories.messages.markConversationRead(accountId, partnerId, Date.now());
   }
 }
 
@@ -2510,4 +2275,25 @@ export function isAuthError(error: unknown): error is AuthError {
   return error instanceof AuthError;
 }
 
-export const authStore = new AuthStore();
+export type AuthStorePort = Pick<AuthStore, keyof AuthStore>;
+
+export type GameRuntimeAuthPort = Pick<
+  AuthStorePort,
+  | 'getAccountIdForGameFaction'
+  | 'getPlayerDarkMatter'
+  | 'isAdminAccount'
+  | 'listGameMemberships'
+  | 'recordGameEnter'
+  | 'recordGameStateVersions'
+  | 'spendPlayerDarkMatter'
+>;
+
+export type GameCatalogPort = Pick<
+  AuthStorePort,
+  | 'close'
+  | 'getAccountFromSessionToken'
+  | 'getGameById'
+  | 'getGamePerspective'
+  | 'listGames'
+  | 'setGameRuntimeStats'
+>;

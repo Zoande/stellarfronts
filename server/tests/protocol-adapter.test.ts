@@ -21,8 +21,8 @@ function protocolSnapshot(protocolVersion: number): Record<string, unknown> {
   };
 }
 
-test("protocol adapters normalize v5-v7 snapshots into one canonical model", () => {
-  for (const protocol of [5, 6, 7]) {
+test("protocol adapters normalize v5-v8 snapshots into one canonical model", () => {
+  for (const protocol of [5, 6, 7, 8]) {
     const snapshot = adaptSnapshot(protocolSnapshot(protocol));
     assert.equal(snapshot.protocolVersion, protocol);
     assert.deepEqual(snapshot.intelligence, { entities: [], lanes: [] });
@@ -71,6 +71,14 @@ test("simple server events validate the fields the client consumes", () => {
   assert.throws(() => decodeServerEvent({ type: "commandResult", ok: "yes", message: 1 }), /Malformed/);
   assert.throws(() => decodeServerEvent({ type: "accountResources", darkMatter: "none" }), /Malformed/);
   assert.throws(() => decodeServerEvent({ type: "serverInfo", message: 7 }), /Malformed/);
+  assert.deepEqual(
+    decodeServerEvent({ type: "commandResult", ok: false, message: "No", requestId: "cmd-1" }),
+    { type: "commandResult", ok: false, message: "No", requestId: "cmd-1" },
+  );
+  assert.throws(
+    () => decodeServerEvent({ type: "commandResult", ok: true, message: "Done", requestId: "" }),
+    /requestId/,
+  );
 });
 
 test("snapshot reducer preserves omissions and applies explicit nulls", () => {

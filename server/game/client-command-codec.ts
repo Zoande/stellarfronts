@@ -68,5 +68,12 @@ export function decodeClientCommand(input: unknown): ClientCommand {
   if (typeof type !== "string" || !COMMAND_TYPES.has(type as ClientCommand["type"])) {
     throw new Error(`Unknown command type "${String(type)}".`);
   }
+  const requestId = (input as { requestId?: unknown }).requestId;
+  if (
+    requestId !== undefined
+    && (typeof requestId !== "string" || requestId.length < 1 || requestId.length > 128)
+  ) {
+    throw new Error("Command requestId must be between 1 and 128 characters.");
+  }
   return input as ClientCommand;
 }
