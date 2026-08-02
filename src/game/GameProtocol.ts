@@ -9,6 +9,8 @@ import type {
   FactionEconomyState,
   JobKind,
   PlanetState,
+  PlanetDefenseBuildingKind,
+  PlanetDefenseSection,
   ResourceKind,
   ResourceCounts,
   UrbanSubDistrictKind,
@@ -24,7 +26,7 @@ import type {
 } from "../data/Market";
 
 /** Wire protocols accepted by the current browser client, newest last. */
-export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8];
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8, 9];
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
@@ -414,7 +416,7 @@ export interface ShipHyperlanePosition {
   progress: number;
 }
 
-export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "colonize" | "merge" | "retreat" | null;
+export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "colonize" | "armyTransfer" | "merge" | "retreat" | null;
 
 export type FleetOrbitTargetKind = "star" | "planet" | "starbase" | "hyperlane" | "fleet";
 
@@ -540,6 +542,8 @@ export interface ServerShip {
   lastShieldDamageAtYear?: number | null;
   subsystemState?: ShipSubsystemState;
   disabled?: boolean;
+  crew: number;
+  crewCapacity: number;
 }
 
 export interface ServerFleet {
@@ -547,6 +551,8 @@ export interface ServerFleet {
   ownerId: number;
   /** Non-null for a defense-platform group permanently anchored to a starbase. */
   stationaryStarbaseId?: string | null;
+  /** Non-null for a defense-platform group permanently anchored to a planet. */
+  stationaryPlanetId?: string | null;
   shipIds: string[];
   formation: FleetFormation;
   currentStarId: number;
@@ -569,6 +575,7 @@ export interface ServerFleet {
   darkMatterBoostActive?: boolean;
   darkMatterBoostPaidUntilYear?: number | null;
   orbitTargetPlanetId: string | null;
+  pendingArmyTransfer?: { planetId: string; mode: "fill" | "drop" } | null;
   orbitOffset: ShipSystemPosition | null;
   orbitTarget: FleetOrbitTarget | null;
   mergeTargetFleetId: string | null;
@@ -778,6 +785,57 @@ export interface SkipPlanetConstructionCommand {
   type: "skipPlanetConstruction";
   planetId: string;
   queueItemId: string;
+}
+
+export interface BuildPlanetDefenseBuildingCommand {
+  type: "buildPlanetDefenseBuilding";
+  planetId: string;
+  section: PlanetDefenseSection;
+  slotIndex: number;
+  buildingKind: PlanetDefenseBuildingKind;
+}
+
+export interface UpgradePlanetDefenseBuildingCommand {
+  type: "upgradePlanetDefenseBuilding";
+  planetId: string;
+  section: PlanetDefenseSection;
+  slotIndex: number;
+}
+
+export interface SetPlanetDefenseBuildingEnabledCommand {
+  type: "setPlanetDefenseBuildingEnabled";
+  planetId: string;
+  section: PlanetDefenseSection;
+  slotIndex: number;
+  enabled: boolean;
+}
+
+export interface DemolishPlanetDefenseBuildingCommand {
+  type: "demolishPlanetDefenseBuilding";
+  planetId: string;
+  section: PlanetDefenseSection;
+  slotIndex: number;
+}
+
+export interface BuildPlanetShipCommand {
+  type: "buildPlanetShip";
+  planetId: string;
+  shipKind: StarbaseShipKind;
+  designId?: string;
+}
+
+export interface CancelShipConstructionCommand {
+  type: "cancelShipConstruction";
+  yardKind: "planet" | "starbase";
+  yardId: string;
+  queueItemId: string;
+}
+
+export interface OrderArmyTransferCommand {
+  type: "orderArmyTransfer";
+  fleetId: string;
+  planetId: string;
+  mode: "fill" | "drop";
 }
 
 export interface BuildStarbaseBuildingCommand {
@@ -1029,6 +1087,13 @@ type ClientCommandPayload =
   | SetPlanetJobLockCommand
   | CancelPlanetConstructionCommand
   | SkipPlanetConstructionCommand
+  | BuildPlanetDefenseBuildingCommand
+  | UpgradePlanetDefenseBuildingCommand
+  | SetPlanetDefenseBuildingEnabledCommand
+  | DemolishPlanetDefenseBuildingCommand
+  | BuildPlanetShipCommand
+  | CancelShipConstructionCommand
+  | OrderArmyTransferCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
   | BuildStarbaseShipCommand

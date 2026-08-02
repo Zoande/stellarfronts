@@ -22,6 +22,7 @@ export interface GatewayOptions {
   retryMs?: number;
   maxPendingMessages?: number;
   maxPendingBytes?: number;
+  maxUpstreamPayloadBytes?: number;
   maxBufferedBytes?: number;
 }
 
@@ -44,6 +45,10 @@ export function attachGatewayProxy(
   const retryMs = options.retryMs ?? 2_000;
   const maxPendingMessages = options.maxPendingMessages ?? 64;
   const maxPendingBytes = options.maxPendingBytes ?? 1024 * 1024;
+  // Client commands queued while a version process starts are intentionally
+  // small, but server snapshots can be much larger. Do not reuse the startup
+  // queue cap as the upstream WebSocket frame limit.
+  const maxUpstreamPayloadBytes = options.maxUpstreamPayloadBytes ?? 64 * 1024 * 1024;
   const maxBufferedBytes = options.maxBufferedBytes ?? 4 * 1024 * 1024;
   const metrics: GatewayMetrics = {
     activeConnections: 0,
@@ -147,7 +152,7 @@ export function attachGatewayProxy(
           origin: request.headers.origin ?? "",
         },
         handshakeTimeout: Math.max(1_000, retryMs),
-        maxPayload: maxPendingBytes,
+        maxPayload: maxUpstreamPayloadBytes,
       });
       upstream = candidate;
       let opened = false;

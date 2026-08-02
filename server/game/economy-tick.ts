@@ -11,6 +11,10 @@ import {
   RESOURCE_KINDS,
   createEmptyResourceCounts,
   addResourceCounts,
+  getActivePlanetDefenseBuildings,
+  normalizePlanetDefenseState,
+  countPlanetShipyards,
+  recalculatePlanetStateEconomy,
   progressPlanetConstructionQueue,
   removeExpiredPlanetModifiers,
 } from "../../src/data/Economy";
@@ -61,7 +65,7 @@ import {
 import { getFactionResearchPerHour, applyTechnologyResearchForFaction } from "./research";
 import { findShipDesignById, getShipDesignForShip } from "./ship-designs";
 import { createShip, createFleet, applyShipDesignToShip, syncStarbaseCombatHealth } from "./fleet-factory";
-import { applyFleetOrbitTarget, createStarbaseOrbitTarget } from "./fleet-combat";
+import { applyFleetOrbitTarget, createStarbaseOrbitTarget, startOrbitOrder } from "./fleet-combat";
 import type { GameFleet, GameShip, RuntimeContext } from "./types";
 
 function getPlanetDetailSignature(planetState: PlanetState): string {
@@ -76,6 +80,101 @@ function queueChangedPlanetDetailRefreshes(ctx: RuntimeContext, previousSignatur
     changed = true;
   }
   return changed;
+}
+
+export function recruitPlanetCrew(ctx: RuntimeContext, factionId: number, elapsedMonths: number): number {
+  if (elapsedMonths <= 0) return 0;
+  let recruitedTotal = 0;
+  ctx.state.planetStates = ctx.state.planetStates.map((planetState) => {
+    if (!planetState.isHabited || planetState.ownerId !== factionId) return planetState;
+    if (!planetState.buildings || !planetState.urbanSubDistricts || !planetState.economy?.popGroups) {
+      return planetState;
+    }
+    let next = {
+      ...planetState,
+      defense: normalizePlanetDefenseState(planetState.defense),
+    };
+    for (let month = 0; month < elapsedMonths; month += 1) {
+      const barracks = getActivePlanetDefenseBuildings(next)
+        .filter((building) => building.kind === "barracks").length;
+      if (barracks <= 0) break;
+      let remainingRecruitment = Math.min(
+        barracks * 10_000,
+        next.economy.popGroups
+          .filter((group) => group.job === "trainee")
+          .reduce((total, group) => total + group.population, 0),
+      );
+      if (remainingRecruitment <= 0) break;
+      const traineeGroups = next.economy.popGroups
+        .filter((group) => group.job === "trainee" && group.population > 0)
+        .sort((left, right) => right.population - left.population || left.speciesId.localeCompare(right.speciesId));
+      const removedBySpecies = new Map<string, number>();
+      const priorRemainders = new Map(
+        next.defense.traineeRemainders.map((entry) => [entry.speciesId, entry.population]),
+      );
+      const nextRemainders = new Map(priorRemainders);
+
+      // Fractional allocations are permanently stuck in the trainee job and
+      // continue training before a new whole-million block begins.
+      const continuingRemainders = traineeGroups
+        .map((group) => ({
+          speciesId: group.speciesId,
+          population: Math.min(group.population, priorRemainders.get(group.speciesId) ?? 0),
+        }))
+        .filter((entry) => entry.population > 0)
+        .sort((left, right) => right.population - left.population || left.speciesId.localeCompare(right.speciesId));
+      for (const entry of continuingRemainders) {
+        if (remainingRecruitment <= 0) break;
+        const removed = Math.min(entry.population, remainingRecruitment);
+        removedBySpecies.set(entry.speciesId, (removedBySpecies.get(entry.speciesId) ?? 0) + removed);
+        const remainder = entry.population - removed;
+        if (remainder > 0) nextRemainders.set(entry.speciesId, remainder);
+        else nextRemainders.delete(entry.speciesId);
+        remainingRecruitment -= removed;
+        recruitedTotal += removed;
+      }
+
+      for (const group of traineeGroups) {
+        if (remainingRecruitment <= 0) break;
+        const priorRemainder = priorRemainders.get(group.speciesId) ?? 0;
+        const wholeMillionAllocation = Math.floor(
+          Math.max(0, group.population - priorRemainder) / 1_000_000,
+        ) * 1_000_000;
+        const alreadyRemoved = removedBySpecies.get(group.speciesId) ?? 0;
+        const removed = Math.min(wholeMillionAllocation, remainingRecruitment);
+        if (removed <= 0) continue;
+        removedBySpecies.set(group.speciesId, alreadyRemoved + removed);
+        const remainder = (wholeMillionAllocation - removed) % 1_000_000;
+        if (remainder > 0) nextRemainders.set(group.speciesId, remainder);
+        remainingRecruitment -= removed;
+        recruitedTotal += removed;
+      }
+      const speciesPopulations = next.speciesPopulations
+        .map((entry) => ({
+          ...entry,
+          population: Math.max(0, entry.population - (removedBySpecies.get(entry.speciesId) ?? 0)),
+        }))
+        .filter((entry) => entry.population > 0);
+      const traineeRemainders = Array.from(nextRemainders.entries())
+        .map(([speciesId, population]) => ({ speciesId, population: Math.max(0, population % 1_000_000) }))
+        .filter((entry) => entry.population > 0)
+        .sort((left, right) => left.speciesId.localeCompare(right.speciesId));
+      next = recalculatePlanetStateEconomy({
+        ...next,
+        population: speciesPopulations.reduce((total, entry) => total + entry.population, 0),
+        speciesPopulations,
+        defense: { ...next.defense, traineeRemainders },
+        jobLocks: [
+          ...next.jobLocks.filter((lock) => lock.job !== "trainee"),
+          ...(traineeRemainders.length > 0
+            ? [{ job: "trainee" as const, allocations: traineeRemainders.map((entry) => ({ ...entry })) }]
+            : []),
+        ],
+      }, getPlanetDistrictLimitsFromState(ctx.state, next), getPlanetTechnologyModifiers(ctx.state, next), getPlanetSpeciesContext(ctx.state, next));
+    }
+    return next;
+  });
+  return recruitedTotal;
 }
 
 export function processEconomyHours(ctx: RuntimeContext, targetHour: number): { economyChanged: boolean; technologiesChanged: boolean } {
@@ -96,6 +195,14 @@ export function processEconomyHours(ctx: RuntimeContext, targetHour: number): { 
     const processedHour = economy.lastProcessedHour ?? targetHour;
     const elapsedHours = Math.max(0, targetHour - processedHour);
     if (elapsedHours <= 0) continue;
+    const targetMonth = gameYearToMonthIndex(elapsedHoursToGameYear(targetHour));
+    const elapsedMonths = Math.max(0, targetMonth - (economy.lastProcessedMonth ?? targetMonth));
+    const recruitedCrew = recruitPlanetCrew(ctx, economy.factionId, elapsedMonths);
+    if (recruitedCrew > 0) {
+      economy.crewStockpile += recruitedCrew;
+      ctx.recalculatePlanetEconomies();
+      ctx.refreshFactionEconomyDeltas();
+    }
     const researchPerHour = getFactionResearchPerHour(ctx, economy.factionId);
     technologiesChanged = applyTechnologyResearchForFaction(ctx, economy.factionId, elapsedHours, researchPerHour) || technologiesChanged;
     const resourceGain = scaleResourceCounts(
@@ -114,7 +221,7 @@ export function processEconomyHours(ctx: RuntimeContext, targetHour: number): { 
     }
     economy.stockpiles.research = 0;
     economy.lastProcessedHour = targetHour;
-    economy.lastProcessedMonth = gameYearToMonthIndex(elapsedHoursToGameYear(targetHour));
+    economy.lastProcessedMonth = targetMonth;
     economyChanged = true;
   }
   if (technologiesChanged) {
@@ -759,7 +866,13 @@ function completeQueuedShipUpgrade(ctx: RuntimeContext, item: StarbaseShipQueueI
     true,
   );
   if (!targetDesign) return false;
+  const previousCrew = ship.crew;
   applyShipDesignToShip(ship, targetDesign);
+  const availableCrew = previousCrew + Math.max(0, item.reservedCrew ?? 0);
+  ship.crew = Math.min(ship.crewCapacity, availableCrew);
+  const surplus = Math.max(0, availableCrew - ship.crewCapacity);
+  const economy = getFactionEconomy(ctx.state, ship.ownerId);
+  if (economy && surplus > 0) economy.crewStockpile += surplus;
   ship.disabled = false;
   ctx.syncFleetMembership();
   return true;
@@ -798,4 +911,103 @@ export function processStarbaseShipQueues(ctx: RuntimeContext, elapsedDays: numb
   ctx.refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
   return { starbasesChanged, fleetsChanged };
+}
+
+function spawnCompletedPlanetShip(
+  ctx: RuntimeContext,
+  planet: PlanetState,
+  item: Pick<StarbaseShipQueueItem, "shipKind" | "designId">,
+): void {
+  if (item.shipKind === "defensePlatform") {
+    let fleet = ctx.state.fleets.find((candidate) => (
+      candidate.stationaryPlanetId === planet.id
+      && candidate.ownerId === planet.ownerId
+      && candidate.combatStatus !== "destroyed"
+    ));
+    if (!fleet) {
+      fleet = createFleet(
+        ctx,
+        planet.ownerId!,
+        planet.starId,
+        [],
+        ctx.createRuntimeId("planet-defense-fleet", [planet.ownerId!, planet.id]),
+      );
+      fleet.stationaryPlanetId = planet.id;
+      fleet.speed = 0;
+      fleet.phaseStartedAtYear = ctx.state.clock.year;
+      startOrbitOrder(ctx, fleet, planet.id);
+      ctx.state.fleets.push(fleet);
+    }
+    const ship = createShip(
+      ctx,
+      planet.ownerId!,
+      fleet.id,
+      item.shipKind,
+      ctx.createRuntimeId("ship", [planet.ownerId!, item.shipKind]),
+      item.designId,
+    );
+    fleet.shipIds.push(ship.id);
+    ctx.state.ships.push(ship);
+    ctx.syncFleetMembership();
+    return;
+  }
+
+  const fleetId = ctx.createRuntimeId("fleet", [planet.ownerId!, planet.starId]);
+  const ship = createShip(
+    ctx,
+    planet.ownerId!,
+    fleetId,
+    item.shipKind,
+    ctx.createRuntimeId("ship", [planet.ownerId!, item.shipKind]),
+    item.designId,
+  );
+  const fleet = createFleet(ctx, planet.ownerId!, planet.starId, [ship.id], fleetId);
+  if (["scienceShip", "constructionShip", "colonizationShip", "armyShip"].includes(item.shipKind)) {
+    fleet.combatSettings.engagementRule = "avoid";
+  }
+  fleet.phaseStartedAtYear = ctx.state.clock.year;
+  fleet.speed = ship.speed;
+  startOrbitOrder(ctx, fleet, planet.id);
+  ctx.state.ships.push(ship);
+  ctx.state.fleets.push(fleet);
+}
+
+export function processPlanetShipQueues(
+  ctx: RuntimeContext,
+  elapsedDays: number,
+): { planetsChanged: boolean; fleetsChanged: boolean } {
+  if (elapsedDays <= 0) return { planetsChanged: false, fleetsChanged: false };
+  let planetsChanged = false;
+  let fleetsChanged = false;
+  ctx.state.planetStates = ctx.state.planetStates.map((planet) => {
+    if (!planet.isHabited || planet.ownerId === null || planet.defense.shipQueue.length === 0) return planet;
+    const shipyards = countPlanetShipyards(planet);
+    if (shipyards <= 0) return planet;
+    const economy = getFactionEconomy(ctx.state, planet.ownerId);
+    const queueHolder = { buildingSlots: [], shipQueue: planet.defense.shipQueue };
+    const result = progressStarbaseShipQueue(queueHolder, elapsedDays, economy?.stockpiles, shipyards);
+    if (!result.changed) return planet;
+    if (economy) {
+      economy.stockpiles = addResourceCounts(economy.stockpiles, scaleResourceCounts(result.resourcesConsumed, -1));
+    }
+    for (const completed of result.completed) {
+      spawnCompletedPlanetShip(ctx, planet, completed);
+      fleetsChanged = true;
+    }
+    planetsChanged = true;
+    ctx.queuePlanetDetailRefresh(planet.id);
+    return {
+      ...planet,
+      defense: { ...planet.defense, shipQueue: result.starbase.shipQueue },
+    };
+  });
+  if (fleetsChanged) {
+    ctx.syncFleetMembership();
+    ctx.refreshDiscovery();
+  }
+  if (planetsChanged || fleetsChanged) {
+    ctx.refreshFactionEconomyDeltas();
+    ctx.hasDirtyState = true;
+  }
+  return { planetsChanged, fleetsChanged };
 }

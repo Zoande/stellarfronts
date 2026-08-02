@@ -5,7 +5,7 @@ import type { FactionInfo, GalaxyPerspective } from "../src/data/Factions";
 import { applyPlanetStatesToStars, createPlanetStateFromConfig } from "../src/data/StarMap";
 import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../src/data/SystemCoordinates";
-import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, completePlanetConstructionQueueItem, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, JOB_FILL_ORDER, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
+import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, completePlanetConstructionQueueItem, countPlanetShipyards, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getPlanetDefensePlatformCapacity, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, JOB_FILL_ORDER, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
 import { isMarketResourceKind } from "../src/data/Market";
 import { countStarbaseShipyards, createStarbaseBuildingQueueItem, createStarbaseShipQueueItem, createStarbaseUpgradeQueueItem, getStarbaseShipConstructionCostMultiplier, hasQueuedStarbaseBuildingTarget, isStarbaseBuildingKind, isStarbaseShipKind, OUTPOST_CONSTRUCTION_COST, STARBASE_LEVEL_DEFINITIONS } from "../src/data/Starbase";
 import { getNebulaGatedBuildingKinds, nebulaEnablesBuildingAtStar } from "../src/data/Nebula";
@@ -178,6 +178,7 @@ import {
   processStarbaseRepairs,
   processShipRepairs,
   processConstructionRepairs,
+  processPlanetShipQueues,
   processStarbaseShipQueues,
 } from "./game/economy-tick";
 import { normalizeResourceCounts, normalizeStarbase, syncFleetMembership, syncSystemOwnershipFromStarbases, fleetHasConstructionShip, getFleetColonizationShip, syncShipsForDesign, normalizeSpeciesRightsForFactions, assignFoundingSpeciesToOwnedPops, getFactionFoundingSpeciesId } from "./game/state-normalization";
@@ -1130,6 +1131,34 @@ function refundResources(factionId: number, refund: Partial<ResourceCounts>): vo
   ctx.hasDirtyState = true;
 }
 
+function hasAvailableCrew(socket: WebSocket, factionId: number, amount: number): boolean {
+  const economy = getFactionEconomy(factionId);
+  if (!economy) {
+    reject(socket, "Faction economy unavailable.");
+    return false;
+  }
+  const required = Math.max(0, Math.floor(amount));
+  if (economy.crewStockpile < required) {
+    reject(socket, `Need ${required} Crew.`);
+    return false;
+  }
+  return true;
+}
+
+function reserveCrew(factionId: number, amount: number): void {
+  const economy = getFactionEconomy(factionId);
+  if (!economy) return;
+  economy.crewStockpile = Math.max(0, economy.crewStockpile - Math.max(0, Math.floor(amount)));
+  ctx.hasDirtyState = true;
+}
+
+function refundCrew(factionId: number, amount: number): void {
+  const economy = getFactionEconomy(factionId);
+  if (!economy) return;
+  economy.crewStockpile += Math.max(0, Math.floor(amount));
+  ctx.hasDirtyState = true;
+}
+
 function handleMarketTrade(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -1446,10 +1475,107 @@ function handleBuildStarbaseShip(
     alloyUpkeepPerDay: stats.alloyUpkeepPerDay,
     crewDemand: stats.crewDemand,
   });
+  if (!hasAvailableCrew(socket, starbase.ownerId, item.reservedCrew)) return;
   if (!spendResources(socket, starbase.ownerId, item.upfrontCost)) return;
+  reserveCrew(starbase.ownerId, item.reservedCrew);
   commitStarbase(socket, "Ship queued.", {
     ...starbase,
     shipQueue: [...starbase.shipQueue, item],
+  });
+}
+
+function handleBuildPlanetShip(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  shipKind: StarbaseShipKind,
+  designId?: string,
+): void {
+  const planet = validatePlanetCommand(socket, perspective, planetId);
+  if (!planet || planet.ownerId === null) return;
+  if (!isStarbaseShipKind(shipKind)) return reject(socket, "Invalid ship design.");
+  if (countPlanetShipyards(planet) <= 0) return reject(socket, "Planet has no completed orbital shipyards.");
+
+  if (shipKind === "defensePlatform") {
+    const capacity = getPlanetDefensePlatformCapacity(planet);
+    const built = ctx.state.fleets
+      .filter((fleet) => (
+        fleet.stationaryPlanetId === planet.id
+        && fleet.ownerId === planet.ownerId
+        && fleet.combatStatus !== "destroyed"
+      ))
+      .reduce((total, fleet) => total + fleet.shipIds.filter((shipId) => (
+        ctx.state.ships.some((ship) => ship.id === shipId && ship.shipKind === "defensePlatform")
+      )).length, 0);
+    const queued = planet.defense.shipQueue.filter((item) => (
+      item.kind === "build" && item.shipKind === "defensePlatform"
+    )).length;
+    if (built + queued >= capacity) return reject(socket, "Planetary defense platform capacity reached.");
+  }
+
+  const design = findShipDesign(ctx.state.shipDesigns, planet.ownerId, shipKind, designId, false);
+  if (!design) return reject(socket, "Ship design is unavailable.");
+  if (!isShipDesignUnlockedForFaction(ctx, planet.ownerId, design)) {
+    return reject(socket, `Requires ${getShipDesignMissingTechnologyName(ctx, planet.ownerId, design) ?? "required technology"}.`);
+  }
+  const stats = calculateShipDesignStats(design);
+  const item = createStarbaseShipQueueItem(shipKind, {
+    kind: "build",
+    designId: design.id,
+    label: design.name,
+    cost: stats.cost,
+    totalDays: stats.buildDays,
+    remainingDays: stats.buildDays,
+    alloyUpkeepPerDay: stats.alloyUpkeepPerDay,
+    crewDemand: stats.crewDemand,
+  });
+  if (!hasAvailableCrew(socket, planet.ownerId, item.reservedCrew)) return;
+  if (!spendResources(socket, planet.ownerId, item.upfrontCost)) return;
+  reserveCrew(planet.ownerId, item.reservedCrew);
+  commitPlanetState(socket, perspective, `${design.name} queued.`, {
+    ...planet,
+    defense: {
+      ...planet.defense,
+      shipQueue: [...planet.defense.shipQueue, item],
+    },
+  });
+}
+
+function handleCancelShipConstruction(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  yardKind: "planet" | "starbase",
+  yardId: string,
+  queueItemId: string,
+): void {
+  if (yardKind === "starbase") {
+    const starbase = validateStarbaseCommand(socket, perspective, yardId);
+    if (!starbase) return;
+    const item = starbase.shipQueue.find((candidate) => candidate.id === queueItemId);
+    if (!item) return reject(socket, "Ship construction not found.");
+    refundCrew(starbase.ownerId, item.reservedCrew);
+    if (item.kind === "upgrade" && item.shipId) {
+      const ship = ctx.state.ships.find((candidate) => candidate.id === item.shipId);
+      if (ship) ship.targetDesignId = null;
+    }
+    commitStarbase(socket, "Ship construction cancelled.", {
+      ...starbase,
+      shipQueue: starbase.shipQueue.filter((candidate) => candidate.id !== queueItemId),
+    });
+    return;
+  }
+
+  const planet = validatePlanetCommand(socket, perspective, yardId);
+  if (!planet || planet.ownerId === null) return;
+  const item = planet.defense.shipQueue.find((candidate) => candidate.id === queueItemId);
+  if (!item) return reject(socket, "Ship construction not found.");
+  refundCrew(planet.ownerId, item.reservedCrew);
+  commitPlanetState(socket, perspective, "Ship construction cancelled.", {
+    ...planet,
+    defense: {
+      ...planet.defense,
+      shipQueue: planet.defense.shipQueue.filter((candidate) => candidate.id !== queueItemId),
+    },
   });
 }
 
@@ -2371,6 +2497,17 @@ function advanceState(now: number): Set<ServerUpdateField> {
     }
   }
 
+  const planetShipQueueResult = processPlanetShipQueues(ctx, elapsedGameDays);
+  if (planetShipQueueResult.planetsChanged || planetShipQueueResult.fleetsChanged) {
+    changed.add("planetStates");
+    changed.add("factionEconomies");
+    if (planetShipQueueResult.fleetsChanged) {
+      changed.add("ships");
+      changed.add("fleets");
+      changed.add("visibility");
+    }
+  }
+
   const nextEconomyHour = gameYearToHourIndex(ctx.state.clock.year);
   const economyResult = processEconomyHours(ctx, nextEconomyHour);
   if (economyResult.economyChanged) {
@@ -3015,6 +3152,26 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "buildStarbaseShip") {
     handleBuildStarbaseShip(session.socket, session.perspective, command.starbaseId, command.shipKind, command.designId);
+    return;
+  }
+  if (command.type === "buildPlanetShip") {
+    handleBuildPlanetShip(
+      session.socket,
+      session.perspective,
+      command.planetId,
+      command.shipKind,
+      command.designId,
+    );
+    return;
+  }
+  if (command.type === "cancelShipConstruction") {
+    handleCancelShipConstruction(
+      session.socket,
+      session.perspective,
+      command.yardKind,
+      command.yardId,
+      command.queueItemId,
+    );
     return;
   }
   if (command.type === "upgradeShip") {

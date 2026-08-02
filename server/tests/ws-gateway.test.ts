@@ -103,6 +103,33 @@ test("gateway preserves queued messages across a cold-start retry", async () => 
   assert.equal(proxy.metrics.activeConnections, 0);
 });
 
+test("gateway forwards large server snapshots independently of the startup queue cap", async () => {
+  const upstream = await listeningServer();
+  const gateway = await listeningServer();
+  const snapshot = Buffer.alloc(2 * 1024 * 1024, "s");
+  upstream.server.on("connection", (socket) => socket.send(snapshot));
+  attachGatewayProxy(gateway.server, {
+    resolveTarget: () => ({ port: upstream.port, available: true }),
+    maxPendingBytes: 8,
+  });
+  const client = new WebSocket(`ws://127.0.0.1:${gateway.port}/?gameId=large`);
+  try {
+    const received = await new Promise<Buffer>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("large snapshot timed out")), 2_000);
+      client.once("message", (message) => {
+        clearTimeout(timer);
+        resolve(Buffer.from(message as Buffer));
+      });
+    });
+    assert.equal(received.byteLength, snapshot.byteLength);
+    assert.deepEqual(received, snapshot);
+  } finally {
+    client.terminate();
+    await closeServer(gateway.server);
+    await closeServer(upstream.server);
+  }
+});
+
 test("gateway caps queued startup payloads and releases all metrics", async () => {
   const gateway = await listeningServer();
   const proxy = attachGatewayProxy(gateway.server, {

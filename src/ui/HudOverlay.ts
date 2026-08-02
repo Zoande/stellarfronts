@@ -558,7 +558,7 @@ const HUD_STYLE = `
   top: 44px;
   left: 50%;
   transform: translateX(-50%);
-  min-width: 142px;
+  min-width: 260px;
   min-height: 24px;
   display: flex;
   align-items: center;
@@ -601,6 +601,34 @@ const HUD_STYLE = `
 
 .spaceHudDarkMatterValue {
   color: #f5eaff;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.spaceHudSecondaryDivider {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: rgba(112, 210, 180, 0.34);
+}
+
+.spaceHudCrewIcon {
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(118, 237, 200, 0.68);
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #d7fff1 0 10%, #3bac8b 32%, #125040 72%, #061c18 100%);
+  color: #eafff7;
+  font-size: 7px;
+  font-weight: 900;
+  box-shadow: 0 0 8px rgba(71, 229, 180, 0.28);
+}
+
+.spaceHudCrewValue {
+  color: #bfffea;
   font-size: 10px;
   font-weight: 800;
   white-space: nowrap;
@@ -1211,12 +1239,17 @@ export class HudOverlay {
     const darkMatter = typeof rawDarkMatter === "number" && Number.isFinite(rawDarkMatter)
       ? Math.max(0, Math.floor(rawDarkMatter))
       : 0;
-    const nextDarkMatterSignature = String(darkMatter);
+    const crew = Math.max(0, Math.floor(state.economy?.crewStockpile ?? 0));
+    const nextDarkMatterSignature = `${darkMatter}:${crew}`;
     if (this.darkMatterSignature !== nextDarkMatterSignature) {
       this.darkMatterEl.innerHTML = `
         <span class="spaceHudDarkMatterIcon" aria-hidden="true">◆</span>
         <span class="spaceHudDarkMatterLabel">Dark Matter</span>
         <span class="spaceHudDarkMatterValue">${formatCompactNumber(darkMatter)}</span>
+        <span class="spaceHudSecondaryDivider" aria-hidden="true"></span>
+        <span class="spaceHudCrewIcon" aria-hidden="true">C</span>
+        <span class="spaceHudDarkMatterLabel">Crew</span>
+        <span class="spaceHudCrewValue">${formatCompactNumber(crew)}</span>
       `;
       this.darkMatterSignature = nextDarkMatterSignature;
     }

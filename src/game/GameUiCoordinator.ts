@@ -1252,6 +1252,9 @@ export async function startGameUi(
 
     if (activeSystemScene) {
       activeSystemScene.setClockYear(getRenderClockYear());
+      if (isFull || has("factionEconomies")) {
+        activeSystemScene.setFactionEconomy(getCurrentFactionEconomy());
+      }
       if (isFull || has("visibility")) {
         activeSystemScene.setStarOwnerships(expandStarOwnership());
       }
@@ -1458,6 +1461,7 @@ export async function startGameUi(
           leaders: snapshot.leaders,
           species: snapshot.species,
           technology: systemPayload.technology,
+          factionEconomy: getCurrentFactionEconomy(),
           onPlanetCommand: sendPlanetCommand,
           onFleetCommand: (command) => server.send(command),
           onReleasePlanetDetails: releasePlanetDetail,

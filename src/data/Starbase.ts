@@ -162,6 +162,7 @@ export interface StarbaseShipQueueItem {
   remainingDays: number;
   alloyUpkeepPerDay: number;
   crewDemand: number;
+  reservedCrew: number;
 }
 
 export interface StarbaseBuildingDefinition {
@@ -593,7 +594,7 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     speed: 1.22,
     buildDays: 45,
     alloyUpkeepPerDay: 11.53,
-    crewDemand: 1_200,
+    crewDemand: 10_000,
     upkeep: resources({ energy: 0.86, alloys: 0.08 }),
     combat: {
       maxShield: 140,
@@ -612,7 +613,7 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     speed: 1.05,
     buildDays: 60,
     alloyUpkeepPerDay: 4.1,
-    crewDemand: 700,
+    crewDemand: 10_000,
     upkeep: resources({ energy: 0.5, alloys: 0.04 }),
     combat: {
       maxShield: 90,
@@ -631,7 +632,7 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     speed: 0.92,
     buildDays: 120,
     alloyUpkeepPerDay: 2.8,
-    crewDemand: 1_100,
+    crewDemand: 25_000,
     upkeep: resources({ energy: 0.61, alloys: 0.05, goods: 0.04 }),
     combat: {
       maxShield: 75,
@@ -650,7 +651,7 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     speed: 0.98,
     buildDays: 120,
     alloyUpkeepPerDay: 9.18,
-    crewDemand: 2_800,
+    crewDemand: 25_000,
     upkeep: resources({ energy: 1.75, alloys: 0.21 }),
     combat: {
       maxShield: 320,
@@ -669,7 +670,7 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     speed: 0.78,
     buildDays: 300,
     alloyUpkeepPerDay: 8.37,
-    crewDemand: 6_400,
+    crewDemand: 60_000,
     upkeep: resources({ energy: 3.18, alloys: 0.51, goods: 0.08 }),
     combat: {
       maxShield: 740,
@@ -688,7 +689,7 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     speed: 0.62,
     buildDays: 720,
     alloyUpkeepPerDay: 7.03,
-    crewDemand: 14_000,
+    crewDemand: 150_000,
     upkeep: resources({ energy: 5.92, alloys: 1.08, goods: 0.17 }),
     combat: {
       maxShield: 1500,
@@ -707,7 +708,7 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     speed: 0,
     buildDays: 90,
     alloyUpkeepPerDay: 12.6,
-    crewDemand: 1_800,
+    crewDemand: 10_000,
     upkeep: resources({ energy: 1.55, alloys: 0.24 }),
     combat: {
       maxShield: 280,
@@ -726,7 +727,7 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     speed: 1.08,
     buildDays: 60,
     alloyUpkeepPerDay: 5.43,
-    crewDemand: 850,
+    crewDemand: 10_000,
     upkeep: resources({ energy: 0.68, alloys: 0.05, goods: 0.04 }),
     combat: {
       maxShield: 75,
@@ -745,11 +746,11 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     speed: 0.88,
     buildDays: 90,
     alloyUpkeepPerDay: 4.7,
-    crewDemand: 2_400,
+    crewDemand: 50_000,
     upkeep: resources({ energy: 0.75, alloys: 0.07, goods: 0.05 }),
     combat: {
-      maxShield: 110,
-      maxArmor: 100,
+      maxShield: 0,
+      maxArmor: 0,
       maxHull: 260,
       evasion: 0.08,
       sensorRange: 3,
@@ -884,6 +885,7 @@ export function createStarbaseShipQueueItem(
     remainingDays: overrides.remainingDays ?? totalDays,
     alloyUpkeepPerDay,
     crewDemand: overrides.crewDemand ?? definition.crewDemand,
+    reservedCrew: overrides.reservedCrew ?? overrides.crewDemand ?? definition.crewDemand,
   };
 }
 
@@ -966,8 +968,9 @@ export function progressStarbaseShipQueue<T extends {
   starbase: T,
   elapsedDays: number,
   availableResources?: ResourceCounts,
+  shipyardCountOverride?: number,
 ): { starbase: T; changed: boolean; completed: StarbaseShipQueueItem[]; resourcesConsumed: ResourceCounts; alloysConsumed: number } {
-  const shipyardCount = countStarbaseShipyards(starbase.buildingSlots);
+  const shipyardCount = shipyardCountOverride ?? countStarbaseShipyards(starbase.buildingSlots);
   if (shipyardCount <= 0 || elapsedDays <= 0 || starbase.shipQueue.length === 0) {
     return { starbase, changed: false, completed: [], resourcesConsumed: createEmptyResourceCounts(), alloysConsumed: 0 };
   }

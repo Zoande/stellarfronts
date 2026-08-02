@@ -44,10 +44,10 @@ class FakeWebSocket {
   }
 }
 
-function snapshot() {
+function snapshot(protocolVersion = 8) {
   return {
     type: "snapshot",
-    protocolVersion: 8,
+    protocolVersion,
     perspective: { mode: "observer" },
     clock: { year: 2200 },
     stars: [],
@@ -57,7 +57,7 @@ function snapshot() {
   };
 }
 
-test("protocol 8 commands resolve out of order without disturbing detail or admin requests", async () => {
+test("protocol 8+ commands resolve out of order without disturbing detail or admin requests", async () => {
   const originalWebSocket = globalThis.WebSocket;
   const originalWindow = globalThis.window;
   Object.assign(globalThis, {
@@ -119,6 +119,45 @@ test("protocol 8 commands resolve out of order without disturbing detail or admi
     });
     assert.equal((await detail).status, "full");
     assert.equal((await admin).ok, true);
+    client.dispose();
+  } finally {
+    Object.assign(globalThis, {
+      WebSocket: originalWebSocket,
+      window: originalWindow,
+    });
+  }
+});
+
+test("protocol 9 send adds the request ID required by authoritative commands", async () => {
+  const originalWebSocket = globalThis.WebSocket;
+  const originalWindow = globalThis.window;
+  Object.assign(globalThis, {
+    WebSocket: FakeWebSocket,
+    window: {
+      setTimeout,
+      clearTimeout,
+    },
+  });
+  try {
+    const client = new GameServerClient("game", "ws://example.test");
+    const connecting = client.connect();
+    const socket = FakeWebSocket.instance;
+    assert.ok(socket);
+    socket.open();
+    socket.serverMessage(snapshot(9));
+    await connecting;
+
+    client.send({
+      type: "buildPlanetBuilding",
+      planetId: "planet-1",
+      area: "city",
+      slotIndex: 0,
+      buildingKind: "fortress",
+    });
+
+    const command = socket.sent.find((entry) => entry.type === "buildPlanetBuilding");
+    assert.equal(typeof command?.requestId, "string");
+    assert.ok(String(command?.requestId).length > 0);
     client.dispose();
   } finally {
     Object.assign(globalThis, {

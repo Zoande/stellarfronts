@@ -9,7 +9,7 @@ import {
   getNextStarbaseLevel,
   hasQueuedStarbaseBuildingTarget,
 } from "../data/Starbase";
-import type { ResourceCounts } from "../data/Economy";
+import type { FactionEconomyState, ResourceCounts } from "../data/Economy";
 import type { StarbaseBuildingKind } from "../data/Starbase";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { NEBULA_DEFINITIONS, getNebulaGatedBuildingKinds } from "../data/Nebula";
@@ -37,6 +37,7 @@ export interface StarbasePanelData {
   ships?: ServerShip[];
   shipDesigns?: ShipDesign[];
   technology?: FactionTechnologyView | null;
+  factionEconomy?: FactionEconomyState | null;
   /** Kind of nebula the starbase's system sits in, if any (gates some buildings). */
   nebulaKind?: NebulaKind | null;
   onStarbaseCommand?: (command: ClientCommand) => void;
@@ -160,6 +161,13 @@ export class StarbasePanel {
     this.show(nextData);
   }
 
+  public refreshFactionEconomy(factionEconomy: FactionEconomyState | null): void {
+    if (!this.currentData) return;
+    const nextData = { ...this.currentData, factionEconomy };
+    this.currentData = nextData;
+    if (this.activeTab === "shipyard") this.show(nextData);
+  }
+
   public dispose(): void {
     this.close();
   }
@@ -247,6 +255,18 @@ export class StarbasePanel {
         const shipId = button.dataset.sbReactivatePlatform;
         if (!shipId) return;
         data.onStarbaseCommand?.({ type: "upgradeShip", starbaseId: data.id, shipId });
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-cancel-ship-queue]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const queueItemId = button.dataset.sbCancelShipQueue;
+        if (!queueItemId) return;
+        data.onStarbaseCommand?.({
+          type: "cancelShipConstruction",
+          yardKind: "starbase",
+          yardId: data.id,
+          queueItemId,
+        });
       });
     });
   }
@@ -514,7 +534,8 @@ export class StarbasePanel {
           <div class="sbSectionTitle">Shipbuilding Demand</div>
           <div class="sbDemandPanel">
             <span>Active shipyard demand: ${this.renderDailyDemand(this.getActiveShipyardDemand(starbase))}</span>
-            <span>Queued crew demand: ${this.formatCompact(shipQueue.reduce((total, item) => total + item.crewDemand, 0))}</span>
+            <span>Available Crew: ${this.formatCompact(data.factionEconomy?.crewStockpile ?? 0)}</span>
+            <span>Reserved Crew: ${this.formatCompact(shipQueue.reduce((total, item) => total + item.reservedCrew, 0))}</span>
             <span>Completed ships: spawn as new fleets in orbit</span>
           </div>
           <div class="sbSectionTitle">Available Ships</div>
@@ -559,6 +580,7 @@ export class StarbasePanel {
             <strong title="${this.escapeHtml(item.label)}">${this.escapeHtml(item.label)}</strong>
             <span>${isActive ? verb : waitingVerb} | ${Math.ceil(item.remainingDays)}d</span>
           </div>
+          <button class="sbShipQueueCancel" type="button" data-sb-cancel-ship-queue="${this.escapeHtml(item.id)}">Cancel</button>
           <div class="sbShipQueueCosts">
             <small><span>Demand</span><strong>${this.renderDailyDemand(item.resourceUpkeepPerDay)}</strong></small>
             <small><span>Cost</span><strong>${this.renderInlineCost(item.cost)}</strong></small>
@@ -1525,6 +1547,18 @@ export class StarbasePanel {
 .sbShipQueueItem.active {
   border-color: rgba(103, 255, 221, 0.58);
   box-shadow: inset 3px 0 0 rgba(103, 255, 221, 0.78);
+}
+
+.sbShipQueueCancel {
+  justify-self: end;
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 126, 101, 0.48);
+  background: rgba(68, 22, 17, 0.72);
+  color: #ffc0b3;
+  font: inherit;
+  font-size: 9px;
+  cursor: pointer;
 }
 
 .sbShipQueueItem strong,

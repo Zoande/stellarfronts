@@ -135,6 +135,7 @@ function materializeIntelShip(source: ServerShip, view: IntelEntityView): Server
     fleetId: readIntel(view, "fleetId", ""),
     shipKind: readIntel(view, "shipKind", "corvette"),
     speed: 0, hp: 0, maxHp: 0, shield: 0, maxShield: 0, armor: 0, maxArmor: 0, hull: 0, maxHull: 0,
+    crew: 0, crewCapacity: 0,
   };
 }
 

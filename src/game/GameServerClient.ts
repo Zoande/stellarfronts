@@ -283,7 +283,8 @@ export class GameServerClient {
 
   send(command: ClientCommand): void {
     if (
-      this.negotiatedProtocol === 8
+      this.negotiatedProtocol !== undefined
+      && this.negotiatedProtocol >= 8
       && !SPECIALIZED_COMMAND_TYPES.has(command.type)
       && !command.requestId
     ) {
@@ -297,9 +298,9 @@ export class GameServerClient {
     if (SPECIALIZED_COMMAND_TYPES.has(command.type)) {
       return Promise.reject(new Error("This command uses a specialized response flow."));
     }
-    if (this.negotiatedProtocol !== 8) {
+    if (this.negotiatedProtocol === undefined || this.negotiatedProtocol < 8) {
       this.send(command);
-      return Promise.reject(new Error("Correlated commands require server protocol 8."));
+      return Promise.reject(new Error("Correlated commands require server protocol 8 or newer."));
     }
     const requestId = this.createRequestId();
     return this.requestWithTimeout(

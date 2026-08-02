@@ -508,7 +508,11 @@ export function canFleetAcceptReplacementOrder(fleet: GameFleet): boolean {
 }
 
 export function isMergeSourceEligible(fleet: GameFleet): boolean {
-  return fleet.phase !== "missingInAction" && fleet.phase !== "buildingStarbase" && fleet.retreatState === null;
+  return !fleet.stationaryStarbaseId
+    && !fleet.stationaryPlanetId
+    && fleet.phase !== "missingInAction"
+    && fleet.phase !== "buildingStarbase"
+    && fleet.retreatState === null;
 }
 
 // ---------------------------------------------------------------------------
@@ -702,6 +706,7 @@ export function refundPendingStarbaseBuildCost(ctx: RuntimeContext, fleet: GameF
 
 export function prepareFleetForReplacementOrder(ctx: RuntimeContext, fleet: GameFleet): void {
   refundPendingStarbaseBuildCost(ctx, fleet);
+  fleet.pendingArmyTransfer = null;
   fleet.systemPosition = getFleetAuthoritativeSystemPosition(ctx, fleet);
   fleet.targetStarId = null;
   fleet.route = [fleet.currentStarId];
@@ -939,6 +944,87 @@ export function startColonizationOrder(ctx: RuntimeContext, fleet: GameFleet, pl
   }
 }
 
+export function completeArmyTransfer(ctx: RuntimeContext, fleet: GameFleet): boolean {
+  const transfer = fleet.pendingArmyTransfer;
+  if (!transfer) return false;
+  const planet = ctx.state.planetStates.find((candidate) => candidate.id === transfer.planetId);
+  const armyShips = fleet.shipIds
+    .map((shipId) => ctx.state.ships.find((candidate) => candidate.id === shipId))
+    .filter((ship): ship is GameShip => Boolean(ship))
+    .sort((left, right) => left.id.localeCompare(right.id));
+
+  if (
+    !planet
+    || !planet.isHabited
+    || planet.ownerId !== fleet.ownerId
+    || armyShips.length === 0
+    || armyShips.some((ship) => ship.shipKind !== "armyShip")
+  ) {
+    fleet.pendingArmyTransfer = null;
+    return false;
+  }
+
+  if (transfer.mode === "drop") {
+    let unloaded = 0;
+    for (const ship of armyShips) {
+      unloaded += Math.max(0, Math.floor(ship.crew));
+      ship.crew = 0;
+    }
+    planet.defense.stationedArmies = Math.max(0, Math.floor(planet.defense.stationedArmies + unloaded));
+  } else {
+    let available = Math.max(0, Math.floor(planet.defense.stationedArmies));
+    for (const ship of armyShips) {
+      const capacity = Math.max(0, Math.floor(ship.crewCapacity));
+      const needed = Math.max(0, capacity - Math.max(0, Math.floor(ship.crew)));
+      const loaded = Math.min(available, needed);
+      ship.crew = Math.max(0, Math.floor(ship.crew)) + loaded;
+      available -= loaded;
+    }
+    planet.defense.stationedArmies = available;
+  }
+
+  fleet.pendingArmyTransfer = null;
+  ctx.recalculatePlanetEconomies();
+  ctx.refreshFactionEconomyDeltas();
+  ctx.queuePlanetDetailRefresh(planet.id);
+  ctx.hasDirtyState = true;
+  return true;
+}
+
+export function startArmyTransferOrder(
+  ctx: RuntimeContext,
+  fleet: GameFleet,
+  planetId: string,
+  mode: "fill" | "drop",
+): void {
+  const target = getPlanetConfigById(ctx, planetId);
+  if (!target) throw new Error("Planet not found.");
+  const route = target.star.id === fleet.currentStarId ? [fleet.currentStarId] : findRoute(ctx, fleet, target.star.id);
+  if (!route) throw new Error("No discovered safe route to planet.");
+  const planetPosition = getPlanetSystemPositionAt(target.star, target.planet, target.planetIndex, ctx.state.clock.year);
+  const orbitPosition = {
+    x: planetPosition.x + SYSTEM_PLANET_ORBIT_DISTANCE,
+    y: SYSTEM_FLEET_Y,
+    z: planetPosition.z,
+  };
+  const orbitTarget: FleetOrbitTarget = {
+    kind: "planet",
+    starId: target.star.id,
+    planetId,
+    position: orbitPosition,
+  };
+  fleet.pendingArmyTransfer = { planetId, mode };
+  startPositionOrder(ctx, fleet, target.star.id, "armyTransfer", orbitPosition, orbitTarget, route);
+  fleet.pendingArmyTransfer = { planetId, mode };
+  if (!fleet.movementPlan && fleet.phase === "orbitingPlanet") {
+    completeArmyTransfer(ctx, fleet);
+    fleet.orderType = null;
+    fleet.targetStarId = null;
+    fleet.route = [fleet.currentStarId];
+    fleet.routeIndex = 0;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Merge helpers
 // ---------------------------------------------------------------------------
@@ -960,6 +1046,10 @@ export function completeMergeSourceFleet(ctx: RuntimeContext, sourceFleet: GameF
   if (!targetFleetId) return false;
   const targetFleet = ctx.state.fleets.find((fleet) => fleet.id === targetFleetId) as GameFleet | undefined;
   if (!targetFleet || targetFleet.id === sourceFleet.id) {
+    cancelMergeSourceOrder(ctx, sourceFleet);
+    return false;
+  }
+  if (targetFleet.stationaryStarbaseId || targetFleet.stationaryPlanetId) {
     cancelMergeSourceOrder(ctx, sourceFleet);
     return false;
   }
@@ -1103,6 +1193,7 @@ export function completeFleetOrder(ctx: RuntimeContext, fleet: GameFleet): void 
   fleet.routeIndex = 0;
   fleet.movementPlan = null;
   fleet.mergeTargetFleetId = null;
+  fleet.pendingArmyTransfer = null;
   fleet.hyperlanePosition = null;
   applyFleetOrbitTarget(fleet, finalOrbitTarget);
   ctx.setFleetPhase(fleet, finalOrbitTarget?.kind === "planet" ? "orbitingPlanet" : (finalOrbitTarget ? "orbiting" : "idle"));
@@ -1182,6 +1273,18 @@ export function advanceFleet(ctx: RuntimeContext, fleet: GameFleet, scaledMs: nu
       if (plan.destinationOrbitTarget.planetId) {
         foundColony(ctx, fleet, plan.destinationOrbitTarget.planetId);
       }
+      fleet.orderType = null;
+      fleet.targetStarId = null;
+      fleet.route = [fleet.currentStarId];
+      fleet.routeIndex = 0;
+      ctx.setFleetPhase(fleet, "orbitingPlanet");
+      fleet.phaseDurationDays = 0;
+      return true;
+    }
+
+    if (fleet.orderType === "armyTransfer" && plan.destinationOrbitTarget?.kind === "planet") {
+      applyFleetOrbitTarget(fleet, plan.destinationOrbitTarget);
+      completeArmyTransfer(ctx, fleet);
       fleet.orderType = null;
       fleet.targetStarId = null;
       fleet.route = [fleet.currentStarId];
@@ -2605,6 +2708,7 @@ export function removeDestroyedShips(ctx: RuntimeContext): boolean {
 
 export function clearFleetMovementNow(ctx: RuntimeContext, fleet: GameFleet): void {
   refundPendingStarbaseBuildCost(ctx, fleet);
+  fleet.pendingArmyTransfer = null;
   const currentPosition = getFleetAuthoritativeSystemPosition(ctx, fleet);
   fleet.systemPosition = currentPosition;
   fleet.targetStarId = null;

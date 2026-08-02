@@ -1,6 +1,6 @@
 {
-  "protocolVersion": 8,
-  "schemaVersion": 27,
-  "migratesFromSchema": [23, 24, 25, 26, 27],
+  "protocolVersion": 9,
+  "schemaVersion": 28,
+  "migratesFromSchema": [23, 24, 25, 26, 27, 28],
   "runtimeApiVersion": 1
 }

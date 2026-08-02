@@ -780,6 +780,8 @@ export class FleetManagerPanel {
     const index = Math.max(0, data.fleets.findIndex((candidate) => candidate.id === fleet.id));
     const shipCount = this.getFleetShipCount(data, fleet);
     const defense = this.getFleetDefense(data, fleet);
+    const crew = ships.reduce((total, ship) => total + Math.max(0, ship.crew), 0);
+    const crewCapacity = ships.reduce((total, ship) => total + Math.max(0, ship.crewCapacity), 0);
     const commandUsed = fleet.commandUsed ?? Math.max(shipCount, ships.length);
     const commandCapacity = fleet.commandCapacity ?? 20;
     return `
@@ -803,6 +805,7 @@ export class FleetManagerPanel {
         ${this.renderFleetInfoCard("hull", "Hull", `${Math.round(defense.hull)} / ${Math.round(defense.maxHull)}`, this.getRatio(defense.hull, defense.maxHull))}
         ${this.renderFleetInfoCard("speed", "Speed", `${this.formatCompact(fleet.speed * 2)} ly/day`)}
         ${this.renderFleetInfoCard("order", "Order", this.formatFleetOrder(data, fleet))}
+        ${this.renderFleetInfoCard("class", "Crew", `${this.formatCompact(crew)} / ${this.formatCompact(crewCapacity)}`)}
       </div>
       ${this.renderFleetDoctrinePanel(data, fleet, ships)}
       <button class="fmAddShipsButton" type="button" data-fm-add-ships ${data.playerFactionId === fleet.ownerId ? "" : "disabled"}>Add Ships</button>
@@ -981,6 +984,7 @@ export class FleetManagerPanel {
           <span class="fmShipCopy">
             <strong>${this.escapeHtml(this.getShipDisplayName(data, fleet, ship, index))}</strong>
             <small>${this.escapeHtml(definition?.label ?? ship.shipKind)}</small>
+            <small>Crew ${this.formatCompact(ship.crew)} / ${this.formatCompact(ship.crewCapacity)}</small>
             ${index === 0 ? '<em>Flagship</em>' : ""}
             ${targetDesign ? `<em class="upgradeReady">Upgrade Ready</em>` : ""}
           </span>

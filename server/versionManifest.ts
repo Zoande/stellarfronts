@@ -10,8 +10,8 @@
  */
 
 // Bump these in lockstep with GameState.schemaVersion and the snapshot protocol.
-export const CURRENT_SCHEMA_VERSION = 27;
-export const CURRENT_PROTOCOL_VERSION = 8;
+export const CURRENT_SCHEMA_VERSION = 28;
+export const CURRENT_PROTOCOL_VERSION = 9;
 export const CURRENT_RUNTIME_API_VERSION = 1;
 
 export interface VersionManifest {
@@ -28,7 +28,7 @@ export const VERSION_MANIFEST: VersionManifest = {
   protocolVersion: CURRENT_PROTOCOL_VERSION,
   schemaVersion: CURRENT_SCHEMA_VERSION,
   // Intelligence v3 deliberately starts new games; legacy saves are not migrated.
-  migratesFromSchema: [23, 24, 25, 26, CURRENT_SCHEMA_VERSION],
+  migratesFromSchema: [23, 24, 25, 26, 27, CURRENT_SCHEMA_VERSION],
   runtimeApiVersion: CURRENT_RUNTIME_API_VERSION,
 };
 

@@ -15,7 +15,11 @@ import type {
   IntelValue,
   SensorSuiteId,
 } from "../../src/data/Intelligence";
-import { BUILDING_DEFINITIONS } from "../../src/data/Economy";
+import {
+  BUILDING_DEFINITIONS,
+  PLANET_DEFENSE_BUILDING_DEFINITIONS,
+  getActivePlanetDefenseBuildings,
+} from "../../src/data/Economy";
 import {
   TRADE_PRIVILEGE_ARTICLE_ID,
   getActiveTreatyPartnersForArticle,
@@ -199,16 +203,22 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
         addStructuredFields(fields, "buildings", planetState.buildings, "planetCivilian");
         addStructuredFields(fields, "urbanSubDistricts", planetState.urbanSubDistricts, "planetCivilian");
         addStructuredFields(fields, "constructionQueue", planetState.constructionQueue, "planetCivilian");
+        addStructuredFields(fields, "defense", planetState.defense, "planetDefense");
         addStructuredFields(fields, "governor", state.leaders.find((leader) => (
           leader.status !== "dead"
           && leader.assignment?.kind === "planet"
           && leader.assignment.targetId === planetState.id
         )) ?? null, "planetCivilian");
       }
-      addField(fields, "defenses.armies", 0, "planetDefense");
-      addField(fields, "defenses.soldiers", 0, "planetDefense");
-      addField(fields, "defenses.fortification", 0, "planetDefense");
-      addField(fields, "defenses.orbitalDefense", "None", "planetDefense");
+      addField(fields, "defenses.armies", planetState?.defense.stationedArmies ?? 0, "planetDefense");
+      addField(
+        fields,
+        "defenses.soldiers",
+        planetState?.economy.popGroups
+          .filter((group) => group.job === "soldier")
+          .reduce((total, group) => total + group.population, 0) ?? 0,
+        "planetDefense",
+      );
       put({ id, kind: "planet", starId: star.id, fields });
     });
   }
@@ -241,6 +251,7 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
     addField(fields, "formation", fleet.formation, "fleetClassification");
     addField(fields, "shipCount", fleet.shipIds.length, "fleetClassification");
     addField(fields, "stationaryStarbaseId", fleet.stationaryStarbaseId ?? null, "fleetClassification");
+    addField(fields, "stationaryPlanetId", fleet.stationaryPlanetId ?? null, "fleetClassification");
     addStructuredFields(fields, "shipIds", fleet.shipIds, "fleetTelemetry");
     addStructuredFields(fields, "telemetry", fleet, "fleetTelemetry");
     put({ id: fleet.id, kind: "fleet", starId: fleet.hyperlanePosition ? null : fleet.currentStarId, fields });
@@ -302,6 +313,18 @@ function collectSensorSources(state: GameState): SensorSource[] {
       if (!kind || !buildingEnabled(slot)) continue;
       const suites = BUILDING_DEFINITIONS[kind as keyof typeof BUILDING_DEFINITIONS]?.sensorSuiteIds ?? [];
       if (suites.length > 0) sources.push({ id: `planet:${planet.id}:${kind}`, factionId: planet.ownerId, starId: planet.starId, suites, authority: true });
+    }
+    for (const building of getActivePlanetDefenseBuildings(planet)) {
+      const suiteId = PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind].sensorSuiteIds?.[building.level];
+      if (suiteId) {
+        sources.push({
+          id: `planet:${planet.id}:${building.kind}:${building.slotIndex}`,
+          factionId: planet.ownerId,
+          starId: planet.starId,
+          suites: [suiteId],
+          authority: true,
+        });
+      }
     }
   }
   for (const starbase of state.starbases) {

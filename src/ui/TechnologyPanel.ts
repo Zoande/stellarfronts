@@ -1,6 +1,7 @@
 import {
   BUILDING_LABELS,
   JOB_LABELS,
+  PLANET_DEFENSE_BUILDING_DEFINITIONS,
   RESOURCE_LABELS,
 } from "../data/Economy";
 import {
@@ -621,6 +622,10 @@ export class TechnologyPanel {
         return `Unlock building upgrade: ${BUILDING_LABELS[effect.building] ?? effect.building} level ${effect.level}`;
       case "unlock_starbase_building":
         return `Unlock starbase building: ${STARBASE_BUILDING_DEFINITIONS[effect.building]?.label ?? effect.building}`;
+      case "unlock_planet_defense_building":
+        return `Unlock planetary facility: ${PLANET_DEFENSE_BUILDING_DEFINITIONS[effect.building]?.label ?? effect.building}`;
+      case "unlock_planet_defense_building_level":
+        return `Unlock planetary facility upgrade: ${PLANET_DEFENSE_BUILDING_DEFINITIONS[effect.building]?.label ?? effect.building} level ${effect.level}`;
       case "unlock_ship_hull":
         return `Unlock hull: ${SHIP_HULL_DEFINITIONS[effect.shipKind]?.label ?? effect.shipKind}`;
       case "unlock_ship_module": {

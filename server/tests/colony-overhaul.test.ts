@@ -100,7 +100,10 @@ test("all five capital tiers use authored totals and retain authored costs and s
   const expected = [
     {
       label: "Colony Headquarters",
-      jobs: [{ job: "colonizer", amount: 500_000_000 }],
+      jobs: [
+        { job: "colonizer", amount: 500_000_000 },
+        { job: "sensorManager", amount: 1_000_000 },
+      ],
       housing: 750_000_000,
       modifiers: [],
       migration: 5_000_000,
@@ -109,6 +112,7 @@ test("all five capital tiers use authored totals and retain authored costs and s
       label: "Planetary Administration",
       jobs: [
         { job: "ruler", amount: 500_000_000 },
+        { job: "sensorManager", amount: 2_000_000 },
         { job: "enforcer", amount: 100_000_000 },
         { job: "entertainer", amount: 100_000_000 },
       ],
@@ -120,6 +124,7 @@ test("all five capital tiers use authored totals and retain authored costs and s
       label: "Planetary Capital",
       jobs: [
         { job: "ruler", amount: 900_000_000 },
+        { job: "sensorManager", amount: 3_000_000 },
         { job: "enforcer", amount: 150_000_000 },
         { job: "entertainer", amount: 150_000_000 },
       ],
@@ -131,6 +136,7 @@ test("all five capital tiers use authored totals and retain authored costs and s
       label: "Planetary Directorate",
       jobs: [
         { job: "ruler", amount: 1_500_000_000 },
+        { job: "sensorManager", amount: 4_000_000 },
         { job: "enforcer", amount: 200_000_000 },
         { job: "entertainer", amount: 200_000_000 },
       ],
@@ -142,6 +148,7 @@ test("all five capital tiers use authored totals and retain authored costs and s
       label: "Planetary Nexus",
       jobs: [
         { job: "ruler", amount: 2_400_000_000 },
+        { job: "sensorManager", amount: 5_000_000 },
         { job: "enforcer", amount: 250_000_000 },
         { job: "entertainer", amount: 250_000_000 },
       ],
@@ -217,7 +224,8 @@ test("colonizers are lower-class frontier support workers in the intended fill p
 
   const colony = makePlanet();
   assert.equal(colony.economy.jobCapacity.colonizer, 500_000_000);
-  assert.equal(colony.economy.popGroups.find((group) => group.job === "colonizer")?.population, 500_000_000);
+  assert.equal(colony.economy.popGroups.find((group) => group.job === "sensorManager")?.population, 1_000_000);
+  assert.equal(colony.economy.popGroups.find((group) => group.job === "colonizer")?.population, 499_000_000);
   assert.equal(colony.economy.production.energy, 0);
   assert.equal(colony.economy.production.minerals, 0);
 });

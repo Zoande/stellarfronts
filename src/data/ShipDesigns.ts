@@ -210,7 +210,7 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     speed: 1.22,
     buildDays: 5,
     alloyUpkeepPerDay: 10,
-    crewDemand: 900,
+    crewDemand: 10_000,
     cost: resources({ minerals: 110, alloys: 80 }),
     upkeep: resources({ energy: 0.72, alloys: 0.07 }),
     combat: {
@@ -233,7 +233,7 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     speed: 0.98,
     buildDays: 16,
     alloyUpkeepPerDay: 30,
-    crewDemand: 2_400,
+    crewDemand: 25_000,
     cost: resources({ minerals: 400, alloys: 330 }),
     upkeep: resources({ energy: 2.1, alloys: 0.28 }),
     combat: {
@@ -256,7 +256,7 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     speed: 0.78,
     buildDays: 34,
     alloyUpkeepPerDay: 58,
-    crewDemand: 5_800,
+    crewDemand: 60_000,
     cost: resources({ minerals: 900, alloys: 820, goods: 100 }),
     upkeep: resources({ energy: 3.8, alloys: 0.54, goods: 0.16 }),
     combat: {
@@ -279,7 +279,7 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     speed: 0.62,
     buildDays: 68,
     alloyUpkeepPerDay: 112,
-    crewDemand: 13_000,
+    crewDemand: 150_000,
     cost: resources({ minerals: 1_800, alloys: 1_750, goods: 220 }),
     upkeep: resources({ energy: 7.6, alloys: 1.08, goods: 0.34 }),
     combat: {
@@ -302,7 +302,7 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     speed: 0,
     buildDays: 12,
     alloyUpkeepPerDay: 24,
-    crewDemand: 1_600,
+    crewDemand: 10_000,
     cost: resources({ minerals: 360, alloys: 300, goods: 40 }),
     upkeep: resources({ energy: 1.7, alloys: 0.26 }),
     combat: {
@@ -325,7 +325,7 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     speed: 1.08,
     buildDays: 8,
     alloyUpkeepPerDay: 9,
-    crewDemand: 800,
+    crewDemand: 10_000,
     cost: resources({ minerals: 180, alloys: 125, goods: 80, research: 20 }),
     upkeep: resources({ energy: 1, alloys: 0.09, goods: 0.07 }),
     combat: {
@@ -348,12 +348,12 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     speed: 0.88,
     buildDays: 11,
     alloyUpkeepPerDay: 15,
-    crewDemand: 2_200,
+    crewDemand: 50_000,
     cost: resources({ minerals: 260, alloys: 210, goods: 120, food: 80 }),
     upkeep: resources({ energy: 1.25, alloys: 0.14, goods: 0.09 }),
     combat: {
-      maxShield: 90,
-      maxArmor: 80,
+      maxShield: 0,
+      maxArmor: 0,
       maxHull: 230,
       evasion: 0.09,
       sensorRange: 3,
@@ -371,7 +371,7 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     speed: 1.05,
     buildDays: 6,
     alloyUpkeepPerDay: 8,
-    crewDemand: 650,
+    crewDemand: 10_000,
     cost: resources({ minerals: 140, alloys: 100 }),
     upkeep: resources({ energy: 0.78, alloys: 0.08 }),
     combat: {
@@ -394,7 +394,7 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     speed: 0.92,
     buildDays: 10,
     alloyUpkeepPerDay: 10,
-    crewDemand: 1_000,
+    crewDemand: 25_000,
     cost: resources({ minerals: 220, alloys: 160, goods: 100, food: 100 }),
     upkeep: resources({ energy: 1, alloys: 0.1, goods: 0.08 }),
     combat: {
@@ -1956,16 +1956,18 @@ export function calculateShipDesignStats(design: ShipDesign): ShipDesignStats {
     speed: design.shipKind === "defensePlatform" ? 0 : Math.max(0.05, totals.speed),
     buildDays: Math.max(1, Math.round(totals.buildDays * SHIP_BUILD_TIME_MULTIPLIERS[hull.kind])),
     alloyUpkeepPerDay: Math.max(0, totals.alloyUpkeepPerDay),
-    crewDemand: Math.max(0, totals.crewDemand),
+    crewDemand: design.shipKind === "armyShip" ? 50_000 : Math.max(0, Math.round(totals.crewDemand)),
     cost: scaleResources(cost, 1.5),
     upkeep: scaleResources(upkeep, 0.5),
     combat: {
-      maxShield: Math.max(0, totals.maxShield),
-      maxArmor: Math.max(0, totals.maxArmor),
+      maxShield: design.shipKind === "armyShip" ? 0 : Math.max(0, totals.maxShield),
+      maxArmor: design.shipKind === "armyShip" ? 0 : Math.max(0, totals.maxArmor),
       maxHull: Math.max(1, totals.maxHull),
       evasion: Math.max(0, Math.min(0.9, totals.evasion)),
       sensorRange: Math.max(1, totals.sensorRange),
-      weaponMounts: weaponMounts.map((mount) => applyWeaponModifiers(mount, totals.weaponModifiers)),
+      weaponMounts: design.shipKind === "armyShip"
+        ? []
+        : weaponMounts.map((mount) => applyWeaponModifiers(mount, totals.weaponModifiers)),
     },
   };
 }

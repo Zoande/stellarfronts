@@ -1,4 +1,4 @@
-import type { BuildingKind, JobKind, ResourceKind } from "./Economy";
+import type { BuildingKind, JobKind, PlanetDefenseBuildingKind, ResourceKind } from "./Economy";
 import type { StarbaseBuildingKind, StarbaseShipKind } from "./Starbase";
 
 export type TechId = string;
@@ -33,6 +33,8 @@ export type TechnologyEffect =
   | { type: "unlock_building"; building: BuildingKind }
   | { type: "unlock_building_level"; building: BuildingKind; level: number }
   | { type: "unlock_starbase_building"; building: StarbaseBuildingKind }
+  | { type: "unlock_planet_defense_building"; building: PlanetDefenseBuildingKind }
+  | { type: "unlock_planet_defense_building_level"; building: PlanetDefenseBuildingKind; level: number }
   | { type: "unlock_ship_hull"; shipKind: StarbaseShipKind }
   | { type: "unlock_ship_module"; moduleId: string }
   | { type: "unlock_ship_section"; sectionModuleId: string }
@@ -300,6 +302,11 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_building", building: "capacitorWorkshops" },
       { type: "unlock_building", building: "entertainmentForum" },
       { type: "unlock_building", building: "securityOffice" },
+      { type: "unlock_building", building: "fortress" },
+      { type: "unlock_planet_defense_building", building: "sensorArray" },
+      { type: "unlock_planet_defense_building", building: "planetaryShield" },
+      { type: "unlock_planet_defense_building", building: "barracks" },
+      { type: "unlock_planet_defense_building", building: "platformSupport" },
     ],
   },
   {
@@ -321,6 +328,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_starbase_building", building: "researchAnnex" },
       { type: "unlock_starbase_building", building: "logisticsDepot" },
       { type: "unlock_starbase_building", building: "listeningStation" },
+      { type: "unlock_planet_defense_building", building: "orbitalShipyard" },
     ],
   },
   {
@@ -437,6 +445,32 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       modifier("research_annex_bonus", "Research annexes", "starbaseResearchAnnexes", "multiplyBy", 0.05, 0.25),
     ],
     effects: [{ type: "job_output_mult", job: "researcher", resource: "research", value: 0.1 }],
+  },
+  {
+    id: "planetary_sensor_fusion",
+    name: "Planetary Sensor Fusion",
+    description: "Distributed processing combines planetary arrays into a coherent range-three intelligence picture.",
+    category: "computing",
+    tier: 1,
+    cost: 1600,
+    prerequisites: ["planetary_infrastructure", "defensive_ship_systems"],
+    positionInTree: { x: 1.4, y: 4.65 },
+    passiveResearchRules: passive(0.12),
+    researchModifiers: [],
+    effects: [{ type: "unlock_planet_defense_building_level", building: "sensorArray", level: 2 }],
+  },
+  {
+    id: "deep_space_sensor_grids",
+    name: "Deep-Space Sensor Grids",
+    description: "High-order signal fusion extends planetary contact tracking across four hyperlane steps.",
+    category: "computing",
+    tier: 3,
+    cost: 5200,
+    prerequisites: ["planetary_sensor_fusion", "applied_research_methods"],
+    positionInTree: { x: 3, y: 4.65 },
+    passiveResearchRules: passive(0.08),
+    researchModifiers: [],
+    effects: [{ type: "unlock_planet_defense_building_level", building: "sensorArray", level: 3 }],
   },
   {
     id: "civilian_fabrication_models",
@@ -1128,6 +1162,24 @@ export function getRequiredTechIdsForBuildingLevel(building: BuildingKind, level
 
 export function getRequiredTechIdsForStarbaseBuilding(building: StarbaseBuildingKind): TechId[] {
   return requiredTechIdsForEffect((effect) => effect.type === "unlock_starbase_building" && effect.building === building);
+}
+
+export function getRequiredTechIdsForPlanetDefenseBuilding(building: PlanetDefenseBuildingKind): TechId[] {
+  return requiredTechIdsForEffect((effect) => (
+    effect.type === "unlock_planet_defense_building" && effect.building === building
+  ));
+}
+
+export function getRequiredTechIdsForPlanetDefenseBuildingLevel(
+  building: PlanetDefenseBuildingKind,
+  level: number,
+): TechId[] {
+  if (level <= 1) return getRequiredTechIdsForPlanetDefenseBuilding(building);
+  return requiredTechIdsForEffect((effect) => (
+    effect.type === "unlock_planet_defense_building_level"
+    && effect.building === building
+    && effect.level === level
+  ));
 }
 
 export function getRequiredTechIdsForShipModule(moduleId: string): TechId[] {

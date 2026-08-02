@@ -33,8 +33,8 @@ test("state envelope migrations are explicit, immutable, and reject unsupported 
   };
   const migrated = migrateGameStateEnvelope(state);
   assert.equal(migrated.originalSchema, 23);
-  assert.equal(migrated.state.schemaVersion, 27);
+  assert.equal(migrated.state.schemaVersion, 28);
   assert.equal(state.schemaVersion, 23);
   assert.throws(() => migrateGameStateEnvelope({ ...state, schemaVersion: 22 }), /not supported/);
-  assert.throws(() => migrateGameStateEnvelope({ ...state, schemaVersion: 28 }), /not supported/);
+  assert.throws(() => migrateGameStateEnvelope({ ...state, schemaVersion: 29 }), /not supported/);
 });

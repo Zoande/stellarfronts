@@ -21,8 +21,8 @@ function protocolSnapshot(protocolVersion: number): Record<string, unknown> {
   };
 }
 
-test("protocol adapters normalize v5-v8 snapshots into one canonical model", () => {
-  for (const protocol of [5, 6, 7, 8]) {
+test("protocol adapters normalize v5-v9 snapshots into one canonical model", () => {
+  for (const protocol of [5, 6, 7, 8, 9]) {
     const snapshot = adaptSnapshot(protocolSnapshot(protocol));
     assert.equal(snapshot.protocolVersion, protocol);
     assert.deepEqual(snapshot.intelligence, { entities: [], lanes: [] });

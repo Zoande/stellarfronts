@@ -55,7 +55,7 @@ import {
   withPlanetOrbitFields,
 } from "../data/SystemCoordinates";
 import type { SystemPosition } from "../data/SystemCoordinates";
-import type { PlanetState } from "../data/Economy";
+import type { FactionEconomyState, PlanetState } from "../data/Economy";
 import { getPlanetColonizationEligibility } from "../data/Colonization";
 import type { LeaderState } from "../data/Leaders";
 import type { SpeciesState } from "../data/Species";
@@ -142,6 +142,7 @@ export interface SystemSceneOptions {
   leaders?: LeaderState[];
   species?: SpeciesState[];
   technology?: FactionTechnologyView | null;
+  factionEconomy?: FactionEconomyState | null;
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
   clockYear?: number;
@@ -227,6 +228,7 @@ export class SystemScene implements IGameScene {
   private warFactionIds = new Set<number>();
   private playerFactionId: number;
   private planetStates: PlanetState[];
+  private factionEconomy: FactionEconomyState | null;
   private species: SpeciesState[];
   private leaders: LeaderState[];
   private shipTransit: GalaxyShipTransit | null;
@@ -402,6 +404,7 @@ export class SystemScene implements IGameScene {
     this.playerFactionId = options.playerFactionId ?? 0;
     this.applyDiplomacyMovement(options.diplomacy);
     this.planetStates = this.systemStore?.getPlanetStates() ?? options.planetStates ?? [];
+    this.factionEconomy = options.factionEconomy ?? null;
     this.species = options.species ?? [];
     this.leaders = this.systemStore?.getLeaders() ?? options.leaders ?? [];
     applyPlanetStatesToStars([this.star], this.planetStates);
@@ -2248,6 +2251,7 @@ export class SystemScene implements IGameScene {
       ships: this.serverShips,
       shipDesigns: this.shipDesigns,
       technology: this.options.technology,
+      factionEconomy: this.factionEconomy,
       nebulaKind: this.options.nebula?.kind ?? null,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
       onClose: (starbaseId) => this.options.onReleaseStarbaseDetails?.(starbaseId),
@@ -4102,9 +4106,13 @@ export class SystemScene implements IGameScene {
       imageUrl: this.getPlanetTextureUrl(panelPlanet),
       accentColor: "rgba(102, 236, 199, 0.95)",
       technology: this.options.technology,
+      factionEconomy: this.factionEconomy,
+      shipDesigns: this.shipDesigns,
+      planetPlatformUsage: this.getPlanetPlatformUsage(panelPlanet.id),
+      armyTransferFleet: this.getArmyTransferFleetContext(),
       orbitFleetId: this.getOrbitCapableFleetId(),
       assignedLeader: this.getAssignedLeader("planet", panelPlanet.id),
-      canManageLeaders: interactive && this.getCurrentStarOwnerId() === this.playerFactionId,
+      canManageLeaders: interactive && planetState?.ownerId === this.playerFactionId,
       onPlanetCommand: interactive ? (command) => this.options.onPlanetCommand?.(command) : undefined,
       onClose: (objectId, kind) => {
         if (kind === "planet") {
@@ -4134,6 +4142,33 @@ export class SystemScene implements IGameScene {
       && fleet.currentStarId === this.star.id
       && (fleet.phase === "idle" || fleet.phase === "orbitingPlanet" || fleet.phase === "orbiting")
     ))?.id ?? null;
+  }
+
+  private getPlanetPlatformUsage(planetId: string): number {
+    const platformShipIds = new Set(this.serverShips
+      .filter((ship) => ship.shipKind === "defensePlatform")
+      .map((ship) => ship.id));
+    return this.serverFleets
+      .filter((fleet) => fleet.stationaryPlanetId === planetId)
+      .reduce((total, fleet) => total + fleet.shipIds.filter((shipId) => platformShipIds.has(shipId)).length, 0);
+  }
+
+  private getArmyTransferFleetContext(): {
+    fleetId: string;
+    mode: "fill" | "drop";
+    carried: number;
+    capacity: number;
+  } | null {
+    const fleetId = this.getPrimarySelectedFleetId();
+    const fleet = fleetId ? this.serverFleets.find((candidate) => candidate.id === fleetId) : null;
+    if (!fleet || fleet.ownerId !== this.playerFactionId || fleet.shipIds.length === 0) return null;
+    const ships = fleet.shipIds
+      .map((shipId) => this.serverShips.find((candidate) => candidate.id === shipId))
+      .filter((ship): ship is ServerShip => Boolean(ship));
+    if (ships.length !== fleet.shipIds.length || ships.some((ship) => ship.shipKind !== "armyShip")) return null;
+    const carried = ships.reduce((total, ship) => total + Math.max(0, ship.crew), 0);
+    const capacity = ships.reduce((total, ship) => total + Math.max(0, ship.crewCapacity), 0);
+    return { fleetId: fleet.id, mode: carried > 0 ? "drop" : "fill", carried, capacity };
   }
 
   private showStarObjectPanel(): void {
@@ -4170,9 +4205,13 @@ export class SystemScene implements IGameScene {
       imageUrl: this.getPlanetTextureUrl(planet),
       accentColor: "rgba(102, 236, 199, 0.95)",
       technology: this.options.technology,
+      factionEconomy: this.factionEconomy,
+      shipDesigns: this.shipDesigns,
+      planetPlatformUsage: this.getPlanetPlatformUsage(planet.id),
+      armyTransferFleet: this.getArmyTransferFleetContext(),
       orbitFleetId: this.getOrbitCapableFleetId(),
       assignedLeader: this.getAssignedLeader("planet", planet.id),
-      canManageLeaders: interactive && this.getCurrentStarOwnerId() === this.playerFactionId,
+      canManageLeaders: interactive && planetState.ownerId === this.playerFactionId,
       onPlanetCommand: interactive ? (command) => this.options.onPlanetCommand?.(command) : undefined,
       onClose: (objectId, kind) => {
         if (kind === "planet") this.options.onReleasePlanetDetails?.(objectId);
@@ -4457,6 +4496,12 @@ export class SystemScene implements IGameScene {
 
   setTechnology(technology: FactionTechnologyView | null): void {
     this.options.technology = technology;
+  }
+
+  setFactionEconomy(economy: FactionEconomyState | null): void {
+    this.factionEconomy = economy;
+    this.objectPanel?.refreshFactionEconomy(economy);
+    this.starbasePanel?.refreshFactionEconomy(economy);
   }
 
   applySystemPayload(

@@ -33,7 +33,7 @@ import {
   createEmptyStarbaseSlots,
 } from "../../src/data/Starbase";
 import type { StarbaseLevel } from "../../src/data/Starbase";
-import { createDefaultShipDesign } from "../../src/data/ShipDesigns";
+import { calculateShipDesignStats, createDefaultShipDesign } from "../../src/data/ShipDesigns";
 import { createInitialFactionEconomyState } from "../../src/data/Economy";
 import { normalizeFactionTechState } from "../../src/data/Technology";
 import { createInitialGovernmentStates, normalizeGovernmentStatesForFactions } from "../../src/data/Government";
@@ -169,7 +169,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 27,
+    schemaVersion: 28,
     stars,
     nebulae,
     planetStates,
@@ -344,6 +344,41 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       parsed.factions.map((faction) => faction.homeStarId),
     );
     parsed.planetStates = normalizedPlanetStates.planetStates;
+    const normalizeQueuedCrew = (
+      ownerId: number,
+      queue: import("../../src/data/Starbase").StarbaseShipQueueItem[],
+    ): import("../../src/data/Starbase").StarbaseShipQueueItem[] => queue.map((item) => {
+      const design = resolveShipDesign(
+        parsed.shipDesigns,
+        ownerId,
+        item.shipKind,
+        item.targetDesignId ?? item.designId,
+        parsed.clock.year,
+      );
+      const crewDemand = item.shipKind === "armyShip"
+        ? 50_000
+        : Math.max(0, Math.floor(calculateShipDesignStats(design).crewDemand));
+      const currentShip = item.kind === "upgrade" && item.shipId
+        ? parsed.ships.find((ship) => ship.id === item.shipId)
+        : null;
+      const reservedCrew = item.kind === "upgrade"
+        ? Math.max(0, crewDemand - Math.max(0, currentShip?.crewCapacity ?? 0))
+        : crewDemand;
+      return { ...item, crewDemand, reservedCrew };
+    });
+    parsed.starbases = parsed.starbases.map((starbase) => ({
+      ...starbase,
+      shipQueue: normalizeQueuedCrew(starbase.ownerId, starbase.shipQueue),
+    }));
+    parsed.planetStates = parsed.planetStates.map((planet) => ({
+      ...planet,
+      defense: {
+        ...planet.defense,
+        shipQueue: planet.ownerId === null
+          ? []
+          : normalizeQueuedCrew(planet.ownerId, planet.defense.shipQueue),
+      },
+    }));
     if (onDiskSchema < 26) {
       const currentMonth = gameYearToMonthIndex(parsed.clock.year);
       parsed.clock.lastProcessedPopulationMonth = currentMonth;
