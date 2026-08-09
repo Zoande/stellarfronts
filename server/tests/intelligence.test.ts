@@ -15,7 +15,7 @@ import {
   hasCommandLink,
   refreshIntelligence,
 } from "../game/intelligence";
-import { createSnapshot } from "../game/snapshot";
+import { createSnapshot, createUpdate } from "../game/snapshot";
 import { createDetailPayload, createSystemDetailPayload } from "../game/detail-payloads";
 import type { RuntimeContext } from "../game/types";
 
@@ -278,6 +278,21 @@ test("faction snapshot serialization does not bypass the intelligence materializ
   const serialized = JSON.stringify(snapshot);
   assert.equal(serialized.includes("987654321"), false);
   assert.equal(snapshot.planetStates.length, 0);
+});
+
+test("clock-only updates retain cached client intelligence instead of resending the graph", () => {
+  const state = stateFixture();
+  refreshIntelligence(state);
+  const ctx = { state } as RuntimeContext;
+  const perspective = { mode: "faction", factionId: 0 } as const;
+
+  const clockUpdate = createUpdate(ctx, perspective, ["clock"]);
+  assert.equal(clockUpdate.intelligence, undefined);
+  assert.ok(clockUpdate.clock);
+
+  const visibilityUpdate = createUpdate(ctx, perspective, ["visibility"]);
+  assert.ok(visibilityUpdate.intelligence);
+  assert.ok(visibilityUpdate.intelligence.entities.length > 0);
 });
 
 test("active projectile snapshots hide launch-time hit locks and unrelated attacker fields", () => {

@@ -18,9 +18,16 @@ export interface SystemAssetDefinition {
   configureMesh?: (mesh: AbstractMesh) => void;
 }
 
+interface SourceTemplate {
+  root: TransformNode;
+  maxDimension: number;
+}
+
 export class SystemAssetRegistry {
   private readonly templates = new Map<string, TransformNode>();
   private readonly pendingTemplates = new Map<string, Promise<TransformNode | null>>();
+  private readonly sources = new Map<string, SourceTemplate>();
+  private readonly pendingSources = new Map<string, Promise<SourceTemplate | null>>();
 
   constructor(private readonly scene: Scene) {}
 
@@ -64,9 +71,55 @@ export class SystemAssetRegistry {
     }
     this.templates.clear();
     this.pendingTemplates.clear();
+    for (const source of this.sources.values()) {
+      source.root.dispose();
+    }
+    this.sources.clear();
+    this.pendingSources.clear();
   }
 
   private async createTemplate(definition: SystemAssetDefinition): Promise<TransformNode | null> {
+    const source = await this.loadSource(definition);
+    if (!source) return null;
+
+    const templateRoot = source.root.clone(`${definition.key}-template`, null);
+    if (!templateRoot) return null;
+    for (const mesh of templateRoot.getChildMeshes()) {
+      mesh.isPickable = false;
+      mesh.alwaysSelectAsActiveMesh = true;
+      definition.configureMesh?.(mesh);
+    }
+    templateRoot.scaling.setAll(
+      (definition.targetSize / source.maxDimension) * (definition.scaleMultiplier ?? 1),
+    );
+    templateRoot.setEnabled(false);
+    return templateRoot;
+  }
+
+  private loadSource(definition: SystemAssetDefinition): Promise<SourceTemplate | null> {
+    const sourceKey = `${definition.rootUrl}\0${definition.fileName}\0${definition.trailSocketName ?? ""}`;
+    const existing = this.sources.get(sourceKey);
+    if (existing) return Promise.resolve(existing);
+
+    const pending = this.pendingSources.get(sourceKey);
+    if (pending) return pending;
+
+    const promise = this.createSource(definition, sourceKey)
+      .then((source) => {
+        if (source) this.sources.set(sourceKey, source);
+        return source;
+      })
+      .finally(() => {
+        this.pendingSources.delete(sourceKey);
+      });
+    this.pendingSources.set(sourceKey, promise);
+    return promise;
+  }
+
+  private async createSource(
+    definition: SystemAssetDefinition,
+    sourceKey: string,
+  ): Promise<SourceTemplate | null> {
     const result = await SceneLoader.ImportMeshAsync(
       "",
       definition.rootUrl,
@@ -91,9 +144,9 @@ export class SystemAssetRegistry {
       bounds.max.y - bounds.min.y,
       bounds.max.z - bounds.min.z,
     );
-    const templateRoot = new TransformNode(`${definition.key}-template`, this.scene);
-    const assetRoot = new TransformNode(`${definition.key}-asset`, this.scene);
-    assetRoot.parent = templateRoot;
+    const sourceRoot = new TransformNode(`${sourceKey}-source`, this.scene);
+    const assetRoot = new TransformNode(`${sourceKey}-asset`, this.scene);
+    assetRoot.parent = sourceRoot;
     assetRoot.position = bounds.center.scale(-1);
 
     for (const mesh of renderableMeshes) {
@@ -101,7 +154,6 @@ export class SystemAssetRegistry {
       mesh.isPickable = false;
       mesh.alwaysSelectAsActiveMesh = true;
       mesh.setEnabled(true);
-      definition.configureMesh?.(mesh);
     }
 
     if (definition.trailSocketName) {
@@ -111,9 +163,8 @@ export class SystemAssetRegistry {
       }
     }
 
-    templateRoot.scaling.setAll((definition.targetSize / maxDimension) * (definition.scaleMultiplier ?? 1));
-    templateRoot.setEnabled(false);
-    return templateRoot;
+    sourceRoot.setEnabled(false);
+    return { root: sourceRoot, maxDimension };
   }
 
   private computeMeshBounds(meshes: AbstractMesh[]): { min: Vector3; max: Vector3; center: Vector3 } {

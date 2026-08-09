@@ -234,7 +234,29 @@ export function createDiplomacyMovementPayload(ctx: RuntimeContext, perspective:
   };
 }
 
-export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPerspective): Omit<GameSnapshot, "type" | "perspective" | "stars"> {
+type VisibleState = Omit<GameSnapshot, "type" | "protocolVersion" | "perspective" | "intelligence" | "stars">;
+
+function createVisibleClock(ctx: RuntimeContext): GameSnapshot["clock"] {
+  return {
+    year: ctx.state.clock.year,
+    speedMultiplier: ctx.state.clock.speedMultiplier,
+    tickSizeDays: ctx.state.clock.tickSizeDays,
+    tickSpeedSeconds: ctx.state.clock.tickSpeedSeconds,
+    paused: ctx.state.clock.paused,
+    syncedAtMs: ctx.state.clock.syncedAtMs,
+  };
+}
+
+function createVisibleFactionEconomies(
+  ctx: RuntimeContext,
+  perspective: GalaxyPerspective,
+): GameSnapshot["factionEconomies"] {
+  return perspective.mode === "faction"
+    ? ctx.state.factionEconomies.filter((economy) => economy.factionId === perspective.factionId)
+    : [];
+}
+
+export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPerspective): VisibleState {
   const visibleSet = getVisibleSet(ctx, perspective);
   const knownSet = getKnownSet(ctx, perspective);
   const visibleStarIds = visibleSet ? Array.from(visibleSet).sort((a, b) => a - b) : null;
@@ -280,9 +302,7 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
     ? ctx.state.stars.map((star) => getKnownSystemOwner(ctx.state, perspective.factionId, star.id))
     : ctx.state.starOwnership;
   while (starOwnership.length < ctx.state.stars.length) starOwnership.push(-1);
-  const factionEconomies = perspective.mode === "faction"
-    ? ctx.state.factionEconomies.filter((economy) => economy.factionId === perspective.factionId)
-    : [];
+  const factionEconomies = createVisibleFactionEconomies(ctx, perspective);
   const governments = perspective.mode === "faction"
     ? ctx.state.governments.filter((government) => government.factionId === perspective.factionId)
     : ctx.state.governments;
@@ -350,15 +370,7 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
     : ctx.state.combatReports.filter((report) => report.ownerId === perspective.factionId);
 
   return {
-    intelligence: getGalaxyIntelligenceView(ctx.state, perspective),
-    clock: {
-      year: ctx.state.clock.year,
-      speedMultiplier: ctx.state.clock.speedMultiplier,
-      tickSizeDays: ctx.state.clock.tickSizeDays,
-      tickSpeedSeconds: ctx.state.clock.tickSpeedSeconds,
-      paused: ctx.state.clock.paused,
-      syncedAtMs: ctx.state.clock.syncedAtMs,
-    },
+    clock: createVisibleClock(ctx),
     nebulae: ctx.state.nebulae ?? [],
     hyperlanes,
     factions,
@@ -394,87 +406,100 @@ export function createSnapshot(ctx: RuntimeContext, perspective: GalaxyPerspecti
     type: "snapshot",
     protocolVersion: VERSION_MANIFEST.protocolVersion,
     perspective,
+    intelligence: getGalaxyIntelligenceView(ctx.state, perspective),
     ...visibleState,
     stars: createVisibleStars(ctx, perspective, knownSet),
   };
 }
 
 export function createUpdate(ctx: RuntimeContext, perspective: GalaxyPerspective, changed: ServerUpdateField[]): GameUpdate {
-  const visibleState = createVisibleState(ctx, perspective);
-  const knownSet = getKnownSet(ctx, perspective);
   const update: GameUpdate = {
     type: "update",
     protocolVersion: VERSION_MANIFEST.protocolVersion,
     perspective,
     changed,
-    intelligence: getGalaxyIntelligenceView(ctx.state, perspective),
   };
 
-  if (changed.includes("clock")) {
-    update.clock = visibleState.clock;
-  }
+  // Intelligence is a multi-megabyte graph for a mature galaxy. It is already
+  // optional on incremental messages, so retain the client's previous graph
+  // for ordinary clock/state updates and replace it only when visibility (the
+  // sensor/intelligence boundary) changes.
   if (changed.includes("visibility")) {
+    update.intelligence = getGalaxyIntelligenceView(ctx.state, perspective);
+  }
+
+  if (changed.includes("clock")) {
+    update.clock = createVisibleClock(ctx);
+  }
+
+  if (changed.includes("factionEconomies")) {
+    update.factionEconomies = createVisibleFactionEconomies(ctx, perspective);
+  }
+
+  let visibleState: VisibleState | null = null;
+  const getVisibleState = (): VisibleState => visibleState ??= createVisibleState(ctx, perspective);
+
+  if (changed.includes("visibility")) {
+    const knownSet = getKnownSet(ctx, perspective);
+    const state = getVisibleState();
     update.stars = createVisibleStars(ctx, perspective, knownSet);
-    update.hyperlanes = visibleState.hyperlanes;
-    update.factions = visibleState.factions;
-    update.starOwnership = visibleState.starOwnership;
-    update.visibleStarIds = visibleState.visibleStarIds;
-    update.knownStarIds = visibleState.knownStarIds;
-    update.habitedPlanetSystemIds = visibleState.habitedPlanetSystemIds;
+    update.hyperlanes = state.hyperlanes;
+    update.factions = state.factions;
+    update.starOwnership = state.starOwnership;
+    update.visibleStarIds = state.visibleStarIds;
+    update.knownStarIds = state.knownStarIds;
+    update.habitedPlanetSystemIds = state.habitedPlanetSystemIds;
   }
   if (changed.includes("planetStates")) {
-    update.planetStates = visibleState.planetStates;
+    update.planetStates = getVisibleState().planetStates;
   }
   if (changed.includes("habitedPlanetSystems")) {
-    update.habitedPlanetSystemIds = visibleState.habitedPlanetSystemIds;
-  }
-  if (changed.includes("factionEconomies")) {
-    update.factionEconomies = visibleState.factionEconomies;
+    update.habitedPlanetSystemIds = getVisibleState().habitedPlanetSystemIds;
   }
   if (changed.includes("ships")) {
-    update.ships = visibleState.ships;
+    update.ships = getVisibleState().ships;
   }
   if (changed.includes("shipDesigns")) {
-    update.shipDesigns = visibleState.shipDesigns;
+    update.shipDesigns = getVisibleState().shipDesigns;
   }
   if (changed.includes("fleets")) {
-    update.fleets = visibleState.fleets;
+    update.fleets = getVisibleState().fleets;
   }
   if (changed.includes("starbases")) {
-    update.starbases = visibleState.starbases;
+    update.starbases = getVisibleState().starbases;
   }
   if (changed.includes("technologies")) {
-    update.technologies = visibleState.technologies;
+    update.technologies = getVisibleState().technologies;
   }
   if (changed.includes("leaders")) {
-    update.leaders = visibleState.leaders;
+    update.leaders = getVisibleState().leaders;
   }
   if (changed.includes("governments")) {
-    update.governments = visibleState.governments;
+    update.governments = getVisibleState().governments;
   }
   if (changed.includes("species")) {
-    update.species = visibleState.species;
+    update.species = getVisibleState().species;
   }
   if (changed.includes("diplomacy")) {
-    update.diplomacy = visibleState.diplomacy;
+    update.diplomacy = getVisibleState().diplomacy;
   }
   if (changed.includes("combatContacts") || changed.includes("visibility")) {
-    update.recentCombatContacts = visibleState.recentCombatContacts;
+    update.recentCombatContacts = getVisibleState().recentCombatContacts;
   }
   if (changed.includes("combatProjectiles") || changed.includes("visibility")) {
-    update.combatProjectiles = visibleState.combatProjectiles;
+    update.combatProjectiles = getVisibleState().combatProjectiles;
   }
   if (changed.includes("combatReports") || changed.includes("visibility")) {
-    update.combatReports = visibleState.combatReports;
+    update.combatReports = getVisibleState().combatReports;
   }
   if (changed.includes("situations")) {
-    update.situations = visibleState.situations;
+    update.situations = getVisibleState().situations;
   }
   if (changed.includes("events")) {
-    update.events = visibleState.events;
+    update.events = getVisibleState().events;
   }
   if (changed.includes("tradeAlerts")) {
-    update.tradeAlerts = visibleState.tradeAlerts;
+    update.tradeAlerts = getVisibleState().tradeAlerts;
   }
   return update;
 }
