@@ -1,4 +1,4 @@
-import { createEmptyResourceCounts, RESOURCE_KINDS } from "../../src/data/Economy";
+import { createEmptyResourceCounts, getEffectivePlanetDistrictLimits, RESOURCE_KINDS } from "../../src/data/Economy";
 import type { FactionEconomyState, PlanetModifier, PlanetState, ResourceCounts, ResourceKind, PlanetEconomySpeciesContext } from "../../src/data/Economy";
 import { createInitialGovernmentState, getGovernmentPositionDefinition, getSelectedGovernmentLawOptions } from "../../src/data/Government";
 import type { FactionGovernmentState, GovernmentEffect, GovernmentPositionDefinition, GovernmentPositionId } from "../../src/data/Government";
@@ -413,7 +413,8 @@ export function getPlanetSpeciesContext(nextState: GameState, planetState: Plane
 }
 
 export function getPlanetDistrictLimitsFromState(nextState: GameState, planetState: PlanetState) {
-  return nextState.stars[planetState.starId]?.system.planets[planetState.planetIndex]?.objectDetails.districtLimits ?? undefined;
+  const baseLimits = nextState.stars[planetState.starId]?.system.planets[planetState.planetIndex]?.objectDetails.districtLimits;
+  return baseLimits ? getEffectivePlanetDistrictLimits(baseLimits, planetState.features) : undefined;
 }
 
 export function haveFactionsMet(nextState: GameState, a: number, b: number): boolean {

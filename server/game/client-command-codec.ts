@@ -13,6 +13,7 @@ export const CLIENT_COMMAND_TYPES = [
   "setFleetDarkMatterBoost",
   "setSpeedMultiplier",
   "buildDistrict",
+  "queuePlanetFeatureRemoval",
   "buildPlanetBuilding",
   "upgradePlanetBuilding",
   "downgradePlanetBuilding",

@@ -5,7 +5,7 @@ import type { FactionInfo, GalaxyPerspective } from "../src/data/Factions";
 import { applyPlanetStatesToStars, createPlanetStateFromConfig } from "../src/data/StarMap";
 import type { PlanetConfig, StarData } from "../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../src/data/SystemCoordinates";
-import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, completePlanetConstructionQueueItem, countPlanetShipyards, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getPlanetDefensePlatformCapacity, getQueuedDistrictCount, hasQueuedBuildingTarget, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, JOB_FILL_ORDER, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
+import { addResourceCounts, BUILDING_DEFINITIONS, BUILDING_KINDS, completePlanetConstructionQueueItem, countPlanetShipyards, createBuildingConstructionQueueItem, createBuildingUpgradeConstructionQueueItem, createDistrictConstructionQueueItem, createEmptyResourceCounts, createFeatureRemovalConstructionQueueItem, createPlanetBuildingState, filterInvalidQueuedBuildingsForSubDistrictChange, getBuildingUpgradeTargetLevel, getPlanetBuildingKind, getPlanetBuildingLevel, getPlanetDefensePlatformCapacity, getQueuedDistrictCount, hasQueuedBuildingTarget, hasQueuedFeatureRemoval, isBuildingCompatible, isPlanetBuildingEnabled, meetsCapitalUpgradePopulation, getCapitalUpgradePopulationThreshold, JOB_FILL_ORDER, PLANET_FEATURE_DEFINITIONS, recalculatePlanetStateEconomy, RESOURCE_KINDS, URBAN_SUB_DISTRICT_KINDS } from "../src/data/Economy";
 import { isMarketResourceKind } from "../src/data/Market";
 import { countStarbaseShipyards, createStarbaseBuildingQueueItem, createStarbaseShipQueueItem, createStarbaseUpgradeQueueItem, getStarbaseShipConstructionCostMultiplier, hasQueuedStarbaseBuildingTarget, isStarbaseBuildingKind, isStarbaseShipKind, OUTPOST_CONSTRUCTION_COST, STARBASE_LEVEL_DEFINITIONS } from "../src/data/Starbase";
 import { getNebulaGatedBuildingKinds, nebulaEnablesBuildingAtStar } from "../src/data/Nebula";
@@ -28,6 +28,7 @@ import type {
   PlanetState,
   PlanetBuildingSlot,
   PlanetModifier,
+  PlanetFeatureKind,
   PlanetEconomySpeciesContext,
   ResourceKind,
   ResourceCounts,
@@ -91,7 +92,7 @@ import {
 import { GAME_DAYS_PER_YEAR, GAME_START_YEAR, REAL_MS_PER_GAME_HOUR, elapsedHoursToGameYear, gameYearToHourIndex, gameYearToMonthIndex, gameYearToWeekIndex } from "../src/game/GameTime";
 import { DARK_MATTER_FLEET_COST_PER_MOVING_DAY, DARK_MATTER_FLEET_SPEED_MULTIPLIER, getConstructionDarkMatterCost, getFleetDarkMatterBillingPlan } from "../src/game/DarkMatter";
 import { gameHourToRealMinute } from "../src/game/ResourceRate";
-import { getFirstRequiredTechName, getMissingPrerequisites, getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel, getRequiredTechIdsForStarbaseBuilding, isTechnologyAvailable, isTechnologyCompleted, isUnlockedByAnyRequiredTech, TechId, TECHNOLOGY_BY_ID } from "../src/data/Technology";
+import { getFirstRequiredTechName, getMissingPrerequisites, getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel, getRequiredTechIdsForPlanetFeatureRemoval, getRequiredTechIdsForStarbaseBuilding, isTechnologyAvailable, isTechnologyCompleted, isUnlockedByAnyRequiredTech, TechId, TECHNOLOGY_BY_ID } from "../src/data/Technology";
 import { formatLeaderClass, getLeaderAssignmentClass } from "../src/data/Leaders";
 import type { LeaderAssignment, LeaderClass, LeaderFleetEffects, LeaderState } from "../src/data/Leaders";
 import type { GameEffect, FactionModifierState } from "../src/data/GameEffects";
@@ -1818,6 +1819,29 @@ function handleBuildDistrict(
   });
 }
 
+function handleQueuePlanetFeatureRemoval(
+  socket: WebSocket,
+  perspective: GalaxyPerspective,
+  planetId: string,
+  featureKind: PlanetFeatureKind,
+): void {
+  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!planetState) return;
+  const definition = PLANET_FEATURE_DEFINITIONS[featureKind];
+  if (!definition || !planetState.features.includes(featureKind)) return reject(socket, "Planet feature not found.");
+  if (!definition.removal) return reject(socket, `${definition.label} cannot be removed.`);
+  if (hasQueuedFeatureRemoval(planetState, featureKind)) return reject(socket, `${definition.label} removal is already queued.`);
+  const factionId = perspective.mode === "faction" ? perspective.factionId : null;
+  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (!requireUnlocked(socket, factionId, getRequiredTechIdsForPlanetFeatureRemoval(featureKind))) return;
+  const item = createFeatureRemovalConstructionQueueItem(featureKind);
+  if (!spendResources(socket, factionId, item.cost)) return;
+  commitPlanetState(socket, perspective, `${definition.label} removal queued.`, {
+    ...planetState,
+    constructionQueue: [...planetState.constructionQueue, item],
+  });
+}
+
 function handleBuildPlanetBuilding(
   socket: WebSocket,
   perspective: GalaxyPerspective,
@@ -3070,6 +3094,10 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "buildDistrict") {
     handleBuildDistrict(session.socket, session.perspective, command.planetId, command.districtKind);
+    return;
+  }
+  if (command.type === "queuePlanetFeatureRemoval") {
+    handleQueuePlanetFeatureRemoval(session.socket, session.perspective, command.planetId, command.featureKind);
     return;
   }
   if (command.type === "buildPlanetBuilding") {

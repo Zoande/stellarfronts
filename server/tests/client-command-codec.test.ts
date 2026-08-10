@@ -5,7 +5,7 @@ import { CLIENT_COMMAND_TYPES, decodeClientCommand } from "../game/client-comman
 const EXPECTED_COMMAND_TYPES = [
   "join", "adminCommand", "moveShip", "moveFleet", "buildStarbase", "orbitPlanet",
   "colonizePlanet", "mergeFleets", "stopFleet", "setFleetDarkMatterBoost",
-  "setSpeedMultiplier", "buildDistrict", "buildPlanetBuilding", "upgradePlanetBuilding",
+  "setSpeedMultiplier", "buildDistrict", "queuePlanetFeatureRemoval", "buildPlanetBuilding", "upgradePlanetBuilding",
   "downgradePlanetBuilding", "setPlanetBuildingEnabled", "setPlanetJobLock",
   "cancelPlanetConstruction", "skipPlanetConstruction",
   "buildPlanetDefenseBuilding", "upgradePlanetDefenseBuilding", "setPlanetDefenseBuildingEnabled",

@@ -6,6 +6,7 @@ import {
   createBuildingConstructionQueueItem,
   createBuildingUpgradeConstructionQueueItem,
   createDistrictConstructionQueueItem,
+  createFeatureRemovalConstructionQueueItem,
   DISTRICT_BUILD_DAYS,
   DISTRICT_COSTS,
   filterInvalidQueuedBuildingsForSubDistrictChange,
@@ -24,6 +25,7 @@ import {
   getCompatibleBuildings,
   getConstructionSpeedMultiplier,
   getEffectiveSpeciesHabitability,
+  getEffectivePlanetDistrictLimits,
   getHabitabilityProductionMultiplier,
   getHabitabilityUpkeepMultiplier,
   getPlanetBuildingKind,
@@ -42,6 +44,7 @@ import {
   PLANET_DEFENSE_BUILDING_DEFINITIONS,
   getActivePlanetDefenseBuildings,
   getPlanetDefensePlatformCapacity,
+  hasQueuedFeatureRemoval,
   getUnlockedPlanetDefenseSlots,
   getUnlockedPlanetShipyardSlots,
   countPlanetShipyards,
@@ -86,6 +89,7 @@ import {
   getRequiredTechIdsForBuildingLevel,
   getRequiredTechIdsForPlanetDefenseBuilding,
   getRequiredTechIdsForPlanetDefenseBuildingLevel,
+  getRequiredTechIdsForPlanetFeatureRemoval,
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
@@ -124,6 +128,7 @@ const CELESTIAL_SCROLL_SELECTORS = [
   ".coBuildList",
   ".coQueueList",
   ".coFeatureList",
+  ".coMinorFeatureList",
   ".coBuildingWorkforceList",
   ".coJobClassList",
   ".coPopGroupList",
@@ -254,7 +259,7 @@ export class CelestialObjectPanel {
   private root: HTMLDivElement;
   private panelElement: HTMLDivElement | null = null;
   private currentData: CelestialObjectPanelData | null = null;
-  private activeTab: "surface" | "economy" | "defenses" = "surface";
+  private activeTab: "surface" | "management" | "economy" | "defenses" = "surface";
   private selectedJob: JobKind | null = null;
   private economyDetailMode: EconomyDetailMode | null = null;
   private expandedJobClasses = this.createDefaultExpandedJobClasses();
@@ -556,6 +561,8 @@ export class CelestialObjectPanel {
         if (button.classList.contains("disabled")) return;
         this.activeTab = button.dataset.coTab === "economy"
           ? "economy"
+          : button.dataset.coTab === "management"
+            ? "management"
           : button.dataset.coTab === "defenses"
             ? "defenses"
             : "surface";
@@ -631,6 +638,12 @@ export class CelestialObjectPanel {
     this.panelElement.querySelector<HTMLButtonElement>("[data-co-orbit-planet]")?.addEventListener("click", () => {
       if (!data.orbitFleetId || data.kind !== "planet") return;
       data.onPlanetCommand?.({ type: "orbitPlanet", fleetId: data.orbitFleetId, planetId: data.objectId });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-remove-feature]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.handleQueueFeatureRemoval(data, button.dataset.coRemoveFeature as PlanetFeatureKind | undefined);
+      });
     });
 
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-defense-building-slot], [data-co-open-defense-building]").forEach((button) => {
@@ -829,6 +842,26 @@ export class CelestialObjectPanel {
     const planetState = this.withQueuedDistrict(freshData.planetState, districtKind);
     freshData.onPlanetCommand?.({ type: "buildDistrict", planetId: freshData.planetState.id, districtKind });
     this.applyLocalPlanetState(freshData, planetState);
+  }
+
+  private handleQueueFeatureRemoval(data: CelestialObjectPanelData, featureKind?: PlanetFeatureKind): void {
+    const freshData = this.getFreshData(data);
+    const planetState = freshData.planetState;
+    if (!planetState || !featureKind || !planetState.features.includes(featureKind)) return;
+    const definition = PLANET_FEATURE_DEFINITIONS[featureKind];
+    if (!definition.removal || hasQueuedFeatureRemoval(planetState, featureKind)) return;
+    const requiredTechIds = getRequiredTechIdsForPlanetFeatureRemoval(featureKind);
+    if (requiredTechIds.length > 0 && !requiredTechIds.some((techId) => this.isTechnologyCompleted(freshData.technology, techId))) return;
+    const item = createFeatureRemovalConstructionQueueItem(featureKind);
+    freshData.onPlanetCommand?.({
+      type: "queuePlanetFeatureRemoval",
+      planetId: planetState.id,
+      featureKind,
+    });
+    this.applyLocalPlanetState(freshData, {
+      ...planetState,
+      constructionQueue: [...planetState.constructionQueue, item],
+    });
   }
 
   private handlePickBuilding(data: CelestialObjectPanelData, buildingKind?: BuildingKind): void {
@@ -1053,6 +1086,8 @@ export class CelestialObjectPanel {
 
     const expectedBody = this.activeTab === "economy" && data.isHabited
       ? "economy"
+      : this.activeTab === "management" && data.kind === "planet"
+        ? "management"
       : this.activeTab === "defenses" && data.isHabited
         ? "defenses"
         : "surface";
@@ -1061,6 +1096,8 @@ export class CelestialObjectPanel {
       this.hideTooltip();
       const html = expectedBody === "economy"
         ? this.renderEconomyBody(data.planetState)
+        : expectedBody === "management"
+          ? this.renderPlanetManagementBody(data)
         : expectedBody === "defenses"
           ? this.renderPlanetDefenseBody(data)
           : this.renderSurfaceBody(data);
@@ -1075,6 +1112,8 @@ export class CelestialObjectPanel {
 
     if (expectedBody === "economy") {
       this.patchEconomyBody(data);
+    } else if (expectedBody === "management") {
+      this.show(data);
     } else if (expectedBody === "defenses") {
       this.show(data);
     } else {
@@ -1188,7 +1227,7 @@ export class CelestialObjectPanel {
 
   private patchDistrictFacts(data: CelestialObjectPanelData): void {
     if (!this.panelElement || !data.planetState) return;
-    const limits = data.objectDetails.districtLimits;
+    const limits = getEffectivePlanetDistrictLimits(data.objectDetails.districtLimits, data.planetState.features);
     const canBuild = data.kind === "planet" && data.isHabited;
     for (const district of DISTRICTS) {
       const kind = district.kind;
@@ -1935,6 +1974,7 @@ export class CelestialObjectPanel {
     const planetState = data.planetState;
     const commandLinked = !isPlanet || hasClientEntityCommandLink("planet", data.objectId);
     const tabsDisabled = isHabitedPlanet && commandLinked ? "" : " disabled";
+    const managementDisabled = isPlanet ? "" : " disabled";
     const nameIntel = this.planetIntel(data, "name");
     const nameFreshness = nameIntel ? formatIntelFreshness(nameIntel, getClientIntelYear()) : null;
     const nameClass = nameIntel?.status === "stale" ? " coIntelStale" : nameIntel?.status === "unknown" ? " coIntelUnknown" : "";
@@ -1970,12 +2010,14 @@ export class CelestialObjectPanel {
       </div>
       ${this.activeTab === "economy" && isHabitedPlanet && planetState
         ? this.renderIntelEconomyBody(data, planetState)
+        : this.activeTab === "management" && isPlanet && planetState
+          ? this.renderPlanetManagementBody(data)
         : this.activeTab === "defenses" && isHabitedPlanet && planetState
           ? this.renderPlanetDefenseBody(data)
           : this.renderSurfaceBody(data)}
       <nav class="coTabs">
         <button class="${this.activeTab === "surface" ? "active" : ""}" type="button" data-co-tab="surface">Overview</button>
-        <button class="${tabsDisabled}" type="button">Management</button>
+        <button class="${this.activeTab === "management" ? "active" : ""} ${managementDisabled}" type="button" data-co-tab="management">Management</button>
         <button class="${this.activeTab === "economy" ? "active" : ""} ${tabsDisabled}" type="button" data-co-tab="economy">Economy</button>
         <button class="${this.activeTab === "defenses" ? "active" : ""} ${tabsDisabled}" type="button" data-co-tab="defenses">Defenses</button>
         <button class="${tabsDisabled}" type="button">Holdings</button>
@@ -2141,7 +2183,9 @@ export class CelestialObjectPanel {
     const details = data.objectDetails;
     const planetState = data.planetState;
     const built = planetState?.builtDistricts ?? details.builtDistricts;
-    const limits = details.districtLimits;
+    const limits = planetState
+      ? getEffectivePlanetDistrictLimits(details.districtLimits, planetState.features)
+      : details.districtLimits;
     const canBuild = data.kind === "planet" && data.isHabited && Boolean(planetState) && hasClientEntityCommandLink("planet", data.objectId);
     const buildTray = this.renderBuildingTray(data);
     const featuresTray = this.renderFeaturesTray(data);
@@ -2459,31 +2503,48 @@ export class CelestialObjectPanel {
 
   private renderHeroModifiers(data: CelestialObjectPanelData): string {
     const intel = this.planetIntel(data, "economy.activeModifiers");
-    if (intel?.status === "unknown") {
+    const featureIntel = this.planetIntel(data, "features");
+    if (intel?.status === "unknown" && featureIntel?.status === "unknown") {
       return `<div class="coHeroModifiers" data-co-hero-modifiers data-co-modifier-key="unknown"><span class="coHeroModifierSlot"><span class="coHeroModifierBadge coIntelUnknown" data-co-tooltip="Planet modifiers unknown">?</span></span></div>`;
     }
     const groups = this.getHeroModifierGroups(data);
     const renderedGroups = Array.from(groups.entries()).map(([source, sourceModifiers], index) => {
       const presentation = this.getModifierSourcePresentation(source, sourceModifiers);
       const colorStyle = presentation.color ? ` --modifier-color:${presentation.color};` : "";
+      const tooltip = source === "planetFeatureMinor:all"
+        ? this.renderMinorFeatureTooltip(data)
+        : this.renderModifierSourceTooltip(presentation.label, presentation.description, sourceModifiers);
       return `
         <span class="coHeroModifierSlot" style="--modifier-index:${index};${colorStyle}">
           <span
             class="coHeroModifierBadge coModifier-${presentation.category}"
-            data-co-tooltip="${this.tooltipAttr(this.renderModifierSourceTooltip(presentation.label, presentation.description, sourceModifiers))}"
+            data-co-tooltip="${this.tooltipAttr(tooltip)}"
             aria-label="${this.escapeHtml(presentation.label)} modifier"
           >${this.escapeHtml(presentation.glyph)}</span>
         </span>
       `;
     }).join("");
-    const freshness = intel ? formatIntelFreshness(intel, getClientIntelYear()) : null;
-    const stale = intel?.status === "stale" ? " coIntelStale" : "";
+    const freshness = featureIntel?.status === "stale"
+      ? formatIntelFreshness(featureIntel, getClientIntelYear())
+      : intel ? formatIntelFreshness(intel, getClientIntelYear()) : null;
+    const stale = intel?.status === "stale" || featureIntel?.status === "stale" ? " coIntelStale" : "";
     return `<div class="coHeroModifiers${stale}" data-co-hero-modifiers data-co-modifier-key="${this.escapeHtml(this.getHeroModifierRenderKey(data))}"${freshness ? ` data-co-tooltip="${this.tooltipAttr(freshness)}"` : ""}>${renderedGroups}</div>`;
   }
 
   private getHeroModifierGroups(data: CelestialObjectPanelData): Map<string, PlanetModifier[]> {
     const groups = new Map<string, PlanetModifier[]>();
+    if (this.planetIntel(data, "features")?.status !== "unknown") {
+      for (const feature of data.planetState?.features ?? []) {
+        const definition = PLANET_FEATURE_DEFINITIONS[feature];
+        const groupKey = definition.tier === "minor" ? "planetFeatureMinor:all" : `planetFeature:${feature}`;
+        const group = groups.get(groupKey) ?? [];
+        group.push(...definition.modifiers);
+        groups.set(groupKey, group);
+      }
+    }
+    if (this.planetIntel(data, "economy.activeModifiers")?.status === "unknown") return groups;
     for (const modifier of data.planetState?.economy.activeModifiers ?? []) {
+      if (modifier.source.startsWith("planetFeature:")) continue;
       const groupKey = modifier.source.startsWith("technology:")
         ? `technologyCategory:${this.getTechnologyModifierCategory(modifier)}`
         : modifier.source;
@@ -2512,6 +2573,14 @@ export class CelestialObjectPanel {
     modifiers: PlanetModifier[],
   ): { label: string; description?: string; category: string; glyph: string; color?: string } {
     const [category, id] = source.split(":", 2);
+    if (category === "planetFeatureMinor") {
+      return {
+        label: "Minor Planet Features",
+        description: "Local environmental characteristics and small-scale planetary conditions.",
+        category: "feature-minor",
+        glyph: "MF",
+      };
+    }
     if (category === "technologyCategory") {
       const technologyCategories = {
         city: { label: "City & Building Technologies", glyph: "CT" },
@@ -2551,8 +2620,8 @@ export class CelestialObjectPanel {
       return {
         label: definition?.label ?? modifiers[0]?.label ?? "Planet Feature",
         description: definition?.description,
-        category: "feature",
-        glyph: "PF",
+        category: definition?.negative ? "feature-negative" : definition?.tier === "special" ? "feature-special" : "feature-major",
+        glyph: definition?.initials ?? "PF",
       };
     }
     if (category === "technology") return { label: modifiers[0]?.label ?? "Technology", category, glyph: "TE" };
@@ -2589,7 +2658,10 @@ export class CelestialObjectPanel {
   }
 
   private formatPlanetModifierEffect(modifier: PlanetModifier): string {
-    const target = modifier.target
+    const districtKind = modifier.target.startsWith("districtLimit:")
+      ? modifier.target.slice("districtLimit:".length)
+      : null;
+    const target = (districtKind ? `${districtKind} district limit` : modifier.target)
       .replace(/^jobOutput:/, "")
       .replace(/^jobUpkeep:/, "")
       .replace(/^jobCapacity:/, "")
@@ -2713,6 +2785,99 @@ export class CelestialObjectPanel {
       .sort((a, b) => b.amount - a.amount);
   }
 
+  private renderPlanetManagementBody(data: CelestialObjectPanelData): string {
+    const planetState = data.planetState;
+    if (!planetState) return '<section class="coBody coManagementBody" data-co-body="management"></section>';
+    const featureIntel = this.planetIntel(data, "features");
+    const freshness = featureIntel ? formatIntelFreshness(featureIntel, getClientIntelYear()) : null;
+    if (featureIntel?.status === "unknown") {
+      return `
+        <section class="coBody coManagementBody coIntelUnknown" data-co-body="management">
+          <div class="coManagementDashboard">
+            <article class="coFeatureManagementCard">
+              <header><strong>Major Features</strong><span>Environmental intelligence required</span></header>
+              <div class="coMajorFeatureSlots">
+                ${[0, 1, 2].map(() => '<div class="coMajorFeatureSlot unknown"><strong>?</strong><span>Unknown feature</span></div>').join("")}
+              </div>
+            </article>
+            <article class="coFeatureManagementCard coMinorFeaturePanel">
+              <header><strong>Minor Features</strong><span>Unknown</span></header>
+              <div class="coMinorFeatureList"><div class="coFeatureEmpty">Planetary features have not been resolved by current intelligence.</div></div>
+            </article>
+            ${this.renderConstructionQueue(data)}
+          </div>
+        </section>
+      `;
+    }
+    const definitions = planetState.features.map((kind) => PLANET_FEATURE_DEFINITIONS[kind]);
+    const majorFeatures = definitions.filter((definition) => definition.tier !== "minor").slice(0, 3);
+    const minorFeatures = definitions.filter((definition) => definition.tier === "minor");
+    const staleClass = featureIntel?.status === "stale" ? " coIntelStale" : "";
+    return `
+      <section class="coBody coManagementBody${staleClass}" data-co-body="management"${freshness ? ` data-co-tooltip="${this.tooltipAttr(freshness)}"` : ""}>
+        <div class="coManagementDashboard">
+          <article class="coFeatureManagementCard">
+            <header><strong>Major Features</strong><span>${majorFeatures.length} / 3 occupied</span></header>
+            <div class="coMajorFeatureSlots">
+              ${[0, 1, 2].map((index) => majorFeatures[index]
+                ? this.renderManagedFeatureCard(data, majorFeatures[index], true)
+                : '<div class="coMajorFeatureSlot empty"><strong>Empty slot</strong><span>No major feature</span></div>').join("")}
+            </div>
+          </article>
+          <article class="coFeatureManagementCard coMinorFeaturePanel">
+            <header><strong>Minor Features</strong><span>${minorFeatures.length} catalogued</span></header>
+            <div class="coMinorFeatureList">
+              ${minorFeatures.length > 0
+                ? minorFeatures.map((definition) => this.renderManagedFeatureCard(data, definition, false)).join("")
+                : '<div class="coFeatureEmpty">No minor planetary features catalogued.</div>'}
+            </div>
+          </article>
+          ${this.renderConstructionQueue(data)}
+        </div>
+      </section>
+    `;
+  }
+
+  private renderManagedFeatureCard(
+    data: CelestialObjectPanelData,
+    definition: (typeof PLANET_FEATURE_DEFINITIONS)[PlanetFeatureKind],
+    major: boolean,
+  ): string {
+    const planetState = data.planetState!;
+    const canManage = data.isHabited
+      && data.canManageLeaders === true
+      && hasClientEntityCommandLink("planet", data.objectId);
+    const queued = hasQueuedFeatureRemoval(planetState, definition.kind);
+    const requiredTechIds = getRequiredTechIdsForPlanetFeatureRemoval(definition.kind);
+    const technologyUnlocked = requiredTechIds.length === 0
+      || requiredTechIds.some((techId) => this.isTechnologyCompleted(data.technology, techId));
+    const affordable = !definition.removal || RESOURCE_KINDS.every((resource) => (
+      (data.factionEconomy?.stockpiles[resource] ?? 0) >= definition.removal!.cost[resource]
+    ));
+    const removalNote = queued
+      ? "Removal queued"
+      : !technologyUnlocked
+        ? `Requires ${getFirstRequiredTechName(requiredTechIds)}`
+        : definition.removal
+          ? `${this.formatResourceCost(definition.removal.cost)} · ${definition.removal.buildDays} days`
+          : "Permanent feature";
+    const action = canManage && definition.removal
+      ? `<button class="coFeatureRemoveButton" type="button" data-co-remove-feature="${this.escapeHtml(definition.kind)}"${queued || !technologyUnlocked || !affordable ? " disabled" : ""}>${queued ? "Queued" : "Remove"}</button>`
+      : "";
+    return `
+      <article class="${major ? "coMajorFeatureSlot" : "coMinorFeatureRow"}${definition.negative ? " negative" : " positive"}">
+        <span class="coManagedFeatureGlyph">${this.escapeHtml(definition.initials)}</span>
+        <div class="coManagedFeatureCopy">
+          <div><strong>${this.escapeHtml(definition.label)}</strong><small>${this.escapeHtml(definition.rarity)}</small></div>
+          <p>${this.escapeHtml(definition.description)}</p>
+          <div class="coManagedFeatureEffects">${definition.modifiers.map((modifier) => `<span>${this.escapeHtml(this.formatPlanetModifierEffect(modifier))}</span>`).join("")}</div>
+          ${definition.removal && canManage ? `<small class="coFeatureRemovalNote">${this.escapeHtml(removalNote)}</small>` : ""}
+        </div>
+        ${action}
+      </article>
+    `;
+  }
+
   private renderPlanetDefenses(data: CelestialObjectPanelData): string {
     const planetState = data.planetState;
     const habitationIntel = this.planetIntel(data, "isHabited");
@@ -2745,6 +2910,19 @@ export class CelestialObjectPanel {
         </div>
         ${this.renderConstructionQueue(data)}
       </aside>
+    `;
+  }
+
+  private renderMinorFeatureTooltip(data: CelestialObjectPanelData): string {
+    const features = (data.planetState?.features ?? [])
+      .map((kind) => PLANET_FEATURE_DEFINITIONS[kind])
+      .filter((definition) => definition.tier === "minor");
+    return `
+      <div class="coTooltipTitle">Minor Planet Features</div>
+      <div class="coTooltipSectionTitle">${features.length} catalogued</div>
+      <div class="coTooltipList">
+        ${features.map((definition) => `<span><strong>${this.escapeHtml(definition.label)}</strong>: ${definition.modifiers.map((modifier) => this.escapeHtml(this.formatPlanetModifierEffect(modifier))).join(", ")}</span>`).join("")}
+      </div>
     `;
   }
 
@@ -3493,7 +3671,9 @@ export class CelestialObjectPanel {
     const planetState = data.planetState;
     const rows = DISTRICTS.map((district) => {
       const used = planetState?.builtDistricts[district.kind] ?? data.objectDetails.builtDistricts[district.kind];
-      const limit = data.objectDetails.districtLimits[district.kind];
+      const limit = data.planetState
+        ? getEffectivePlanetDistrictLimits(data.objectDetails.districtLimits, data.planetState.features)[district.kind]
+        : data.objectDetails.districtLimits[district.kind];
       return this.renderTooltipListRow(district.label, `${used}/${limit}`, this.renderDistrictTooltip(district.kind));
     }).join("");
     return `
@@ -4935,6 +5115,7 @@ export class CelestialObjectPanel {
 
   private describeModifier(target: PlanetModifierTarget, value: number): string {
     if (target === "habitability:human") return `${value >= 0 ? "+" : ""}${value}% Human Habitability`;
+    if (target.startsWith("districtLimit:")) return `${value >= 0 ? "+" : ""}${value} ${target.slice("districtLimit:".length)} district limit`;
     const label = target.replace(/:/g, " ");
     return `${value >= 0 ? "+" : ""}${value} ${label}`;
   }
@@ -8029,6 +8210,159 @@ button.coBuildingIconSlot {
   gap: 4px;
 }
 
+.coManagementBody {
+  min-height: 0;
+  padding: 5px;
+}
+
+.coManagementDashboard {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(250px, 0.8fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 6px;
+}
+
+.coFeatureManagementCard,
+.coManagementDashboard > .coQueuePanel {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid rgba(76, 158, 133, 0.46);
+  background: rgba(8, 20, 19, 0.74);
+}
+
+.coFeatureManagementCard > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.22);
+}
+
+.coFeatureManagementCard > header strong { color: #eefaf6; font-size: 12px; }
+.coFeatureManagementCard > header span { color: rgba(202, 225, 219, 0.65); font-size: 9px; }
+
+.coMajorFeatureSlots {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 7px;
+}
+
+.coMajorFeatureSlot,
+.coMinorFeatureRow {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 7px;
+  padding: 7px;
+  border: 1px solid rgba(103, 255, 221, 0.3);
+  background: linear-gradient(145deg, rgba(11, 42, 39, 0.82), rgba(4, 17, 19, 0.94));
+}
+
+.coMajorFeatureSlot.negative,
+.coMinorFeatureRow.negative {
+  border-color: rgba(255, 116, 116, 0.48);
+  background: linear-gradient(145deg, rgba(65, 21, 24, 0.78), rgba(18, 10, 14, 0.94));
+}
+
+.coMajorFeatureSlot.empty,
+.coMajorFeatureSlot.unknown {
+  min-height: 126px;
+  display: grid;
+  grid-template-columns: 1fr;
+  place-content: center;
+  text-align: center;
+  opacity: 0.48;
+}
+
+.coMajorFeatureSlot.empty strong,
+.coMajorFeatureSlot.unknown strong { color: #c7e4dc; }
+.coMajorFeatureSlot.empty span,
+.coMajorFeatureSlot.unknown span { margin-top: 4px; color: rgba(202, 225, 219, 0.58); font-size: 9px; }
+
+.coManagedFeatureGlyph {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(124, 255, 221, 0.52);
+  background: rgba(5, 30, 29, 0.86);
+  color: #9cffdc;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.negative .coManagedFeatureGlyph {
+  border-color: rgba(255, 128, 128, 0.58);
+  background: rgba(55, 12, 18, 0.88);
+  color: #ffaaa5;
+}
+
+.coManagedFeatureCopy { min-width: 0; }
+.coManagedFeatureCopy > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 5px; }
+.coManagedFeatureCopy strong { color: #effbf7; font-size: 11px; }
+.coManagedFeatureCopy small { color: rgba(202, 225, 219, 0.58); font-size: 8px; text-transform: capitalize; }
+.coManagedFeatureCopy p { margin: 4px 0 0; color: rgba(205, 230, 223, 0.68); font-size: 9px; line-height: 1.3; }
+
+.coManagedFeatureEffects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.coManagedFeatureEffects span {
+  padding: 2px 4px;
+  border: 1px solid rgba(248, 218, 103, 0.28);
+  background: rgba(47, 38, 12, 0.48);
+  color: #ffe989;
+  font-size: 8px;
+}
+
+.coFeatureRemoveButton {
+  grid-column: 1 / -1;
+  min-height: 25px;
+  border: 1px solid rgba(255, 117, 117, 0.58);
+  background: rgba(66, 12, 20, 0.72);
+  color: #ffb8b8;
+  font: inherit;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.coFeatureRemoveButton:disabled { opacity: 0.38; cursor: default; }
+.coFeatureRemovalNote { display: block; margin-top: 5px; color: rgba(242, 193, 151, 0.76) !important; text-transform: none !important; }
+
+.coMinorFeaturePanel {
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+}
+
+.coMinorFeatureList {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.coMinorFeatureList::-webkit-scrollbar { width: 6px; }
+.coMinorFeatureList::-webkit-scrollbar-thumb { background: rgba(103, 255, 221, 0.34); border-radius: 999px; }
+.coManagementDashboard > .coQueuePanel { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
+.coModifier-feature-minor { --modifier-color: #91d8c5; }
+.coModifier-feature-major { --modifier-color: #f8da67; }
+.coModifier-feature-special { --modifier-color: #8ed8ff; }
+.coModifier-feature-negative { --modifier-color: #ff837c; }
+
 .coTabs {
   flex: 0 0 auto;
   display: grid;
@@ -8061,9 +8395,13 @@ button.coBuildingIconSlot {
   .coHeroRow,
   .coDistrictGrid,
   .coEconomyBody,
+  .coManagementDashboard,
   .coSurfaceLayout.withSide {
     grid-template-columns: 1fr;
   }
+
+  .coManagementDashboard > .coQueuePanel { grid-column: 1; grid-row: auto; }
+  .coMajorFeatureSlots { grid-template-columns: 1fr; }
 
   .coDistrictCity,
   .coInfoCard {

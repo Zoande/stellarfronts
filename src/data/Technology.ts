@@ -1,4 +1,5 @@
 import type { BuildingKind, JobKind, PlanetDefenseBuildingKind, ResourceKind } from "./Economy";
+import type { PlanetFeatureKind } from "./PlanetFeatures";
 import type { StarbaseBuildingKind, StarbaseShipKind } from "./Starbase";
 
 export type TechId = string;
@@ -35,6 +36,7 @@ export type TechnologyEffect =
   | { type: "unlock_starbase_building"; building: StarbaseBuildingKind }
   | { type: "unlock_planet_defense_building"; building: PlanetDefenseBuildingKind }
   | { type: "unlock_planet_defense_building_level"; building: PlanetDefenseBuildingKind; level: number }
+  | { type: "unlock_planet_feature_removal"; feature: PlanetFeatureKind }
   | { type: "unlock_ship_hull"; shipKind: StarbaseShipKind }
   | { type: "unlock_ship_module"; moduleId: string }
   | { type: "unlock_ship_section"; sectionModuleId: string }
@@ -346,7 +348,10 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       modifier("low_food_pressure", "Low food stockpile", "lowFoodStockpile", "flatBonus", 0.08, 0.08),
       modifier("famine_pressure", "Famine pressure", "famine", "flatBonus", 0.15, 0.15),
     ],
-    effects: [{ type: "job_output_mult", job: "farmer", resource: "food", value: 0.1 }],
+    effects: [
+      { type: "job_output_mult", job: "farmer", resource: "food", value: 0.1 },
+      { type: "unlock_planet_feature_removal", feature: "hostileBiosphere" },
+    ],
   },
   {
     id: "agro_industrial_supply_chains",
@@ -364,6 +369,57 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       modifier("low_food_pressure", "Low food stockpile", "lowFoodStockpile", "flatBonus", 0.08, 0.08),
     ],
     effects: [{ type: "unlock_building", building: "agroIndustrialKitchens" }],
+  },
+  {
+    id: "environmental_remediation",
+    name: "Environmental Remediation",
+    description: "Atmospheric processors and ecological recovery methods allow colonies to neutralize severe planetary hazards.",
+    category: "society",
+    tier: 2,
+    cost: 2600,
+    prerequisites: ["field_biochemistry", "industrial_tooling"],
+    positionInTree: { x: 2.2, y: 5.7 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("famine_pressure", "Famine pressure", "famine", "flatBonus", 0.08, 0.08),
+      modifier("researcher_job_bonus", "Researchers", "researcherJobs", "multiplyBy", 0.00004, 0.16),
+    ],
+    effects: [
+      { type: "unlock_planet_feature_removal", feature: "toxicAtmosphere" },
+    ],
+  },
+  {
+    id: "geotechnical_remediation",
+    name: "Geotechnical Remediation",
+    description: "Deep anchoring, pressure grouting, and crustal stress mapping permit large-scale stabilization projects.",
+    category: "industry",
+    tier: 2,
+    cost: 2800,
+    prerequisites: ["industrial_tooling", "planetary_infrastructure"],
+    positionInTree: { x: 2.2, y: 1.7 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("miner_job_bonus", "Miners", "minerJobs", "multiplyBy", 0.00005, 0.18),
+    ],
+    effects: [
+      { type: "unlock_planet_feature_removal", feature: "seismicFaults" },
+      { type: "unlock_planet_feature_removal", feature: "volatileTectonics" },
+    ],
+  },
+  {
+    id: "hazard_containment",
+    name: "Hazard Containment",
+    description: "Remote decontamination systems and hardened field robotics make irradiated landscapes recoverable.",
+    category: "computing",
+    tier: 3,
+    cost: 5200,
+    prerequisites: ["environmental_remediation", "planetary_sensor_fusion"],
+    positionInTree: { x: 3.2, y: 5.7 },
+    passiveResearchRules: passive(0.08),
+    researchModifiers: [],
+    effects: [
+      { type: "unlock_planet_feature_removal", feature: "irradiatedWastes" },
+    ],
   },
   {
     id: "industrial_tooling",
@@ -457,7 +513,10 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
     positionInTree: { x: 1.4, y: 4.65 },
     passiveResearchRules: passive(0.12),
     researchModifiers: [],
-    effects: [{ type: "unlock_planet_defense_building_level", building: "sensorArray", level: 2 }],
+    effects: [
+      { type: "unlock_planet_defense_building_level", building: "sensorArray", level: 2 },
+      { type: "unlock_planet_feature_removal", feature: "radiationPockets" },
+    ],
   },
   {
     id: "deep_space_sensor_grids",
@@ -703,6 +762,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
     effects: [
       ...unlockBuildingLevels(ALL_PLANET_BUILDINGS, 5),
       { type: "construction_speed_mult", value: 0.06 },
+      { type: "unlock_planet_feature_removal", feature: "shatteredCrust" },
     ],
   },
   {
@@ -1179,6 +1239,12 @@ export function getRequiredTechIdsForPlanetDefenseBuildingLevel(
     effect.type === "unlock_planet_defense_building_level"
     && effect.building === building
     && effect.level === level
+  ));
+}
+
+export function getRequiredTechIdsForPlanetFeatureRemoval(feature: PlanetFeatureKind): TechId[] {
+  return requiredTechIdsForEffect((effect) => (
+    effect.type === "unlock_planet_feature_removal" && effect.feature === feature
   ));
 }
 

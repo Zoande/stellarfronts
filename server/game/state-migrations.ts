@@ -50,6 +50,7 @@ const MIGRATIONS = new Map<number, Migration>([
   [25, (state) => ({ ...state, schemaVersion: 26 })],
   [26, (state) => ({ ...state, schemaVersion: 27 })],
   [27, (state) => ({ ...state, schemaVersion: 28 })],
+  [28, (state) => ({ ...state, schemaVersion: 29 })],
 ]);
 
 export function migrateGameStateEnvelope(input: unknown): { state: GameState; originalSchema: number } {

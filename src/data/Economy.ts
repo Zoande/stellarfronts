@@ -1,5 +1,12 @@
 import type { DistrictCounts, DistrictKind } from "./StarMap";
 import {
+  PLANET_FEATURE_DEFINITIONS,
+  PLANET_FEATURE_GENERATION_VERSION,
+  PLANET_FEATURE_KINDS,
+  isPlanetFeatureKind,
+} from "./PlanetFeatures";
+import type { PlanetFeatureDefinition, PlanetFeatureKind } from "./PlanetFeatures";
+import {
   DEFAULT_SPECIES_RIGHTS,
   HUMAN_SPECIES_ID,
   canRightsWorkJob,
@@ -32,6 +39,12 @@ import type {
 
 export type { DistrictCounts, DistrictKind } from "./StarMap";
 export type { SpeciesId } from "./Species";
+export type { PlanetFeatureDefinition, PlanetFeatureKind } from "./PlanetFeatures";
+export {
+  PLANET_FEATURE_DEFINITIONS,
+  PLANET_FEATURE_GENERATION_VERSION,
+  PLANET_FEATURE_KINDS,
+} from "./PlanetFeatures";
 export type {
   PlanetMigrationLedger,
   PlanetMigrationSummary,
@@ -141,8 +154,6 @@ export type UrbanSubDistrictKind =
 
 export type BuildingSlotArea = DistrictKind | "urbanSubDistrict";
 
-export type PlanetFeatureKind = "homePlanet";
-
 export type PlanetModifierOperation = "add" | "multiply";
 
 export type PlanetModifierTarget =
@@ -160,6 +171,7 @@ export type PlanetModifierTarget =
   | "buildingConstructionSpeed"
   | "migrationAttractiveness"
   | "migrationIntakeCapacity"
+  | `districtLimit:${DistrictKind}`
   | `habitability:${SpeciesId}`
   | `jobCapacity:${JobKind}`
   | `jobOutput:${JobKind}:${ResourceKind}`
@@ -186,13 +198,6 @@ export interface PlanetJobLockAllocation {
 export interface PlanetJobLock {
   job: Exclude<JobKind, "criminal" | "unemployed">;
   allocations: PlanetJobLockAllocation[];
-}
-
-export interface PlanetFeatureDefinition {
-  kind: PlanetFeatureKind;
-  label: string;
-  description: string;
-  modifiers: PlanetModifier[];
 }
 
 export type ResourceDelta = Partial<Record<ResourceKind, number>>;
@@ -256,7 +261,8 @@ export type PlanetConstructionKind =
   | "building"
   | "buildingUpgrade"
   | "defenseBuilding"
-  | "defenseBuildingUpgrade";
+  | "defenseBuildingUpgrade"
+  | "featureRemoval";
 
 export interface PlanetConstructionQueueItem {
   id: string;
@@ -275,6 +281,7 @@ export interface PlanetConstructionQueueItem {
   subDistrictIndex?: number;
   defenseBuildingKind?: PlanetDefenseBuildingKind;
   defenseSection?: PlanetDefenseSection;
+  featureKind?: PlanetFeatureKind;
 }
 
 export interface PopGroup {
@@ -352,6 +359,7 @@ export interface PlanetState {
   population: number;
   speciesPopulations: SpeciesPopulation[];
   features: PlanetFeatureKind[];
+  featureGenerationVersion: number;
   builtDistricts: DistrictCounts;
   buildings: DistrictBuildingSlots;
   urbanSubDistricts: UrbanSubDistrictState[];
@@ -381,6 +389,7 @@ export interface PlanetEconomySeed {
   isHabited: boolean;
   habitability: number | null;
   features?: PlanetFeatureKind[];
+  featureGenerationVersion?: number;
   builtDistricts: DistrictCounts;
   districtLimits: DistrictCounts;
   starterInfrastructure?: boolean;
@@ -684,26 +693,6 @@ export const URBAN_SUB_DISTRICT_LABELS: Record<UrbanSubDistrictKind, string> = {
   civilianIndustry: "Civilian Industry",
   heavyIndustry: "Heavy Industry",
 };
-
-export const PLANET_FEATURE_DEFINITIONS: Record<PlanetFeatureKind, PlanetFeatureDefinition> = {
-  homePlanet: {
-    kind: "homePlanet",
-    label: "Home Planet",
-    description: "The species' cradle world, with familiar biospheres, culture, infrastructure, and settlement patterns.",
-    modifiers: [
-      {
-        id: "feature-home-planet-human-habitability",
-        label: "Home Planet",
-        source: "planetFeature:homePlanet",
-        target: "habitability:human",
-        operation: "add",
-        value: 20,
-      },
-    ],
-  },
-};
-
-export const PLANET_FEATURE_KINDS: PlanetFeatureKind[] = ["homePlanet"];
 
 export interface CapitalTierDefinition {
   level: number;
@@ -1751,8 +1740,13 @@ function normalizeModifiers(modifiers: PlanetModifier[] | undefined): PlanetModi
 export function normalizePlanetFeatures(features: PlanetFeatureKind[] | undefined): PlanetFeatureKind[] {
   const seen = new Set<PlanetFeatureKind>();
   const normalized: PlanetFeatureKind[] = [];
+  let occupiedMajorSlots = 0;
   for (const feature of features ?? []) {
-    if (!PLANET_FEATURE_KINDS.includes(feature) || seen.has(feature)) continue;
+    if (!isPlanetFeatureKind(feature) || seen.has(feature)) continue;
+    if (PLANET_FEATURE_DEFINITIONS[feature].tier !== "minor") {
+      if (occupiedMajorSlots >= 3) continue;
+      occupiedMajorSlots += 1;
+    }
     seen.add(feature);
     normalized.push(feature);
   }
@@ -1834,6 +1828,18 @@ function getActiveModifiers(
       ? getBuildingLevelModifiers(CAPITAL_BUILDING_KIND, getPlanetBuildingLevel(capital))
       : []),
   ];
+}
+
+export function getEffectivePlanetDistrictLimits(
+  baseLimits: DistrictCounts,
+  features: PlanetFeatureKind[] | undefined,
+): DistrictCounts {
+  const modifiers = getFeatureModifiers(features);
+  const effective = {} as DistrictCounts;
+  for (const kind of ["city", "generator", "mining", "agriculture"] as const) {
+    effective[kind] = Math.max(0, Math.floor(applyModifiers(baseLimits[kind], modifiers, `districtLimit:${kind}`)));
+  }
+  return effective;
 }
 
 function applyModifiers(value: number, modifiers: PlanetModifier[], target: PlanetModifierTarget): number {
@@ -1924,7 +1930,7 @@ function normalizeConstructionQueueItem(
   if (
     !item?.id
     || !item.label
-    || !["district", "building", "buildingUpgrade", "defenseBuilding", "defenseBuildingUpgrade"].includes(item.kind ?? "")
+    || !["district", "building", "buildingUpgrade", "defenseBuilding", "defenseBuildingUpgrade", "featureRemoval"].includes(item.kind ?? "")
   ) return null;
   const totalDays = Math.max(1, Number(item.totalDays) || 1);
   const remainingDays = Math.max(0, Math.min(totalDays, Number(item.remainingDays) || totalDays));
@@ -1942,6 +1948,19 @@ function normalizeConstructionQueueItem(
       totalDays,
       remainingDays,
       districtKind: item.districtKind,
+    };
+  }
+  if (item.kind === "featureRemoval") {
+    if (!isPlanetFeatureKind(item.featureKind) || !PLANET_FEATURE_DEFINITIONS[item.featureKind].removal) return null;
+    return {
+      id: item.id,
+      kind: "featureRemoval",
+      label: item.label,
+      cost,
+      mineralCost,
+      totalDays,
+      remainingDays,
+      featureKind: item.featureKind,
     };
   }
   if (item.kind === "defenseBuilding" || item.kind === "defenseBuildingUpgrade") {
@@ -2076,15 +2095,16 @@ export function createPlanetStateFromSeed(
   existing?: Partial<PlanetState>,
 ): PlanetState {
   const features = normalizePlanetFeatures(existing?.features ?? seed.features);
-  const baseBuiltDistricts = normalizeDistrictCounts(existing?.builtDistricts ?? seed.builtDistricts, seed.districtLimits);
+  const effectiveDistrictLimits = getEffectivePlanetDistrictLimits(seed.districtLimits, features);
+  const baseBuiltDistricts = normalizeDistrictCounts(existing?.builtDistricts ?? seed.builtDistricts, effectiveDistrictLimits);
   const isHabited = (existing?.isHabited ?? false) || seed.isHabited;
   const useStarterInfrastructure = isHabited && seed.starterInfrastructure !== false;
   const builtDistricts = useStarterInfrastructure
-    ? createStarterBuiltDistricts(seed.districtLimits, baseBuiltDistricts)
+    ? createStarterBuiltDistricts(effectiveDistrictLimits, baseBuiltDistricts)
     : baseBuiltDistricts;
   let buildings = ensureCapitalBuilding(
     useStarterInfrastructure
-      ? normalizeBuildings(existing?.buildings ?? createStarterBuildings(seed.districtLimits))
+      ? normalizeBuildings(existing?.buildings ?? createStarterBuildings(effectiveDistrictLimits))
       : normalizeBuildings(existing?.buildings),
     isHabited,
   );
@@ -2124,6 +2144,7 @@ export function createPlanetStateFromSeed(
     population,
     speciesPopulations,
     features,
+    featureGenerationVersion: Math.max(0, Math.floor(existing?.featureGenerationVersion ?? seed.featureGenerationVersion ?? PLANET_FEATURE_GENERATION_VERSION)),
     builtDistricts,
     buildings,
     urbanSubDistricts,
@@ -2139,7 +2160,7 @@ export function createPlanetStateFromSeed(
     },
     economy: createEmptyPlanetEconomySummary(),
   };
-  state.economy = calculatePlanetEconomy(state, seed.districtLimits);
+  state.economy = calculatePlanetEconomy(state, effectiveDistrictLimits);
   return state;
 }
 
@@ -3062,6 +3083,7 @@ export function recalculatePlanetStateEconomy(
     population: sumSpeciesPopulation(speciesPopulations),
     speciesPopulations,
     features: normalizePlanetFeatures(state.features),
+    featureGenerationVersion: Math.max(0, Math.floor(state.featureGenerationVersion ?? PLANET_FEATURE_GENERATION_VERSION)),
     builtDistricts: cloneDistricts(state.builtDistricts),
     buildings: normalizeBuildings(state.buildings),
     urbanSubDistricts: normalizeUrbanSubDistricts(state.urbanSubDistricts),
@@ -3267,6 +3289,13 @@ function canCompleteConstructionItem(
   if (item.kind === "district") {
     return Boolean(item.districtKind && state.builtDistricts[item.districtKind] < districtLimits[item.districtKind]);
   }
+  if (item.kind === "featureRemoval") {
+    return Boolean(
+      item.featureKind
+      && state.features.includes(item.featureKind)
+      && PLANET_FEATURE_DEFINITIONS[item.featureKind].removal,
+    );
+  }
   if (item.kind === "defenseBuilding" || item.kind === "defenseBuildingUpgrade") {
     if (!item.defenseBuildingKind || !item.defenseSection || item.slotIndex === undefined) return false;
     const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[item.defenseBuildingKind];
@@ -3328,6 +3357,12 @@ function completeConstructionItem(
         ...state.builtDistricts,
         [item.districtKind]: state.builtDistricts[item.districtKind] + 1,
       },
+    };
+  }
+  if (item.kind === "featureRemoval" && item.featureKind) {
+    return {
+      ...state,
+      features: state.features.filter((feature) => feature !== item.featureKind),
     };
   }
   if (
@@ -3483,6 +3518,28 @@ export function createDefenseBuildingConstructionQueueItem(
     slotIndex,
     targetLevel: level,
   };
+}
+
+export function createFeatureRemovalConstructionQueueItem(
+  featureKind: PlanetFeatureKind,
+  id = createConstructionId("feature-removal", [featureKind]),
+): PlanetConstructionQueueItem {
+  const definition = PLANET_FEATURE_DEFINITIONS[featureKind];
+  if (!definition.removal) throw new Error(`${definition.label} cannot be removed.`);
+  return {
+    id,
+    kind: "featureRemoval",
+    label: `Remove ${definition.label}`,
+    cost: { ...definition.removal.cost },
+    mineralCost: definition.removal.cost.minerals,
+    totalDays: definition.removal.buildDays,
+    remainingDays: definition.removal.buildDays,
+    featureKind,
+  };
+}
+
+export function hasQueuedFeatureRemoval(state: PlanetState, featureKind: PlanetFeatureKind): boolean {
+  return state.constructionQueue.some((item) => item.kind === "featureRemoval" && item.featureKind === featureKind);
 }
 
 export function hasQueuedDefenseBuildingTarget(

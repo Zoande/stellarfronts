@@ -7,6 +7,10 @@
 import { createPlanetStateFromSeed } from "./Economy";
 import type { PlanetFeatureKind, PlanetState } from "./Economy";
 import {
+  PLANET_FEATURE_GENERATION_VERSION,
+  generatePlanetFeatures,
+} from "./PlanetFeatures";
+import {
   normalizePlanetOrbitFields,
   withPlanetOrbitFields,
 } from "./SystemCoordinates";
@@ -715,7 +719,7 @@ export function createPlanetStateFromConfig(
   planet: PlanetConfig,
   existing?: Partial<PlanetState>,
   seedFeatures?: PlanetFeatureKind[],
-  options?: { starterInfrastructure?: boolean; startingPopulation?: number },
+  options?: { starterInfrastructure?: boolean; startingPopulation?: number; featureGenerationVersion?: number },
 ): PlanetState {
   return createPlanetStateFromSeed({
     id: planet.id || createPlanetId(starId, planetIndex),
@@ -724,6 +728,7 @@ export function createPlanetStateFromConfig(
     isHabited: planet.isHabited === true,
     habitability: planet.objectDetails.habitability,
     features: seedFeatures,
+    featureGenerationVersion: options?.featureGenerationVersion,
     builtDistricts: normalizeDistrictCounts(planet.objectDetails.builtDistricts, planet.objectDetails.districtLimits),
     districtLimits: planet.objectDetails.districtLimits,
     starterInfrastructure: options?.starterInfrastructure,
@@ -738,8 +743,15 @@ export function buildPlanetStatesFromStars(stars: StarData[], homeStarIds: Itera
   for (const star of stars) {
     for (let planetIndex = 0; planetIndex < star.system.planets.length; planetIndex++) {
       const planet = star.system.planets[planetIndex];
-      const features = homeIds.has(star.id) && planet.isHabited === true ? ["homePlanet" as const] : undefined;
-      states.push(createPlanetStateFromConfig(star.id, planetIndex, planet, undefined, features));
+      const features = generatePlanetFeatures({
+        planetId: planet.id || createPlanetId(star.id, planetIndex),
+        planetType: planet.type,
+        starType: star.type,
+        isHomePlanet: homeIds.has(star.id) && planet.isHabited === true,
+      });
+      states.push(createPlanetStateFromConfig(star.id, planetIndex, planet, undefined, features, {
+        featureGenerationVersion: PLANET_FEATURE_GENERATION_VERSION,
+      }));
     }
   }
   return states;
@@ -760,14 +772,27 @@ export function normalizePlanetStates(
       const planet = star.system.planets[planetIndex];
       const expectedId = createPlanetId(star.id, planetIndex);
       const source = byId.get(planet.id) ?? byId.get(expectedId);
-      const features = homeIds.has(star.id) && planet.isHabited === true ? ["homePlanet" as const] : undefined;
+      const generatedFeatures = generatePlanetFeatures({
+        planetId: planet.id || expectedId,
+        planetType: planet.type,
+        starType: star.type,
+        isHomePlanet: homeIds.has(star.id) && planet.isHabited === true,
+      });
+      const featureAwareSource = source && (source.featureGenerationVersion ?? 0) >= PLANET_FEATURE_GENERATION_VERSION
+        ? source
+        : source
+          ? { ...source, features: generatedFeatures, featureGenerationVersion: PLANET_FEATURE_GENERATION_VERSION }
+          : undefined;
       const nextState = createPlanetStateFromConfig(
         star.id,
         planetIndex,
         planet,
-        source,
-        features,
-        { starterInfrastructure: source === undefined },
+        featureAwareSource,
+        generatedFeatures,
+        {
+          starterInfrastructure: source === undefined,
+          featureGenerationVersion: PLANET_FEATURE_GENERATION_VERSION,
+        },
       );
 
       if (!source || JSON.stringify(source) !== JSON.stringify(nextState)) {

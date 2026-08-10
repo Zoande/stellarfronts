@@ -15,6 +15,7 @@ import type {
   ResourceCounts,
   UrbanSubDistrictKind,
 } from "../data/Economy";
+import type { PlanetFeatureKind } from "../data/PlanetFeatures";
 import type { ColonizationEligibility } from "../data/Colonization";
 import type {
   MarketPlayerStats,
@@ -26,7 +27,7 @@ import type {
 } from "../data/Market";
 
 /** Wire protocols accepted by the current browser client, newest last. */
-export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8, 9];
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8, 9, 10];
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
@@ -727,6 +728,12 @@ export interface BuildDistrictCommand {
   districtKind: DistrictKind;
 }
 
+export interface QueuePlanetFeatureRemovalCommand {
+  type: "queuePlanetFeatureRemoval";
+  planetId: string;
+  featureKind: PlanetFeatureKind;
+}
+
 export interface BuildPlanetBuildingCommand {
   type: "buildPlanetBuilding";
   planetId: string;
@@ -1080,6 +1087,7 @@ type ClientCommandPayload =
   | SetFleetDarkMatterBoostCommand
   | SetSpeedCommand
   | BuildDistrictCommand
+  | QueuePlanetFeatureRemovalCommand
   | BuildPlanetBuildingCommand
   | UpgradePlanetBuildingCommand
   | DowngradePlanetBuildingCommand
