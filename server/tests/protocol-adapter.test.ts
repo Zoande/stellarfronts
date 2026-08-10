@@ -21,12 +21,14 @@ function protocolSnapshot(protocolVersion: number): Record<string, unknown> {
   };
 }
 
-test("protocol adapters normalize v5-v10 snapshots into one canonical model", () => {
-  for (const protocol of [5, 6, 7, 8, 9, 10]) {
+test("protocol adapters normalize v5-v11 snapshots into one canonical model", () => {
+  for (const protocol of [5, 6, 7, 8, 9, 10, 11]) {
     const snapshot = adaptSnapshot(protocolSnapshot(protocol));
     assert.equal(snapshot.protocolVersion, protocol);
     assert.deepEqual(snapshot.intelligence, { entities: [], lanes: [] });
     assert.deepEqual(snapshot.tradeAlerts, []);
+    assert.deepEqual(snapshot.armies, []);
+    assert.deepEqual(snapshot.groundBattles, []);
     assert.deepEqual(snapshot.diplomacy, {
       playerFactionId: null,
       openBorderFactionIds: [],
@@ -94,4 +96,20 @@ test("snapshot reducer preserves omissions and applies explicit nulls", () => {
   assert.equal(reduced.stars, snapshot.stars);
   assert.equal(reduced.protocolVersion, 7);
   assert.equal(reduced.type, "snapshot");
+});
+
+test("snapshot reducer applies Army and ground-battle updates", () => {
+  const snapshot = adaptSnapshot(protocolSnapshot(11));
+  const army = { id: "army-1" } as never;
+  const battle = { id: "battle-1" } as never;
+  const reduced = reduceSnapshot(snapshot, adaptUpdate({
+    type: "update",
+    protocolVersion: 11,
+    perspective: { mode: "observer" },
+    changed: ["armies", "groundBattles"],
+    armies: [army],
+    groundBattles: [battle],
+  }, 11));
+  assert.deepEqual(reduced.armies, [army]);
+  assert.deepEqual(reduced.groundBattles, [battle]);
 });

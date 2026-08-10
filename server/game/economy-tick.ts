@@ -66,6 +66,7 @@ import { getFactionResearchPerHour, applyTechnologyResearchForFaction } from "./
 import { findShipDesignById, getShipDesignForShip } from "./ship-designs";
 import { createShip, createFleet, applyShipDesignToShip, syncStarbaseCombatHealth } from "./fleet-factory";
 import { applyFleetOrbitTarget, createStarbaseOrbitTarget, startOrbitOrder } from "./fleet-combat";
+import { spawnCompletedArmy } from "./ground-combat";
 import type { GameFleet, GameShip, RuntimeContext } from "./types";
 
 function getPlanetDetailSignature(planetState: PlanetState): string {
@@ -895,6 +896,9 @@ export function processStarbaseShipQueues(ctx: RuntimeContext, elapsedDays: numb
     for (const completed of result.completed) {
       if (completed.kind === "upgrade") {
         fleetsChanged = completeQueuedShipUpgrade(ctx, completed) || fleetsChanged;
+      } else if (completed.kind === "armyBuild") {
+        spawnCompletedArmy(ctx, starbase.ownerId, starbase.starId, completed, undefined, getSystemStarbaseOrbitPosition(starbase.systemPosition));
+        fleetsChanged = true;
       } else {
         spawnCompletedShip(ctx, starbase, completed);
         fleetsChanged = true;
@@ -991,7 +995,11 @@ export function processPlanetShipQueues(
       economy.stockpiles = addResourceCounts(economy.stockpiles, scaleResourceCounts(result.resourcesConsumed, -1));
     }
     for (const completed of result.completed) {
-      spawnCompletedPlanetShip(ctx, planet, completed);
+      if (completed.kind === "armyBuild") {
+        spawnCompletedArmy(ctx, planet.ownerId, planet.starId, completed, planet.id);
+      } else {
+        spawnCompletedPlanetShip(ctx, planet, completed);
+      }
       fleetsChanged = true;
     }
     planetsChanged = true;

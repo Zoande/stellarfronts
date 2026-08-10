@@ -9,10 +9,10 @@ protocol compatibility are separate, explicit contracts.
 The checked-in [`server/version-manifest.json`](../../server/version-manifest.json) is the canonical
 artifact metadata:
 
-- `schemaVersion: 27` describes the persisted `GameState`.
-- `protocolVersion: 8` describes WebSocket messages.
+- `schemaVersion: 30` describes the persisted `GameState`.
+- `protocolVersion: 11` describes WebSocket messages.
 - `runtimeApiVersion: 1` describes the stable control-plane/runtime integration.
-- `migratesFromSchema: [23, 24, 25, 26, 27]` lists schemas this build can load.
+- `migratesFromSchema: [30]` makes the persistent-Army overhaul a deliberate new-game boundary.
 
 [`server/versionManifest.ts`](../../server/versionManifest.ts) exposes the same values to runtime
 code. A drift test fails if the TypeScript constants and static manifest disagree.
@@ -41,10 +41,11 @@ from an invalid save:
 - malformed JSON, an invalid envelope, or an unsupported schema aborts startup and preserves the
   original file.
 
-[`server/game/state-migrations.ts`](../../server/game/state-migrations.ts) owns the explicit
-23→24→25→26→27 migration chain. Current normalizers then fill safe additive defaults and enforce the
-current domain shape. A schema bump must add the corresponding explicit migration step; normalization
-alone is not a substitute for a declared migration.
+The current manifest accepts schema 30 only. Schema 29's anonymous planetary troop counts cannot be
+migrated into persistent, species-aware Army identities without inventing player state, so games must
+be recreated for this version. Current normalizers still fill safe additive defaults and enforce the
+schema-30 domain shape. Future compatible schema bumps must add an explicit migration step;
+normalization alone is not a substitute for a declared migration.
 
 Saves are stamped with the writing code version and protocol. Atomic persistence, exclusive owner
 locks, and verified backups are described in
@@ -52,12 +53,13 @@ locks, and verified backups are described in
 
 ## Wire compatibility
 
-The current client accepts server protocols 5, 6, 7, and 8 through
+The current client accepts server protocols 5 through 11 through
 [`src/game/ProtocolAdapter.ts`](../../src/game/ProtocolAdapter.ts). Every initial snapshot is
 validated and adapted to the current canonical client model before entering the UI. Updates are
 validated against the negotiated protocol and reduced with explicit missing-versus-null semantics.
-Protocol 8 correlates normal command results by request ID; older protocols retain their legacy
-fire-and-forget behavior.
+Protocol 8+ correlates normal command results by request ID; older protocols retain their legacy
+fire-and-forget behavior. Protocol 11 adds persistent Army Units, ground battles, Army queue orders,
+and their incremental update fields.
 
 Compatibility is never bypassed for the development version. The same static manifest and migration
 checks apply to `dev` and immutable versions.

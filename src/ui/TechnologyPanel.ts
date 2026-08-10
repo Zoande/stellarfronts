@@ -17,6 +17,7 @@ import {
   TECHNOLOGY_DEFINITIONS,
 } from "../data/Technology";
 import { PLANET_FEATURE_DEFINITIONS } from "../data/PlanetFeatures";
+import { ARMY_TYPE_DEFINITIONS } from "../data/Armies";
 import type {
   FactionTechnologyView,
   TechnologyDefinition,
@@ -631,6 +632,8 @@ export class TechnologyPanel {
         return `Unlock planetary remediation: ${PLANET_FEATURE_DEFINITIONS[effect.feature]?.label ?? effect.feature}`;
       case "unlock_ship_hull":
         return `Unlock hull: ${SHIP_HULL_DEFINITIONS[effect.shipKind]?.label ?? effect.shipKind}`;
+      case "unlock_army_type":
+        return `Unlock army: ${ARMY_TYPE_DEFINITIONS[effect.armyTypeId]?.name ?? effect.armyTypeId}`;
       case "unlock_ship_module": {
         const module = getShipModuleDefinition(effect.moduleId);
         return `Unlock ship module: ${module?.label ?? effect.moduleId}`;

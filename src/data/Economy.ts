@@ -141,7 +141,6 @@ export interface PlanetDefenseState {
   defenseSlots: Array<PlanetDefenseBuildingState | null>;
   shipyardSlots: Array<PlanetDefenseBuildingState | null>;
   shipQueue: import("./Starbase").StarbaseShipQueueItem[];
-  stationedArmies: number;
   traineeRemainders: PlanetTraineeRemainder[];
 }
 
@@ -171,6 +170,7 @@ export type PlanetModifierTarget =
   | "buildingConstructionSpeed"
   | "migrationAttractiveness"
   | "migrationIntakeCapacity"
+  | "combatWidth"
   | `districtLimit:${DistrictKind}`
   | `habitability:${SpeciesId}`
   | `jobCapacity:${JobKind}`
@@ -1210,7 +1210,6 @@ export function createEmptyPlanetDefenseState(): PlanetDefenseState {
     defenseSlots: Array<PlanetDefenseBuildingState | null>(6).fill(null),
     shipyardSlots: Array<PlanetDefenseBuildingState | null>(3).fill(null),
     shipQueue: [],
-    stationedArmies: 0,
     traineeRemainders: [],
   };
 }
@@ -1287,7 +1286,7 @@ export function normalizePlanetDefenseState(value?: Partial<PlanetDefenseState>)
         const crewDemand = Math.max(0, Math.floor(Number(item.crewDemand) || 0));
         return [{
           id: typeof item.id === "string" && item.id ? item.id : `planet-ship-queue-${index}`,
-          kind: item.kind === "upgrade" ? "upgrade" as const : "build" as const,
+          kind: item.kind === "upgrade" ? "upgrade" as const : item.kind === "armyBuild" ? "armyBuild" as const : "build" as const,
           shipKind: item.shipKind,
           designId: typeof item.designId === "string" ? item.designId : null,
           targetDesignId: typeof item.targetDesignId === "string" ? item.targetDesignId : null,
@@ -1301,10 +1300,11 @@ export function normalizePlanetDefenseState(value?: Partial<PlanetDefenseState>)
           alloyUpkeepPerDay: Math.max(0, Number(item.alloyUpkeepPerDay) || resourceUpkeepPerDay.alloys),
           crewDemand,
           reservedCrew: Math.max(0, Math.floor(Number(item.reservedCrew ?? crewDemand) || 0)),
+          armyTypeId: typeof item.armyTypeId === "string" ? item.armyTypeId as import("./Armies").ArmyTypeId : undefined,
+          speciesId: typeof item.speciesId === "string" ? item.speciesId : undefined,
         }];
       })
       : [],
-    stationedArmies: Math.max(0, Math.floor(Number(value?.stationedArmies) || 0)),
     traineeRemainders,
   };
 }
@@ -2730,12 +2730,6 @@ export function calculatePlanetEconomy(
 
   const production = createEmptyResourceCounts();
   const upkeep = createEmptyResourceCounts();
-  addResource(
-    upkeep,
-    "food",
-    defenseState.stationedArmies / PEOPLE_PER_MONTHLY_UNIT * POP_FOOD_UPKEEP_PER_UNIT,
-  );
-
   for (const group of popGroups) {
     const habitabilityProductionMultiplier = getHabitabilityProductionMultiplier(group.habitability);
     const habitabilityUpkeepMultiplier = getHabitabilityUpkeepMultiplier(group.habitability);

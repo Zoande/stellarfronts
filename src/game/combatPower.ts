@@ -51,9 +51,11 @@ export function computeShipPower(
   const currentDurabilityRatio = (
     ship.shield + ship.armor + ship.hull
   ) / Math.max(1, ship.maxShield + ship.maxArmor + ship.maxHull);
+  const crewRatio = ship.crewCapacity > 0 ? Math.max(0, Math.min(1, ship.crew / ship.crewCapacity)) : 1;
+  const crewMultiplier = 0.5 + 0.5 * crewRatio;
   return (
     (ship.maxShield * 0.85 + ship.maxArmor * 0.95 + ship.maxHull) * (0.5 + 0.5 * currentDurabilityRatio)
-    + computeWeaponSustainedOutput(functioningMounts) * roundsToKillEstimate * 24
+    + computeWeaponSustainedOutput(functioningMounts) * roundsToKillEstimate * 24 * crewMultiplier
   );
 }
 

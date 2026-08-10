@@ -210,7 +210,9 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
           && leader.assignment.targetId === planetState.id
         )) ?? null, "planetCivilian");
       }
-      addField(fields, "defenses.armies", planetState?.defense.stationedArmies ?? 0, "planetDefense");
+      addField(fields, "defenses.armies", planetState
+        ? state.armies.filter((army) => army.location.kind === "planet" && army.location.planetId === planetState.id && army.hp > 0 && army.manpower > 0).length
+        : 0, "planetDefense");
       addField(
         fields,
         "defenses.soldiers",

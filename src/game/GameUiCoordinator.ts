@@ -412,6 +412,7 @@ export async function startGameUi(
     factions: snapshot.factions,
     clockYear: getRenderClockYear(),
     combatReports: fleetManagerDetail?.combatReports ?? snapshot.combatReports,
+    armies: fleetManagerDetail?.armies ?? snapshot.armies,
     playerFactionId: getPlayerFactionId(),
     technology: fleetManagerDetail?.technologies.find((technology) => technology.factionId === getPlayerFactionId())
       ?? getCurrentFactionTechnology(),
@@ -1264,6 +1265,12 @@ export async function startGameUi(
       if (isFull || has("leaders")) {
         activeSystemScene.setLeaders(snapshot.leaders);
       }
+      if (isFull || has("planetStates")) {
+        activeSystemScene.setArmyRecruitmentPlanetStates(snapshot.planetStates);
+      }
+      if (isFull || has("armies") || has("groundBattles")) {
+        activeSystemScene.setArmyState(snapshot.armies, snapshot.groundBattles);
+      }
     }
 
     updateHud();
@@ -1458,8 +1465,11 @@ export async function startGameUi(
           clockYear: getRenderClockYear(),
           selectedFleetIds,
           planetStates: systemPayload.planetStates,
+          empirePlanetStates: snapshot.planetStates,
           leaders: snapshot.leaders,
           species: snapshot.species,
+          armies: snapshot.armies,
+          groundBattles: snapshot.groundBattles,
           technology: systemPayload.technology,
           factionEconomy: getCurrentFactionEconomy(),
           onPlanetCommand: sendPlanetCommand,
@@ -1475,6 +1485,8 @@ export async function startGameUi(
             return {
               planet: planetDetails.planet,
               planetState: planetDetails.planetState,
+              armies: planetDetails.armies,
+              groundBattle: planetDetails.groundBattle,
             };
           },
         },

@@ -3,7 +3,7 @@ import type { FactionEconomyState, PlanetModifier, PlanetState, ResourceCounts, 
 import { createInitialGovernmentState, getGovernmentPositionDefinition, getSelectedGovernmentLawOptions } from "../../src/data/Government";
 import type { FactionGovernmentState, GovernmentEffect, GovernmentPositionDefinition, GovernmentPositionId } from "../../src/data/Government";
 import { getLeaderTraitDefinition } from "../../src/data/Leaders";
-import type { LeaderAssignment, LeaderFleetEffects, LeaderState } from "../../src/data/Leaders";
+import type { LeaderAssignment, LeaderFleetEffects, LeaderGroundEffects, LeaderState } from "../../src/data/Leaders";
 import { SHORTAGE_SITUATION_ID, situationInstanceId } from "../../src/data/Situations";
 import { ACTIVE_RESEARCH_FRACTION, PASSIVE_RESEARCH_FRACTION, getCompletedTechnologyEffects, TECHNOLOGY_BY_ID } from "../../src/data/Technology";
 import type { FactionTechState } from "../../src/data/Technology";
@@ -343,6 +343,43 @@ export function getFleetLeaderEffects(nextState: GameState, fleetId: string): Re
     shieldMultiplier: clamp(totals.shieldMultiplier, 0.25, 2.25),
     upkeepMultiplier: clamp(totals.upkeepMultiplier, 0.25, 2),
     evasionBonus: clamp(totals.evasionBonus, -0.25, 0.25),
+  };
+}
+
+export function getGroundLeaderEffects(
+  nextState: GameState,
+  assignmentKind: "planetMilitary" | "groundBattle" | "fleet",
+  targetId: string,
+  defending: boolean,
+): Required<Omit<LeaderGroundEffects, "defenderOnly">> & { leader: LeaderState | null } {
+  const leader = getAssignedLeader(nextState, assignmentKind, targetId);
+  const totals = {
+    attackMultiplier: 1,
+    defenseMultiplier: 1,
+    upkeepMultiplier: 1,
+    recoveryMultiplier: 1,
+    leader,
+  };
+  if (!leader || leader.class !== "military") return totals;
+  const directLevelBonus = Math.min(25, Math.max(0, leader.level - 1)) * 0.01;
+  totals.attackMultiplier += directLevelBonus;
+  totals.defenseMultiplier += directLevelBonus;
+  for (const traitId of leader.traits) {
+    const effects = getLeaderTraitDefinition(traitId).groundEffects;
+    if (!effects || (effects.defenderOnly && !defending)) continue;
+    // Ground-trait values are authored as exact bonuses. Commander level is a
+    // separate +1% per level above one and must not scale those traits again.
+    totals.attackMultiplier += effects.attackMultiplier ?? 0;
+    totals.defenseMultiplier += effects.defenseMultiplier ?? 0;
+    totals.upkeepMultiplier += effects.upkeepMultiplier ?? 0;
+    totals.recoveryMultiplier += effects.recoveryMultiplier ?? 0;
+  }
+  return {
+    attackMultiplier: clamp(totals.attackMultiplier, 0.25, 2.5),
+    defenseMultiplier: clamp(totals.defenseMultiplier, 0.25, 2.5),
+    upkeepMultiplier: clamp(totals.upkeepMultiplier, 0.25, 2),
+    recoveryMultiplier: clamp(totals.recoveryMultiplier, 0.25, 3),
+    leader,
   };
 }
 

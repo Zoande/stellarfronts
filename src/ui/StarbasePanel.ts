@@ -9,7 +9,10 @@ import {
   getNextStarbaseLevel,
   hasQueuedStarbaseBuildingTarget,
 } from "../data/Starbase";
-import type { FactionEconomyState, ResourceCounts } from "../data/Economy";
+import type { FactionEconomyState, PlanetState, ResourceCounts } from "../data/Economy";
+import type { SpeciesState } from "../data/Species";
+import { ARMY_TOTAL_CREW_DEMAND, ARMY_TRANSPORT_BUILD_DAYS, ARMY_TYPE_DEFINITIONS, MOBILE_ARMY_TYPE_IDS, getArmyMaxHp } from "../data/Armies";
+import type { ArmyUnit } from "../data/Armies";
 import type { StarbaseBuildingKind } from "../data/Starbase";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { NEBULA_DEFINITIONS, getNebulaGatedBuildingKinds } from "../data/Nebula";
@@ -38,6 +41,10 @@ export interface StarbasePanelData {
   shipDesigns?: ShipDesign[];
   technology?: FactionTechnologyView | null;
   factionEconomy?: FactionEconomyState | null;
+  planetStates?: PlanetState[];
+  species?: SpeciesState[];
+  armies?: ArmyUnit[];
+  playerFactionId?: number;
   /** Kind of nebula the starbase's system sits in, if any (gates some buildings). */
   nebulaKind?: NebulaKind | null;
   onStarbaseCommand?: (command: ClientCommand) => void;
@@ -53,6 +60,7 @@ const STARBASE_SCROLL_SELECTORS = [
   ".sbAvailableShipList",
   ".sbDefensePlatformList",
   ".sbDefenseDesignList",
+  ".sbArmyRecruitmentList",
 ] as const;
 
 type StarbaseTab = "starbase" | "defenses" | "shipyard";
@@ -159,6 +167,13 @@ export class StarbasePanel {
       return;
     }
     this.show(nextData);
+  }
+
+  public refreshArmyContext(armies: ArmyUnit[], planetStates?: PlanetState[]): void {
+    if (!this.currentData) return;
+    const nextData = { ...this.currentData, armies, planetStates: planetStates ?? this.currentData.planetStates };
+    this.currentData = nextData;
+    if (this.activeTab === "defenses") this.show(nextData);
   }
 
   public refreshFactionEconomy(factionEconomy: FactionEconomyState | null): void {
@@ -269,6 +284,11 @@ export class StarbasePanel {
         });
       });
     });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-sb-recruit-army]").forEach((button) => button.addEventListener("click", () => {
+      const [armyTypeId, speciesId] = (button.dataset.sbRecruitArmy ?? "").split(":");
+      if (!armyTypeId || !speciesId) return;
+      data.onStarbaseCommand?.({ type: "queueArmyRecruitment", yardKind: "starbase", yardId: data.id, armyTypeId: armyTypeId as keyof typeof ARMY_TYPE_DEFINITIONS, speciesId });
+    }));
   }
 
   private applyPosition(): void {
@@ -464,10 +484,8 @@ export class StarbasePanel {
             <div class="sbShipQueueList">${this.renderShipQueueItems(starbase, shipyardCount)}</div>
           `}
         </article>
-        <article class="sbDefenseColumn sbGroundArmyPlaceholder">
-          <span>Ground Army Overview</span>
-          <strong>Operational view pending</strong>
-          <p>Planetary garrisons, embarked armies, reinforcement readiness, and invasion posture will be shown here.</p>
+        <article class="sbDefenseColumn sbArmyRecruitmentColumn">
+          ${this.renderArmyRecruitment(data, shipyardCount)}
         </article>
       </section>
     `;
@@ -540,7 +558,7 @@ export class StarbasePanel {
           </div>
           <div class="sbSectionTitle">Available Ships</div>
           <div class="sbAvailableShipList">
-            ${STARBASE_SHIP_KINDS.filter((kind) => kind !== "defensePlatform").map((kind) => {
+            ${STARBASE_SHIP_KINDS.filter((kind) => kind !== "defensePlatform" && kind !== "armyShip").map((kind) => {
               const definition = STARBASE_SHIP_DEFINITIONS[kind];
               const predictedAlloys = definition.alloyUpkeepPerDay * definition.buildDays;
               const lockedByTechnology = !this.isShipHullUnlocked(data.technology, kind);
@@ -563,6 +581,37 @@ export class StarbasePanel {
         </article>
       </section>
     `;
+  }
+
+  private renderArmyRecruitment(data: StarbasePanelData, shipyardCount: number): string {
+    const factionId = data.playerFactionId;
+    const populationBySpecies = new Map<string, number>();
+    for (const planet of data.planetStates ?? []) {
+      if (!planet.isHabited || planet.ownerId !== factionId) continue;
+      for (const entry of planet.speciesPopulations) populationBySpecies.set(entry.speciesId, (populationBySpecies.get(entry.speciesId) ?? 0) + entry.population);
+    }
+    const species = (data.species ?? []).filter((entry) => (populationBySpecies.get(entry.id) ?? 0) > 0).sort((a, b) => a.name.localeCompare(b.name));
+    const usedBySpecies = new Map<string, number>();
+    for (const army of data.armies ?? []) if (army.ownerId === factionId && army.mobility === "mobile") usedBySpecies.set(army.speciesId, (usedBySpecies.get(army.speciesId) ?? 0) + 1);
+    for (const planet of data.planetStates ?? []) for (const item of planet.defense.shipQueue) if (planet.ownerId === factionId && item.kind === "armyBuild" && item.speciesId) usedBySpecies.set(item.speciesId, (usedBySpecies.get(item.speciesId) ?? 0) + 1);
+    for (const item of data.starbase?.shipQueue ?? []) if (item.kind === "armyBuild" && item.speciesId) usedBySpecies.set(item.speciesId, (usedBySpecies.get(item.speciesId) ?? 0) + 1);
+    const crew = data.factionEconomy?.crewStockpile ?? 0;
+    return `<div class="sbDefenseHeader"><div><span>Army Recruitment</span><strong>${shipyardCount} active lane${shipyardCount === 1 ? "" : "s"}</strong></div></div>
+      <div class="sbArmyRecruitmentList">
+        ${MOBILE_ARMY_TYPE_IDS.flatMap((typeId) => {
+          const definition = ARMY_TYPE_DEFINITIONS[typeId];
+          const techUnlocked = !definition.requiredTechnologyId || data.technology?.completedTechIds.includes(definition.requiredTechnologyId as TechId) === true;
+          return species.map((entry) => {
+            const cap = Math.floor((populationBySpecies.get(entry.id) ?? 0) / 100_000_000);
+            const used = usedBySpecies.get(entry.id) ?? 0;
+            const disabledReason = shipyardCount <= 0 ? "No completed shipyard" : crew < ARMY_TOTAL_CREW_DEMAND ? "Insufficient Crew" : !techUnlocked ? `Requires ${definition.requiredTechnologyId}` : used >= cap ? `Species army cap reached (${used}/${cap})` : "";
+            return `<button class="sbDefenseDesignCard sbArmyRecruitmentCard" type="button" data-sb-recruit-army="${typeId}:${this.escapeHtml(entry.id)}" ${disabledReason ? `disabled title="${this.escapeHtml(disabledReason)}"` : ""}>
+              <span class="sbShipIcon">${this.escapeHtml(definition.name.slice(0, 2).toUpperCase())}</span>
+              <span><strong>${this.escapeHtml(definition.name)} · ${this.escapeHtml(entry.name)}</strong><small>${this.formatCompact(definition.attackPower)} / ${this.formatCompact(definition.defensePower)} nominal · ${getArmyMaxHp(entry.traitIds)} max HP · ${ARMY_TRANSPORT_BUILD_DAYS + definition.trainingDays} days</small><small>${this.escapeHtml(this.renderInlineCost(definition.cost))} · ${this.formatCompact(ARMY_TOTAL_CREW_DEMAND)} Crew · cap ${used}/${cap}${definition.requiredTechnologyId ? ` · ${this.escapeHtml(definition.requiredTechnologyId)}` : " · Starting"}</small></span>
+            </button>`;
+          });
+        }).join("") || '<div class="sbQueueEmpty">No resident species currently meet the recruitment cap.</div>'}
+      </div>`;
   }
 
   private renderShipQueueItems(starbase: ServerStarbase | undefined, shipyardCount: number): string {
@@ -1548,6 +1597,9 @@ export class StarbasePanel {
   border-color: rgba(103, 255, 221, 0.58);
   box-shadow: inset 3px 0 0 rgba(103, 255, 221, 0.78);
 }
+.sbArmyRecruitmentList { display: grid; align-content: start; gap: 6px; min-height: 0; overflow-y: auto; padding-right: 3px; }
+.sbArmyRecruitmentColumn { min-width: 0; }
+.sbArmyRecruitmentCard { width: 100%; text-align: left; }
 
 .sbShipQueueCancel {
   justify-self: end;

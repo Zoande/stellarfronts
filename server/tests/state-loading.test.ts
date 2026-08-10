@@ -22,7 +22,7 @@ test("corrupt saves are preserved and reported instead of replaced", async () =>
 
 test("state envelope migrations are explicit, immutable, and reject unsupported schemas", () => {
   const state = {
-    schemaVersion: 23,
+    schemaVersion: 30,
     stars: [],
     planetStates: [],
     factions: [],
@@ -32,9 +32,10 @@ test("state envelope migrations are explicit, immutable, and reject unsupported 
     clock: { year: 2200 },
   };
   const migrated = migrateGameStateEnvelope(state);
-  assert.equal(migrated.originalSchema, 23);
-  assert.equal(migrated.state.schemaVersion, 29);
-  assert.equal(state.schemaVersion, 23);
-  assert.throws(() => migrateGameStateEnvelope({ ...state, schemaVersion: 22 }), /not supported/);
-  assert.throws(() => migrateGameStateEnvelope({ ...state, schemaVersion: 30 }), /not supported/);
+  assert.equal(migrated.originalSchema, 30);
+  assert.equal(migrated.state.schemaVersion, 30);
+  assert.notEqual(migrated.state, state);
+  assert.equal(state.schemaVersion, 30);
+  assert.throws(() => migrateGameStateEnvelope({ ...state, schemaVersion: 29 }), /not supported/);
+  assert.throws(() => migrateGameStateEnvelope({ ...state, schemaVersion: 31 }), /not supported/);
 });

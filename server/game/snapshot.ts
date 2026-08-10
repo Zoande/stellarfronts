@@ -395,6 +395,21 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
     situations,
     events,
     tradeAlerts,
+    // Persistent unit records contain exact manpower, HP, species, and
+    // transport identity. Never leak them merely because a system was once
+    // discovered: non-participants use the existing planet-defense/fleet intel
+    // fields, which carry current/stale/unknown status instead.
+    armies: perspective.mode === "observer"
+      ? ctx.state.armies
+      : (() => {
+        const participantArmyIds = new Set(ctx.state.groundBattles
+          .filter((battle) => battle.attackerFactionId === perspective.factionId || battle.defenderFactionId === perspective.factionId)
+          .flatMap((battle) => [...battle.attackerArmyIds, ...battle.defenderArmyIds]));
+        return ctx.state.armies.filter((army) => army.ownerId === perspective.factionId || participantArmyIds.has(army.id));
+      })(),
+    groundBattles: perspective.mode === "observer"
+      ? ctx.state.groundBattles
+      : ctx.state.groundBattles.filter((battle) => battle.attackerFactionId === perspective.factionId || battle.defenderFactionId === perspective.factionId),
   };
 }
 
@@ -500,6 +515,12 @@ export function createUpdate(ctx: RuntimeContext, perspective: GalaxyPerspective
   }
   if (changed.includes("tradeAlerts")) {
     update.tradeAlerts = getVisibleState().tradeAlerts;
+  }
+  if (changed.includes("armies")) {
+    update.armies = getVisibleState().armies;
+  }
+  if (changed.includes("groundBattles")) {
+    update.groundBattles = getVisibleState().groundBattles;
   }
   return update;
 }

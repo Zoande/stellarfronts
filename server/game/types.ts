@@ -15,6 +15,7 @@ import type { ActiveEvent } from "../../src/data/Events";
 import type { FactionModifierState } from "../../src/data/GameEffects";
 import type { ShipDesign } from "../../src/data/ShipDesigns";
 import type { IntelligenceByFaction } from "../../src/data/Intelligence";
+import type { ArmyUnit, GroundBattleState } from "../../src/data/Armies";
 import type {
   GameClock,
   GameDetailScope,
@@ -38,7 +39,7 @@ export interface GameFleet extends ServerFleet {
 export interface GameShip extends ServerShip {}
 
 export interface GameState {
-  schemaVersion: 23 | 24 | 25 | 26 | 27 | 28 | 29;
+  schemaVersion: 30;
   stars: StarData[];
   nebulae: NebulaRegion[];
   planetStates: PlanetState[];
@@ -59,6 +60,8 @@ export interface GameState {
   starOwnership: number[];
   starbases: ServerStarbase[];
   shipDesigns: ShipDesign[];
+  armies: ArmyUnit[];
+  groundBattles: GroundBattleState[];
   ships: GameShip[];
   fleets: GameFleet[];
   recentCombatContacts: ServerCombatContact[];

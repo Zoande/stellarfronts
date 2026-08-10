@@ -20,6 +20,7 @@ import type { FactionInfo } from "../data/Factions";
 import {
   STARBASE_SHIP_DEFINITIONS,
   STARBASE_SHIP_KINDS,
+  PLAYER_DESIGNABLE_SHIP_KINDS,
   SHIP_MODEL_DEFINITIONS,
   countStarbaseShipyards,
 } from "../data/Starbase";
@@ -55,6 +56,8 @@ import {
   getRequiredTechIdsForShipSection,
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
+import { ARMY_TYPE_DEFINITIONS, getArmyCurrentPower } from "../data/Armies";
+import type { ArmyUnit } from "../data/Armies";
 import type {
   FleetEngagementRule,
   FleetDoctrine,
@@ -80,6 +83,7 @@ export interface FleetManagerPanelData {
   clockYear: number;
   combatReports?: CombatAfterActionReport[];
   technology?: FactionTechnologyView | null;
+  armies?: ArmyUnit[];
   onFleetCommand?: (command: ClientCommand) => void;
   onClose?: () => void;
 }
@@ -784,6 +788,11 @@ export class FleetManagerPanel {
     const crewCapacity = ships.reduce((total, ship) => total + Math.max(0, ship.crewCapacity), 0);
     const commandUsed = fleet.commandUsed ?? Math.max(shipCount, ships.length);
     const commandCapacity = fleet.commandCapacity ?? 20;
+    const armies = this.getArmiesForFleet(data, fleet);
+    const isArmyFleet = armies.length > 0 && armies.length === ships.length;
+    const armyManpower = armies.reduce((sum, army) => sum + army.manpower, 0);
+    const armyHp = armies.reduce((sum, army) => sum + army.hp, 0);
+    const armyMaxHp = armies.reduce((sum, army) => sum + army.maxHp, 0);
     return `
       <div class="fmSelectedHeader">
         <div>
@@ -793,19 +802,20 @@ export class FleetManagerPanel {
         </div>
         <div class="fmSelectedHeaderChips">
           <span class="fmCommandChip"><small>Command Limit</small><strong>${this.escapeHtml(String(commandUsed))} / ${this.escapeHtml(String(commandCapacity))}</strong></span>
-          <div class="fmPowerBadge"><strong>${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</strong><small>Fleet Power</small></div>
+          <div class="fmPowerBadge"><strong>${this.escapeHtml(this.formatFleetPower(data, fleet, index))}</strong><small>${isArmyFleet ? "Army Power" : "Fleet Power"}</small></div>
         </div>
       </div>
       <div class="fmStatGrid">
         ${this.renderFleetInfoCard("status", "Status", this.formatFleetStatus(fleet))}
         ${this.renderFleetInfoCard("owner", "Owner", owner?.name ?? "Unknown")}
-        ${this.renderFleetInfoCard("class", "Class", shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`)}
+        ${this.renderFleetInfoCard("class", "Class", isArmyFleet ? `${armies.length} Army ${armies.length === 1 ? "Unit" : "Units"}` : shipCount === 1 ? "Single-Ship Fleet" : `${shipCount} Ships`)}
         ${this.renderFleetInfoCard("shields", "Shields", `${Math.round(defense.shield)} / ${Math.round(defense.maxShield)}`, this.getRatio(defense.shield, defense.maxShield))}
         ${this.renderFleetInfoCard("armor", "Armor", `${Math.round(defense.armor)} / ${Math.round(defense.maxArmor)}`, this.getRatio(defense.armor, defense.maxArmor))}
         ${this.renderFleetInfoCard("hull", "Hull", `${Math.round(defense.hull)} / ${Math.round(defense.maxHull)}`, this.getRatio(defense.hull, defense.maxHull))}
         ${this.renderFleetInfoCard("speed", "Speed", `${this.formatCompact(fleet.speed * 2)} ly/day`)}
         ${this.renderFleetInfoCard("order", "Order", this.formatFleetOrder(data, fleet))}
         ${this.renderFleetInfoCard("class", "Crew", `${this.formatCompact(crew)} / ${this.formatCompact(crewCapacity)}`)}
+        ${isArmyFleet ? this.renderFleetInfoCard("class", "Manpower", this.formatCompact(armyManpower)) + this.renderFleetInfoCard("hull", "Army HP", `${Math.round(armyHp)} / ${Math.round(armyMaxHp)}`, this.getRatio(armyHp, armyMaxHp)) : ""}
       </div>
       ${this.renderFleetDoctrinePanel(data, fleet, ships)}
       <button class="fmAddShipsButton" type="button" data-fm-add-ships ${data.playerFactionId === fleet.ownerId ? "" : "disabled"}>Add Ships</button>
@@ -975,6 +985,7 @@ export class FleetManagerPanel {
 
   private renderShipRow(data: FleetManagerPanelData, fleet: ServerFleet, ship: ServerShip, index: number): string {
     const definition = STARBASE_SHIP_DEFINITIONS[ship.shipKind];
+    const army = ship.armyUnitId ? (data.armies ?? []).find((candidate) => candidate.id === ship.armyUnitId) : null;
     const targetDesign = this.getTargetDesignForShip(data, ship);
     const shipPower = computeShipPower(ship, undefined, data.shipDesigns);
     return `
@@ -982,8 +993,8 @@ export class FleetManagerPanel {
         <div class="fmShipCell">
           <span class="fmShipThumb" aria-hidden="true"></span>
           <span class="fmShipCopy">
-            <strong>${this.escapeHtml(this.getShipDisplayName(data, fleet, ship, index))}</strong>
-            <small>${this.escapeHtml(definition?.label ?? ship.shipKind)}</small>
+            <strong>${this.escapeHtml(army ? ARMY_TYPE_DEFINITIONS[army.typeId].name : this.getShipDisplayName(data, fleet, ship, index))}</strong>
+            <small>${this.escapeHtml(army ? `${army.speciesId} · ${this.formatCompact(army.manpower)} manpower · ${Math.round(army.hp)}/${Math.round(army.maxHp)} HP` : definition?.label ?? ship.shipKind)}</small>
             <small>Crew ${this.formatCompact(ship.crew)} / ${this.formatCompact(ship.crewCapacity)}</small>
             ${index === 0 ? '<em>Flagship</em>' : ""}
             ${targetDesign ? `<em class="upgradeReady">Upgrade Ready</em>` : ""}
@@ -1238,7 +1249,7 @@ export class FleetManagerPanel {
       list.push(design);
       groups.set(design.shipKind, list);
     }
-    const orderedKinds: StarbaseShipKind[] = STARBASE_SHIP_KINDS;
+    const orderedKinds: StarbaseShipKind[] = PLAYER_DESIGNABLE_SHIP_KINDS;
     return orderedKinds.map((shipKind) => {
       if (!this.isShipHullUnlocked(data, shipKind)) return "";
       const designs = (groups.get(shipKind) ?? []).sort((a, b) => a.name.localeCompare(b.name));
@@ -1929,8 +1940,15 @@ export class FleetManagerPanel {
   }
 
   private getFleetPowerValue(data: FleetManagerPanelData, fleet: ServerFleet, index: number): number {
+    const armies = this.getArmiesForFleet(data, fleet);
+    if (armies.length > 0) return armies.reduce((sum, army) => sum + getArmyCurrentPower(army).nominal, 0);
     const ships = this.getShipsForFleet(data, fleet.id);
     return computeFleetPower(ships, Math.max(1, this.getFleetShipCount(data, fleet)), undefined, data.shipDesigns);
+  }
+
+  private getArmiesForFleet(data: FleetManagerPanelData, fleet: ServerFleet): ArmyUnit[] {
+    const ids = new Set(this.getShipsForFleet(data, fleet.id).map((ship) => ship.armyUnitId).filter((id): id is string => typeof id === "string"));
+    return (data.armies ?? []).filter((army) => ids.has(army.id));
   }
 
   private formatFleetPower(data: FleetManagerPanelData, fleet: ServerFleet, index: number): string {

@@ -122,8 +122,9 @@ are stored under `server/state/games/<gameId>/game-state.json`.
 
 ## Versioning
 
-The current build advertises protocol version 7 and schema version 27. It normalizes schemas
-23–26 into schema 27, while the browser client accepts wire protocols 5, 6, 7, and 8. The orchestrator
+The current build advertises protocol version 11 and schema version 30. Schema 30 is a deliberate
+new-game boundary for persistent Army Units and ground battles; schema-29 saves are not migrated.
+The browser client accepts wire protocols 5 through 11. The orchestrator
 checks compatibility before moving a game and creates checksummed, version-aware backups around
 destructive operations. Corrupt or incompatible saves are quarantined and preserved rather than
 being replaced with a fresh galaxy.

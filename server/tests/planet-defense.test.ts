@@ -18,9 +18,8 @@ import {
   calculateShipDesignStats,
   createDefaultShipDesign,
 } from "../../src/data/ShipDesigns";
-import { completeArmyTransfer } from "../game/fleet-combat";
 import { recruitPlanetCrew } from "../game/economy-tick";
-import type { GameFleet, GameShip, RuntimeContext } from "../game/types";
+import type { RuntimeContext } from "../game/types";
 import { createInitialGovernmentState } from "../../src/data/Government";
 import { createInitialDiplomacyState } from "../../src/data/Diplomacy";
 
@@ -78,7 +77,7 @@ test("overflow planetary facilities suspend deterministically and reactivate wit
   assert.equal(getPlanetDefensePlatformCapacity(planet), 6);
 });
 
-test("planetary facility balance and sensor intelligence bands match protocol 9", () => {
+test("planetary facility balance and sensor intelligence bands match protocol 11", () => {
   assert.deepEqual(PLANET_DEFENSE_BUILDING_DEFINITIONS.barracks.levels[1].cost, {
     food: 0,
     minerals: 1_500,
@@ -101,7 +100,7 @@ test("planetary facility balance and sensor intelligence bands match protocol 9"
 test("Army Ships have fixed personnel and no generated defenses", () => {
   const design = createDefaultShipDesign(0, "armyShip", 2200);
   const stats = calculateShipDesignStats(design);
-  assert.equal(stats.crewDemand, 50_000);
+  assert.equal(stats.crewDemand, 10_000);
   assert.equal(stats.combat.maxShield, 0);
   assert.equal(stats.combat.maxArmor, 0);
   assert.deepEqual(stats.combat.weaponMounts, []);
@@ -115,7 +114,6 @@ test("malformed planetary defense personnel and slots normalize deterministicall
       { kind: "orbitalShipyard", level: 1, enabled: true },
     ],
     shipyardSlots: [{ kind: "platformSupport", level: -4, enabled: false }],
-    stationedArmies: -20,
     traineeRemainders: [
       { speciesId: "b", population: 2_500_000 },
       { speciesId: "a", population: 10_000 },
@@ -126,49 +124,10 @@ test("malformed planetary defense personnel and slots normalize deterministicall
   assert.deepEqual(normalized.defenseSlots[0], { kind: "sensorArray", level: 3, enabled: true });
   assert.equal(normalized.defenseSlots[1], null);
   assert.deepEqual(normalized.shipyardSlots[0], { kind: "platformSupport", level: 1, enabled: false });
-  assert.equal(normalized.stationedArmies, 0);
   assert.deepEqual(normalized.traineeRemainders, [
     { speciesId: "a", population: 10_000 },
     { speciesId: "b", population: 999_999 },
   ]);
-});
-
-test("Army Ship groups fill deterministically and drop their aggregate payload", () => {
-  const planet = defensePlanet();
-  planet.id = "planet";
-  planet.ownerId = 0;
-  planet.isHabited = true;
-  planet.defense.stationedArmies = 70_000;
-  const fleet = {
-    id: "army-fleet",
-    ownerId: 0,
-    shipIds: ["ship-b", "ship-a"],
-    pendingArmyTransfer: { planetId: planet.id, mode: "fill" },
-  } as unknown as GameFleet;
-  const ships = [
-    { id: "ship-b", ownerId: 0, fleetId: fleet.id, shipKind: "armyShip", crew: 0, crewCapacity: 50_000 },
-    { id: "ship-a", ownerId: 0, fleetId: fleet.id, shipKind: "armyShip", crew: 0, crewCapacity: 50_000 },
-  ] as GameShip[];
-  const refreshed: string[] = [];
-  const ctx = {
-    state: { planetStates: [planet], ships },
-    hasDirtyState: false,
-    recalculatePlanetEconomies: () => undefined,
-    refreshFactionEconomyDeltas: () => undefined,
-    queuePlanetDetailRefresh: (planetId: string) => refreshed.push(planetId),
-  } as unknown as RuntimeContext;
-
-  assert.equal(completeArmyTransfer(ctx, fleet), true);
-  assert.equal(ships.find((ship) => ship.id === "ship-a")?.crew, 50_000);
-  assert.equal(ships.find((ship) => ship.id === "ship-b")?.crew, 20_000);
-  assert.equal(planet.defense.stationedArmies, 0);
-  assert.deepEqual(refreshed, ["planet"]);
-
-  fleet.pendingArmyTransfer = { planetId: planet.id, mode: "drop" };
-  assert.equal(completeArmyTransfer(ctx, fleet), true);
-  assert.equal(ships[0].crew, 0);
-  assert.equal(ships[1].crew, 0);
-  assert.equal(planet.defense.stationedArmies, 70_000);
 });
 
 test("Barracks recruit exactly ten thousand Crew monthly and preserve fractional locks", () => {

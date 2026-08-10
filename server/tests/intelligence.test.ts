@@ -63,7 +63,7 @@ function stateFixture(): GameState {
   homeState.buildings.city[0] = "planetaryCapital";
   const targetState = createPlanetStateFromConfig(1, 0, target, { ownerId: null });
   return {
-    schemaVersion: 23,
+    schemaVersion: 30,
     stars,
     nebulae: [],
     planetStates: [homeState, targetState],
@@ -73,7 +73,7 @@ function stateFixture(): GameState {
     leaders: [], situations: [], events: [], factionModifiers: [],
     hyperlanes: [[0, 1], [1, 2]], adjacency: [[1], [0, 2], [1]],
     factions: [{ id: 0, name: "Player", color: [0.2, 0.7, 1], homeStarId: 0 }],
-    starOwnership: [0, -1, -1], starbases: [], shipDesigns: [], ships: [], fleets: [], recentCombatContacts: [], combatProjectiles: [], combatReports: [],
+    starOwnership: [0, -1, -1], starbases: [], shipDesigns: [], armies: [], groundBattles: [], ships: [], fleets: [], recentCombatContacts: [], combatProjectiles: [], combatReports: [],
     intelligenceByFaction: {}, startingIntelligenceSeeded: false,
     clock: {
       year: 2100, tickSizeDays: 1, tickSpeedSeconds: 1, paused: false, speedMultiplier: 1,

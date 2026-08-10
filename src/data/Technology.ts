@@ -1,6 +1,7 @@
 import type { BuildingKind, JobKind, PlanetDefenseBuildingKind, ResourceKind } from "./Economy";
 import type { PlanetFeatureKind } from "./PlanetFeatures";
 import type { StarbaseBuildingKind, StarbaseShipKind } from "./Starbase";
+import type { ArmyTypeId } from "./Armies";
 
 export type TechId = string;
 
@@ -40,6 +41,7 @@ export type TechnologyEffect =
   | { type: "unlock_ship_hull"; shipKind: StarbaseShipKind }
   | { type: "unlock_ship_module"; moduleId: string }
   | { type: "unlock_ship_section"; sectionModuleId: string }
+  | { type: "unlock_army_type"; armyTypeId: ArmyTypeId }
   | { type: "job_output_mult"; job: JobKind; resource: ResourceKind; value: number }
   | { type: "construction_speed_mult"; value: number }
   | { type: "starbase_ship_build_speed_mult"; value: number };
@@ -211,7 +213,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_ship_hull", shipKind: "corvette" },
       { type: "unlock_ship_hull", shipKind: "defensePlatform" },
       { type: "unlock_ship_hull", shipKind: "scienceShip" },
-      { type: "unlock_ship_hull", shipKind: "armyShip" },
+      { type: "unlock_army_type", armyTypeId: "lightInfantry" },
       { type: "unlock_ship_hull", shipKind: "constructionShip" },
       { type: "unlock_ship_hull", shipKind: "colonizationShip" },
       { type: "unlock_ship_section", sectionModuleId: "weapon_section_corvette_swarmer" },
@@ -782,6 +784,38 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
     effects: [{ type: "starbase_ship_build_speed_mult", value: 0.1 }],
   },
   {
+    id: "ground_warfare_doctrine",
+    name: "Ground Warfare Doctrine",
+    description: "Standardized expeditionary command, combined-arms training, and planetary assault logistics unlock Line Infantry.",
+    category: "military",
+    tier: 1,
+    cost: 1500,
+    prerequisites: ["spacefaring_foundations", "planetary_infrastructure"],
+    positionInTree: { x: 1, y: 3.05 },
+    passiveResearchRules: passive(0.12),
+    researchModifiers: [
+      modifier("at_war_bonus", "At war", "atWar", "flatBonus", 0.15, 0.15),
+      modifier("ship_count_bonus", "Ships", "shipCount", "multiplyBy", 0.006, 0.18),
+    ],
+    effects: [{ type: "unlock_army_type", armyTypeId: "lineInfantry" }],
+  },
+  {
+    id: "mechanized_ground_warfare",
+    name: "Mechanized Ground Warfare",
+    description: "Heavy vehicles, armored logistics, and orbital deployment systems unlock Mechanized Armies.",
+    category: "military",
+    tier: 2,
+    cost: 3200,
+    prerequisites: ["ground_warfare_doctrine", "integrated_fleet_logistics"],
+    positionInTree: { x: 2, y: 3.05 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("at_war_bonus", "At war", "atWar", "flatBonus", 0.12, 0.12),
+      modifier("alloy_income_bonus", "Alloy income", "alloyIncome", "multiplyBy", 0.00004, 0.25),
+    ],
+    effects: [{ type: "unlock_army_type", armyTypeId: "mechanizedArmy" }],
+  },
+  {
     id: "point_defense_networks",
     name: "Point Defense Networks",
     description: "Short-range tracking systems unlock point-defense weapon modules.",
@@ -1258,6 +1292,10 @@ export function getRequiredTechIdsForShipSection(sectionModuleId: string): TechI
 
 export function getRequiredTechIdsForShipHull(shipKind: StarbaseShipKind): TechId[] {
   return requiredTechIdsForEffect((effect) => effect.type === "unlock_ship_hull" && effect.shipKind === shipKind);
+}
+
+export function getRequiredTechIdsForArmyType(armyTypeId: ArmyTypeId): TechId[] {
+  return requiredTechIdsForEffect((effect) => effect.type === "unlock_army_type" && effect.armyTypeId === armyTypeId);
 }
 
 export function isUnlockedByAnyRequiredTech(state: FactionTechState | undefined, requiredTechIds: TechId[]): boolean {

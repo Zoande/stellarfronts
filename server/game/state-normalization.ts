@@ -32,6 +32,7 @@ import {
   normalizeShipDesign,
 } from "../../src/data/ShipDesigns";
 import type { ShipDesign } from "../../src/data/ShipDesigns";
+import { isArmyTypeId } from "../../src/data/Armies";
 import {
   HUMAN_SPECIES_ID,
   normalizeSpeciesState,
@@ -147,10 +148,12 @@ export function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<Serve
           const resourceUpkeepPerDay = normalizeResourceCounts(item.resourceUpkeepPerDay ?? fallbackDaily);
           return {
             ...item,
-            kind: item.kind === "upgrade" ? "upgrade" : "build",
+            kind: item.kind === "upgrade" ? "upgrade" : item.kind === "armyBuild" ? "armyBuild" : "build",
             designId: typeof item.designId === "string" ? item.designId : null,
             targetDesignId: typeof item.targetDesignId === "string" ? item.targetDesignId : null,
             shipId: typeof item.shipId === "string" ? item.shipId : null,
+            armyTypeId: isArmyTypeId(item.armyTypeId) ? item.armyTypeId : undefined,
+            speciesId: typeof item.speciesId === "string" ? item.speciesId : undefined,
             cost,
             upfrontCost,
             resourceUpkeepPerDay,
@@ -199,7 +202,7 @@ export function normalizeShip(
   const hull = Math.max(0, Math.min(maxHull, Number.isFinite(hullValue) ? hullValue : maxHull));
   const shield = Math.max(0, Math.min(maxShield, Number.isFinite(shieldValue) ? shieldValue : maxShield));
   const armor = Math.max(0, Math.min(maxArmor, Number.isFinite(armorValue) ? armorValue : maxArmor));
-  const crewCapacity = shipKind === "armyShip" ? 50_000 : Math.max(0, Math.round(stats.crewDemand));
+  const crewCapacity = Math.max(0, Math.round(stats.crewDemand));
   const crew = Math.max(0, Math.min(
     crewCapacity,
     Number.isFinite(Number(ship.crew)) ? Math.floor(Number(ship.crew)) : crewCapacity,
@@ -237,6 +240,7 @@ export function normalizeShip(
     disabled: ship.disabled === true,
     crew,
     crewCapacity,
+    armyUnitId: typeof ship.armyUnitId === "string" ? ship.armyUnitId : undefined,
   };
 }
 
@@ -253,7 +257,7 @@ export function normalizeFleet(
   const phase = (fleet.phase ?? "idle") as ShipTransitPhase;
   const targetStarId = Number.isInteger(fleet.targetStarId) ? Number(fleet.targetStarId) : null;
   const formation = isFleetFormation(fleet.formation) ? fleet.formation : "line";
-  const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "attack" || fleet.orderType === "orbit" || fleet.orderType === "colonize" || fleet.orderType === "armyTransfer" || fleet.orderType === "merge" || fleet.orderType === "retreat"
+  const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "attack" || fleet.orderType === "orbit" || fleet.orderType === "colonize" || fleet.orderType === "merge" || fleet.orderType === "retreat"
     ? fleet.orderType
     : null;
   const shipIds = Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [];
@@ -308,11 +312,6 @@ export function normalizeFleet(
       ? fleet.darkMatterBoostPaidUntilYear!
       : null,
     orbitTargetPlanetId: typeof fleet.orbitTargetPlanetId === "string" ? fleet.orbitTargetPlanetId : null,
-    pendingArmyTransfer: fleet.pendingArmyTransfer
-      && typeof fleet.pendingArmyTransfer.planetId === "string"
-      && (fleet.pendingArmyTransfer.mode === "fill" || fleet.pendingArmyTransfer.mode === "drop")
-      ? { planetId: fleet.pendingArmyTransfer.planetId, mode: fleet.pendingArmyTransfer.mode }
-      : null,
     orbitOffset: fleet.orbitOffset ?? null,
     orbitTarget: fleet.orbitTarget ?? null,
     mergeTargetFleetId: typeof fleet.mergeTargetFleetId === "string" ? fleet.mergeTargetFleetId : null,
@@ -563,8 +562,12 @@ export function normalizeShipDesignsForFactions(
     }
   }
 
+  const playerDesignKinds = STARBASE_SHIP_KINDS.filter((shipKind) => shipKind !== "armyShip");
+  for (let index = designs.length - 1; index >= 0; index -= 1) {
+    if (designs[index].shipKind === "armyShip") designs.splice(index, 1);
+  }
   for (const faction of factions) {
-    for (const shipKind of STARBASE_SHIP_KINDS) {
+    for (const shipKind of playerDesignKinds) {
       const hasActive = designs.some((design) => (
         design.ownerId === faction.id
         && design.shipKind === shipKind

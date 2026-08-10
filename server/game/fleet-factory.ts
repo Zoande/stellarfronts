@@ -78,7 +78,7 @@ export function applyShipDesignToShip(ship: GameShip, design: ShipDesign): void 
   ship.hull = clamp(combat.maxHull * hullRatio, 1, combat.maxHull);
   ship.hp = ship.hull;
   ship.weaponCooldowns = {};
-  ship.crewCapacity = design.shipKind === "armyShip" ? 50_000 : stats.crewDemand;
+  ship.crewCapacity = stats.crewDemand;
   ship.crew = Math.min(ship.crew, ship.crewCapacity);
 }
 
@@ -112,8 +112,8 @@ export function createShipFromDesign(
     lastShieldDamageAtYear: null,
     subsystemState: { disabledWeaponKeys: [], engineDisabled: false, emergencyMobility: false },
     disabled: false,
-    crew: design.shipKind === "armyShip" ? 50_000 : stats.crewDemand,
-    crewCapacity: design.shipKind === "armyShip" ? 50_000 : stats.crewDemand,
+    crew: stats.crewDemand,
+    crewCapacity: stats.crewDemand,
   };
 }
 
@@ -166,7 +166,6 @@ export function createFleet(
     darkMatterBoostActive: false,
     darkMatterBoostPaidUntilYear: null,
     orbitTargetPlanetId: null,
-    pendingArmyTransfer: null,
     orbitOffset: null,
     orbitTarget: null,
     mergeTargetFleetId: null,

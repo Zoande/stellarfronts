@@ -12,7 +12,7 @@ How a game's `GameState` is created, migrated, saved, and protected. Versioning 
 
 ## Fresh state versus failed state
 
-`createInitialState` creates schema 27 only when the save file does not exist. `loadState` never
+`createInitialState` creates schema 30 only when the save file does not exist. `loadState` never
 turns a parse, validation, normalization, or compatibility error into a new galaxy. Instead it throws
 a `GameStateLoadError`; the version host releases ownership, quarantines that game, reports the
 failure to the dev panel, and leaves the original bytes untouched.
@@ -24,9 +24,9 @@ Loading proceeds in this order:
 1. Read and decode JSON.
 2. Validate the durable envelope (`schemaVersion`, clock, and required root collections).
 3. Check `VERSION_MANIFEST.migratesFromSchema`.
-4. Run explicit envelope steps `23 -> 24 -> 25 -> 26 -> 27`.
-5. Run domain normalizers for planets, fleets, starbases, species, governments, markets, leaders,
-   intelligence, and other entity details.
+4. Reject every schema other than 30; schema 29 has no Army-identity migration.
+5. Run domain normalizers for planets, fleets, starbases, armies, ground battles, species,
+   governments, markets, leaders, intelligence, and other entity details.
 6. Rebuild derived adjacency, ownership, discovery, and economies.
 7. Mark normalized state dirty so it is persisted in the current shape.
 

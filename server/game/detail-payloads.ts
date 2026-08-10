@@ -61,6 +61,7 @@ import {
 import type { RuntimeContext } from "./types";
 import { getFactionPlanetColonizationEligibility } from "./colonization";
 import { getFactionFoundingSpeciesId } from "./state-normalization";
+import { getEffectiveArmyPower } from "./ground-combat";
 
 function intelValue<T>(view: IntelEntityView | null, fieldId: string, fallback: T): T {
   const field = view?.fields[fieldId] as IntelValue<T> | undefined;
@@ -73,8 +74,21 @@ function createPartialPlanetDetail(
   sourceState: PlanetState,
   sourcePlanet: PlanetConfig,
 ) {
-  if (perspective.mode === "observer") {
-    return { planet: sourcePlanet, planetState: sourceState, intelligence: [getPerspectiveEntityView(ctx.state, perspective, "planet", sourceState.id)!], commandLinked: true };
+  const battle = ctx.state.groundBattles.find((candidate) => candidate.planetId === sourceState.id) ?? null;
+  const exact = perspective.mode === "observer"
+    || sourceState.ownerId === perspective.factionId
+    || Boolean(battle && (battle.attackerFactionId === perspective.factionId || battle.defenderFactionId === perspective.factionId));
+  if (exact) {
+    const armies = ctx.state.armies.filter((army) => army.location.kind === "planet" && army.location.planetId === sourceState.id);
+    return {
+      planet: sourcePlanet,
+      planetState: sourceState,
+      armies,
+      groundBattle: battle,
+      armyPower: armies.reduce((total, army) => total + getEffectiveArmyPower(ctx.state, sourceState, army, battle?.attackerFactionId === army.ownerId, battle).nominal, 0),
+      intelligence: [getPerspectiveEntityView(ctx.state, perspective, "planet", sourceState.id)!],
+      commandLinked: true,
+    };
   }
   const view = getIntelEntityView(ctx.state, perspective.factionId, "planet", sourceState.id);
   if (!view || !view.fields.existence) return null;
@@ -120,6 +134,7 @@ function createPartialPlanetDetail(
     constructionQueue: intelValue(view, "constructionQueue", []),
     modifiers: intelValue(view, "modifiers", []),
     economy: intelValue(view, "economy", empty.economy),
+    defense: intelValue(view, "defense", empty.defense),
   };
   return {
     planet,
@@ -615,6 +630,7 @@ export function createDetailPayload(
       leaders: detailState.leaders,
       factionEconomies: detailState.factionEconomies,
       combatReports: detailState.combatReports,
+      armies: detailState.armies,
     };
     return { payload, revision: createRevision(payload), normalizedId: null };
   }

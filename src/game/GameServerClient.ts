@@ -335,6 +335,9 @@ export class GameServerClient {
         starId: payload.starId,
         planet: payload.planet,
         planetState: payload.planetState,
+        armies: payload.armies,
+        groundBattle: payload.groundBattle,
+        armyPower: payload.armyPower,
       };
     });
   }

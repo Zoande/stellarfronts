@@ -28,7 +28,7 @@ import {
 } from "../../src/data/Nebula";
 import {
   STARBASE_LEVEL_DEFINITIONS,
-  STARBASE_SHIP_KINDS,
+  PLAYER_DESIGNABLE_SHIP_KINDS,
   calculateStarbaseEconomy,
   createEmptyStarbaseSlots,
 } from "../../src/data/Starbase";
@@ -41,6 +41,7 @@ import { createDefaultSpeciesRightsState } from "../../src/data/Species";
 import { createInitialDiplomacyState, normalizeDiplomacyState } from "../../src/data/Diplomacy";
 import { createInitialMarketState, normalizeMarketState } from "../../src/data/Market";
 import { createInitialLeaders, getLeaderArchetypesByFaction, normalizeLeadersForFactions } from "../../src/data/Leaders";
+import { ARMY_TOTAL_CREW_DEMAND, normalizeArmyUnit, normalizeGroundBattle } from "../../src/data/Armies";
 import {
   GAME_START_YEAR,
   gameYearToMonthIndex,
@@ -134,7 +135,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     shipQueue: [],
   }));
   const shipDesigns = factions.flatMap((faction) => (
-    STARBASE_SHIP_KINDS.map((shipKind) => createDefaultShipDesign(faction.id, shipKind, GAME_START_YEAR))
+    PLAYER_DESIGNABLE_SHIP_KINDS.map((shipKind) => createDefaultShipDesign(faction.id, shipKind, GAME_START_YEAR))
   ));
   const ships: GameShip[] = [];
   const fleets = factions.flatMap<GameFleet>((faction) => {
@@ -169,7 +170,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 29,
+    schemaVersion: 30,
     stars,
     nebulae,
     planetStates,
@@ -195,6 +196,8 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     starOwnership,
     starbases,
     shipDesigns,
+    armies: [],
+    groundBattles: [],
     ships,
     fleets,
     recentCombatContacts: [],
@@ -245,6 +248,12 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
   try {
     const decoded: unknown = JSON.parse(raw);
     const { state: parsed, originalSchema: onDiskSchema } = migrateGameStateEnvelope(decoded);
+    parsed.armies = Array.isArray(parsed.armies)
+      ? parsed.armies.map(normalizeArmyUnit).filter((army): army is NonNullable<typeof army> => army !== null)
+      : [];
+    parsed.groundBattles = Array.isArray(parsed.groundBattles)
+      ? parsed.groundBattles.map(normalizeGroundBattle).filter((battle): battle is NonNullable<typeof battle> => battle !== null)
+      : [];
     delete (parsed as GameState & { battles?: unknown }).battles;
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
@@ -348,15 +357,9 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       ownerId: number,
       queue: import("../../src/data/Starbase").StarbaseShipQueueItem[],
     ): import("../../src/data/Starbase").StarbaseShipQueueItem[] => queue.map((item) => {
-      const design = resolveShipDesign(
-        parsed.shipDesigns,
-        ownerId,
-        item.shipKind,
-        item.targetDesignId ?? item.designId,
-        parsed.clock.year,
-      );
-      const crewDemand = item.shipKind === "armyShip"
-        ? 50_000
+      const design = resolveShipDesign(parsed.shipDesigns, ownerId, item.shipKind, item.targetDesignId ?? item.designId, parsed.clock.year);
+      const crewDemand = item.kind === "armyBuild"
+        ? ARMY_TOTAL_CREW_DEMAND
         : Math.max(0, Math.floor(calculateShipDesignStats(design).crewDemand));
       const currentShip = item.kind === "upgrade" && item.shipId
         ? parsed.ships.find((ship) => ship.id === item.shipId)

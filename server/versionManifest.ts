@@ -10,8 +10,8 @@
  */
 
 // Bump these in lockstep with GameState.schemaVersion and the snapshot protocol.
-export const CURRENT_SCHEMA_VERSION = 29;
-export const CURRENT_PROTOCOL_VERSION = 10;
+export const CURRENT_SCHEMA_VERSION = 30;
+export const CURRENT_PROTOCOL_VERSION = 11;
 export const CURRENT_RUNTIME_API_VERSION = 1;
 
 export interface VersionManifest {
@@ -27,8 +27,9 @@ export const VERSION_MANIFEST: VersionManifest = {
   versionId: process.env.SF_VERSION_ID ?? "dev",
   protocolVersion: CURRENT_PROTOCOL_VERSION,
   schemaVersion: CURRENT_SCHEMA_VERSION,
-  // Intelligence v3 deliberately starts new games; legacy saves are not migrated.
-  migratesFromSchema: [23, 24, 25, 26, 27, 28, CURRENT_SCHEMA_VERSION],
+  // Persistent armies and ground battles deliberately start new games; legacy
+  // anonymous troop state cannot be migrated without inventing unit identity.
+  migratesFromSchema: [CURRENT_SCHEMA_VERSION],
   runtimeApiVersion: CURRENT_RUNTIME_API_VERSION,
 };
 

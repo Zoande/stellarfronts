@@ -80,6 +80,7 @@ import type { ShipDesign } from "../data/ShipDesigns";
 import { NEBULA_DEFINITIONS, NEBULA_KINDS } from "../data/Nebula";
 import type { ClientCommand } from "../game/GameProtocol";
 import type { LeaderState } from "../data/Leaders";
+import type { SpeciesState } from "../data/Species";
 import { GAME_DAYS_PER_YEAR } from "../game/GameTime";
 import { getConstructionDarkMatterCost } from "../game/DarkMatter";
 import { dailyToRealMinute, monthlyToRealMinute, weeklyToRealMinute, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
@@ -90,6 +91,7 @@ import {
   getRequiredTechIdsForPlanetDefenseBuilding,
   getRequiredTechIdsForPlanetDefenseBuildingLevel,
   getRequiredTechIdsForPlanetFeatureRemoval,
+  TECHNOLOGY_BY_ID,
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
@@ -97,6 +99,8 @@ import { requestOpenLeadersPanel } from "./leaderEvents";
 import { FloatingTooltipManager } from "./FloatingTooltipManager";
 import { formatIntelFreshness, getClientIntelField, getClientIntelYear, hasClientEntityCommandLink } from "../game/ClientIntelligence";
 import type { IntelValue } from "../data/Intelligence";
+import { ARMY_TOTAL_CREW_DEMAND, ARMY_TRANSPORT_BUILD_DAYS, ARMY_TYPE_DEFINITIONS, MOBILE_ARMY_TYPE_IDS, getArmyCurrentPower, getArmyHabitabilityMultiplier, getArmyMaxHp, getPlanetCombatWidth } from "../data/Armies";
+import type { ArmyUnit, GroundBattleState } from "../data/Armies";
 
 export type CelestialObjectKind = "planet" | "star";
 type EconomyDetailMode = "growth" | "decline" | "migration";
@@ -115,7 +119,15 @@ export interface CelestialObjectPanelData {
   factionEconomy?: FactionEconomyState | null;
   shipDesigns?: ShipDesign[];
   planetPlatformUsage?: number;
-  armyTransferFleet?: { fleetId: string; mode: "fill" | "drop"; carried: number; capacity: number } | null;
+  armies?: ArmyUnit[];
+  empireArmies?: ArmyUnit[];
+  empirePlanetStates?: PlanetState[];
+  species?: SpeciesState[];
+  groundBattle?: GroundBattleState | null;
+  armyPower?: number;
+  playerFactionId?: number;
+  militaryCommander?: LeaderState | null;
+  battleCommander?: LeaderState | null;
   onPlanetCommand?: (command: ClientCommand) => void;
   orbitFleetId?: string | null;
   assignedLeader?: LeaderState | null;
@@ -259,7 +271,7 @@ export class CelestialObjectPanel {
   private root: HTMLDivElement;
   private panelElement: HTMLDivElement | null = null;
   private currentData: CelestialObjectPanelData | null = null;
-  private activeTab: "surface" | "management" | "economy" | "defenses" = "surface";
+  private activeTab: "surface" | "management" | "economy" | "defenses" | "battle" = "surface";
   private selectedJob: JobKind | null = null;
   private economyDetailMode: EconomyDetailMode | null = null;
   private expandedJobClasses = this.createDefaultExpandedJobClasses();
@@ -491,6 +503,18 @@ export class CelestialObjectPanel {
     this.bindLeaderCardEvent(nextData, nextCard);
   }
 
+  public refreshArmyState(
+    planetId: string,
+    armies: ArmyUnit[],
+    groundBattle: GroundBattleState | null,
+    militaryCommander: LeaderState | null,
+    battleCommander: LeaderState | null,
+    empireArmies: ArmyUnit[],
+  ): void {
+    if (!this.currentData || this.currentData.objectId !== planetId || this.currentData.kind !== "planet") return;
+    this.show({ ...this.currentData, armies, groundBattle, militaryCommander, battleCommander, empireArmies });
+  }
+
   public getCurrentObjectId(): string | null {
     return this.currentData?.objectId ?? null;
   }
@@ -563,6 +587,8 @@ export class CelestialObjectPanel {
           ? "economy"
           : button.dataset.coTab === "management"
             ? "management"
+          : button.dataset.coTab === "battle"
+            ? "battle"
           : button.dataset.coTab === "defenses"
             ? "defenses"
             : "surface";
@@ -727,15 +753,25 @@ export class CelestialObjectPanel {
       });
     });
 
-    this.panelElement.querySelector<HTMLButtonElement>("[data-co-army-transfer]")?.addEventListener("click", () => {
-      const transfer = data.armyTransferFleet;
-      if (!transfer) return;
-      data.onPlanetCommand?.({
-        type: "orderArmyTransfer",
-        fleetId: transfer.fleetId,
-        planetId: data.objectId,
-        mode: transfer.mode,
-      });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-embark-armies]")?.addEventListener("click", () => {
+      const checked = Array.from(this.panelElement?.querySelectorAll<HTMLInputElement>("[data-co-embark-army]:checked") ?? []).map((input) => input.value);
+      if (checked.length === 0) return;
+      data.onPlanetCommand?.({ type: "embarkPlanetArmies", planetId: data.objectId, armyIds: checked, embarkCommander: this.panelElement?.querySelector<HTMLInputElement>("[data-co-embark-commander]")?.checked === true });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-recruit-army]").forEach((button) => button.addEventListener("click", () => {
+      const [armyTypeId, speciesId] = (button.dataset.coRecruitArmy ?? "").split(":");
+      if (!armyTypeId || !speciesId) return;
+      data.onPlanetCommand?.({ type: "queueArmyRecruitment", yardKind: "planet", yardId: data.objectId, armyTypeId: armyTypeId as keyof typeof ARMY_TYPE_DEFINITIONS, speciesId });
+    }));
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-assign-ground-commander]")?.addEventListener("click", () => {
+      if (!data.groundBattle) return;
+      requestOpenLeadersPanel({ assignmentTarget: { kind: "groundBattle", targetId: data.groundBattle.id, label: `${data.name} Invasion`, requiredClass: "military" } });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-assign-planet-military]")?.addEventListener("click", () => {
+      requestOpenLeadersPanel({ assignmentTarget: { kind: "planetMilitary", targetId: data.objectId, label: `${data.name} Defense`, requiredClass: "military" } });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-withdraw-ground]")?.addEventListener("click", () => {
+      if (data.groundBattle) data.onPlanetCommand?.({ type: "withdrawGroundBattle", battleId: data.groundBattle.id });
     });
 
     this.bindLeaderCardEvent(data, this.panelElement);
@@ -1088,6 +1124,8 @@ export class CelestialObjectPanel {
       ? "economy"
       : this.activeTab === "management" && data.kind === "planet"
         ? "management"
+      : this.activeTab === "battle" && data.kind === "planet"
+        ? "battle"
       : this.activeTab === "defenses" && data.isHabited
         ? "defenses"
         : "surface";
@@ -1098,6 +1136,8 @@ export class CelestialObjectPanel {
         ? this.renderEconomyBody(data.planetState)
         : expectedBody === "management"
           ? this.renderPlanetManagementBody(data)
+        : expectedBody === "battle"
+          ? this.renderPlanetBattleBody(data)
         : expectedBody === "defenses"
           ? this.renderPlanetDefenseBody(data)
           : this.renderSurfaceBody(data);
@@ -1113,6 +1153,8 @@ export class CelestialObjectPanel {
     if (expectedBody === "economy") {
       this.patchEconomyBody(data);
     } else if (expectedBody === "management") {
+      this.show(data);
+    } else if (expectedBody === "battle") {
       this.show(data);
     } else if (expectedBody === "defenses") {
       this.show(data);
@@ -2012,6 +2054,8 @@ export class CelestialObjectPanel {
         ? this.renderIntelEconomyBody(data, planetState)
         : this.activeTab === "management" && isPlanet && planetState
           ? this.renderPlanetManagementBody(data)
+        : this.activeTab === "battle" && isPlanet && planetState
+          ? this.renderPlanetBattleBody(data)
         : this.activeTab === "defenses" && isHabitedPlanet && planetState
           ? this.renderPlanetDefenseBody(data)
           : this.renderSurfaceBody(data)}
@@ -2020,7 +2064,7 @@ export class CelestialObjectPanel {
         <button class="${this.activeTab === "management" ? "active" : ""} ${managementDisabled}" type="button" data-co-tab="management">Management</button>
         <button class="${this.activeTab === "economy" ? "active" : ""} ${tabsDisabled}" type="button" data-co-tab="economy">Economy</button>
         <button class="${this.activeTab === "defenses" ? "active" : ""} ${tabsDisabled}" type="button" data-co-tab="defenses">Defenses</button>
-        <button class="${tabsDisabled}" type="button">Holdings</button>
+        <button class="${this.activeTab === "battle" ? "active" : ""} ${managementDisabled}" type="button" data-co-tab="battle">Battle</button>
       </nav>
     `;
   }
@@ -2902,7 +2946,7 @@ export class CelestialObjectPanel {
         </div>
         <div class="coDefenseGrid">
           ${this.renderDefenseStat("population", "Soldiers", this.formatPeople(soldiers), this.planetIntel(data, "defenses.soldiers"))}
-          ${this.renderDefenseStat("districts", "Stationed Armies", this.formatPeople(planetState.defense.stationedArmies), this.planetIntel(data, "defenses.armies"))}
+          ${this.renderDefenseStat("districts", "Stationed Armies", String(data.armies?.length ?? 0), this.planetIntel(data, "defenses.armies"))}
           ${this.renderDefenseStat("stability", "Sensor Array", sensorTier > 0 ? `Tier ${sensorTier}` : "Capital L1", this.planetIntel(data, "defenses.sensorTier"))}
           ${this.renderDefenseStat("habitability", "Orbital Defense", `${platformUsage} / ${platformCapacity}`, this.planetIntel(data, "defenses.orbitalDefense"))}
           ${this.renderDefenseStat("amenities", "Trainees", this.formatPeople(trainees), this.planetIntel(data, "defenses.trainees"))}
@@ -2947,11 +2991,12 @@ export class CelestialObjectPanel {
     const lanes = countPlanetShipyards(planet);
     const soldiers = this.getEmployedJobPopulation(planet, "soldier");
     const trainees = this.getEmployedJobPopulation(planet, "trainee");
-    const stationed = Math.max(0, planet.defense.stationedArmies);
+    const residentArmies = (data.armies ?? []).filter((army) => army.location.kind === "planet" && army.location.planetId === planet.id);
+    const stationed = residentArmies.reduce((sum, army) => sum + Math.max(0, army.manpower), 0);
+    const armyPower = data.armyPower ?? residentArmies.reduce((sum, army) => sum + getArmyCurrentPower(army).nominal, 0);
     const crew = Math.max(0, Math.floor(data.factionEconomy?.crewStockpile ?? 0));
     const reservedCrew = planet.defense.shipQueue.reduce((sum, item) => sum + Math.max(0, item.reservedCrew), 0);
     const canManage = data.canManageLeaders === true;
-    const transfer = canManage ? data.armyTransferFleet : null;
 
     return `
       <section class="coBody coDefenseBody" data-co-body="defenses">
@@ -2972,13 +3017,15 @@ export class CelestialObjectPanel {
             <div class="coDefenseSummaryGrid">
               <div><span>Employed Soldiers</span><strong>${this.formatPeople(soldiers)}</strong></div>
               <div><span>Stationed armies</span><strong>${this.formatPeople(stationed)}</strong></div>
+              <div><span>Army Power</span><strong>${this.formatPower(armyPower)}</strong></div>
               <div class="wide"><span>Total defense manpower</span><strong>${this.formatPeople(soldiers + trainees + stationed)}</strong></div>
             </div>
-            ${transfer ? `
-              <button class="coArmyTransferButton" type="button" data-co-army-transfer>
-                ${transfer.mode === "drop" ? "Drop armies" : "Fill transports"}
-                <small>${this.formatPeople(transfer.carried)} / ${this.formatPeople(transfer.capacity)} aboard</small>
-              </button>
+            ${canManage && residentArmies.some((army) => army.mobility === "mobile") ? `
+              <div class="coArmyEmbarkList">
+                ${residentArmies.filter((army) => army.mobility === "mobile").map((army) => `<label><input type="checkbox" data-co-embark-army value="${this.escapeHtml(army.id)}" checked> ${this.escapeHtml(ARMY_TYPE_DEFINITIONS[army.typeId].name)} · ${this.formatPeople(army.manpower)}</label>`).join("")}
+                <label><input type="checkbox" data-co-embark-commander> Embark military commander</label>
+                <button class="coArmyTransferButton" type="button" data-co-embark-armies>Embark Armies</button>
+              </div>
             ` : ""}
           </article>
           `}
@@ -3023,6 +3070,7 @@ export class CelestialObjectPanel {
             ${this.renderPlanetShipQueueItems(data, lanes, canManage)}
           </div>
         </section>
+        ${this.renderPlanetArmyRecruitment(data, lanes, canManage)}
       </section>
     `;
   }
@@ -3031,6 +3079,121 @@ export class CelestialObjectPanel {
     return planet.economy.popGroups
       .filter((group) => group.job === job)
       .reduce((sum, group) => sum + Math.max(0, group.population), 0);
+  }
+
+  private renderPlanetArmyRecruitment(data: CelestialObjectPanelData, lanes: number, canManage: boolean): string {
+    const planet = data.planetState;
+    if (!planet) return "";
+    const ownerId = planet.ownerId;
+    const populationBySpecies = new Map<string, number>();
+    const queuedBySpecies = new Map<string, number>();
+    for (const ownedPlanet of data.empirePlanetStates ?? [planet]) {
+      if (!ownedPlanet.isHabited || ownedPlanet.ownerId !== ownerId) continue;
+      for (const entry of ownedPlanet.speciesPopulations) populationBySpecies.set(entry.speciesId, (populationBySpecies.get(entry.speciesId) ?? 0) + entry.population);
+      for (const item of ownedPlanet.defense.shipQueue) if (item.kind === "armyBuild" && item.speciesId) queuedBySpecies.set(item.speciesId, (queuedBySpecies.get(item.speciesId) ?? 0) + 1);
+    }
+    const existingBySpecies = new Map<string, number>();
+    for (const army of data.empireArmies ?? data.armies ?? []) {
+      if (army.ownerId === ownerId && army.mobility === "mobile") existingBySpecies.set(army.speciesId, (existingBySpecies.get(army.speciesId) ?? 0) + 1);
+    }
+    const species = (data.species ?? []).filter((entry) => (populationBySpecies.get(entry.id) ?? 0) > 0).map((entry) => {
+      const localGroups = planet.economy.popGroups.filter((group) => group.speciesId === entry.id && group.population > 0);
+      const localPopulation = localGroups.reduce((sum, group) => sum + group.population, 0);
+      const habitability = localPopulation > 0
+        ? localGroups.reduce((sum, group) => sum + group.habitability * group.population, 0) / localPopulation
+        : Number(planet.habitability ?? 0);
+      return { ...entry, habitability };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    const crew = Math.max(0, data.factionEconomy?.crewStockpile ?? 0);
+    return `
+      <section class="coPlanetShipyardPanel coArmyRecruitmentPanel">
+        <header><div><strong>Recruit Army</strong><span>One persistent unit and one fixed transport per order</span></div></header>
+        <div class="coArmyRecruitmentList">
+          ${MOBILE_ARMY_TYPE_IDS.flatMap((typeId) => {
+            const definition = ARMY_TYPE_DEFINITIONS[typeId];
+            const techUnlocked = !definition.requiredTechnologyId || data.technology?.completedTechIds.includes(definition.requiredTechnologyId as TechId) === true;
+            return species.map((entry) => {
+              const cap = Math.floor((populationBySpecies.get(entry.id) ?? 0) / 100_000_000);
+              const used = (existingBySpecies.get(entry.id) ?? 0) + (queuedBySpecies.get(entry.id) ?? 0);
+              const environment = getArmyHabitabilityMultiplier(entry.habitability);
+              const maxHp = getArmyMaxHp(entry.traitIds);
+              const requiredTechName = definition.requiredTechnologyId ? TECHNOLOGY_BY_ID[definition.requiredTechnologyId]?.name ?? definition.requiredTechnologyId : null;
+              const disabledReason = lanes <= 0 ? "No completed orbital shipyard" : !canManage ? "Planet is not under your control" : !techUnlocked ? `Requires ${requiredTechName}` : crew < ARMY_TOTAL_CREW_DEMAND ? "Insufficient Crew" : used >= cap ? `Species army cap reached (${used}/${cap})` : "";
+              return `<article class="coArmyRecruitmentRow">
+                <div><strong>${this.escapeHtml(definition.name)}</strong><small>${this.escapeHtml(entry.name)} · ${Math.round(entry.habitability)}% habitability · ${maxHp} max HP</small></div>
+                <div><span>${this.formatCompact(definition.attackPower)} / ${this.formatCompact(definition.defensePower)} nominal</span><small>Local ${this.formatCompact(definition.attackPower * environment)} / ${this.formatCompact(definition.defensePower * environment)} · ${ARMY_TRANSPORT_BUILD_DAYS + definition.trainingDays} days · ${this.formatPeople(ARMY_TOTAL_CREW_DEMAND)} Crew</small></div>
+                <div><small>${this.escapeHtml(this.formatResourceCost(definition.cost))} · species cap ${used}/${cap}${requiredTechName ? ` · ${this.escapeHtml(requiredTechName)}` : " · Starting technology"}</small><button type="button" data-co-recruit-army="${typeId}:${this.escapeHtml(entry.id)}" ${disabledReason ? `disabled title="${this.escapeHtml(disabledReason)}"` : ""}>Recruit</button></div>
+              </article>`;
+            });
+          }).join("") || '<p class="coEmptyState">No resident species are eligible.</p>'}
+        </div>
+      </section>`;
+  }
+
+  private renderPlanetBattleBody(data: CelestialObjectPanelData): string {
+    const armies = data.armies ?? [];
+    const battle = data.groundBattle ?? null;
+    const byId = new Map(armies.map((army) => [army.id, army]));
+    const attackers = battle ? battle.attackerArmyIds.map((id) => byId.get(id)).filter((army): army is ArmyUnit => Boolean(army)) : [];
+    const defenders = battle ? battle.defenderArmyIds.map((id) => byId.get(id)).filter((army): army is ArmyUnit => Boolean(army)) : armies;
+    const strongest = (units: ArmyUnit[], attacking: boolean) => [...units].sort((a, b) => {
+      const left = getArmyCurrentPower(a)[attacking ? "attack" : "defense"];
+      const right = getArmyCurrentPower(b)[attacking ? "attack" : "defense"];
+      return right - left || a.id.localeCompare(b.id);
+    });
+    const width = battle
+      ? getPlanetCombatWidth(data.objectDetails.typeName as PlanetType, data.planetState?.features ?? [])
+      : 0;
+    const engagedAttackers = strongest(attackers, true).slice(0, width);
+    const engagedDefenders = strongest(defenders, false).slice(0, width);
+    const attackerReserve = attackers.filter((army) => !engagedAttackers.includes(army));
+    const defenderReserve = defenders.filter((army) => !engagedDefenders.includes(army));
+    const stats = (units: ArmyUnit[], attacking: boolean) => {
+      const manpower = units.reduce((sum, army) => sum + army.manpower, 0);
+      const maxManpower = units.reduce((sum, army) => sum + army.maxManpower, 0);
+      const hp = units.reduce((sum, army) => sum + army.hp, 0);
+      const maxHp = units.reduce((sum, army) => sum + army.maxHp, 0);
+      return {
+        manpower,
+        power: units.reduce((sum, army) => sum + getArmyCurrentPower(army)[attacking ? "attack" : "defense"], 0),
+        ratio: units.length > 0 ? Math.min(1, hp / Math.max(1, maxHp)) * Math.min(1, manpower / Math.max(1, maxManpower)) : 0,
+      };
+    };
+    const marker = (side: "attacker" | "defender", ratio: number) => `<div class="coBattleTrack"><span class="coBattleMarker ${side}" style="top:${10 + (1 - ratio) * 80}%;filter:brightness(${0.45 + ratio * 0.75})"></span></div>`;
+    const aReserve = stats(attackerReserve, true);
+    const dReserve = stats(defenderReserve, false);
+    const aTotal = stats(attackers, true);
+    const dTotal = stats(defenders, false);
+    const aEngaged = stats(engagedAttackers, true);
+    const dEngaged = stats(engagedDefenders, false);
+    const playerIsAttacker = battle?.attackerFactionId === data.playerFactionId;
+    const playerIsDefender = battle?.defenderFactionId === data.playerFactionId;
+    const commander = (leader: LeaderState | null | undefined, control: string) => `<div class="coBattleCommander"><span>${this.escapeHtml(control)}</span><strong>${this.escapeHtml(leader?.name ?? "Unassigned")}</strong><small>${leader ? `Level ${leader.level}` : "Military commander"}</small></div>`;
+    return `
+      <section class="coBody coBattleBody" data-co-body="battle">
+        <div class="coBattleColumns">
+          <article class="coBattleSide attacker">
+            <header><strong>Attacker Reserve</strong><span>${this.formatPeople(aTotal.manpower)} total manpower · ${this.formatPower(aTotal.power)} total power</span></header>
+            ${commander(data.battleCommander, "Invasion command")}
+            ${marker("attacker", aReserve.ratio)}
+            <div class="coBattleUnitList">${attackerReserve.map((army) => `<span>${this.escapeHtml(ARMY_TYPE_DEFINITIONS[army.typeId].name)} · ${Math.round(army.hp)} HP · ${this.formatPeople(army.manpower)}</span>`).join("") || "No reserves"}</div>
+            ${playerIsAttacker ? `<button type="button" data-co-assign-ground-commander>Assign Commander</button>${battle ? `<button type="button" data-co-withdraw-ground ${battle.withdrawalRequestedAtYear ? "disabled" : ""}>${battle.withdrawalRequestedAtYear ? "Withdrawal Pending" : "Withdraw"}</button>` : ""}` : ""}
+          </article>
+          <article class="coBattlefield">
+            <header><strong>Battlefield</strong><span>${battle ? `Combat width ${width}` : "No active battle"}</span></header>
+            <div><strong>Attacker</strong><span>${this.formatPeople(aEngaged.manpower)} · ${this.formatPower(aEngaged.power)}</span></div>
+            <div class="coBattleOpposition">VS</div>
+            <div><strong>Defender</strong><span>${this.formatPeople(dEngaged.manpower)} · ${this.formatPower(dEngaged.power)}</span></div>
+          </article>
+          <article class="coBattleSide defender">
+            <header><strong>Defender Reserve</strong><span>${this.formatPeople(dTotal.manpower)} total manpower · ${this.formatPower(dTotal.power)} total power</span></header>
+            ${commander(data.militaryCommander, "Planetary command")}
+            ${marker("defender", dReserve.ratio)}
+            <div class="coBattleUnitList">${defenderReserve.map((army) => `<span>${this.escapeHtml(ARMY_TYPE_DEFINITIONS[army.typeId].name)} · ${Math.round(army.hp)} HP · ${this.formatPeople(army.manpower)}</span>`).join("") || "No reserves"}</div>
+            ${playerIsDefender || (!battle && data.canManageLeaders) ? '<button type="button" data-co-assign-planet-military>Assign Commander</button>' : ""}
+          </article>
+        </div>
+      </section>`;
   }
 
   private renderPlanetDefenseBuildingPanel(data: CelestialObjectPanelData): string {
@@ -5096,6 +5259,10 @@ export class CelestialObjectPanel {
     if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
     if (abs >= 1_000) return `${(value / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}K`;
     return `${Math.round(value)}`;
+  }
+
+  private formatPower(value: number): string {
+    return Math.max(0, Math.round(value)).toLocaleString();
   }
 
   private formatSignedPeople(value: number): string {
@@ -8387,6 +8554,24 @@ button.coBuildingIconSlot {
   opacity: 0.42;
 }
 
+.coBattleBody { padding: 9px; min-height: 330px; }
+.coBattleColumns { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 8px; min-height: 310px; }
+.coBattleSide, .coBattlefield, .coArmyRecruitmentRow { border: 1px solid rgba(111, 214, 186, .25); background: rgba(5, 20, 21, .82); padding: 9px; }
+.coBattleSide header, .coBattlefield header { display: flex; flex-direction: column; gap: 3px; }
+.coBattleTrack { height: 105px; margin: 8px 0; position: relative; border-left: 2px solid rgba(255,255,255,.15); }
+.coBattleMarker { position: absolute; left: -8px; width: 14px; height: 14px; border-radius: 50%; transition: top .25s ease; }
+.coBattleMarker.attacker { background: #ef5350; box-shadow: 0 0 12px #ef5350; }
+.coBattleMarker.defender { background: #55d487; box-shadow: 0 0 12px #55d487; }
+.coBattleUnitList, .coArmyRecruitmentList, .coArmyEmbarkList { display: grid; gap: 5px; overflow-y: auto; max-height: 145px; }
+.coBattleUnitList span, .coArmyEmbarkList label { font-size: 9px; color: rgba(226,242,237,.82); }
+.coBattlefield { display: grid; align-content: space-between; text-align: center; }
+.coBattleOpposition { font-size: 25px; color: #f8da67; }
+.coBattleCommander { display: grid; margin: 8px 0; padding: 6px; background: rgba(27,64,57,.45); }
+.coArmyRecruitmentPanel { margin-top: 8px; }
+.coArmyRecruitmentList { max-height: 210px; padding: 6px; }
+.coArmyRecruitmentRow { display: grid; grid-template-columns: 1.1fr 1fr 1.5fr; gap: 8px; align-items: center; }
+.coArmyRecruitmentRow > div { display: grid; gap: 2px; }
+
 @media (max-width: 760px) {
   .celestialObjectPanel {
     width: calc(100vw - 16px);
@@ -8401,6 +8586,7 @@ button.coBuildingIconSlot {
   }
 
   .coManagementDashboard > .coQueuePanel { grid-column: 1; grid-row: auto; }
+  .coBattleColumns, .coArmyRecruitmentRow { grid-template-columns: 1fr; }
   .coMajorFeatureSlots { grid-template-columns: 1fr; }
 
   .coDistrictCity,

@@ -41,6 +41,7 @@ import {
   getActiveTreatyPartnersForArticle,
 } from "../../src/data/Diplomacy";
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
+import { ARMY_TYPE_DEFINITIONS } from "../../src/data/Armies";
 import { GAME_HOURS_PER_MONTH, gameYearToMonthIndex } from "../../src/game/GameTime";
 import type { MarketResourceQuote } from "../../src/game/GameProtocol";
 import { scaleResourceCounts } from "./pure-helpers";
@@ -50,6 +51,7 @@ import {
   getPlanetDistrictLimitsFromState,
   getPlanetTechnologyModifiers,
   getPlanetSpeciesContext,
+  getGroundLeaderEffects,
 } from "./state-queries";
 import { resolveShipDesign } from "./ship-designs";
 import type { GameState, RuntimeContext } from "./types";
@@ -67,6 +69,16 @@ export interface PlayerMarketQuote {
   sellPrice: number;
   pricing: MarketPricingState;
   ownedAmount: number;
+}
+
+function getArmyUpkeepMultiplier(state: GameState, armyId: string): number {
+  const army = state.armies.find((candidate) => candidate.id === armyId);
+  if (!army || army.typeId === "garrison") return 1;
+  if (army.location.kind === "fleet") return getGroundLeaderEffects(state, "fleet", army.location.fleetId, false).upkeepMultiplier;
+  const planetId = army.location.planetId;
+  const battle = state.groundBattles.find((candidate) => candidate.planetId === planetId);
+  if (battle?.attackerFactionId === army.ownerId) return getGroundLeaderEffects(state, "groundBattle", battle.id, false).upkeepMultiplier;
+  return getGroundLeaderEffects(state, "planetMilitary", planetId, true).upkeepMultiplier;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +108,7 @@ export function calculateFactionResourceFlow(nextState: GameState, factionId: nu
 
   for (const ship of nextState.ships) {
     if (ship.ownerId !== factionId || ship.hull <= 0) continue;
+    if (ship.shipKind === "armyShip") continue;
     const design = resolveShipDesign(nextState.shipDesigns, ship.ownerId, ship.shipKind, ship.designId, nextState.clock.year);
     const fleet = nextState.fleets.find((candidate) => candidate.id === ship.fleetId) ?? null;
     const upkeepMultiplier = fleet
@@ -106,6 +119,11 @@ export function calculateFactionResourceFlow(nextState: GameState, factionId: nu
     for (const resource of RESOURCE_KINDS) {
       consumption[resource] += Math.max(0, upkeep[resource]);
     }
+  }
+  for (const army of nextState.armies ?? []) {
+    if (army.ownerId !== factionId || army.typeId === "garrison") continue;
+    const upkeep = scaleResourceCounts(ARMY_TYPE_DEFINITIONS[army.typeId].upkeep, getArmyUpkeepMultiplier(nextState, army.id));
+    for (const resource of RESOURCE_KINDS) consumption[resource] += Math.max(0, upkeep[resource]);
   }
 
   return { production, consumption };
@@ -124,6 +142,7 @@ export function calculateFactionMonthlyDelta(nextState: GameState, factionId: nu
   }
   for (const ship of nextState.ships) {
     if (ship.ownerId !== factionId || ship.hull <= 0) continue;
+    if (ship.shipKind === "armyShip") continue;
     const design = resolveShipDesign(nextState.shipDesigns, ship.ownerId, ship.shipKind, ship.designId, nextState.clock.year);
     const fleet = nextState.fleets.find((candidate) => candidate.id === ship.fleetId) ?? null;
     const upkeepMultiplier = fleet
@@ -131,6 +150,10 @@ export function calculateFactionMonthlyDelta(nextState: GameState, factionId: nu
         * getGovernmentFleetEffects(nextState, fleet.ownerId).upkeepMultiplier
       : getGovernmentFleetEffects(nextState, ship.ownerId).upkeepMultiplier;
     delta = addResourceCounts(delta, scaleResourceCounts(calculateShipDesignStats(design).upkeep, -upkeepMultiplier));
+  }
+  for (const army of nextState.armies ?? []) {
+    if (army.ownerId !== factionId || army.typeId === "garrison") continue;
+    delta = addResourceCounts(delta, scaleResourceCounts(ARMY_TYPE_DEFINITIONS[army.typeId].upkeep, -getArmyUpkeepMultiplier(nextState, army.id)));
   }
   return delta;
 }

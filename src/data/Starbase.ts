@@ -145,7 +145,7 @@ export interface StarbaseConstructionQueueItem {
   slotIndex?: number;
 }
 
-export type StarbaseShipQueueKind = "build" | "upgrade";
+export type StarbaseShipQueueKind = "build" | "upgrade" | "armyBuild";
 
 export interface StarbaseShipQueueItem {
   id: string;
@@ -163,6 +163,8 @@ export interface StarbaseShipQueueItem {
   alloyUpkeepPerDay: number;
   crewDemand: number;
   reservedCrew: number;
+  armyTypeId?: import("./Armies").ArmyTypeId;
+  speciesId?: string;
 }
 
 export interface StarbaseBuildingDefinition {
@@ -585,6 +587,9 @@ export const STARBASE_SHIP_KINDS: StarbaseShipKind[] = [
   "colonizationShip",
 ];
 
+/** Fixed Army Ships are commissioned only through Army recruitment. */
+export const PLAYER_DESIGNABLE_SHIP_KINDS: StarbaseShipKind[] = STARBASE_SHIP_KINDS.filter((kind) => kind !== "armyShip");
+
 export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDefinition> = {
   corvette: {
     kind: "corvette",
@@ -742,11 +747,11 @@ export const STARBASE_SHIP_DEFINITIONS: Record<StarbaseShipKind, StarbaseShipDef
     kind: "armyShip",
     label: "Army Ship",
     className: "Legion-class",
-    description: "Placeholder troop transport hull for the future ground-army system.",
+    description: "A fixed expeditionary transport assigned permanently to one mobile army.",
     speed: 0.88,
     buildDays: 90,
     alloyUpkeepPerDay: 4.7,
-    crewDemand: 50_000,
+    crewDemand: 10_000,
     upkeep: resources({ energy: 0.75, alloys: 0.07, goods: 0.05 }),
     combat: {
       maxShield: 0,
@@ -886,6 +891,8 @@ export function createStarbaseShipQueueItem(
     alloyUpkeepPerDay,
     crewDemand: overrides.crewDemand ?? definition.crewDemand,
     reservedCrew: overrides.reservedCrew ?? overrides.crewDemand ?? definition.crewDemand,
+    armyTypeId: overrides.armyTypeId,
+    speciesId: overrides.speciesId,
   };
 }
 

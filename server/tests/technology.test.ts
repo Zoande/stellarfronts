@@ -86,6 +86,9 @@ test("all current buildings, hulls, modules, and sections have a technology mapp
     if (getRequiredTechIdsForStarbaseBuilding(building).length === 0) missing.push(`starbaseBuilding:${building}`);
   }
   for (const shipKind of STARBASE_SHIP_KINDS) {
+    // Army transports are an internal fixed hull created by army recruitment,
+    // not a player-buildable hull unlocked through the ship technology tree.
+    if (shipKind === "armyShip") continue;
     if (getRequiredTechIdsForShipHull(shipKind).length === 0) missing.push(`hull:${shipKind}`);
   }
   for (const moduleId of Object.keys(SHIP_MODULE_DEFINITIONS)) {

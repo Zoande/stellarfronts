@@ -52,6 +52,7 @@ export function processLeaderDays(ctx: RuntimeContext, targetDay: number): {
     if (leader.level !== previousLevel && leader.assignment) {
       if (leader.assignment.kind === "planet") planetEconomiesChanged = true;
       if (leader.assignment.kind === "fleet") fleetEffectsChanged = true;
+      if (leader.assignment.kind === "planetMilitary" || leader.assignment.kind === "groundBattle") fleetEffectsChanged = true;
       if (leader.assignment.kind === "government") governmentEffectsChanged = true;
     }
 
@@ -65,6 +66,7 @@ export function processLeaderDays(ctx: RuntimeContext, targetDay: number): {
     leadersChanged = true;
     if (oldAssignment?.kind === "planet") planetEconomiesChanged = true;
     if (oldAssignment?.kind === "fleet") fleetEffectsChanged = true;
+    if (oldAssignment?.kind === "planetMilitary" || oldAssignment?.kind === "groundBattle") fleetEffectsChanged = true;
     if (oldAssignment?.kind === "government") governmentEffectsChanged = true;
   }
 

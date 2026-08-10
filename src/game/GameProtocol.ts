@@ -16,6 +16,7 @@ import type {
   UrbanSubDistrictKind,
 } from "../data/Economy";
 import type { PlanetFeatureKind } from "../data/PlanetFeatures";
+import type { ArmyTypeId, ArmyUnit, GroundBattleState } from "../data/Armies";
 import type { ColonizationEligibility } from "../data/Colonization";
 import type {
   MarketPlayerStats,
@@ -27,7 +28,7 @@ import type {
 } from "../data/Market";
 
 /** Wire protocols accepted by the current browser client, newest last. */
-export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8, 9, 10];
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8, 9, 10, 11];
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
@@ -132,7 +133,9 @@ export type ServerUpdateField =
   | "combatReports"
   | "situations"
   | "events"
-  | "tradeAlerts";
+  | "tradeAlerts"
+  | "armies"
+  | "groundBattles";
 
 export interface ServerStar extends StarData {}
 
@@ -216,12 +219,16 @@ export interface PlanetDetailPayload {
   starId: number;
   planet: PlanetConfig;
   planetState: PlanetState;
+  armies?: ArmyUnit[];
+  groundBattle?: GroundBattleState | null;
+  armyPower?: number;
 }
 
 export interface StarbaseDetailPayload {
   intelligence?: IntelEntityView[];
   commandLinked?: boolean;
   starbase: ServerStarbase;
+  armies?: ArmyUnit[];
 }
 
 export interface FleetDetailPayload {
@@ -229,6 +236,7 @@ export interface FleetDetailPayload {
   commandLinked?: boolean;
   fleet: ServerFleet;
   ships: ServerShip[];
+  armies?: ArmyUnit[];
 }
 
 export interface FleetManagerDetailPayload {
@@ -240,6 +248,7 @@ export interface FleetManagerDetailPayload {
   leaders: LeaderState[];
   factionEconomies: FactionEconomyState[];
   combatReports: CombatAfterActionReport[];
+  armies?: ArmyUnit[];
 }
 
 export interface PlanetManagerPlanetEntry {
@@ -417,7 +426,7 @@ export interface ShipHyperlanePosition {
   progress: number;
 }
 
-export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "colonize" | "armyTransfer" | "merge" | "retreat" | null;
+export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "colonize" | "merge" | "retreat" | null;
 
 export type FleetOrbitTargetKind = "star" | "planet" | "starbase" | "hyperlane" | "fleet";
 
@@ -545,6 +554,7 @@ export interface ServerShip {
   disabled?: boolean;
   crew: number;
   crewCapacity: number;
+  armyUnitId?: string | null;
 }
 
 export interface ServerFleet {
@@ -576,7 +586,6 @@ export interface ServerFleet {
   darkMatterBoostActive?: boolean;
   darkMatterBoostPaidUntilYear?: number | null;
   orbitTargetPlanetId: string | null;
-  pendingArmyTransfer?: { planetId: string; mode: "fill" | "drop" } | null;
   orbitOffset: ShipSystemPosition | null;
   orbitTarget: FleetOrbitTarget | null;
   mergeTargetFleetId: string | null;
@@ -838,11 +847,36 @@ export interface CancelShipConstructionCommand {
   queueItemId: string;
 }
 
-export interface OrderArmyTransferCommand {
-  type: "orderArmyTransfer";
+export interface QueueArmyRecruitmentCommand {
+  type: "queueArmyRecruitment";
+  yardKind: "planet" | "starbase";
+  yardId: string;
+  armyTypeId: ArmyTypeId;
+  speciesId: string;
+}
+
+export interface LandArmyFleetCommand {
+  type: "landArmyFleet";
   fleetId: string;
   planetId: string;
-  mode: "fill" | "drop";
+}
+
+export interface EmbarkPlanetArmiesCommand {
+  type: "embarkPlanetArmies";
+  planetId: string;
+  armyIds: string[];
+  embarkCommander: boolean;
+}
+
+export interface BeginPlanetInvasionCommand {
+  type: "beginPlanetInvasion";
+  fleetId: string;
+  planetId: string;
+}
+
+export interface WithdrawGroundBattleCommand {
+  type: "withdrawGroundBattle";
+  battleId: string;
 }
 
 export interface BuildStarbaseBuildingCommand {
@@ -1101,7 +1135,11 @@ type ClientCommandPayload =
   | DemolishPlanetDefenseBuildingCommand
   | BuildPlanetShipCommand
   | CancelShipConstructionCommand
-  | OrderArmyTransferCommand
+  | QueueArmyRecruitmentCommand
+  | LandArmyFleetCommand
+  | EmbarkPlanetArmiesCommand
+  | BeginPlanetInvasionCommand
+  | WithdrawGroundBattleCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
   | BuildStarbaseShipCommand
@@ -1168,6 +1206,8 @@ export interface GameSnapshot {
   knownStarIds: number[] | null;
   ships: ServerShip[];
   shipDesigns: ShipDesign[];
+  armies: ArmyUnit[];
+  groundBattles: GroundBattleState[];
   fleets: ServerFleet[];
   starbases: ServerStarbaseSummary[];
   technologies: FactionTechnologyView[];
@@ -1202,6 +1242,8 @@ export interface GameUpdate {
   knownStarIds?: number[] | null;
   ships?: ServerShip[];
   shipDesigns?: ShipDesign[];
+  armies?: ArmyUnit[];
+  groundBattles?: GroundBattleState[];
   fleets?: ServerFleet[];
   starbases?: ServerStarbaseSummary[];
   technologies?: FactionTechnologyView[];
@@ -1245,6 +1287,9 @@ export interface PlanetDetailsEvent {
   starId: number;
   planet: PlanetConfig;
   planetState: PlanetState;
+  armies?: ArmyUnit[];
+  groundBattle?: GroundBattleState | null;
+  armyPower?: number;
 }
 
 export interface GameDetailEvent {
