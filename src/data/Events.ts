@@ -107,11 +107,11 @@ export const EVENT_DEFINITIONS: Record<string, EventDefinition> = {
         label: "Declare Bankruptcy",
         tooltip: "Receive emergency reserves and reset the shortage — but lose 70% of your fleet.",
         effects: [
-          { type: "addResource", resource: "food", amount: 8000 },
-          { type: "addResource", resource: "minerals", amount: 8000 },
-          { type: "addResource", resource: "energy", amount: 8000 },
-          { type: "addResource", resource: "goods", amount: 5000 },
-          { type: "addResource", resource: "alloys", amount: 4000 },
+          { type: "addResource", resource: "food", amount: 320 },
+          { type: "addResource", resource: "minerals", amount: 320 },
+          { type: "addResource", resource: "energy", amount: 320 },
+          { type: "addResource", resource: "goods", amount: 200 },
+          { type: "addResource", resource: "alloys", amount: 160 },
           { type: "disbandShipsFraction", fraction: 0.7 },
           {
             type: "factionModifier",

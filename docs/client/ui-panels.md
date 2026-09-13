@@ -23,20 +23,21 @@ Shared helpers: [`panelTheme.ts`](../../src/ui/panelTheme.ts) (styling),
 ## HUD & modals
 
 - [`HudOverlay.ts`](../../src/ui/HudOverlay.ts) — header (clock/speed/exit), bottom economy/population
-  bar, sidebar of panel buttons, view toggles (hyperlanes, ownership, labels, …), and the connected-
-  system navigation list.
+  bar, centered compact Dark Matter resource, sidebar of panel buttons, view toggles (hyperlanes,
+  ownership, labels, …), notifications, and the connected-system navigation list.
 - [`EventModal.ts`](../../src/ui/EventModal.ts) / [`SituationModal.ts`](../../src/ui/SituationModal.ts)
   — blocking decision/condition modals (see [events-and-situations.md](../systems/events-and-situations.md)).
 - [`LoginOverlay.ts`](../../src/ui/LoginOverlay.ts) — in-view login overlay.
-- [`SelectionPanel.ts`](../../src/ui/SelectionPanel.ts) — selected fleet/entity actions.
+- [`SelectionPanel.ts`](../../src/ui/SelectionPanel.ts) — selected fleet/entity actions, fleet route
+  progress, and the Dark Matter travel-boost toggle.
 
 ## Panel catalog
 
 | Panel | System | Sends (examples) |
 | --- | --- | --- |
-| [CelestialObjectPanel.ts](../../src/ui/CelestialObjectPanel.ts) | Planet/star detail, economy, construction | `buildDistrict`, `buildPlanetBuilding`, `upgradePlanetBuilding`, `setUrbanSubDistrict`, `cancelPlanetConstruction` |
+| [CelestialObjectPanel.ts](../../src/ui/CelestialObjectPanel.ts) | Planet/star detail, economy, construction, multi-species job locks | `buildDistrict`, `buildPlanetBuilding`, `upgradePlanetBuilding`, `setPlanetJobLock`, `setUrbanSubDistrict`, `cancelPlanetConstruction`, `skipPlanetConstruction` |
 | [PlanetOperationsPanel.ts](../../src/ui/PlanetOperationsPanel.ts) | Owned-planet operations | planet construction commands |
-| [FleetManagerPanel.ts](../../src/ui/FleetManagerPanel.ts) | Fleets + ship designer | `moveFleet`, `buildStarbaseShip`, `upgradeShip`, `saveShipDesign`, `setFleetCombatSettings` |
+| [FleetManagerPanel.ts](../../src/ui/FleetManagerPanel.ts) | Fleets + ship designer | fleet orders, `buildStarbaseShip`, `upgradeShip`, `saveShipDesign`, `setFleetCombatSettings` |
 | [StarbasePanel.ts](../../src/ui/StarbasePanel.ts) | Starbase stats/queues | `buildStarbaseBuilding`, `upgradeStarbase` |
 | [MarketPanel.ts](../../src/ui/MarketPanel.ts) | Market prices/trade | `marketTrade`, `addMarketAutoTrade`, `removeMarketAutoTrade` |
 | [TechnologyPanel.ts](../../src/ui/TechnologyPanel.ts) | Tech tree | `setActiveTechnology` |
@@ -48,6 +49,12 @@ Shared helpers: [`panelTheme.ts`](../../src/ui/panelTheme.ts) (styling),
 
 Exact command shapes are in the `ClientCommand` union
 ([`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts)).
+
+Planet Operations is keyed by owned system rather than planet ownership, so uninhabited planets in
+owned systems remain visible. Its rows use the founding species' effective habitability and typed
+eligibility metadata to show `Colonizable`, `Restricted world`, or `Unsuitable`. Capital labels,
+descriptions, jobs, housing, and local modifiers come from the same authored tier helpers used by
+the economy; the capital downgrade control is disabled at every level.
 
 ## How to extend / rules
 

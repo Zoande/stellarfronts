@@ -1,5 +1,7 @@
-import type { BuildingKind, JobKind, ResourceKind } from "./Economy";
+import type { BuildingKind, JobKind, PlanetDefenseBuildingKind, ResourceKind } from "./Economy";
+import type { PlanetFeatureKind } from "./PlanetFeatures";
 import type { StarbaseBuildingKind, StarbaseShipKind } from "./Starbase";
+import type { ArmyTypeId } from "./Armies";
 
 export type TechId = string;
 
@@ -33,9 +35,13 @@ export type TechnologyEffect =
   | { type: "unlock_building"; building: BuildingKind }
   | { type: "unlock_building_level"; building: BuildingKind; level: number }
   | { type: "unlock_starbase_building"; building: StarbaseBuildingKind }
+  | { type: "unlock_planet_defense_building"; building: PlanetDefenseBuildingKind }
+  | { type: "unlock_planet_defense_building_level"; building: PlanetDefenseBuildingKind; level: number }
+  | { type: "unlock_planet_feature_removal"; feature: PlanetFeatureKind }
   | { type: "unlock_ship_hull"; shipKind: StarbaseShipKind }
   | { type: "unlock_ship_module"; moduleId: string }
   | { type: "unlock_ship_section"; sectionModuleId: string }
+  | { type: "unlock_army_type"; armyTypeId: ArmyTypeId }
   | { type: "job_output_mult"; job: JobKind; resource: ResourceKind; value: number }
   | { type: "construction_speed_mult"; value: number }
   | { type: "starbase_ship_build_speed_mult"; value: number };
@@ -135,7 +141,7 @@ export const PASSIVE_RESEARCH_FRACTION = 0.2;
 export const DEFAULT_PASSIVE_RESEARCH_CAP_FRACTION = 0.8;
 export const MIN_TECH_RESEARCH_MULTIPLIER = 1;
 export const MAX_TECH_RESEARCH_MULTIPLIER = 2;
-export const BASELINE_RESEARCH_PER_HOUR = 0.25;
+export const BASELINE_RESEARCH_PER_HOUR = 0.01;
 
 const passive = (baseWeight = 0.1): TechnologyPassiveResearchRules => ({
   baseWeight,
@@ -207,7 +213,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_ship_hull", shipKind: "corvette" },
       { type: "unlock_ship_hull", shipKind: "defensePlatform" },
       { type: "unlock_ship_hull", shipKind: "scienceShip" },
-      { type: "unlock_ship_hull", shipKind: "armyShip" },
+      { type: "unlock_army_type", armyTypeId: "lightInfantry" },
       { type: "unlock_ship_hull", shipKind: "constructionShip" },
       { type: "unlock_ship_hull", shipKind: "colonizationShip" },
       { type: "unlock_ship_section", sectionModuleId: "weapon_section_corvette_swarmer" },
@@ -300,6 +306,11 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_building", building: "capacitorWorkshops" },
       { type: "unlock_building", building: "entertainmentForum" },
       { type: "unlock_building", building: "securityOffice" },
+      { type: "unlock_building", building: "fortress" },
+      { type: "unlock_planet_defense_building", building: "sensorArray" },
+      { type: "unlock_planet_defense_building", building: "planetaryShield" },
+      { type: "unlock_planet_defense_building", building: "barracks" },
+      { type: "unlock_planet_defense_building", building: "platformSupport" },
     ],
   },
   {
@@ -321,6 +332,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       { type: "unlock_starbase_building", building: "researchAnnex" },
       { type: "unlock_starbase_building", building: "logisticsDepot" },
       { type: "unlock_starbase_building", building: "listeningStation" },
+      { type: "unlock_planet_defense_building", building: "orbitalShipyard" },
     ],
   },
   {
@@ -338,7 +350,10 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       modifier("low_food_pressure", "Low food stockpile", "lowFoodStockpile", "flatBonus", 0.08, 0.08),
       modifier("famine_pressure", "Famine pressure", "famine", "flatBonus", 0.15, 0.15),
     ],
-    effects: [{ type: "job_output_mult", job: "farmer", resource: "food", value: 0.1 }],
+    effects: [
+      { type: "job_output_mult", job: "farmer", resource: "food", value: 0.1 },
+      { type: "unlock_planet_feature_removal", feature: "hostileBiosphere" },
+    ],
   },
   {
     id: "agro_industrial_supply_chains",
@@ -356,6 +371,57 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       modifier("low_food_pressure", "Low food stockpile", "lowFoodStockpile", "flatBonus", 0.08, 0.08),
     ],
     effects: [{ type: "unlock_building", building: "agroIndustrialKitchens" }],
+  },
+  {
+    id: "environmental_remediation",
+    name: "Environmental Remediation",
+    description: "Atmospheric processors and ecological recovery methods allow colonies to neutralize severe planetary hazards.",
+    category: "society",
+    tier: 2,
+    cost: 2600,
+    prerequisites: ["field_biochemistry", "industrial_tooling"],
+    positionInTree: { x: 2.2, y: 5.7 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("famine_pressure", "Famine pressure", "famine", "flatBonus", 0.08, 0.08),
+      modifier("researcher_job_bonus", "Researchers", "researcherJobs", "multiplyBy", 0.00004, 0.16),
+    ],
+    effects: [
+      { type: "unlock_planet_feature_removal", feature: "toxicAtmosphere" },
+    ],
+  },
+  {
+    id: "geotechnical_remediation",
+    name: "Geotechnical Remediation",
+    description: "Deep anchoring, pressure grouting, and crustal stress mapping permit large-scale stabilization projects.",
+    category: "industry",
+    tier: 2,
+    cost: 2800,
+    prerequisites: ["industrial_tooling", "planetary_infrastructure"],
+    positionInTree: { x: 2.2, y: 1.7 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("miner_job_bonus", "Miners", "minerJobs", "multiplyBy", 0.00005, 0.18),
+    ],
+    effects: [
+      { type: "unlock_planet_feature_removal", feature: "seismicFaults" },
+      { type: "unlock_planet_feature_removal", feature: "volatileTectonics" },
+    ],
+  },
+  {
+    id: "hazard_containment",
+    name: "Hazard Containment",
+    description: "Remote decontamination systems and hardened field robotics make irradiated landscapes recoverable.",
+    category: "computing",
+    tier: 3,
+    cost: 5200,
+    prerequisites: ["environmental_remediation", "planetary_sensor_fusion"],
+    positionInTree: { x: 3.2, y: 5.7 },
+    passiveResearchRules: passive(0.08),
+    researchModifiers: [],
+    effects: [
+      { type: "unlock_planet_feature_removal", feature: "irradiatedWastes" },
+    ],
   },
   {
     id: "industrial_tooling",
@@ -437,6 +503,35 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       modifier("research_annex_bonus", "Research annexes", "starbaseResearchAnnexes", "multiplyBy", 0.05, 0.25),
     ],
     effects: [{ type: "job_output_mult", job: "researcher", resource: "research", value: 0.1 }],
+  },
+  {
+    id: "planetary_sensor_fusion",
+    name: "Planetary Sensor Fusion",
+    description: "Distributed processing combines planetary arrays into a coherent range-three intelligence picture.",
+    category: "computing",
+    tier: 1,
+    cost: 1600,
+    prerequisites: ["planetary_infrastructure", "defensive_ship_systems"],
+    positionInTree: { x: 1.4, y: 4.65 },
+    passiveResearchRules: passive(0.12),
+    researchModifiers: [],
+    effects: [
+      { type: "unlock_planet_defense_building_level", building: "sensorArray", level: 2 },
+      { type: "unlock_planet_feature_removal", feature: "radiationPockets" },
+    ],
+  },
+  {
+    id: "deep_space_sensor_grids",
+    name: "Deep-Space Sensor Grids",
+    description: "High-order signal fusion extends planetary contact tracking across four hyperlane steps.",
+    category: "computing",
+    tier: 3,
+    cost: 5200,
+    prerequisites: ["planetary_sensor_fusion", "applied_research_methods"],
+    positionInTree: { x: 3, y: 4.65 },
+    passiveResearchRules: passive(0.08),
+    researchModifiers: [],
+    effects: [{ type: "unlock_planet_defense_building_level", building: "sensorArray", level: 3 }],
   },
   {
     id: "civilian_fabrication_models",
@@ -669,6 +764,7 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
     effects: [
       ...unlockBuildingLevels(ALL_PLANET_BUILDINGS, 5),
       { type: "construction_speed_mult", value: 0.06 },
+      { type: "unlock_planet_feature_removal", feature: "shatteredCrust" },
     ],
   },
   {
@@ -686,6 +782,38 @@ export const TECHNOLOGY_DEFINITIONS: TechnologyDefinition[] = [
       modifier("fleet_power_bonus", "Fleet power", "fleetPower", "multiplyBy", 0.00004, 0.25),
     ],
     effects: [{ type: "starbase_ship_build_speed_mult", value: 0.1 }],
+  },
+  {
+    id: "ground_warfare_doctrine",
+    name: "Ground Warfare Doctrine",
+    description: "Standardized expeditionary command, combined-arms training, and planetary assault logistics unlock Line Infantry.",
+    category: "military",
+    tier: 1,
+    cost: 1500,
+    prerequisites: ["spacefaring_foundations", "planetary_infrastructure"],
+    positionInTree: { x: 1, y: 3.05 },
+    passiveResearchRules: passive(0.12),
+    researchModifiers: [
+      modifier("at_war_bonus", "At war", "atWar", "flatBonus", 0.15, 0.15),
+      modifier("ship_count_bonus", "Ships", "shipCount", "multiplyBy", 0.006, 0.18),
+    ],
+    effects: [{ type: "unlock_army_type", armyTypeId: "lineInfantry" }],
+  },
+  {
+    id: "mechanized_ground_warfare",
+    name: "Mechanized Ground Warfare",
+    description: "Heavy vehicles, armored logistics, and orbital deployment systems unlock Mechanized Armies.",
+    category: "military",
+    tier: 2,
+    cost: 3200,
+    prerequisites: ["ground_warfare_doctrine", "integrated_fleet_logistics"],
+    positionInTree: { x: 2, y: 3.05 },
+    passiveResearchRules: passive(0.1),
+    researchModifiers: [
+      modifier("at_war_bonus", "At war", "atWar", "flatBonus", 0.12, 0.12),
+      modifier("alloy_income_bonus", "Alloy income", "alloyIncome", "multiplyBy", 0.00004, 0.25),
+    ],
+    effects: [{ type: "unlock_army_type", armyTypeId: "mechanizedArmy" }],
   },
   {
     id: "point_defense_networks",
@@ -1130,6 +1258,30 @@ export function getRequiredTechIdsForStarbaseBuilding(building: StarbaseBuilding
   return requiredTechIdsForEffect((effect) => effect.type === "unlock_starbase_building" && effect.building === building);
 }
 
+export function getRequiredTechIdsForPlanetDefenseBuilding(building: PlanetDefenseBuildingKind): TechId[] {
+  return requiredTechIdsForEffect((effect) => (
+    effect.type === "unlock_planet_defense_building" && effect.building === building
+  ));
+}
+
+export function getRequiredTechIdsForPlanetDefenseBuildingLevel(
+  building: PlanetDefenseBuildingKind,
+  level: number,
+): TechId[] {
+  if (level <= 1) return getRequiredTechIdsForPlanetDefenseBuilding(building);
+  return requiredTechIdsForEffect((effect) => (
+    effect.type === "unlock_planet_defense_building_level"
+    && effect.building === building
+    && effect.level === level
+  ));
+}
+
+export function getRequiredTechIdsForPlanetFeatureRemoval(feature: PlanetFeatureKind): TechId[] {
+  return requiredTechIdsForEffect((effect) => (
+    effect.type === "unlock_planet_feature_removal" && effect.feature === feature
+  ));
+}
+
 export function getRequiredTechIdsForShipModule(moduleId: string): TechId[] {
   return requiredTechIdsForEffect((effect) => effect.type === "unlock_ship_module" && effect.moduleId === moduleId);
 }
@@ -1140,6 +1292,10 @@ export function getRequiredTechIdsForShipSection(sectionModuleId: string): TechI
 
 export function getRequiredTechIdsForShipHull(shipKind: StarbaseShipKind): TechId[] {
   return requiredTechIdsForEffect((effect) => effect.type === "unlock_ship_hull" && effect.shipKind === shipKind);
+}
+
+export function getRequiredTechIdsForArmyType(armyTypeId: ArmyTypeId): TechId[] {
+  return requiredTechIdsForEffect((effect) => effect.type === "unlock_army_type" && effect.armyTypeId === armyTypeId);
 }
 
 export function isUnlockedByAnyRequiredTech(state: FactionTechState | undefined, requiredTechIds: TechId[]): boolean {

@@ -327,11 +327,25 @@ export class PlanetOperationsPanel {
   }
 
   private renderUninhabitedPlanetRow(data: PlanetOperationsPanelData, entry: PlanetManagerPlanetEntry): string {
-    const habitability = entry.planetState.habitability ?? entry.planet.objectDetails.habitability ?? 0;
+    const habitability = entry.foundingSpeciesHabitability
+      ?? entry.planetState.habitability
+      ?? entry.planet.objectDetails.habitability
+      ?? 0;
     const limits = entry.planet.objectDetails.districtLimits;
     const districtLimit = limits.city + limits.generator + limits.mining + limits.agriculture;
     const canOpen = Boolean(data.onOpenPlanet);
-    const colonizableLabel = habitability > 0 ? "Colonizable" : "Unsuitable";
+    const reason = entry.colonizationEligibility?.reason;
+    const colonizable = entry.colonizationEligibility?.eligible ?? habitability > 0;
+    const colonizableLabel = reason === "restrictedPlanetType"
+      ? "Restricted world"
+      : reason === "zeroHabitability"
+        ? "Unsuitable"
+        : colonizable
+          ? "Colonizable"
+          : "Unavailable";
+    const speciesLabel = entry.foundingSpeciesName
+      ? `${entry.foundingSpeciesName} — ${Math.round(habitability)}%`
+      : `${Math.round(habitability)}% Habitability`;
     return `
       <article class="poPlanetRow poPlanetRow-uninhabited" data-po-planet-row="${this.escapeAttribute(entry.planetState.id)}">
         <div class="poPlanetCell">
@@ -342,12 +356,12 @@ export class PlanetOperationsPanel {
           <div class="poPlanetCopy">
             <strong>${this.escapeHtml(entry.planet.name)}</strong>
             <span>${this.escapeHtml(colonizableLabel)}</span>
-            <em class="poRoleChip ${habitability > 0 ? "balanced" : "deficit"}">${this.escapeHtml(`${Math.round(habitability)}% Habitability`)}</em>
+            <em class="poRoleChip ${colonizable ? "balanced" : "deficit"}">${this.escapeHtml(speciesLabel)}</em>
           </div>
         </div>
         <div class="poPlainCell"><strong>${this.escapeHtml(entry.starName)}</strong></div>
         <div class="poPlainCell"><strong>${this.escapeHtml(entry.planet.objectDetails.typeName || entry.planet.type)}</strong></div>
-        <div class="poPlainCell ${habitability > 0 ? "positive" : "deficit"}"><strong>${Math.round(habitability)}%</strong></div>
+        <div class="poPlainCell ${colonizable ? "positive" : "deficit"}"><strong>${Math.round(habitability)}%</strong><small>${this.escapeHtml(entry.foundingSpeciesName ?? "Founding species")}</small></div>
         <div class="poPlainCell"><strong>${districtLimit}</strong><small>district capacity</small></div>
         <div class="poActionCell">
           <button class="poOpenPlanet" type="button" ${canOpen ? `data-po-open-planet="${this.escapeAttribute(entry.planetState.id)}"` : "disabled"} aria-label="Open ${this.escapeAttribute(entry.planet.name)}">

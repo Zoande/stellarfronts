@@ -1,18 +1,7 @@
-import { RESOURCE_KINDS } from "./Economy";
-import type { ResourceKind } from "./Economy";
+export const MARKET_RESOURCE_KINDS = ["food", "minerals", "goods", "alloys"] as const;
+export type MarketResourceKind = (typeof MARKET_RESOURCE_KINDS)[number];
 
 export type MarketTradeType = "buy" | "sell" | "auto_buy" | "auto_sell";
-
-export interface MarketResourceState {
-  resourceId: ResourceKind;
-  basePrice: number;
-  currentPrice: number;
-  liquidity: number;
-  temporaryPressure: number;
-  persistentPressure: number;
-  marketEnabled: boolean;
-  lastUpdatedAt: number;
-}
 
 export interface MarketPlayerStats {
   playerId: number;
@@ -22,7 +11,7 @@ export interface MarketPlayerStats {
 
 export interface MarketTransactionRecord {
   playerId: number;
-  resourceId: ResourceKind;
+  resourceId: MarketResourceKind;
   type: MarketTradeType;
   amount: number;
   unitPrice: number;
@@ -33,17 +22,24 @@ export interface MarketTransactionRecord {
 }
 
 export interface MarketPriceSnapshot {
-  resourceId: ResourceKind;
+  playerId: number;
+  resourceId: MarketResourceKind;
   price: number;
-  temporaryPressure: number;
-  persistentPressure: number;
   timestamp: number;
+}
+
+export interface MarketTradeBucket {
+  playerId: number;
+  resourceId: MarketResourceKind;
+  monthIndex: number;
+  purchases: number;
+  sales: number;
 }
 
 export interface MarketAutoTradeOrder {
   id: string;
   playerId: number;
-  resourceId: ResourceKind;
+  resourceId: MarketResourceKind;
   type: "auto_buy" | "auto_sell";
   amountPerHour: number;
   enabled: boolean;
@@ -55,7 +51,7 @@ export interface MarketTradeAlert {
   /** Stable id: `${playerId}:${resourceId}:${tradeType}` */
   id: string;
   playerId: number;
-  resourceId: ResourceKind;
+  resourceId: MarketResourceKind;
   tradeType: "auto_buy" | "auto_sell";
   requestedPerHour: number;
   /** Actual amount traded in the last processed period, normalised to per-hour. */
@@ -63,7 +59,7 @@ export interface MarketTradeAlert {
 }
 
 export interface MarketState {
-  resources: MarketResourceState[];
+  tradeBuckets: MarketTradeBucket[];
   playerStats: MarketPlayerStats[];
   autoTrades: MarketAutoTradeOrder[];
   transactions: MarketTransactionRecord[];
@@ -73,74 +69,126 @@ export interface MarketState {
   lastSnapshotHour: number;
 }
 
-interface MarketResourceDefinition {
+export interface MarketResourceDefinition {
   basePrice: number;
-  liquidity: number;
-  marketEnabled: boolean;
+}
+
+export interface MarketPricingState {
+  resourceId: MarketResourceKind;
+  basePrice: number;
+  monthlyProduction: number;
+  monthlyUpkeep: number;
+  baselineSupply: number;
+  baselineDemand: number;
+  tradeBalance: number;
+  effectiveSupply: number;
+  effectiveDemand: number;
+  currentPrice: number;
+  minimumPrice: number;
+}
+
+export interface MarketBulkQuote {
+  tradeType: "buy" | "sell";
+  amount: number;
+  priceBefore: number;
+  priceAfter: number;
+  averageUnitPrice: number;
+  feeRate: number;
+  feePaid: number;
+  totalEnergy: number;
+  postTradeBalance: number;
 }
 
 export const MARKET_FEE_RATE = 0.05;
 export const MARKET_MIN_PRICE_MULTIPLIER = 0.25;
-export const MARKET_MAX_PRICE_MULTIPLIER = 4;
-export const MARKET_TEMPORARY_DECAY_PER_HOUR = 0.96;
-export const MARKET_PERSISTENT_DECAY_PER_HOUR = 0.995;
-export const MARKET_MANUAL_PRESSURE_FACTOR = 0.04;
-export const MARKET_AUTO_PRESSURE_FACTOR = 0.01;
+export const MARKET_INTERNAL_FLOW_MULTIPLIER = 5;
+export const MARKET_SEED_LIQUIDITY = 10;
+export const MARKET_TRADE_WINDOW_MONTHS = 5;
 export const MARKET_PRICE_SNAPSHOT_INTERVAL_HOURS = 6;
-export const MARKET_PRICE_SNAPSHOT_LIMIT_PER_RESOURCE = 180;
+export const MARKET_PRICE_SNAPSHOT_LIMIT_PER_FACTION_RESOURCE = 600;
 export const MARKET_TRANSACTION_LIMIT = 320;
-export const PLAYER_INTERNAL_MODIFIER_MIN = 0.85;
-export const PLAYER_INTERNAL_MODIFIER_MAX = 1.18;
 
-export const MARKET_RESOURCE_DEFINITIONS: Record<ResourceKind, MarketResourceDefinition> = {
-  food: { basePrice: 1.1, liquidity: 5_000, marketEnabled: true },
-  minerals: { basePrice: 1.4, liquidity: 4_500, marketEnabled: true },
-  energy: { basePrice: 1, liquidity: 10_000, marketEnabled: false },
-  goods: { basePrice: 3.2, liquidity: 2_200, marketEnabled: true },
-  alloys: { basePrice: 5.5, liquidity: 1_600, marketEnabled: true },
-  research: { basePrice: 6.5, liquidity: 1_200, marketEnabled: false },
+export const MARKET_RESOURCE_DEFINITIONS: Record<MarketResourceKind, MarketResourceDefinition> = {
+  food: { basePrice: 1.1 },
+  minerals: { basePrice: 1.4 },
+  goods: { basePrice: 3.2 },
+  alloys: { basePrice: 5.5 },
 };
 
-export function clampMarketValue(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
+export function isMarketResourceKind(value: unknown): value is MarketResourceKind {
+  return typeof value === "string" && MARKET_RESOURCE_KINDS.includes(value as MarketResourceKind);
 }
 
-export function calculateMarketPrice(basePrice: number, persistentPressure: number, temporaryPressure: number): number {
-  const multiplier = clampMarketValue(
-    1 + persistentPressure + temporaryPressure,
-    MARKET_MIN_PRICE_MULTIPLIER,
-    MARKET_MAX_PRICE_MULTIPLIER,
+export function calculateMarketPricingState(
+  resourceId: MarketResourceKind,
+  monthlyProduction: number,
+  monthlyUpkeep: number,
+  tradeBalance: number,
+): MarketPricingState {
+  const basePrice = MARKET_RESOURCE_DEFINITIONS[resourceId].basePrice;
+  const normalizedProduction = Math.max(0, finiteOr(monthlyProduction, 0));
+  const normalizedUpkeep = Math.max(0, finiteOr(monthlyUpkeep, 0));
+  const normalizedBalance = finiteOr(tradeBalance, 0);
+  const baselineSupply = Math.max(MARKET_SEED_LIQUIDITY, normalizedProduction * MARKET_INTERNAL_FLOW_MULTIPLIER);
+  const baselineDemand = Math.max(MARKET_SEED_LIQUIDITY, normalizedUpkeep * MARKET_INTERNAL_FLOW_MULTIPLIER);
+  const effectiveSupply = baselineSupply + Math.max(0, -normalizedBalance);
+  const effectiveDemand = baselineDemand + Math.max(0, normalizedBalance);
+  const minimumPrice = basePrice * MARKET_MIN_PRICE_MULTIPLIER;
+  const currentPrice = Math.max(
+    minimumPrice,
+    basePrice * Math.sqrt(effectiveDemand / effectiveSupply),
   );
-  return Math.max(0.000001, basePrice * multiplier);
-}
-
-export function calculateMarketPressureDelta(amount: number, liquidity: number, factor: number): number {
-  return factor * Math.sqrt(Math.max(0, amount) / Math.max(1, liquidity));
-}
-
-export function createInitialMarketResource(resourceId: ResourceKind, timestamp = 0): MarketResourceState {
-  const definition = MARKET_RESOURCE_DEFINITIONS[resourceId];
-  const currentPrice = calculateMarketPrice(definition.basePrice, 0, 0);
   return {
     resourceId,
-    basePrice: definition.basePrice,
+    basePrice,
+    monthlyProduction: normalizedProduction,
+    monthlyUpkeep: normalizedUpkeep,
+    baselineSupply,
+    baselineDemand,
+    tradeBalance: normalizedBalance,
+    effectiveSupply,
+    effectiveDemand,
     currentPrice,
-    liquidity: definition.liquidity,
-    temporaryPressure: 0,
-    persistentPressure: 0,
-    marketEnabled: definition.marketEnabled,
-    lastUpdatedAt: timestamp,
+    minimumPrice,
+  };
+}
+
+export function calculateBulkMarketQuote(
+  pricing: MarketPricingState,
+  tradeType: "buy" | "sell",
+  rawAmount: number,
+): MarketBulkQuote {
+  const amount = Math.max(0, finiteOr(rawAmount, 0));
+  const postTradeBalance = pricing.tradeBalance + (tradeType === "buy" ? amount : -amount);
+  const postPricing = calculateMarketPricingState(
+    pricing.resourceId,
+    pricing.monthlyProduction,
+    pricing.monthlyUpkeep,
+    postTradeBalance,
+  );
+  const averageUnitPrice = (pricing.currentPrice + postPricing.currentPrice) / 2;
+  const grossEnergy = amount * averageUnitPrice;
+  const feePaid = grossEnergy * MARKET_FEE_RATE;
+  return {
+    tradeType,
+    amount,
+    priceBefore: pricing.currentPrice,
+    priceAfter: postPricing.currentPrice,
+    averageUnitPrice,
+    feeRate: MARKET_FEE_RATE,
+    feePaid,
+    totalEnergy: tradeType === "buy" ? grossEnergy + feePaid : grossEnergy - feePaid,
+    postTradeBalance,
   };
 }
 
 export function createInitialMarketState(
   factionIds: number[] = [],
   currentHour = 0,
-  timestamp = 0,
+  _timestamp = 0,
 ): MarketState {
-  const resources = RESOURCE_KINDS.map((resource) => createInitialMarketResource(resource, timestamp));
   return {
-    resources,
+    tradeBuckets: [],
     playerStats: factionIds.map((playerId) => ({
       playerId,
       totalImportsEnergy: 0,
@@ -149,13 +197,7 @@ export function createInitialMarketState(
     autoTrades: [],
     transactions: [],
     tradeAlerts: [],
-    priceSnapshots: resources.map((resource) => ({
-      resourceId: resource.resourceId,
-      price: resource.currentPrice,
-      temporaryPressure: resource.temporaryPressure,
-      persistentPressure: resource.persistentPressure,
-      timestamp,
-    })),
+    priceSnapshots: [],
     lastProcessedHour: currentHour,
     lastSnapshotHour: currentHour,
   };
@@ -165,57 +207,11 @@ export function normalizeMarketState(
   raw: Partial<MarketState> | undefined,
   factionIds: number[],
   currentHour = 0,
-  timestamp = 0,
+  _timestamp = 0,
 ): { state: MarketState; changed: boolean } {
-  if (!raw || !Array.isArray(raw.resources)) {
-    return { state: createInitialMarketState(factionIds, currentHour, timestamp), changed: true };
+  if (!raw || typeof raw !== "object") {
+    return { state: createInitialMarketState(factionIds, currentHour), changed: true };
   }
-
-  let changed = false;
-  const rawResources = new Map<ResourceKind, Partial<MarketResourceState>>();
-  for (const resource of raw.resources) {
-    if (
-      typeof resource?.resourceId === "string"
-      && RESOURCE_KINDS.includes(resource.resourceId as ResourceKind)
-    ) {
-      rawResources.set(resource.resourceId as ResourceKind, resource);
-    }
-  }
-
-  const resources = RESOURCE_KINDS.map((resourceId) => {
-    const fallback = createInitialMarketResource(resourceId, timestamp);
-    const rawResource = rawResources.get(resourceId);
-    if (!rawResource) {
-      changed = true;
-      return fallback;
-    }
-    const definition = MARKET_RESOURCE_DEFINITIONS[resourceId];
-    const basePrice = sanitizePositiveNumber(rawResource.basePrice, definition.basePrice);
-    const liquidity = sanitizePositiveNumber(rawResource.liquidity, definition.liquidity);
-    const temporaryPressure = sanitizeFiniteNumber(rawResource.temporaryPressure, 0);
-    const persistentPressure = sanitizeFiniteNumber(rawResource.persistentPressure, 0);
-    const currentPrice = calculateMarketPrice(basePrice, persistentPressure, temporaryPressure);
-    if (
-      basePrice !== rawResource.basePrice
-      || liquidity !== rawResource.liquidity
-      || temporaryPressure !== rawResource.temporaryPressure
-      || persistentPressure !== rawResource.persistentPressure
-      || currentPrice !== rawResource.currentPrice
-      || definition.marketEnabled !== rawResource.marketEnabled
-    ) {
-      changed = true;
-    }
-    return {
-      resourceId,
-      basePrice,
-      currentPrice,
-      liquidity,
-      temporaryPressure,
-      persistentPressure,
-      marketEnabled: definition.marketEnabled,
-      lastUpdatedAt: sanitizeFiniteNumber(rawResource.lastUpdatedAt, timestamp),
-    };
-  });
 
   const factionSet = new Set(factionIds);
   const rawStats = Array.isArray(raw.playerStats) ? raw.playerStats : [];
@@ -227,68 +223,88 @@ export function normalizeMarketState(
   }
   const playerStats = factionIds.map((playerId) => {
     const entry = statsByFaction.get(playerId);
-    if (!entry) {
-      changed = true;
-      return { playerId, totalImportsEnergy: 0, totalExportsEnergy: 0 };
-    }
     return {
       playerId,
-      totalImportsEnergy: sanitizeFiniteNumber(entry.totalImportsEnergy, 0),
-      totalExportsEnergy: sanitizeFiniteNumber(entry.totalExportsEnergy, 0),
+      totalImportsEnergy: Math.max(0, finiteOr(entry?.totalImportsEnergy, 0)),
+      totalExportsEnergy: Math.max(0, finiteOr(entry?.totalExportsEnergy, 0)),
     };
   });
 
+  const currentMonthIndex = Math.floor(currentHour / (30 * 24));
+  const tradeBuckets = normalizeTradeBuckets(raw.tradeBuckets, factionSet, currentMonthIndex);
   const autoTrades = normalizeAutoTrades(raw.autoTrades, factionSet);
-  if (autoTrades.length !== (Array.isArray(raw.autoTrades) ? raw.autoTrades.length : 0)) changed = true;
-
   const transactions = normalizeTransactions(raw.transactions, factionSet);
-  if (transactions.length !== (Array.isArray(raw.transactions) ? raw.transactions.length : 0)) changed = true;
-
-  const priceSnapshots = normalizePriceSnapshots(raw.priceSnapshots);
-  if (priceSnapshots.length === 0) {
-    changed = true;
-    priceSnapshots.push(...resources.map((resource) => ({
-      resourceId: resource.resourceId,
-      price: resource.currentPrice,
-      temporaryPressure: resource.temporaryPressure,
-      persistentPressure: resource.persistentPressure,
-      timestamp,
-    })));
-  }
+  const priceSnapshots = normalizePriceSnapshots(raw.priceSnapshots, factionSet);
+  const tradeAlerts = normalizeTradeAlerts(raw.tradeAlerts, factionSet);
+  const normalized: MarketState = {
+    tradeBuckets,
+    playerStats,
+    autoTrades,
+    transactions: transactions.slice(-MARKET_TRANSACTION_LIMIT),
+    tradeAlerts,
+    priceSnapshots: trimMarketPriceSnapshots(priceSnapshots),
+    lastProcessedHour: finiteOr(raw.lastProcessedHour, currentHour),
+    lastSnapshotHour: finiteOr(raw.lastSnapshotHour, currentHour),
+  };
 
   return {
-    state: {
-      resources,
-      playerStats,
-      autoTrades,
-      transactions: transactions.slice(-MARKET_TRANSACTION_LIMIT),
-      tradeAlerts: Array.isArray(raw.tradeAlerts) ? raw.tradeAlerts.filter((a) => a && typeof a.id === "string") : [],
-      priceSnapshots: trimMarketPriceSnapshots(priceSnapshots),
-      lastProcessedHour: sanitizeFiniteNumber(raw.lastProcessedHour, currentHour),
-      lastSnapshotHour: sanitizeFiniteNumber(raw.lastSnapshotHour, currentHour),
-    },
-    changed,
+    state: normalized,
+    changed: JSON.stringify(raw) !== JSON.stringify(normalized),
   };
 }
 
-export function recomputeMarketResourcePrice(resource: MarketResourceState, timestamp: number): MarketResourceState {
-  return {
-    ...resource,
-    currentPrice: calculateMarketPrice(resource.basePrice, resource.persistentPressure, resource.temporaryPressure),
-    lastUpdatedAt: timestamp,
-  };
+export function pruneMarketTradeBuckets(
+  buckets: MarketTradeBucket[],
+  currentMonthIndex: number,
+): MarketTradeBucket[] {
+  return buckets.filter((bucket) => (
+    bucket.monthIndex <= currentMonthIndex
+    && currentMonthIndex - bucket.monthIndex < MARKET_TRADE_WINDOW_MONTHS
+  ));
 }
 
 export function trimMarketPriceSnapshots(snapshots: MarketPriceSnapshot[]): MarketPriceSnapshot[] {
-  const byResource = new Map<ResourceKind, MarketPriceSnapshot[]>();
+  const byFactionResource = new Map<string, MarketPriceSnapshot[]>();
   for (const snapshot of snapshots) {
-    const list = byResource.get(snapshot.resourceId) ?? [];
+    const key = `${snapshot.playerId}:${snapshot.resourceId}`;
+    const list = byFactionResource.get(key) ?? [];
     list.push(snapshot);
-    byResource.set(snapshot.resourceId, list);
+    byFactionResource.set(key, list);
   }
-  return Array.from(byResource.values())
-    .flatMap((list) => list.sort((a, b) => a.timestamp - b.timestamp).slice(-MARKET_PRICE_SNAPSHOT_LIMIT_PER_RESOURCE))
+  return Array.from(byFactionResource.values())
+    .flatMap((list) => list
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .slice(-MARKET_PRICE_SNAPSHOT_LIMIT_PER_FACTION_RESOURCE))
     .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function normalizeTradeBuckets(
+  raw: MarketState["tradeBuckets"] | undefined,
+  factionSet: Set<number>,
+  currentMonthIndex: number,
+): MarketTradeBucket[] {
+  if (!Array.isArray(raw)) return [];
+  const merged = new Map<string, MarketTradeBucket>();
+  for (const entry of raw) {
+    if (
+      !Number.isInteger(entry?.playerId)
+      || !factionSet.has(Number(entry.playerId))
+      || !isMarketResourceKind(entry.resourceId)
+      || !Number.isInteger(entry.monthIndex)
+    ) continue;
+    const key = `${entry.playerId}:${entry.resourceId}:${entry.monthIndex}`;
+    const existing = merged.get(key) ?? {
+      playerId: Number(entry.playerId),
+      resourceId: entry.resourceId,
+      monthIndex: Number(entry.monthIndex),
+      purchases: 0,
+      sales: 0,
+    };
+    existing.purchases += Math.max(0, finiteOr(entry.purchases, 0));
+    existing.sales += Math.max(0, finiteOr(entry.sales, 0));
+    merged.set(key, existing);
+  }
+  return pruneMarketTradeBuckets(Array.from(merged.values()), currentMonthIndex);
 }
 
 function normalizeAutoTrades(
@@ -302,8 +318,7 @@ function normalizeAutoTrades(
       typeof entry?.id === "string"
       && Number.isInteger(entry.playerId)
       && factionSet.has(Number(entry.playerId))
-      && typeof entry.resourceId === "string"
-      && RESOURCE_KINDS.includes(entry.resourceId as ResourceKind)
+      && isMarketResourceKind(entry.resourceId)
       && (entry.type === "auto_buy" || entry.type === "auto_sell")
       && Number.isFinite(entry.amountPerHour)
       && Number.isFinite(entry.createdAt)
@@ -336,8 +351,7 @@ function normalizeTransactions(
     .filter((entry): entry is MarketTransactionRecord => (
       Number.isInteger(entry?.playerId)
       && factionSet.has(Number(entry.playerId))
-      && typeof entry.resourceId === "string"
-      && RESOURCE_KINDS.includes(entry.resourceId as ResourceKind)
+      && isMarketResourceKind(entry.resourceId)
       && isMarketTradeType(entry.type)
       && Number.isFinite(entry.amount)
       && Number.isFinite(entry.unitPrice)
@@ -356,40 +370,51 @@ function normalizeTransactions(
       feePaid: Math.max(0, Number(entry.feePaid)),
       totalEnergyDelta: Number(entry.totalEnergyDelta),
       timestamp: Number(entry.timestamp),
-    }))
-    .slice(-MARKET_TRANSACTION_LIMIT);
+    }));
 }
 
-function normalizePriceSnapshots(raw: MarketState["priceSnapshots"] | undefined): MarketPriceSnapshot[] {
+function normalizePriceSnapshots(
+  raw: MarketState["priceSnapshots"] | undefined,
+  factionSet: Set<number>,
+): MarketPriceSnapshot[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter((entry): entry is MarketPriceSnapshot => (
-      typeof entry?.resourceId === "string"
-      && RESOURCE_KINDS.includes(entry.resourceId as ResourceKind)
+      Number.isInteger(entry?.playerId)
+      && factionSet.has(Number(entry.playerId))
+      && isMarketResourceKind(entry.resourceId)
       && Number.isFinite(entry.price)
-      && Number.isFinite(entry.temporaryPressure)
-      && Number.isFinite(entry.persistentPressure)
       && Number.isFinite(entry.timestamp)
     ))
     .map((entry) => ({
+      playerId: Number(entry.playerId),
       resourceId: entry.resourceId,
       price: Math.max(0, Number(entry.price)),
-      temporaryPressure: Number(entry.temporaryPressure),
-      persistentPressure: Number(entry.persistentPressure),
       timestamp: Number(entry.timestamp),
     }));
+}
+
+function normalizeTradeAlerts(
+  raw: MarketState["tradeAlerts"] | undefined,
+  factionSet: Set<number>,
+): MarketTradeAlert[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((entry): entry is MarketTradeAlert => (
+    typeof entry?.id === "string"
+    && Number.isInteger(entry.playerId)
+    && factionSet.has(Number(entry.playerId))
+    && isMarketResourceKind(entry.resourceId)
+    && (entry.tradeType === "auto_buy" || entry.tradeType === "auto_sell")
+    && Number.isFinite(entry.requestedPerHour)
+    && Number.isFinite(entry.executedPerHour)
+  ));
 }
 
 function isMarketTradeType(value: unknown): value is MarketTradeType {
   return value === "buy" || value === "sell" || value === "auto_buy" || value === "auto_sell";
 }
 
-function sanitizeFiniteNumber(value: unknown, fallback: number): number {
+function finiteOr(value: unknown, fallback: number): number {
   const next = Number(value);
   return Number.isFinite(next) ? next : fallback;
-}
-
-function sanitizePositiveNumber(value: unknown, fallback: number): number {
-  const next = sanitizeFiniteNumber(value, fallback);
-  return next > 0 ? next : fallback;
 }

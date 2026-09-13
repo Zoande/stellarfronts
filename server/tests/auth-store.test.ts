@@ -1,9 +1,10 @@
 ﻿import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { AuthStore } from "../auth-store";
+import { WEEKLY_QUESTS } from "../game/progression";
 import type { AuthAccount } from "../../src/auth/types";
 import type { SpeciesSetup } from "../../src/data/Species";
 
@@ -11,6 +12,45 @@ function requireAccount(account: AuthAccount | null): AuthAccount {
   assert.ok(account);
   return account;
 }
+
+test("dark matter is account-scoped and awarded once for progression rewards", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-auth-"));
+  const store = new AuthStore(path.join(directory, "auth.sqlite"));
+  const account = store.signup({ username: "darkmatter", password: "darkmatter" }).account;
+
+  assert.equal(store.getPlayerDarkMatter(account.id), 0);
+  assert.deepEqual(store.checkAndUnlockAchievements(account.id), ["first-contact"]);
+  assert.equal(store.getPlayerDarkMatter(account.id), 1);
+
+  const quest = WEEKLY_QUESTS[0];
+  const windowKey = "test-window";
+  store.upsertQuestProgress(account.id, quest.id, windowKey, quest.target, quest.target);
+  const reward = store.claimQuestReward(account.id, quest.id, windowKey);
+  assert.ok(reward);
+  assert.equal(reward.xpGained, quest.xpReward);
+  assert.equal(reward.darkMatterGained, quest.darkMatterReward);
+  assert.ok(reward.newDarkMatter >= 1 + quest.darkMatterReward);
+
+  const balanceAfterClaim = store.getPlayerDarkMatter(account.id);
+  assert.equal(store.claimQuestReward(account.id, quest.id, windowKey), null);
+  assert.equal(store.getPlayerDarkMatter(account.id), balanceAfterClaim);
+
+  const profile = store.buildPlayerProfile(account);
+  assert.equal(profile.darkMatter, balanceAfterClaim);
+  assert.equal(
+    profile.achievements.find((achievement) => achievement.id === "first-contact")?.darkMatterReward,
+    1,
+  );
+
+  const otherAccount = store.signup({ username: "darkmatter-other", password: "darkmatter-other" }).account;
+  assert.equal(store.getPlayerDarkMatter(otherAccount.id), 0);
+
+  const afterSpend = store.spendPlayerDarkMatter(account.id, 1);
+  assert.equal(afterSpend, balanceAfterClaim - 1);
+  assert.equal(store.getPlayerDarkMatter(otherAccount.id), 0);
+  assert.equal(store.spendPlayerDarkMatter(account.id, balanceAfterClaim + 100), null);
+  assert.equal(store.getPlayerDarkMatter(account.id), afterSpend);
+});
 
 test("multi-game auth store claims generated countries per game", () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-auth-"));
@@ -45,9 +85,22 @@ test("multi-game auth store claims generated countries per game", () => {
     mode: "faction",
     factionId: first.factionId,
   });
+  assert.equal(
+    store.getAccountIdForGameFaction(game.id, first.factionId),
+    colorAccounts[0].id,
+  );
+  assert.equal(store.getAccountIdForGameFaction(game.id, 999), null);
 
   const permanent = store.joinGame(colorAccounts[0], game.id, "Renamed Later");
   assert.deepEqual(permanent, first);
+
+  const secondGame = store.createGame("Second Front");
+  const secondGameMembership = store.joinGame(colorAccounts[0], secondGame.id, "Second Country");
+  assert.ok(secondGameMembership);
+  assert.equal(
+    store.getAccountIdForGameFaction(secondGame.id, secondGameMembership.factionId),
+    colorAccounts[0].id,
+  );
 
   for (const account of colorAccounts.slice(2)) {
     store.joinGame(account, game.id, `Claim ${account.username}`);
@@ -57,11 +110,13 @@ test("multi-game auth store claims generated countries per game", () => {
   assert.throws(() => store.joinGame(signup, game.id, "Late Country"), /Game is full/);
 
   const summaries = store.getGameSummariesForAccount(colorAccounts[0]);
-  assert.equal(summaries[0].controlledCountries, 15);
-  assert.equal(summaries[0].isFull, true);
-  assert.equal(summaries[0].isJoined, true);
-  assert.equal(summaries[0].membership?.countryName, "Solar Assembly");
-  assert.deepEqual(summaries[0].membership?.speciesSetup, speciesSetup);
+  const alphaSummary = summaries.find((summary) => summary.id === game.id);
+  assert.ok(alphaSummary);
+  assert.equal(alphaSummary.controlledCountries, 15);
+  assert.equal(alphaSummary.isFull, true);
+  assert.equal(alphaSummary.isJoined, true);
+  assert.equal(alphaSummary.membership?.countryName, "Solar Assembly");
+  assert.deepEqual(alphaSummary.membership?.speciesSetup, speciesSetup);
 });
 
 test("auth store rejects invalid species trait payloads", () => {
@@ -134,4 +189,25 @@ test("auth store manages public news posts comments and votes", () => {
   const cleared = store.voteNewsComment(voter, comment.id, 0);
   assert.equal(cleared.score, 0);
   assert.equal(cleared.userVote, 0);
+});
+test("auth store data remains visible across connections and reopening", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-auth-reopen-"));
+  const databasePath = path.join(directory, "auth.sqlite");
+  const first = new AuthStore(databasePath);
+  const second = new AuthStore(databasePath);
+  try {
+    first.signup({ username: "shared_connection_user", password: "test-password" });
+    assert.equal(second.getAccountByUsername("shared_connection_user")?.username, "shared_connection_user");
+    first.close();
+    const reopened = new AuthStore(databasePath);
+    try {
+      assert.equal(reopened.getAccountByUsername("shared_connection_user")?.username, "shared_connection_user");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    first.close();
+    second.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

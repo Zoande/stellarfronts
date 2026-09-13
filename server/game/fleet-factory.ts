@@ -78,6 +78,8 @@ export function applyShipDesignToShip(ship: GameShip, design: ShipDesign): void 
   ship.hull = clamp(combat.maxHull * hullRatio, 1, combat.maxHull);
   ship.hp = ship.hull;
   ship.weaponCooldowns = {};
+  ship.crewCapacity = stats.crewDemand;
+  ship.crew = Math.min(ship.crew, ship.crewCapacity);
 }
 
 export function createShipFromDesign(
@@ -110,6 +112,8 @@ export function createShipFromDesign(
     lastShieldDamageAtYear: null,
     subsystemState: { disabledWeaponKeys: [], engineDisabled: false, emergencyMobility: false },
     disabled: false,
+    crew: stats.crewDemand,
+    crewCapacity: stats.crewDemand,
   };
 }
 
@@ -140,6 +144,7 @@ export function createFleet(
     id,
     ownerId,
     stationaryStarbaseId: null,
+    stationaryPlanetId: null,
     shipIds,
     formation: "line",
     currentStarId,
@@ -158,6 +163,8 @@ export function createFleet(
     systemPosition: systemCenterPosition(),
     hyperlanePosition: null,
     movementPlan: null,
+    darkMatterBoostActive: false,
+    darkMatterBoostPaidUntilYear: null,
     orbitTargetPlanetId: null,
     orbitOffset: null,
     orbitTarget: null,

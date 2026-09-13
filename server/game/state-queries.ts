@@ -1,9 +1,9 @@
-import { createEmptyResourceCounts, RESOURCE_KINDS } from "../../src/data/Economy";
+import { createEmptyResourceCounts, getEffectivePlanetDistrictLimits, RESOURCE_KINDS } from "../../src/data/Economy";
 import type { FactionEconomyState, PlanetModifier, PlanetState, ResourceCounts, ResourceKind, PlanetEconomySpeciesContext } from "../../src/data/Economy";
 import { createInitialGovernmentState, getGovernmentPositionDefinition, getSelectedGovernmentLawOptions } from "../../src/data/Government";
 import type { FactionGovernmentState, GovernmentEffect, GovernmentPositionDefinition, GovernmentPositionId } from "../../src/data/Government";
 import { getLeaderTraitDefinition } from "../../src/data/Leaders";
-import type { LeaderAssignment, LeaderFleetEffects, LeaderState } from "../../src/data/Leaders";
+import type { LeaderAssignment, LeaderFleetEffects, LeaderGroundEffects, LeaderState } from "../../src/data/Leaders";
 import { SHORTAGE_SITUATION_ID, situationInstanceId } from "../../src/data/Situations";
 import { ACTIVE_RESEARCH_FRACTION, PASSIVE_RESEARCH_FRACTION, getCompletedTechnologyEffects, TECHNOLOGY_BY_ID } from "../../src/data/Technology";
 import type { FactionTechState } from "../../src/data/Technology";
@@ -67,10 +67,9 @@ export function getFactionShortagePlanetModifiers(nextState: GameState, factionI
 
   if (food > 0) {
     modifiers.push(
-      shortageModifier("food", "happiness", "Food Shortage", "happiness", "add", -50 * food),
-      shortageModifier("food", "stability", "Food Shortage", "stability", "add", -28 * food),
-      shortageModifier("food", "growth", "Food Shortage", "populationGrowth", "multiply", -0.8 * food),
-      shortageModifier("food", "output", "Food Shortage", "jobOutput", "multiply", -0.2 * food),
+      shortageModifier("food", "happiness", "Food Shortage", "happiness", "add", -40 * food),
+      shortageModifier("food", "stability", "Food Shortage", "stability", "add", -22 * food),
+      shortageModifier("food", "output", "Food Shortage", "jobOutput", "multiply", -0.15 * food),
     );
   }
   if (goods > 0) {
@@ -111,8 +110,8 @@ export function getFactionFleetShortageEffects(nextState: GameState, factionId: 
 } {
   const { food, goods, energy, alloys } = getFactionShortageSeverities(nextState, factionId);
   return {
-    attackMultiplier: clamp(1 - energy * 0.35 - alloys * 0.3 - goods * 0.15 - food * 0.1, 0.35, 1),
-    speedMultiplier: clamp(1 - energy * 0.3 - alloys * 0.2 - food * 0.1, 0.4, 1),
+    attackMultiplier: clamp(1 - energy * 0.35 - alloys * 0.3 - goods * 0.15 - food * 0.08, 0.35, 1),
+    speedMultiplier: clamp(1 - energy * 0.3 - alloys * 0.2 - food * 0.08, 0.4, 1),
     shieldMultiplier: clamp(1 - energy * 0.75, 0.2, 1),
   };
 }
@@ -347,6 +346,43 @@ export function getFleetLeaderEffects(nextState: GameState, fleetId: string): Re
   };
 }
 
+export function getGroundLeaderEffects(
+  nextState: GameState,
+  assignmentKind: "planetMilitary" | "groundBattle" | "fleet",
+  targetId: string,
+  defending: boolean,
+): Required<Omit<LeaderGroundEffects, "defenderOnly">> & { leader: LeaderState | null } {
+  const leader = getAssignedLeader(nextState, assignmentKind, targetId);
+  const totals = {
+    attackMultiplier: 1,
+    defenseMultiplier: 1,
+    upkeepMultiplier: 1,
+    recoveryMultiplier: 1,
+    leader,
+  };
+  if (!leader || leader.class !== "military") return totals;
+  const directLevelBonus = Math.min(25, Math.max(0, leader.level - 1)) * 0.01;
+  totals.attackMultiplier += directLevelBonus;
+  totals.defenseMultiplier += directLevelBonus;
+  for (const traitId of leader.traits) {
+    const effects = getLeaderTraitDefinition(traitId).groundEffects;
+    if (!effects || (effects.defenderOnly && !defending)) continue;
+    // Ground-trait values are authored as exact bonuses. Commander level is a
+    // separate +1% per level above one and must not scale those traits again.
+    totals.attackMultiplier += effects.attackMultiplier ?? 0;
+    totals.defenseMultiplier += effects.defenseMultiplier ?? 0;
+    totals.upkeepMultiplier += effects.upkeepMultiplier ?? 0;
+    totals.recoveryMultiplier += effects.recoveryMultiplier ?? 0;
+  }
+  return {
+    attackMultiplier: clamp(totals.attackMultiplier, 0.25, 2.5),
+    defenseMultiplier: clamp(totals.defenseMultiplier, 0.25, 2.5),
+    upkeepMultiplier: clamp(totals.upkeepMultiplier, 0.25, 2),
+    recoveryMultiplier: clamp(totals.recoveryMultiplier, 0.25, 3),
+    leader,
+  };
+}
+
 export function getFleetSpeedMultiplier(nextState: GameState, fleet: Pick<ServerFleet, "id" | "ownerId">): number {
   return getFactionFleetShortageEffects(nextState, fleet.ownerId).speedMultiplier
     * getFleetLeaderEffects(nextState, fleet.id).speedMultiplier
@@ -383,6 +419,7 @@ export function getSpeciesLawSelections(nextState: GameState, factionId: number)
   return {
     civilRights: selected.find((entry) => entry.law.id === "civilRights")?.option.id,
     speciesPolicy: selected.find((entry) => entry.law.id === "speciesPolicy")?.option.id,
+    migrationPolicy: selected.find((entry) => entry.law.id === "migrationPolicy")?.option.id,
   };
 }
 
@@ -408,11 +445,13 @@ export function getPlanetSpeciesContext(nextState: GameState, planetState: Plane
   return {
     species: nextState.species,
     rightsBySpeciesId: rightsState.rightsBySpeciesId,
+    foodShortageProgress: getFactionShortageSeverities(nextState, ownerId).food * 100,
   };
 }
 
 export function getPlanetDistrictLimitsFromState(nextState: GameState, planetState: PlanetState) {
-  return nextState.stars[planetState.starId]?.system.planets[planetState.planetIndex]?.objectDetails.districtLimits ?? undefined;
+  const baseLimits = nextState.stars[planetState.starId]?.system.planets[planetState.planetIndex]?.objectDetails.districtLimits;
+  return baseLimits ? getEffectivePlanetDistrictLimits(baseLimits, planetState.features) : undefined;
 }
 
 export function haveFactionsMet(nextState: GameState, a: number, b: number): boolean {

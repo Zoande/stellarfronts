@@ -19,6 +19,7 @@ How to make changes that compile, stay backward compatible, and pass the test su
   - `npm run server:test` — the Node test suite. Several tests assert exact economy/building layouts,
     so behavior changes legitimately require test updates — update them deliberately, don't delete
     them.
+  - `npm run server:test:coverage` — the same suite with minimum line, branch, and function coverage.
 
 ## Recipe: add a planetary building
 
@@ -37,7 +38,7 @@ Worked end-to-end by the Planetary Capital change; see
    [`server/tests/technology.test.ts`](../../server/tests/technology.test.ts) requires one unless the
    building is `autoPlaced`.
 4. **Server validation** already iterates `BUILDING_KINDS` in `handleBuildPlanetBuilding`
-   ([`server/index.ts`](../../server/index.ts)) — confirm cost/compatibility/tech checks behave. If
+   ([`server/game-runtime.ts`](../../server/game-runtime.ts)) — confirm cost/compatibility/tech checks behave. If
    the building is special (auto-placed, non-buildable), add the guard there.
 5. **Tests:** update economy/state tests that assert starter layouts if your building shifts them.
 
@@ -55,7 +56,7 @@ Worked end-to-end by the Planetary Capital change; see
 
 1. **Define the message** as a new `*Command` interface and add it to the `ClientCommand` union in
    [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts).
-2. **Dispatch it** in `handleCommand` ([`server/index.ts`](../../server/index.ts)) — add an
+2. **Dispatch it** in `handleCommand` ([`server/game-runtime.ts`](../../server/game-runtime.ts)) — add an
    `if (command.type === "yourCommand")` branch that calls your handler.
 3. **In the handler:** resolve and validate the faction perspective (observers are read-only — see
    `validateCommandPerspective`/`validatePlanetCommand`), check ownership/visibility via
@@ -77,8 +78,8 @@ Worked end-to-end by the Planetary Capital change; see
 3. **Backfill it** on load — give the normalizer a default (`parsed.newField = parsed.newField ?? …`)
    so old saves don't arrive missing it. Normalization *is* the migration.
 4. **Decide on a schema bump.** Additive fields with a backfill usually need none. If you do bump
-   `CURRENT_SCHEMA_VERSION`, keep the `GameState.schemaVersion` literal in lockstep — see the known
-   inconsistency in [`03-versioning-and-schema.md`](03-versioning-and-schema.md).
+   `CURRENT_SCHEMA_VERSION`, keep the manifest, `GameState` type, fresh-state value, and load
+   normalization in lockstep; see [`03-versioning-and-schema.md`](03-versioning-and-schema.md).
 5. **Send it to clients** only if needed: add it to the snapshot/update builders and (if the wire
    shape changes incompatibly) bump `protocolVersion`.
 

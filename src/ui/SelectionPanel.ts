@@ -39,7 +39,9 @@ export interface SelectionShipData {
 
 export interface SelectionMovementData {
   destination: string;
+  startedYear: number;
   arrivalYear: number;
+  darkMatterBoostActive?: boolean;
 }
 
 export interface SelectionData {
@@ -398,6 +400,18 @@ export class SelectionPanel {
   background: rgba(36, 13, 18, 0.76);
 }
 
+.fleetSelectionToolBtn.darkMatterBoost {
+  color: #dba3ff;
+  border-color: rgba(194, 88, 255, 0.62);
+  background: linear-gradient(145deg, rgba(67, 19, 96, 0.86), rgba(24, 10, 43, 0.86));
+}
+
+.fleetSelectionToolBtn.darkMatterBoost.active {
+  color: #fff;
+  border-color: rgba(228, 161, 255, 0.98);
+  box-shadow: 0 0 14px rgba(195, 72, 255, 0.64), inset 0 0 10px rgba(225, 153, 255, 0.15);
+}
+
 .fleetSelectionTopMeta {
   margin-left: auto;
   align-self: flex-end;
@@ -582,18 +596,14 @@ export class SelectionPanel {
 }
 
 .fleetSelectionMovement {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  top: 82px;
-  height: 14px;
   min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 0;
-  border: 0;
-  background: transparent;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  padding: 4px 6px 5px;
+  border: 1px solid rgba(154, 111, 211, 0.3);
+  border-radius: 3px;
+  background: linear-gradient(180deg, rgba(34, 17, 54, 0.52), rgba(10, 13, 24, 0.68));
   pointer-events: none;
   overflow: hidden;
 }
@@ -602,8 +612,12 @@ export class SelectionPanel {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   overflow: hidden;
+}
+
+.fleetSelectionMovementRow.destination {
+  grid-column: 1 / -1;
 }
 
 .fleetSelectionMovementRow span {
@@ -627,10 +641,35 @@ export class SelectionPanel {
   text-overflow: ellipsis;
 }
 
+.fleetSelectionMovementProgress {
+  grid-column: 1 / -1;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(143, 162, 190, 0.18);
+}
+
+.fleetSelectionMovementProgress i {
+  display: block;
+  width: var(--movement-progress, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #7138ce, #d77bff);
+  box-shadow: 0 0 7px rgba(203, 94, 255, 0.72);
+}
+
+.fleetSelectionCommandLower {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 98px minmax(0, 1fr);
+  gap: 8px;
+  align-items: stretch;
+}
+
 .fleetSelectionCommandStack {
   min-width: 0;
   display: grid;
-  grid-template-rows: 39px 30px auto;
+  grid-template-rows: 39px auto auto;
   gap: 8px;
   align-content: start;
 }
@@ -698,7 +737,7 @@ export class SelectionPanel {
 
 .fleetSelectionPolicyRow {
   grid-template-columns: repeat(3, 30px);
-  justify-content: center;
+  justify-content: start;
   align-items: center;
 }
 
@@ -1178,6 +1217,7 @@ export class SelectionPanel {
       attack: "Attack",
       merge: "Merge",
       stop: "Stop",
+      toggleDarkMatterBoost: "Dark Matter Boost",
       retreat: "Retreat",
       retreatTo: "Retreat To",
       emergencyRetreatTo: "Emergency Retreat",
@@ -1298,6 +1338,15 @@ export class SelectionPanel {
         ${this.renderFleetActionButton(data, "stop", "fleetSelectionToolBtn stop", "Stop fleet", "stop")}
         ${this.renderFleetActionButton(data, "retreat", "fleetSelectionToolBtn retreatText", "Retreat fleet", undefined, "RETREAT")}
         ${this.renderFleetActionButton(data, "retreatTo", "fleetSelectionToolBtn", "Set retreat target", "retreatTarget")}
+        ${this.renderFleetActionButton(
+          data,
+          "toggleDarkMatterBoost",
+          "fleetSelectionToolBtn darkMatterBoost",
+          data.movement?.darkMatterBoostActive
+            ? "Disable Dark Matter speed boost"
+            : "Activate 10x Dark Matter speed boost",
+          "darkMatterBoost",
+        )}
         <div class="fleetSelectionTopMeta">ID: ${this.escapeHtml(data.readoutId ?? data.id ?? "--")}</div>
       </div>
       <div class="fleetSelectionBody">
@@ -1318,10 +1367,13 @@ export class SelectionPanel {
             ${this.renderFleetActionButton(data, "move", "fleetSelectionPrimaryBtn move", "Move fleet", "move", "MOVE")}
             ${this.renderFleetActionButton(data, secondaryAction, secondaryClass, secondaryLabel, secondaryIcon, secondaryText)}
           </div>
-          <div class="fleetSelectionPolicyRow">
-            ${this.renderFleetPolicyButton(data, selectionKey, "engagementRule", "fleetSelectionPolicyBtn stance", "Engagement rule")}
-            ${this.renderFleetPolicyButton(data, selectionKey, "doctrine", "fleetSelectionPolicyBtn behavior", "Tactical doctrine")}
-            ${this.renderFleetPolicyButton(data, selectionKey, "retreatPreset", "fleetSelectionPolicyBtn chase", "Retreat preset")}
+          <div class="fleetSelectionCommandLower">
+            <div class="fleetSelectionPolicyRow">
+              ${this.renderFleetPolicyButton(data, selectionKey, "engagementRule", "fleetSelectionPolicyBtn stance", "Engagement rule")}
+              ${this.renderFleetPolicyButton(data, selectionKey, "doctrine", "fleetSelectionPolicyBtn behavior", "Tactical doctrine")}
+              ${this.renderFleetPolicyButton(data, selectionKey, "retreatPreset", "fleetSelectionPolicyBtn chase", "Retreat preset")}
+            </div>
+            ${this.renderFleetMovementDetails(data)}
           </div>
           ${this.renderFleetRepairControl(data)}
         </section>
@@ -1345,7 +1397,6 @@ export class SelectionPanel {
               : '<div class="fleetSelectionEmptyShips">No ship telemetry</div>'}
           </div>
         </section>
-        ${this.renderFleetMovementDetails(data)}
       </div>
     `;
 
@@ -1416,7 +1467,10 @@ export class SelectionPanel {
     visibleLabel?: string,
   ): string {
     const enabled = data.canCommand === true && (data.actions ?? []).includes(action);
-    const active = this.activeShipAction === action ? " active" : "";
+    const active = this.activeShipAction === action
+      || (action === "toggleDarkMatterBoost" && data.movement?.darkMatterBoostActive)
+      ? " active"
+      : "";
     const contents = `${icon ? this.renderIcon(icon) : ""}${visibleLabel ? `<span>${this.escapeHtml(visibleLabel)}</span>` : ""}`;
     return `
       <button
@@ -1535,21 +1589,25 @@ export class SelectionPanel {
 
   private renderFleetMovementDetails(data: SelectionData): string {
     if (!data.movement) return "";
+    const progress = this.getFleetMovementProgress(data.movement.startedYear, data.movement.arrivalYear);
     return `
       <div class="fleetSelectionMovement">
-        <div class="fleetSelectionMovementRow">
+        <div class="fleetSelectionMovementRow destination">
           <span>Destination</span>
           <strong>${this.escapeHtml(data.movement.destination)}</strong>
         </div>
         <div class="fleetSelectionMovementRow">
           <span>Arrival</span>
-          <strong>${this.escapeHtml(this.formatFleetArrival(data.movement.arrivalYear))}</strong>
+          <strong title="${this.escapeHtml(this.formatFleetArrival(data.movement.arrivalYear))}">${this.escapeHtml(this.formatFleetArrivalDate(data.movement.arrivalYear))}</strong>
         </div>
         <div class="fleetSelectionMovementRow">
-          <span>Days Left</span>
-          <strong data-fleet-movement-days-left data-arrival-year="${data.movement.arrivalYear}">
+          <span>Left</span>
+          <strong data-fleet-movement-days-left data-arrival-year="${data.movement.arrivalYear}" data-started-year="${data.movement.startedYear}">
             ${this.escapeHtml(this.formatFleetDaysLeft(data.movement.arrivalYear))}
           </strong>
+        </div>
+        <div class="fleetSelectionMovementProgress">
+          <i data-fleet-movement-progress style="--movement-progress:${progress}%"></i>
         </div>
       </div>
     `;
@@ -1657,10 +1715,20 @@ export class SelectionPanel {
     return `${date.year} / ${String(date.month).padStart(2, "0")} / ${String(date.day).padStart(2, "0")} ${String(date.hour).padStart(2, "0")}:${String(date.minute).padStart(2, "0")}`;
   }
 
+  private formatFleetArrivalDate(arrivalYear: number): string {
+    const date = gameYearToDateTime(arrivalYear);
+    return `${date.year}/${String(date.month).padStart(2, "0")}/${String(date.day).padStart(2, "0")}`;
+  }
+
   private formatFleetDaysLeft(arrivalYear: number): string {
     const days = Math.max(0, (arrivalYear - this.clockYear) * GAME_DAYS_PER_YEAR);
     if (days >= 10) return `${Math.ceil(days)} days`;
     return `${days.toFixed(1)} days`;
+  }
+
+  private getFleetMovementProgress(startedYear: number, arrivalYear: number): number {
+    const duration = Math.max(0.000001, arrivalYear - startedYear);
+    return Math.max(0, Math.min(100, ((this.clockYear - startedYear) / duration) * 100));
   }
 
   private updateFleetMovementTimers(): void {
@@ -1669,6 +1737,12 @@ export class SelectionPanel {
       const arrivalYear = Number(element.dataset.arrivalYear);
       if (!Number.isFinite(arrivalYear)) return;
       element.textContent = this.formatFleetDaysLeft(arrivalYear);
+      const startedYear = Number(element.dataset.startedYear);
+      const fill = element.closest(".fleetSelectionMovement")
+        ?.querySelector<HTMLElement>("[data-fleet-movement-progress]");
+      if (fill && Number.isFinite(startedYear)) {
+        fill.style.setProperty("--movement-progress", `${this.getFleetMovementProgress(startedYear, arrivalYear)}%`);
+      }
     });
   }
 
@@ -1685,6 +1759,7 @@ export class SelectionPanel {
       retreatCondition: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v4"/><path d="M6 18h12"/><path d="M8 18V9h8v9"/><path d="M5 9h14"/><path d="M8 5h8"/></svg>',
       sliders: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg>',
       move: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6l6 6-6 6"/><path d="M11 6l6 6-6 6"/><path d="M18 6l2 6-2 6"/></svg>',
+      darkMatterBoost: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6l6 6-6 6"/><path d="M9 6l6 6-6 6"/><path d="M15 6l6 6-6 6"/><circle cx="12" cy="12" r="10" opacity=".22"/></svg>',
       attack: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>',
       build: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16"/><path d="M6 20V10l6-4 6 4v10"/><path d="M9 20v-6h6v6"/><path d="M12 3v5"/><path d="M9.5 5.5h5"/></svg>',
       chase: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M17 7l3-3"/><path d="M17.5 3.5H20V6"/></svg>',

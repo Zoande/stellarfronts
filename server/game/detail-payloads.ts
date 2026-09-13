@@ -7,7 +7,7 @@
 // the socket dispatch (sendDetailEvent / handleRequestDetails) stays in index.ts.
 // =============================================================================
 
-import { MARKET_FEE_RATE } from "../../src/data/Market";
+import { MARKET_FEE_RATE, MARKET_RESOURCE_KINDS } from "../../src/data/Market";
 import {
   TREATY_ARTICLE_DEFINITIONS,
   TRADE_PRIVILEGE_ARTICLE_ID,
@@ -40,7 +40,6 @@ import type {
 } from "../../src/game/GameProtocol";
 import { buildSystemDetailPayload, createSystemDetailRevision } from "./system-view";
 import {
-  calculateFactionResourceFlow,
   calculatePlayerMarketQuote,
   getReadonlyMarketPlayerStats,
   getMarketPriceHistory,
@@ -60,6 +59,9 @@ import {
   canAccessStarbase,
 } from "./state-queries";
 import type { RuntimeContext } from "./types";
+import { getFactionPlanetColonizationEligibility } from "./colonization";
+import { getFactionFoundingSpeciesId } from "./state-normalization";
+import { getEffectiveArmyPower } from "./ground-combat";
 
 function intelValue<T>(view: IntelEntityView | null, fieldId: string, fallback: T): T {
   const field = view?.fields[fieldId] as IntelValue<T> | undefined;
@@ -72,8 +74,21 @@ function createPartialPlanetDetail(
   sourceState: PlanetState,
   sourcePlanet: PlanetConfig,
 ) {
-  if (perspective.mode === "observer") {
-    return { planet: sourcePlanet, planetState: sourceState, intelligence: [getPerspectiveEntityView(ctx.state, perspective, "planet", sourceState.id)!], commandLinked: true };
+  const battle = ctx.state.groundBattles.find((candidate) => candidate.planetId === sourceState.id) ?? null;
+  const exact = perspective.mode === "observer"
+    || sourceState.ownerId === perspective.factionId
+    || Boolean(battle && (battle.attackerFactionId === perspective.factionId || battle.defenderFactionId === perspective.factionId));
+  if (exact) {
+    const armies = ctx.state.armies.filter((army) => army.location.kind === "planet" && army.location.planetId === sourceState.id);
+    return {
+      planet: sourcePlanet,
+      planetState: sourceState,
+      armies,
+      groundBattle: battle,
+      armyPower: armies.reduce((total, army) => total + getEffectiveArmyPower(ctx.state, sourceState, army, battle?.attackerFactionId === army.ownerId, battle).nominal, 0),
+      intelligence: [getPerspectiveEntityView(ctx.state, perspective, "planet", sourceState.id)!],
+      commandLinked: true,
+    };
   }
   const view = getIntelEntityView(ctx.state, perspective.factionId, "planet", sourceState.id);
   if (!view || !view.fields.existence) return null;
@@ -119,6 +134,7 @@ function createPartialPlanetDetail(
     constructionQueue: intelValue(view, "constructionQueue", []),
     modifiers: intelValue(view, "modifiers", []),
     economy: intelValue(view, "economy", empty.economy),
+    defense: intelValue(view, "defense", empty.defense),
   };
   return {
     planet,
@@ -213,6 +229,7 @@ function createPartialShip(source: ServerShip, view: IntelEntityView): ServerShi
     shipKind: intelValue(view, "shipKind", "corvette"),
     speed: 0, hp: 0, maxHp: 0, shield: 0, maxShield: 0,
     armor: 0, maxArmor: 0, hull: 0, maxHull: 0,
+    crew: 0, crewCapacity: 0,
   };
 }
 
@@ -325,44 +342,44 @@ export function createSystemDetailPayload(
 
 export function createMarketDetailPayload(ctx: RuntimeContext, perspective: GalaxyPerspective): MarketDetailPayload {
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-  const flows = factionId === null ? undefined : calculateFactionResourceFlow(ctx.state, factionId);
   const playerStats = getReadonlyMarketPlayerStats(ctx, factionId);
-  const resources = ctx.state.market.resources.map<MarketResourceQuote>((resource) => {
-    const quote = calculatePlayerMarketQuote(resource, factionId, flows, ctx.state);
+  const resources = factionId === null ? [] : MARKET_RESOURCE_KINDS.map<MarketResourceQuote>((resourceId) => {
+    const quote = calculatePlayerMarketQuote(resourceId, factionId, ctx.state);
+    const pricing = quote.pricing;
     return {
-      resourceId: resource.resourceId,
-      basePrice: resource.basePrice,
-      currentPrice: resource.currentPrice,
-      liquidity: resource.liquidity,
-      temporaryPressure: resource.temporaryPressure,
-      persistentPressure: resource.persistentPressure,
-      marketEnabled: resource.marketEnabled,
-      lastUpdatedAt: resource.lastUpdatedAt,
+      resourceId,
+      marketMemberIds: quote.marketMemberIds,
+      basePrice: pricing.basePrice,
+      currentPrice: pricing.currentPrice,
+      minimumPrice: pricing.minimumPrice,
       finalQuotePrice: quote.finalQuotePrice,
       buyPrice: quote.buyPrice,
       sellPrice: quote.sellPrice,
       marketFee: MARKET_FEE_RATE,
       ownedAmount: quote.ownedAmount,
-      productionPerHour: quote.productionPerHour,
-      consumptionPerHour: quote.consumptionPerHour,
-      internalSupply: quote.internalSupply,
-      internalDemand: quote.internalDemand,
-      playerInternalModifier: quote.playerInternalModifier,
+      monthlyProduction: pricing.monthlyProduction,
+      monthlyUpkeep: pricing.monthlyUpkeep,
+      baselineSupply: pricing.baselineSupply,
+      baselineDemand: pricing.baselineDemand,
+      tradeBalance: pricing.tradeBalance,
+      effectiveSupply: pricing.effectiveSupply,
+      effectiveDemand: pricing.effectiveDemand,
       totalExportsEnergy: playerStats?.totalExportsEnergy ?? 0,
       totalImportsEnergy: playerStats?.totalImportsEnergy ?? 0,
-      priceHistory: getMarketPriceHistory(ctx, resource.resourceId),
-      trend: getMarketTrend(ctx, resource.resourceId, resource.currentPrice),
+      priceHistory: getMarketPriceHistory(ctx, factionId, resourceId),
+      trend: getMarketTrend(ctx, factionId, resourceId, pricing.currentPrice),
     };
   });
 
   return {
     resources,
+    marketMemberIds: resources[0]?.marketMemberIds ?? [],
     playerStats,
     autoTrades: factionId === null
       ? []
       : ctx.state.market.autoTrades.filter((order) => order.playerId === factionId),
     transactions: factionId === null
-      ? ctx.state.market.transactions.slice(-24)
+      ? []
       : ctx.state.market.transactions.filter((transaction) => transaction.playerId === factionId).slice(-24),
     marketFee: MARKET_FEE_RATE,
   };
@@ -476,10 +493,11 @@ export function createEligiblePeaceTransferSystems(
 export function createSocietyDetailPayload(ctx: RuntimeContext, perspective: GalaxyPerspective): SocietyDetailPayload {
   const playerFactionId = perspective.mode === "faction" ? perspective.factionId : null;
   const laws = playerFactionId === null
-    ? { civilRights: "civicRegistry", speciesPolicy: "managedResidency" }
+    ? { civilRights: "civicRegistry", speciesPolicy: "managedResidency", migrationPolicy: "managedMigration" }
     : {
       civilRights: getSpeciesLawSelections(ctx.state, playerFactionId).civilRights ?? "civicRegistry",
       speciesPolicy: getSpeciesLawSelections(ctx.state, playerFactionId).speciesPolicy ?? "managedResidency",
+      migrationPolicy: getSpeciesLawSelections(ctx.state, playerFactionId).migrationPolicy ?? "managedMigration",
     };
   const speciesIds = playerFactionId === null
     ? ctx.state.species.map((species) => species.id)
@@ -612,6 +630,7 @@ export function createDetailPayload(
       leaders: detailState.leaders,
       factionEconomies: detailState.factionEconomies,
       combatReports: detailState.combatReports,
+      armies: detailState.armies,
     };
     return { payload, revision: createRevision(payload), normalizedId: null };
   }
@@ -620,18 +639,35 @@ export function createDetailPayload(
     const detailState = createVisibleDetailState(ctx, perspective);
     const ownerId = perspective.mode === "faction" ? perspective.factionId : null;
     const planets = ctx.state.planetStates
-      .filter((planetState) => ownerId === null || planetState.ownerId === ownerId)
+      .filter((planetState) => ownerId === null || (ctx.state.starOwnership[planetState.starId] ?? -1) === ownerId)
       .filter((planetState) => canAccessPlanet(ctx, perspective, planetState))
       .map((planetState) => {
         const star = ctx.state.stars[planetState.starId];
         const planet = getPlanetConfig(ctx, planetState);
         if (!star || !planet) return null;
+        const systemOwnerId = ctx.state.starOwnership[planetState.starId] ?? -1;
+        const relevantFactionId = ownerId ?? systemOwnerId;
+        const foundingSpeciesId = relevantFactionId >= 0
+          ? ctx.state.factions.find((faction) => faction.id === relevantFactionId)?.foundingSpeciesId
+            ?? getFactionFoundingSpeciesId(relevantFactionId)
+          : null;
+        const foundingSpeciesName = foundingSpeciesId
+          ? ctx.state.species.find((species) => species.id === foundingSpeciesId)?.name ?? foundingSpeciesId
+          : null;
+        const colonizationEligibility = relevantFactionId >= 0
+          ? getFactionPlanetColonizationEligibility(ctx, relevantFactionId, planetState.id)
+          : null;
         return {
           starId: planetState.starId,
           starName: star.name,
           ownerId: planetState.ownerId ?? -1,
+          systemOwnerId,
           planet,
           planetState,
+          foundingSpeciesId,
+          foundingSpeciesName,
+          foundingSpeciesHabitability: colonizationEligibility?.foundingSpeciesHabitability ?? null,
+          colonizationEligibility: colonizationEligibility ?? undefined,
         };
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry !== null);

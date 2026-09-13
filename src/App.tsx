@@ -1,12 +1,46 @@
+import { Component, lazy, Suspense } from 'react';
+import type { ErrorInfo, ReactNode } from 'react';
 import { BrowserRouter as Router } from 'react-router-dom';
-import LoginPage from './pages/LoginPage';
-import GamePage from './pages/GamePage';
-import HomePage from './pages/HomePage';
-import DevPage from './pages/DevPage';
-import NewsPage from './pages/NewsPage';
 import { LoadingScreen } from './components/LoadingScreen';
-import BackgroundScene from './components/BackgroundScene';
+import { UserErrorPage } from './components/UserErrorPage';
 import { useAppFlow } from './hooks/useAppFlow';
+
+const LoginPage = lazy(() => import('./pages/LoginPage'));
+const GamePage = lazy(() => import('./pages/GamePage'));
+const HomePage = lazy(() => import('./pages/HomePage'));
+const DevPage = lazy(() => import('./pages/DevPage'));
+const NewsPage = lazy(() => import('./pages/NewsPage'));
+const BackgroundScene = lazy(() => import('./components/BackgroundScene'));
+
+function RouteFallback() {
+  return <div className="auth-container" aria-busy="true" />;
+}
+
+class AppErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[Client] Unhandled page error', error, info);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <UserErrorPage
+          kind="unexpected"
+          onPrimary={() => window.location.reload()}
+          secondaryLabel="Home"
+          onSecondary={() => window.location.assign('/')}
+        />
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function MainAppFlow() {
   const {
@@ -14,6 +48,7 @@ function MainAppFlow() {
     authLoadingDetail,
     authBackgroundReady,
     authSessionReady,
+    authStartupError,
     showAuthStartupLoading,
     auth,
     homeTransition,
@@ -32,15 +67,40 @@ function MainAppFlow() {
   const gameRouteMatch = currentPath.match(/^\/game\/([^/]+)$/);
   const gameId = gameRouteMatch?.[1] ? decodeURIComponent(gameRouteMatch[1]) : null;
 
+  if (authStartupError) {
+    return (
+      <Router>
+        <UserErrorPage
+          kind="serviceUnavailable"
+          onPrimary={() => window.location.reload()}
+        />
+      </Router>
+    );
+  }
+
+  if ((gameId || currentPath === '/home') && authSessionReady && !auth.isLoggedIn) {
+    return (
+      <Router>
+        <UserErrorPage
+          kind="sessionExpired"
+          primaryLabel="Sign In"
+          onPrimary={() => window.location.assign('/')}
+        />
+      </Router>
+    );
+  }
+
   if (gameId && auth.isLoggedIn && auth.account) {
     return (
       <Router>
-        <GamePage
-          gameId={gameId}
-          username={auth.account.username}
-          accountType={auth.account.accountType}
-          onLogout={handleLogout}
-        />
+        <Suspense fallback={<RouteFallback />}>
+          <GamePage
+            gameId={gameId}
+            username={auth.account.username}
+            accountType={auth.account.accountType}
+            onLogout={handleLogout}
+          />
+        </Suspense>
       </Router>
     );
   }
@@ -51,17 +111,19 @@ function MainAppFlow() {
     return (
       <Router>
         {shouldRenderHomeBehindLoader && (
-          <HomePage
-            account={auth.account ?? {
-              id: 0,
-              username: homeTransition.username,
-              accountType: 'observer',
-              factionId: null,
-              createdAt: 0,
-              updatedAt: 0,
-            }}
-            onContinuePlaying={handleStartGameFromHome}
-          />
+          <Suspense fallback={<RouteFallback />}>
+            <HomePage
+              account={auth.account ?? {
+                id: 0,
+                username: homeTransition.username,
+                accountType: 'observer',
+                factionId: null,
+                createdAt: 0,
+                updatedAt: 0,
+              }}
+              onContinuePlaying={handleStartGameFromHome}
+            />
+          </Suspense>
         )}
         <LoadingScreen
           theme="auth"
@@ -80,10 +142,12 @@ function MainAppFlow() {
   if (auth.isLoggedIn && auth.mode === 'home') {
     return (
       <Router>
-        <HomePage
-          account={auth.account ?? { id: 0, username: '', accountType: 'observer', factionId: null, createdAt: 0, updatedAt: 0 }}
-          onContinuePlaying={handleStartGameFromHome}
-        />
+        <Suspense fallback={<RouteFallback />}>
+          <HomePage
+            account={auth.account ?? { id: 0, username: '', accountType: 'observer', factionId: null, createdAt: 0, updatedAt: 0 }}
+            onContinuePlaying={handleStartGameFromHome}
+          />
+        </Suspense>
       </Router>
     );
   }
@@ -91,10 +155,12 @@ function MainAppFlow() {
   return (
     <Router>
       <div className="auth-container">
-        <BackgroundScene
-          onLoadProgress={handleAuthBackgroundProgress}
-          onReady={handleAuthBackgroundReady}
-        />
+        <Suspense fallback={null}>
+          <BackgroundScene
+            onLoadProgress={handleAuthBackgroundProgress}
+            onReady={handleAuthBackgroundReady}
+          />
+        </Suspense>
 
         {showAuthStartupLoading && (
           <LoadingScreen
@@ -110,10 +176,12 @@ function MainAppFlow() {
         )}
 
         {authBackgroundReady && (
-          <LoginPage
-            onLoginSubmit={handleLoginSubmit}
-            onSignupSubmit={handleSignupSubmit}
-          />
+          <Suspense fallback={null}>
+            <LoginPage
+              onLoginSubmit={handleLoginSubmit}
+              onSignupSubmit={handleSignupSubmit}
+            />
+          </Suspense>
         )}
       </div>
     </Router>
@@ -124,11 +192,16 @@ function App() {
   const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/';
   const isDevRoute = currentPath === '/dev' || currentPath.startsWith('/dev/');
   const isNewsRoute = currentPath === '/news' || currentPath.startsWith('/news/');
+  const isPlayerRoute = currentPath === '/'
+    || currentPath === '/home'
+    || /^\/game\/[^/]+$/.test(currentPath);
 
   if (isDevRoute) {
     return (
       <Router>
-        <DevPage />
+        <Suspense fallback={<RouteFallback />}>
+          <DevPage />
+        </Suspense>
       </Router>
     );
   }
@@ -136,12 +209,30 @@ function App() {
   if (isNewsRoute) {
     return (
       <Router>
-        <NewsPage />
+        <Suspense fallback={<RouteFallback />}>
+          <NewsPage />
+        </Suspense>
       </Router>
+    );
+  }
+
+  if (!isPlayerRoute) {
+    return (
+      <UserErrorPage
+        kind="pageNotFound"
+        primaryLabel="Go Home"
+        onPrimary={() => window.location.assign('/')}
+      />
     );
   }
 
   return <MainAppFlow />;
 }
 
-export default App;
+export default function AppWithErrorBoundary() {
+  return (
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
+  );
+}

@@ -15,7 +15,7 @@ import {
   hasCommandLink,
   refreshIntelligence,
 } from "../game/intelligence";
-import { createSnapshot } from "../game/snapshot";
+import { createSnapshot, createUpdate } from "../game/snapshot";
 import { createDetailPayload, createSystemDetailPayload } from "../game/detail-payloads";
 import type { RuntimeContext } from "../game/types";
 
@@ -63,7 +63,7 @@ function stateFixture(): GameState {
   homeState.buildings.city[0] = "planetaryCapital";
   const targetState = createPlanetStateFromConfig(1, 0, target, { ownerId: null });
   return {
-    schemaVersion: 23,
+    schemaVersion: 30,
     stars,
     nebulae: [],
     planetStates: [homeState, targetState],
@@ -73,11 +73,11 @@ function stateFixture(): GameState {
     leaders: [], situations: [], events: [], factionModifiers: [],
     hyperlanes: [[0, 1], [1, 2]], adjacency: [[1], [0, 2], [1]],
     factions: [{ id: 0, name: "Player", color: [0.2, 0.7, 1], homeStarId: 0 }],
-    starOwnership: [0, -1, -1], starbases: [], shipDesigns: [], ships: [], fleets: [], recentCombatContacts: [], combatProjectiles: [], combatReports: [],
+    starOwnership: [0, -1, -1], starbases: [], shipDesigns: [], armies: [], groundBattles: [], ships: [], fleets: [], recentCombatContacts: [], combatProjectiles: [], combatReports: [],
     intelligenceByFaction: {}, startingIntelligenceSeeded: false,
     clock: {
       year: 2100, tickSizeDays: 1, tickSpeedSeconds: 1, paused: false, speedMultiplier: 1,
-      syncedAtMs: 0, lastUpdatedAt: 0, lastProcessedPopulationWeek: 0, lastProcessedLeaderDay: 0,
+      syncedAtMs: 0, lastUpdatedAt: 0, lastProcessedPopulationWeek: 0, lastProcessedPopulationMonth: 0, lastProcessedLeaderDay: 0,
     },
   };
 }
@@ -278,6 +278,21 @@ test("faction snapshot serialization does not bypass the intelligence materializ
   const serialized = JSON.stringify(snapshot);
   assert.equal(serialized.includes("987654321"), false);
   assert.equal(snapshot.planetStates.length, 0);
+});
+
+test("clock-only updates retain cached client intelligence instead of resending the graph", () => {
+  const state = stateFixture();
+  refreshIntelligence(state);
+  const ctx = { state } as RuntimeContext;
+  const perspective = { mode: "faction", factionId: 0 } as const;
+
+  const clockUpdate = createUpdate(ctx, perspective, ["clock"]);
+  assert.equal(clockUpdate.intelligence, undefined);
+  assert.ok(clockUpdate.clock);
+
+  const visibilityUpdate = createUpdate(ctx, perspective, ["visibility"]);
+  assert.ok(visibilityUpdate.intelligence);
+  assert.ok(visibilityUpdate.intelligence.entities.length > 0);
 });
 
 test("active projectile snapshots hide launch-time hit locks and unrelated attacker fields", () => {

@@ -42,6 +42,7 @@ import { StarbasePanel } from "../ui/StarbasePanel";
 import { GalaxySystemTooltip } from "../ui/GalaxySystemTooltip";
 import type { GalaxySystemTooltipData, GalaxySystemTooltipRow } from "../ui/GalaxySystemTooltip";
 import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
+import { OUTPOST_CONSTRUCTION_COST } from "../data/Starbase";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { computeStarbasePower } from "../game/combatPower";
 import {
@@ -1775,6 +1776,7 @@ export class GalaxyScene implements IGameScene {
     if (this.fleetCanBuildStarbase(fleet)) actions.push("build");
     if (this.fleetCanColonize(fleet)) actions.push("colonize");
     actions.push("attack", "stop", "merge", "retreat", "retreatTo", "emergencyRetreatTo");
+    if (fleet?.movementPlan) actions.push("toggleDarkMatterBoost");
     return actions;
   }
 
@@ -1876,6 +1878,33 @@ export class GalaxyScene implements IGameScene {
     if (action === "stop") {
       if (this.selectedCommandShipId) {
         this.options.onFleetCommand?.({ type: "stopFleet", fleetId: this.selectedCommandShipId });
+      }
+      this.clearShipAction();
+      return;
+    }
+
+    if (action === "toggleDarkMatterBoost") {
+      const fleet = this.selectedCommandShipId
+        ? this.serverFleets.find((candidate) => candidate.id === this.selectedCommandShipId)
+        : null;
+      if (!fleet?.movementPlan) {
+        this.clearShipAction();
+        return;
+      }
+      const enabled = fleet.darkMatterBoostActive !== true;
+      const confirmed = enabled
+        ? window.confirm(
+          "Activate Dark Matter fleet boost?\n\nEffect: 10x movement speed\nCost: 1 Dark Matter now, then 1 per in-game moving day\nThe boost stops automatically on arrival or when your balance is empty.",
+        )
+        : window.confirm(
+          "Disable the Dark Matter fleet boost?\n\nThe fleet will return to normal movement speed. Prepaid Dark Matter is not refunded.",
+        );
+      if (confirmed) {
+        this.options.onFleetCommand?.({
+          type: "setFleetDarkMatterBoost",
+          fleetId: fleet.id,
+          enabled,
+        });
       }
       this.clearShipAction();
       return;
@@ -2098,7 +2127,11 @@ export class GalaxyScene implements IGameScene {
       items.push({ label: "Attack", disabled: !reachable("attack"), onSelect: issue("attack") });
     }
     if (this.fleetCanBuildStarbase(commandFleet)) {
-      items.push({ label: "Build Starbase", disabled: !reachable("build"), onSelect: issue("build") });
+      items.push({
+        label: `Build Outpost · ${OUTPOST_CONSTRUCTION_COST.minerals}M ${OUTPOST_CONSTRUCTION_COST.goods}G ${OUTPOST_CONSTRUCTION_COST.alloys}A · 180d · upkeep 4E/mo`,
+        disabled: !reachable("build"),
+        onSelect: issue("build"),
+      });
     }
     if (this.fleetCanColonize(commandFleet) && commandFleet?.currentStarId === star.id) {
       // Colonize enters the system and arms the colonize action there.
@@ -2361,7 +2394,9 @@ export class GalaxyScene implements IGameScene {
         : this.getStarName(fleet.movementPlan.destinationStarId));
     return {
       destination,
+      startedYear: fleet.movementPlan.startedAtYear,
       arrivalYear: fleet.movementPlan.endsAtYear,
+      darkMatterBoostActive: fleet.darkMatterBoostActive === true,
     };
   }
 
@@ -2434,6 +2469,7 @@ export class GalaxyScene implements IGameScene {
       case "jumpingHyperlane":
         return "in transit";
       case "movingSystem":
+        if (fleet.orderType === "colonize") return "colonizing";
         return fleet.orderType === "merge" ? "merging" : "maneuvering";
       case "orbiting":
       case "orbitingPlanet":

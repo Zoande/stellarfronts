@@ -5,6 +5,7 @@ import {
 import {
   GAME_START_YEAR,
   GAME_DAYS_PER_YEAR,
+  gameYearToMonthIndex,
   gameYearToWeekIndex,
 } from "../../src/game/GameTime";
 import type { GameState } from "./types";
@@ -27,6 +28,7 @@ export function normalizeClock(clock: Partial<GameState["clock"]> | undefined, n
     syncedAtMs: Number(clock?.syncedAtMs) || now,
     lastUpdatedAt: Number(clock?.lastUpdatedAt) || now,
     lastProcessedPopulationWeek: Number(clock?.lastProcessedPopulationWeek) || gameYearToWeekIndex(Number(clock?.year) || GAME_START_YEAR),
+    lastProcessedPopulationMonth: Number(clock?.lastProcessedPopulationMonth) || gameYearToMonthIndex(Number(clock?.year) || GAME_START_YEAR),
     lastProcessedLeaderDay: Number(clock?.lastProcessedLeaderDay) || Math.floor((Number(clock?.year) || GAME_START_YEAR) * GAME_DAYS_PER_YEAR),
   };
 }

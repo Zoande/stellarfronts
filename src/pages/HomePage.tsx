@@ -3,6 +3,9 @@ import { getGames, getPlayerProfile, joinGame, claimQuestReward } from '@/auth/c
 import type { AuthAccount, GameSummary, PlayerProfile, QuestInfo, AchievementInfo } from '@/auth/types';
 import { MessagesPanel } from '@/components/MessagesPanel';
 import { FlagJoinForm } from '@/components/FlagJoinForm';
+import { UserErrorPage } from '@/components/UserErrorPage';
+import type { UserErrorKind } from '@/components/UserErrorPage';
+import { classifyRequestFailure } from '@/errors/UserFacingErrors';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
 import '../styles/Home.css';
@@ -53,6 +56,9 @@ function formatLastEntered(timestamp: number | null): string {
 }
 
 function gameStatus(game: GameSummary): string {
+  if (game.availability === 'starting') return 'Game is preparing';
+  if (game.availability === 'stopped') return 'Game is offline';
+  if (game.availability === 'unavailable') return 'Temporarily unavailable';
   if (game.membership) return game.membership.countryName;
   if (game.isJoined) return 'Privileged command access';
   if (game.isFull) return 'Game full';
@@ -94,9 +100,10 @@ function AchievementPanel({ achievements, onClose }: { achievements: Achievement
               <div className="home-ach-body">
                 <div className="home-ach-title">{ach.title}</div>
                 <div className="home-ach-desc">{ach.description}</div>
-                {ach.xpReward > 0 && (
-                  <div className="home-ach-reward">+{ach.xpReward} XP</div>
-                )}
+                <div className="home-ach-reward">
+                  {ach.xpReward > 0 && <span>+{ach.xpReward} XP</span>}
+                  <span>+{ach.darkMatterReward} Dark Matter</span>
+                </div>
               </div>
             </div>
           ))}
@@ -156,7 +163,9 @@ function QuestPanel({
             disabled={claiming === q.id}
             onClick={() => void handleClaim(q)}
           >
-            {claiming === q.id ? 'Claiming…' : `Claim +${q.xpReward} XP`}
+            {claiming === q.id
+              ? 'Claiming…'
+              : `Claim +${q.xpReward} XP · +${q.darkMatterReward} Dark Matter`}
           </button>
         )}
         {claimed && <span className="home-quest-claimed-badge">Claimed</span>}
@@ -312,30 +321,36 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
   const [games, setGames] = useState<GameSummary[]>([]);
   const [gamesLoading, setGamesLoading] = useState(true);
   const [gamesError, setGamesError] = useState('');
+  const [fatalError, setFatalError] = useState<UserErrorKind | null>(null);
   const [continuePage, setContinuePage] = useState(0);
   const [joinTarget, setJoinTarget] = useState<GameSummary | null>(null);
   const [joinError, setJoinError] = useState('');
   const [joinBusy, setJoinBusy] = useState(false);
   const [profile, setProfile] = useState<PlayerProfile | null>(null);
+  const [profileUnavailable, setProfileUnavailable] = useState(false);
   const [showAchievements, setShowAchievements] = useState(false);
   const [showQuests, setShowQuests] = useState(false);
 
-  const loadGames = async () => {
+  const loadGames = async (showLoading = true) => {
     try {
-      setGamesLoading(true);
+      if (showLoading) setGamesLoading(true);
       setGamesError('');
       setGames(await getGames());
     } catch (error) {
+      const failure = classifyRequestFailure(error);
+      if (failure) setFatalError(failure);
       setGamesError(error instanceof Error ? error.message : 'Could not load games');
     } finally {
-      setGamesLoading(false);
+      if (showLoading) setGamesLoading(false);
     }
   };
 
   const loadProfile = useCallback(async () => {
     try {
       setProfile(await getPlayerProfile());
+      setProfileUnavailable(false);
     } catch {
+      setProfileUnavailable(true);
       // profile is optional — fail silently
     }
   }, []);
@@ -343,11 +358,17 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
   useEffect(() => {
     void loadGames();
     void loadProfile();
+    const refreshId = window.setInterval(() => void loadGames(false), 10_000);
+    return () => window.clearInterval(refreshId);
   }, [loadProfile]);
 
   const handleClaimQuest = async (quest: QuestInfo) => {
-    await claimQuestReward(quest.id, quest.windowKey);
-    await loadProfile();
+    try {
+      await claimQuestReward(quest.id, quest.windowKey);
+      await loadProfile();
+    } catch {
+      setProfileUnavailable(true);
+    }
   };
 
   const privileged = account.accountType === 'observer' || account.accountType === 'admin';
@@ -360,7 +381,7 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
     continuePage * CONTINUE_PAGE_SIZE,
     (continuePage + 1) * CONTINUE_PAGE_SIZE,
   );
-  const leadGame = continueGames[0] ?? null;
+  const leadGame = continueGames.find((game) => game.availability === 'ready') ?? null;
 
   useEffect(() => {
     if (continuePage < continuePageCount) return;
@@ -381,6 +402,7 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
       : 'Join a game to claim a country.';
 
   const openGameAction = (game: GameSummary) => {
+    if (game.availability !== 'ready') return;
     if (game.isJoined) {
       onContinuePlaying(game.id);
       return;
@@ -400,6 +422,12 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
       void loadProfile();
       onContinuePlaying(result.game.id);
     } catch (error) {
+      const failure = classifyRequestFailure(error);
+      if (failure) {
+        setJoinTarget(null);
+        setFatalError(failure);
+        return;
+      }
       setJoinError(error instanceof Error ? error.message : 'Could not join game');
     } finally {
       setJoinBusy(false);
@@ -423,12 +451,32 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
         type="button"
         className="home-secondary-btn"
         onClick={() => openGameAction(game)}
-        disabled={!game.isJoined && !game.joinable}
+        disabled={game.availability !== 'ready' || (!game.isJoined && !game.joinable)}
       >
-        {game.isJoined ? 'Continue' : game.isFull ? 'Full' : 'Join'}
+        {game.availability === 'starting'
+          ? 'Preparing'
+          : game.availability === 'stopped'
+            ? 'Offline'
+            : game.availability === 'unavailable'
+              ? 'Unavailable'
+              : game.isJoined
+                ? 'Continue'
+                : game.isFull
+                  ? 'Full'
+                  : 'Join'}
       </button>
     </article>
   );
+
+  if (fatalError) {
+    return (
+      <UserErrorPage
+        kind={fatalError}
+        primaryLabel="Sign In"
+        onPrimary={() => window.location.assign('/')}
+      />
+    );
+  }
 
   return (
     <div className="home-page">
@@ -485,11 +533,19 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
               </div>
               <div className="home-game-list is-catalog">
                 {gamesLoading && <div className="home-list-message">Loading games</div>}
-                {gamesError && <div className="home-list-message is-error">{gamesError}</div>}
+                {gamesError && (
+                  <UserErrorPage
+                    kind="serviceUnavailable"
+                    variant="compact"
+                    title="Games are unavailable"
+                    message="The game list cannot be loaded right now. Please try again shortly."
+                    onPrimary={() => void loadGames()}
+                  />
+                )}
                 {!gamesLoading && !gamesError && games.length === 0 && (
                   <div className="home-list-message">No games have been created yet.</div>
                 )}
-                {games.map(renderGameRow)}
+                {!gamesError && games.map(renderGameRow)}
               </div>
             </section>
           </main>
@@ -504,17 +560,27 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
                 <h2 className="home-card-title">Command Overview</h2>
                 <span className="home-card-kicker">Welcome back, {commanderName}</span>
               </div>
-              <div className="home-profile-row">
-                <AchievementsSlot
-                  profile={profile}
-                  commanderInitial={commanderInitial}
-                  commanderName={commanderName}
-                  commanderRole={commanderRole}
-                  onClick={() => setShowAchievements(true)}
+              {profileUnavailable ? (
+                <UserErrorPage
+                  kind="serviceUnavailable"
+                  variant="compact"
+                  title="Profile unavailable"
+                  message="Your commander profile cannot be loaded right now. Please try again shortly."
+                  onPrimary={() => void loadProfile()}
                 />
-                <LevelTrackSlot profile={profile} />
-                <QuestsSlot profile={profile} onClick={() => setShowQuests(true)} />
-              </div>
+              ) : (
+                <div className="home-profile-row">
+                  <AchievementsSlot
+                    profile={profile}
+                    commanderInitial={commanderInitial}
+                    commanderName={commanderName}
+                    commanderRole={commanderRole}
+                    onClick={() => setShowAchievements(true)}
+                  />
+                  <LevelTrackSlot profile={profile} />
+                  <QuestsSlot profile={profile} onClick={() => setShowQuests(true)} />
+                </div>
+              )}
             </section>
 
             <section className="home-card home-action">
@@ -557,11 +623,19 @@ export default function HomePage({ account, onContinuePlaying }: HomePageProps) 
               </div>
               <div className="home-game-list">
                 {gamesLoading && <div className="home-list-message">Loading games</div>}
-                {gamesError && <div className="home-list-message is-error">{gamesError}</div>}
+                {gamesError && (
+                  <UserErrorPage
+                    kind="serviceUnavailable"
+                    variant="compact"
+                    title="Games are unavailable"
+                    message="The game list cannot be loaded right now. Please try again shortly."
+                    onPrimary={() => void loadGames()}
+                  />
+                )}
                 {!gamesLoading && !gamesError && visibleContinueGames.length === 0 && (
                   <div className="home-list-message">No games ready to continue.</div>
                 )}
-                {visibleContinueGames.map(renderGameRow)}
+                {!gamesError && visibleContinueGames.map(renderGameRow)}
               </div>
             </section>
 

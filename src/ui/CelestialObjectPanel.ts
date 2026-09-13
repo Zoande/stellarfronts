@@ -3,22 +3,29 @@ import {
   BUILDING_KINDS,
   BUILDING_DEFINITIONS,
   BUILDING_LABELS,
-  BUILDING_MAX_LEVEL,
   createBuildingConstructionQueueItem,
   createBuildingUpgradeConstructionQueueItem,
   createDistrictConstructionQueueItem,
+  createFeatureRemovalConstructionQueueItem,
   DISTRICT_BUILD_DAYS,
-  DISTRICT_MINERAL_COSTS,
+  DISTRICT_COSTS,
   filterInvalidQueuedBuildingsForSubDistrictChange,
   getBuildingBuildDays,
+  getBuildingCost,
+  getBuildingDisplayDescription,
+  getBuildingDisplayLabel,
+  getBuildingHousing,
+  getBuildingJobEffects,
   getBuildingLevelEffectMultiplier,
-  getBuildingMineralCost,
+  getBuildingMaxLevel,
   getBuildingUpgradeBuildDays,
-  getBuildingUpgradeMineralCost,
+  getBuildingUpgradeCost,
+  getBuildingUpkeep,
   getBuildingUpgradeTargetLevel,
   getCompatibleBuildings,
   getConstructionSpeedMultiplier,
   getEffectiveSpeciesHabitability,
+  getEffectivePlanetDistrictLimits,
   getHabitabilityProductionMultiplier,
   getHabitabilityUpkeepMultiplier,
   getPlanetBuildingKind,
@@ -34,6 +41,13 @@ import {
   PEOPLE_PER_MONTHLY_UNIT,
   isBuildingCompatible,
   PLANET_FEATURE_DEFINITIONS,
+  PLANET_DEFENSE_BUILDING_DEFINITIONS,
+  getActivePlanetDefenseBuildings,
+  getPlanetDefensePlatformCapacity,
+  hasQueuedFeatureRemoval,
+  getUnlockedPlanetDefenseSlots,
+  getUnlockedPlanetShipyardSlots,
+  countPlanetShipyards,
   RESOURCE_KINDS,
   RESOURCE_LABELS,
   URBAN_SUB_DISTRICT_KINDS,
@@ -43,6 +57,7 @@ import type {
   BuildingDefinition,
   BuildingKind,
   BuildingSlotArea,
+  FactionEconomyState,
   JobClass,
   JobKind,
   PlanetConstructionQueueItem,
@@ -51,19 +66,32 @@ import type {
   PlanetModifierTarget,
   PlanetModifier,
   PlanetState,
+  PlanetDefenseBuildingKind,
+  PlanetDefenseSection,
   PopGroup,
   ResourceKind,
+  ResourceCounts,
   UrbanSubDistrictKind,
 } from "../data/Economy";
+import { STARBASE_SHIP_DEFINITIONS, STARBASE_SHIP_KINDS } from "../data/Starbase";
+import type { StarbaseShipKind } from "../data/Starbase";
+import { calculateShipDesignStats } from "../data/ShipDesigns";
+import type { ShipDesign } from "../data/ShipDesigns";
 import { NEBULA_DEFINITIONS, NEBULA_KINDS } from "../data/Nebula";
 import type { ClientCommand } from "../game/GameProtocol";
 import type { LeaderState } from "../data/Leaders";
+import type { SpeciesState } from "../data/Species";
 import { GAME_DAYS_PER_YEAR } from "../game/GameTime";
-import { monthlyToRealMinute, quarterlyToRealMinute, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
+import { getConstructionDarkMatterCost } from "../game/DarkMatter";
+import { dailyToRealMinute, monthlyToRealMinute, weeklyToRealMinute, RESOURCE_RATE_LABEL } from "../game/ResourceRate";
 import {
   getFirstRequiredTechName,
   getRequiredTechIdsForBuilding,
   getRequiredTechIdsForBuildingLevel,
+  getRequiredTechIdsForPlanetDefenseBuilding,
+  getRequiredTechIdsForPlanetDefenseBuildingLevel,
+  getRequiredTechIdsForPlanetFeatureRemoval,
+  TECHNOLOGY_BY_ID,
 } from "../data/Technology";
 import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
@@ -71,9 +99,11 @@ import { requestOpenLeadersPanel } from "./leaderEvents";
 import { FloatingTooltipManager } from "./FloatingTooltipManager";
 import { formatIntelFreshness, getClientIntelField, getClientIntelYear, hasClientEntityCommandLink } from "../game/ClientIntelligence";
 import type { IntelValue } from "../data/Intelligence";
+import { ARMY_TOTAL_CREW_DEMAND, ARMY_TRANSPORT_BUILD_DAYS, ARMY_TYPE_DEFINITIONS, MOBILE_ARMY_TYPE_IDS, getArmyCurrentPower, getArmyHabitabilityMultiplier, getArmyMaxHp, getPlanetCombatWidth } from "../data/Armies";
+import type { ArmyUnit, GroundBattleState } from "../data/Armies";
 
 export type CelestialObjectKind = "planet" | "star";
-type EconomyDetailMode = "growth" | "decline" | "capacity";
+type EconomyDetailMode = "growth" | "decline" | "migration";
 
 export interface CelestialObjectPanelData {
   kind: CelestialObjectKind;
@@ -86,6 +116,18 @@ export interface CelestialObjectPanelData {
   imageUrl?: string;
   accentColor?: string;
   technology?: FactionTechnologyView | null;
+  factionEconomy?: FactionEconomyState | null;
+  shipDesigns?: ShipDesign[];
+  planetPlatformUsage?: number;
+  armies?: ArmyUnit[];
+  empireArmies?: ArmyUnit[];
+  empirePlanetStates?: PlanetState[];
+  species?: SpeciesState[];
+  groundBattle?: GroundBattleState | null;
+  armyPower?: number;
+  playerFactionId?: number;
+  militaryCommander?: LeaderState | null;
+  battleCommander?: LeaderState | null;
   onPlanetCommand?: (command: ClientCommand) => void;
   orbitFleetId?: string | null;
   assignedLeader?: LeaderState | null;
@@ -98,6 +140,7 @@ const CELESTIAL_SCROLL_SELECTORS = [
   ".coBuildList",
   ".coQueueList",
   ".coFeatureList",
+  ".coMinorFeatureList",
   ".coBuildingWorkforceList",
   ".coJobClassList",
   ".coPopGroupList",
@@ -131,6 +174,11 @@ interface BuildingSlotTarget {
   area: BuildingSlotArea;
   slotIndex: number;
   subDistrictIndex?: number;
+}
+
+interface PlanetDefenseSlotTarget {
+  section: PlanetDefenseSection;
+  slotIndex: number;
 }
 
 const DISTRICTS: Array<{ kind: DistrictKind; label: string; code: string }> = [
@@ -170,6 +218,7 @@ const BUILDING_ICON_BY_KIND: Record<BuildingKind, string> = {
   capacitorWorkshops: `${BUILDING_ICON_DIR}/Capacitor_Workshops.webp`,
   entertainmentForum: `${BUILDING_ICON_DIR}/Entertainment_Forum.webp`,
   securityOffice: `${BUILDING_ICON_DIR}/Security_Office.webp`,
+  fortress: `${BUILDING_ICON_DIR}/Security_Office.webp`,
 };
 
 const HABITED_PLANET_BANNERS: Partial<Record<PlanetType, string>> = {
@@ -222,12 +271,13 @@ export class CelestialObjectPanel {
   private root: HTMLDivElement;
   private panelElement: HTMLDivElement | null = null;
   private currentData: CelestialObjectPanelData | null = null;
-  private activeTab: "surface" | "economy" = "surface";
+  private activeTab: "surface" | "management" | "economy" | "defenses" | "battle" = "surface";
   private selectedJob: JobKind | null = null;
   private economyDetailMode: EconomyDetailMode | null = null;
   private expandedJobClasses = this.createDefaultExpandedJobClasses();
   private buildingPickerTarget: BuildingSlotTarget | null = null;
   private buildingDetailsTarget: BuildingSlotTarget | null = null;
+  private defenseBuildingTarget: PlanetDefenseSlotTarget | null = null;
   private featureTrayOpen = false;
   private readonly tooltips = new FloatingTooltipManager({
     selector: "[data-co-tooltip]",
@@ -352,6 +402,7 @@ export class CelestialObjectPanel {
       this.expandedJobClasses = this.createDefaultExpandedJobClasses();
       this.buildingPickerTarget = null;
       this.buildingDetailsTarget = null;
+      this.defenseBuildingTarget = null;
       this.featureTrayOpen = false;
     }
     if (data.planetState && (previousData?.objectId !== data.objectId || previousData?.planetState !== data.planetState)) {
@@ -452,6 +503,18 @@ export class CelestialObjectPanel {
     this.bindLeaderCardEvent(nextData, nextCard);
   }
 
+  public refreshArmyState(
+    planetId: string,
+    armies: ArmyUnit[],
+    groundBattle: GroundBattleState | null,
+    militaryCommander: LeaderState | null,
+    battleCommander: LeaderState | null,
+    empireArmies: ArmyUnit[],
+  ): void {
+    if (!this.currentData || this.currentData.objectId !== planetId || this.currentData.kind !== "planet") return;
+    this.show({ ...this.currentData, armies, groundBattle, militaryCommander, battleCommander, empireArmies });
+  }
+
   public getCurrentObjectId(): string | null {
     return this.currentData?.objectId ?? null;
   }
@@ -475,6 +538,7 @@ export class CelestialObjectPanel {
     this.expandedJobClasses = this.createDefaultExpandedJobClasses();
     this.buildingPickerTarget = null;
     this.buildingDetailsTarget = null;
+    this.defenseBuildingTarget = null;
     this.featureTrayOpen = false;
     this.activeTab = "surface";
     this.onPointerUp();
@@ -519,7 +583,16 @@ export class CelestialObjectPanel {
     this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-tab]").forEach((button) => {
       button.addEventListener("click", () => {
         if (button.classList.contains("disabled")) return;
-        this.activeTab = button.dataset.coTab === "economy" ? "economy" : "surface";
+        this.activeTab = button.dataset.coTab === "economy"
+          ? "economy"
+          : button.dataset.coTab === "management"
+            ? "management"
+          : button.dataset.coTab === "battle"
+            ? "battle"
+          : button.dataset.coTab === "defenses"
+            ? "defenses"
+            : "surface";
+        if (this.activeTab !== "defenses") this.defenseBuildingTarget = null;
         this.show(this.getFreshData(data));
       });
     });
@@ -593,6 +666,114 @@ export class CelestialObjectPanel {
       data.onPlanetCommand?.({ type: "orbitPlanet", fleetId: data.orbitFleetId, planetId: data.objectId });
     });
 
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-remove-feature]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.handleQueueFeatureRemoval(data, button.dataset.coRemoveFeature as PlanetFeatureKind | undefined);
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-defense-building-slot], [data-co-open-defense-building]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.defenseBuildingTarget = {
+          section: button.dataset.coSection as PlanetDefenseSection,
+          slotIndex: Number(button.dataset.coSlotIndex),
+        };
+        this.show(this.getFreshData(data));
+      });
+    });
+
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-close-defense-building]")?.addEventListener("click", () => {
+      this.defenseBuildingTarget = null;
+      this.show(this.getFreshData(data));
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-pick-defense-building]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const target = this.defenseBuildingTarget;
+        const buildingKind = button.dataset.coPickDefenseBuilding as PlanetDefenseBuildingKind | undefined;
+        if (!target || !buildingKind || button.disabled) return;
+        this.defenseBuildingTarget = null;
+        data.onPlanetCommand?.({
+          type: "buildPlanetDefenseBuilding",
+          planetId: data.objectId,
+          section: target.section,
+          slotIndex: target.slotIndex,
+          buildingKind,
+        });
+        this.show(this.getFreshData(data));
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-defense-action]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const section = button.dataset.coSection as PlanetDefenseSection;
+        const slotIndex = Number(button.dataset.coSlotIndex);
+        const action = button.dataset.coDefenseAction;
+        if (action === "upgrade") {
+          data.onPlanetCommand?.({ type: "upgradePlanetDefenseBuilding", planetId: data.objectId, section, slotIndex });
+        } else if (action === "toggle") {
+          data.onPlanetCommand?.({
+            type: "setPlanetDefenseBuildingEnabled",
+            planetId: data.objectId,
+            section,
+            slotIndex,
+            enabled: button.dataset.coEnabled !== "true",
+          });
+        } else if (action === "demolish") {
+          data.onPlanetCommand?.({ type: "demolishPlanetDefenseBuilding", planetId: data.objectId, section, slotIndex });
+        }
+        this.defenseBuildingTarget = null;
+        this.show(this.getFreshData(data));
+      });
+    });
+
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-build-planet-ship]")?.addEventListener("click", () => {
+      const picker = this.panelElement?.querySelector<HTMLSelectElement>("[data-co-planet-ship-picker]");
+      const selected = picker?.selectedOptions[0];
+      const shipKind = selected?.dataset.coShipKind as StarbaseShipKind | undefined;
+      if (!shipKind) return;
+      data.onPlanetCommand?.({
+        type: "buildPlanetShip",
+        planetId: data.objectId,
+        shipKind,
+        designId: selected?.value || undefined,
+      });
+    });
+
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-cancel-planet-ship]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const queueItemId = button.dataset.coCancelPlanetShip;
+        if (!queueItemId) return;
+        data.onPlanetCommand?.({
+          type: "cancelShipConstruction",
+          yardKind: "planet",
+          yardId: data.objectId,
+          queueItemId,
+        });
+      });
+    });
+
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-embark-armies]")?.addEventListener("click", () => {
+      const checked = Array.from(this.panelElement?.querySelectorAll<HTMLInputElement>("[data-co-embark-army]:checked") ?? []).map((input) => input.value);
+      if (checked.length === 0) return;
+      data.onPlanetCommand?.({ type: "embarkPlanetArmies", planetId: data.objectId, armyIds: checked, embarkCommander: this.panelElement?.querySelector<HTMLInputElement>("[data-co-embark-commander]")?.checked === true });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-recruit-army]").forEach((button) => button.addEventListener("click", () => {
+      const [armyTypeId, speciesId] = (button.dataset.coRecruitArmy ?? "").split(":");
+      if (!armyTypeId || !speciesId) return;
+      data.onPlanetCommand?.({ type: "queueArmyRecruitment", yardKind: "planet", yardId: data.objectId, armyTypeId: armyTypeId as keyof typeof ARMY_TYPE_DEFINITIONS, speciesId });
+    }));
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-assign-ground-commander]")?.addEventListener("click", () => {
+      if (!data.groundBattle) return;
+      requestOpenLeadersPanel({ assignmentTarget: { kind: "groundBattle", targetId: data.groundBattle.id, label: `${data.name} Invasion`, requiredClass: "military" } });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-assign-planet-military]")?.addEventListener("click", () => {
+      requestOpenLeadersPanel({ assignmentTarget: { kind: "planetMilitary", targetId: data.objectId, label: `${data.name} Defense`, requiredClass: "military" } });
+    });
+    this.panelElement.querySelector<HTMLButtonElement>("[data-co-withdraw-ground]")?.addEventListener("click", () => {
+      if (data.groundBattle) data.onPlanetCommand?.({ type: "withdrawGroundBattle", battleId: data.groundBattle.id });
+    });
+
     this.bindLeaderCardEvent(data, this.panelElement);
 
     const closeFeatures = this.panelElement.querySelector<HTMLButtonElement>("[data-co-close-features]");
@@ -627,6 +808,23 @@ export class CelestialObjectPanel {
         this.selectedJob = button.dataset.coJob as JobKind;
         this.economyDetailMode = null;
         this.show(this.getFreshData(data));
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-toggle-job-lock]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const job = button.dataset.coToggleJobLock as Exclude<JobKind, "criminal" | "unemployed"> | undefined;
+        if (!job || !data.planetState) return;
+        data.onPlanetCommand?.({
+          type: "setPlanetJobLock",
+          planetId: data.planetState.id,
+          job,
+          locked: button.dataset.coJobLocked !== "true",
+        });
+      });
+    });
+    this.panelElement.querySelectorAll<HTMLButtonElement>("[data-co-skip-planet-queue]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.handleSkipPlanetConstruction(data, button.dataset.coSkipPlanetQueue);
       });
     });
 
@@ -680,6 +878,26 @@ export class CelestialObjectPanel {
     const planetState = this.withQueuedDistrict(freshData.planetState, districtKind);
     freshData.onPlanetCommand?.({ type: "buildDistrict", planetId: freshData.planetState.id, districtKind });
     this.applyLocalPlanetState(freshData, planetState);
+  }
+
+  private handleQueueFeatureRemoval(data: CelestialObjectPanelData, featureKind?: PlanetFeatureKind): void {
+    const freshData = this.getFreshData(data);
+    const planetState = freshData.planetState;
+    if (!planetState || !featureKind || !planetState.features.includes(featureKind)) return;
+    const definition = PLANET_FEATURE_DEFINITIONS[featureKind];
+    if (!definition.removal || hasQueuedFeatureRemoval(planetState, featureKind)) return;
+    const requiredTechIds = getRequiredTechIdsForPlanetFeatureRemoval(featureKind);
+    if (requiredTechIds.length > 0 && !requiredTechIds.some((techId) => this.isTechnologyCompleted(freshData.technology, techId))) return;
+    const item = createFeatureRemovalConstructionQueueItem(featureKind);
+    freshData.onPlanetCommand?.({
+      type: "queuePlanetFeatureRemoval",
+      planetId: planetState.id,
+      featureKind,
+    });
+    this.applyLocalPlanetState(freshData, {
+      ...planetState,
+      constructionQueue: [...planetState.constructionQueue, item],
+    });
   }
 
   private handlePickBuilding(data: CelestialObjectPanelData, buildingKind?: BuildingKind): void {
@@ -741,6 +959,7 @@ export class CelestialObjectPanel {
     const building = this.getBuildingSlot(planetState, target.area, target.slotIndex, target.subDistrictIndex);
     const buildingKind = getPlanetBuildingKind(building);
     if (!buildingKind || this.getQueuedBuildingForSlot(planetState, target.area, target.slotIndex, target.subDistrictIndex)) return;
+    if (buildingKind === "planetaryCapital") return;
     const level = getPlanetBuildingLevel(building);
     if (level <= 1 && BUILDING_DEFINITIONS[buildingKind].autoPlaced) return;
     const replacement = level > 1
@@ -764,7 +983,7 @@ export class CelestialObjectPanel {
     if (!planetState || !target) return;
     const building = this.getBuildingSlot(planetState, target.area, target.slotIndex, target.subDistrictIndex);
     const buildingKind = getPlanetBuildingKind(building);
-    if (!buildingKind) return;
+    if (!buildingKind || buildingKind === "planetaryCapital") return;
     const enabled = !isPlanetBuildingEnabled(building);
     freshData.onPlanetCommand?.({
       type: "setPlanetBuildingEnabled",
@@ -828,6 +1047,24 @@ export class CelestialObjectPanel {
     this.applyLocalPlanetState(freshData, planetState);
   }
 
+  private handleSkipPlanetConstruction(data: CelestialObjectPanelData, queueItemId?: string): void {
+    const freshData = this.getFreshData(data);
+    if (!freshData.planetState || !queueItemId) return;
+    const item = this.getEstimatedConstructionQueue(freshData.planetState)
+      .find((candidate) => candidate.id === queueItemId);
+    if (!item) return;
+    const cost = getConstructionDarkMatterCost(item.remainingDays);
+    const confirmed = window.confirm(
+      `Finish ${item.label} immediately?\n\nCost: ${cost} Dark Matter\nThe construction will complete instantly.`,
+    );
+    if (!confirmed) return;
+    freshData.onPlanetCommand?.({
+      type: "skipPlanetConstruction",
+      planetId: freshData.planetState.id,
+      queueItemId,
+    });
+  }
+
   private handlePickSubDistrict(
     data: CelestialObjectPanelData,
     subDistrictIndex: number,
@@ -883,11 +1120,27 @@ export class CelestialObjectPanel {
     this.patchPlanetSummary(data);
     this.patchResourceStrip(data.planetState);
 
-    const expectedBody = this.activeTab === "economy" && data.isHabited ? "economy" : "surface";
+    const expectedBody = this.activeTab === "economy" && data.isHabited
+      ? "economy"
+      : this.activeTab === "management" && data.kind === "planet"
+        ? "management"
+      : this.activeTab === "battle" && data.kind === "planet"
+        ? "battle"
+      : this.activeTab === "defenses" && data.isHabited
+        ? "defenses"
+        : "surface";
     const body = this.panelElement.querySelector<HTMLElement>("[data-co-body]");
     if (body?.dataset.coBody !== expectedBody) {
       this.hideTooltip();
-      const html = expectedBody === "economy" ? this.renderEconomyBody(data.planetState) : this.renderSurfaceBody(data);
+      const html = expectedBody === "economy"
+        ? this.renderEconomyBody(data.planetState)
+        : expectedBody === "management"
+          ? this.renderPlanetManagementBody(data)
+        : expectedBody === "battle"
+          ? this.renderPlanetBattleBody(data)
+        : expectedBody === "defenses"
+          ? this.renderPlanetDefenseBody(data)
+          : this.renderSurfaceBody(data);
       const nextBody = body ? this.replaceElementWithHtml(body, html) : this.appendPanelHtml(html);
       if (nextBody) {
         this.initializeDynamicMedia(nextBody);
@@ -899,6 +1152,12 @@ export class CelestialObjectPanel {
 
     if (expectedBody === "economy") {
       this.patchEconomyBody(data);
+    } else if (expectedBody === "management") {
+      this.show(data);
+    } else if (expectedBody === "battle") {
+      this.show(data);
+    } else if (expectedBody === "defenses") {
+      this.show(data);
     } else {
       this.patchSurfaceBody(data);
     }
@@ -930,6 +1189,12 @@ export class CelestialObjectPanel {
         if (days) days.textContent = `${remaining} remaining`;
         const fill = element.querySelector<HTMLElement>("[data-co-queue-progress-fill]");
         if (fill) fill.style.width = this.getConstructionProgressPercent(item);
+        const skip = element.querySelector<HTMLButtonElement>("[data-co-skip-planet-queue]");
+        if (skip) {
+          const cost = getConstructionDarkMatterCost(item.remainingDays);
+          skip.title = `Finish instantly · ${cost} Dark Matter`;
+          skip.setAttribute("aria-label", `Finish ${item.label} instantly for ${cost} Dark Matter`);
+        }
       });
       this.panelElement.querySelectorAll<HTMLElement>("[data-co-queued-building-days]").forEach((element) => {
         if (element.dataset.coQueueItem !== item.id) return;
@@ -1004,7 +1269,7 @@ export class CelestialObjectPanel {
 
   private patchDistrictFacts(data: CelestialObjectPanelData): void {
     if (!this.panelElement || !data.planetState) return;
-    const limits = data.objectDetails.districtLimits;
+    const limits = getEffectivePlanetDistrictLimits(data.objectDetails.districtLimits, data.planetState.features);
     const canBuild = data.kind === "planet" && data.isHabited;
     for (const district of DISTRICTS) {
       const kind = district.kind;
@@ -1286,9 +1551,15 @@ export class CelestialObjectPanel {
       if (current.dataset.coQueueItem === nextKey) {
         const currentCancel = current.querySelector<HTMLButtonElement>("[data-co-cancel-planet-queue]");
         const nextCancel = nextChild.querySelector<HTMLButtonElement>("[data-co-cancel-planet-queue]");
-        if (Boolean(currentCancel) !== Boolean(nextCancel)) {
+        const currentSkip = current.querySelector<HTMLButtonElement>("[data-co-skip-planet-queue]");
+        const nextSkip = nextChild.querySelector<HTMLButtonElement>("[data-co-skip-planet-queue]");
+        if (Boolean(currentCancel) !== Boolean(nextCancel) || Boolean(currentSkip) !== Boolean(nextSkip)) {
           current.replaceWith(nextChild);
           return;
+        }
+        if (currentSkip && nextSkip) {
+          currentSkip.title = nextSkip.title;
+          currentSkip.setAttribute("aria-label", nextSkip.getAttribute("aria-label") ?? "Finish construction instantly");
         }
         const currentName = current.querySelector<HTMLElement>(".coQueueItemMain strong");
         const nextName = nextChild.querySelector<HTMLElement>(".coQueueItemMain strong");
@@ -1388,6 +1659,9 @@ export class CelestialObjectPanel {
     });
     this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-cancel-planet-queue]").forEach((button) => {
       this.bindClickOnce(button, () => this.handleCancelPlanetConstruction(data, button.dataset.coCancelPlanetQueue));
+    });
+    this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-skip-planet-queue]").forEach((button) => {
+      this.bindClickOnce(button, () => this.handleSkipPlanetConstruction(data, button.dataset.coSkipPlanetQueue));
     });
     this.queryAllIncludingRoot<HTMLButtonElement>(root, "[data-co-change-sub]").forEach((button) => {
       this.bindClickOnce(button, () => {
@@ -1742,6 +2016,7 @@ export class CelestialObjectPanel {
     const planetState = data.planetState;
     const commandLinked = !isPlanet || hasClientEntityCommandLink("planet", data.objectId);
     const tabsDisabled = isHabitedPlanet && commandLinked ? "" : " disabled";
+    const managementDisabled = isPlanet ? "" : " disabled";
     const nameIntel = this.planetIntel(data, "name");
     const nameFreshness = nameIntel ? formatIntelFreshness(nameIntel, getClientIntelYear()) : null;
     const nameClass = nameIntel?.status === "stale" ? " coIntelStale" : nameIntel?.status === "unknown" ? " coIntelUnknown" : "";
@@ -1777,13 +2052,19 @@ export class CelestialObjectPanel {
       </div>
       ${this.activeTab === "economy" && isHabitedPlanet && planetState
         ? this.renderIntelEconomyBody(data, planetState)
-        : this.renderSurfaceBody(data)}
+        : this.activeTab === "management" && isPlanet && planetState
+          ? this.renderPlanetManagementBody(data)
+        : this.activeTab === "battle" && isPlanet && planetState
+          ? this.renderPlanetBattleBody(data)
+        : this.activeTab === "defenses" && isHabitedPlanet && planetState
+          ? this.renderPlanetDefenseBody(data)
+          : this.renderSurfaceBody(data)}
       <nav class="coTabs">
         <button class="${this.activeTab === "surface" ? "active" : ""}" type="button" data-co-tab="surface">Overview</button>
-        <button class="${tabsDisabled}" type="button">Management</button>
+        <button class="${this.activeTab === "management" ? "active" : ""} ${managementDisabled}" type="button" data-co-tab="management">Management</button>
         <button class="${this.activeTab === "economy" ? "active" : ""} ${tabsDisabled}" type="button" data-co-tab="economy">Economy</button>
-        <button class="${tabsDisabled}" type="button">Armies</button>
-        <button class="${tabsDisabled}" type="button">Holdings</button>
+        <button class="${this.activeTab === "defenses" ? "active" : ""} ${tabsDisabled}" type="button" data-co-tab="defenses">Defenses</button>
+        <button class="${this.activeTab === "battle" ? "active" : ""} ${managementDisabled}" type="button" data-co-tab="battle">Battle</button>
       </nav>
     `;
   }
@@ -1946,7 +2227,9 @@ export class CelestialObjectPanel {
     const details = data.objectDetails;
     const planetState = data.planetState;
     const built = planetState?.builtDistricts ?? details.builtDistricts;
-    const limits = details.districtLimits;
+    const limits = planetState
+      ? getEffectivePlanetDistrictLimits(details.districtLimits, planetState.features)
+      : details.districtLimits;
     const canBuild = data.kind === "planet" && data.isHabited && Boolean(planetState) && hasClientEntityCommandLink("planet", data.objectId);
     const buildTray = this.renderBuildingTray(data);
     const featuresTray = this.renderFeaturesTray(data);
@@ -2222,7 +2505,7 @@ export class CelestialObjectPanel {
             const definition = BUILDING_DEFINITIONS[building];
             const note = lockedByTechnology
               ? `Requires ${this.getRequiredBuildingTechnologyName(building)}`
-              : `${getBuildingMineralCost(building)} minerals | ${getBuildingBuildDays(building)} days`;
+              : `${this.formatResourceCost(getBuildingCost(building))} | ${getBuildingBuildDays(building)} days`;
             return `
               <button
                 type="button"
@@ -2264,31 +2547,48 @@ export class CelestialObjectPanel {
 
   private renderHeroModifiers(data: CelestialObjectPanelData): string {
     const intel = this.planetIntel(data, "economy.activeModifiers");
-    if (intel?.status === "unknown") {
+    const featureIntel = this.planetIntel(data, "features");
+    if (intel?.status === "unknown" && featureIntel?.status === "unknown") {
       return `<div class="coHeroModifiers" data-co-hero-modifiers data-co-modifier-key="unknown"><span class="coHeroModifierSlot"><span class="coHeroModifierBadge coIntelUnknown" data-co-tooltip="Planet modifiers unknown">?</span></span></div>`;
     }
     const groups = this.getHeroModifierGroups(data);
     const renderedGroups = Array.from(groups.entries()).map(([source, sourceModifiers], index) => {
       const presentation = this.getModifierSourcePresentation(source, sourceModifiers);
       const colorStyle = presentation.color ? ` --modifier-color:${presentation.color};` : "";
+      const tooltip = source === "planetFeatureMinor:all"
+        ? this.renderMinorFeatureTooltip(data)
+        : this.renderModifierSourceTooltip(presentation.label, presentation.description, sourceModifiers);
       return `
         <span class="coHeroModifierSlot" style="--modifier-index:${index};${colorStyle}">
           <span
             class="coHeroModifierBadge coModifier-${presentation.category}"
-            data-co-tooltip="${this.tooltipAttr(this.renderModifierSourceTooltip(presentation.label, presentation.description, sourceModifiers))}"
+            data-co-tooltip="${this.tooltipAttr(tooltip)}"
             aria-label="${this.escapeHtml(presentation.label)} modifier"
           >${this.escapeHtml(presentation.glyph)}</span>
         </span>
       `;
     }).join("");
-    const freshness = intel ? formatIntelFreshness(intel, getClientIntelYear()) : null;
-    const stale = intel?.status === "stale" ? " coIntelStale" : "";
+    const freshness = featureIntel?.status === "stale"
+      ? formatIntelFreshness(featureIntel, getClientIntelYear())
+      : intel ? formatIntelFreshness(intel, getClientIntelYear()) : null;
+    const stale = intel?.status === "stale" || featureIntel?.status === "stale" ? " coIntelStale" : "";
     return `<div class="coHeroModifiers${stale}" data-co-hero-modifiers data-co-modifier-key="${this.escapeHtml(this.getHeroModifierRenderKey(data))}"${freshness ? ` data-co-tooltip="${this.tooltipAttr(freshness)}"` : ""}>${renderedGroups}</div>`;
   }
 
   private getHeroModifierGroups(data: CelestialObjectPanelData): Map<string, PlanetModifier[]> {
     const groups = new Map<string, PlanetModifier[]>();
+    if (this.planetIntel(data, "features")?.status !== "unknown") {
+      for (const feature of data.planetState?.features ?? []) {
+        const definition = PLANET_FEATURE_DEFINITIONS[feature];
+        const groupKey = definition.tier === "minor" ? "planetFeatureMinor:all" : `planetFeature:${feature}`;
+        const group = groups.get(groupKey) ?? [];
+        group.push(...definition.modifiers);
+        groups.set(groupKey, group);
+      }
+    }
+    if (this.planetIntel(data, "economy.activeModifiers")?.status === "unknown") return groups;
     for (const modifier of data.planetState?.economy.activeModifiers ?? []) {
+      if (modifier.source.startsWith("planetFeature:")) continue;
       const groupKey = modifier.source.startsWith("technology:")
         ? `technologyCategory:${this.getTechnologyModifierCategory(modifier)}`
         : modifier.source;
@@ -2317,6 +2617,14 @@ export class CelestialObjectPanel {
     modifiers: PlanetModifier[],
   ): { label: string; description?: string; category: string; glyph: string; color?: string } {
     const [category, id] = source.split(":", 2);
+    if (category === "planetFeatureMinor") {
+      return {
+        label: "Minor Planet Features",
+        description: "Local environmental characteristics and small-scale planetary conditions.",
+        category: "feature-minor",
+        glyph: "MF",
+      };
+    }
     if (category === "technologyCategory") {
       const technologyCategories = {
         city: { label: "City & Building Technologies", glyph: "CT" },
@@ -2356,11 +2664,20 @@ export class CelestialObjectPanel {
       return {
         label: definition?.label ?? modifiers[0]?.label ?? "Planet Feature",
         description: definition?.description,
-        category: "feature",
-        glyph: "PF",
+        category: definition?.negative ? "feature-negative" : definition?.tier === "special" ? "feature-special" : "feature-major",
+        glyph: definition?.initials ?? "PF",
       };
     }
     if (category === "technology") return { label: modifiers[0]?.label ?? "Technology", category, glyph: "TE" };
+    if (category === "colony") {
+      return {
+        label: modifiers[0]?.label ?? "Frontier Settlement",
+        description: "Temporary settlement support for a newly founded colony.",
+        category,
+        glyph: "FS",
+      };
+    }
+    if (category === "building") return { label: modifiers[0]?.label ?? "Capital Effects", category, glyph: "CP" };
     if (category === "government") return { label: "Government Effects", category, glyph: "GV" };
     if (category === "shortage") return { label: modifiers[0]?.label ?? `${id ?? "Resource"} Shortage`, category, glyph: "!" };
     if (category === "leader") return { label: modifiers[0]?.label ?? "Governor Effect", category, glyph: "LD" };
@@ -2374,13 +2691,21 @@ export class CelestialObjectPanel {
       ${description ? `<p>${this.escapeHtml(description)}</p>` : ""}
       <div class="coTooltipSectionTitle">${modifiers.length} active modifier${modifiers.length === 1 ? "" : "s"}</div>
       <div class="coTooltipList">
-        ${modifiers.map((modifier) => `<span>${this.escapeHtml(modifier.label)}: ${this.escapeHtml(this.formatPlanetModifierEffect(modifier))}</span>`).join("")}
+        ${modifiers.map((modifier) => {
+          const expiry = modifier.expiresAtYear === undefined
+            ? ""
+            : ` (expires in ${Math.max(0, modifier.expiresAtYear - getClientIntelYear()).toFixed(1)} years)`;
+          return `<span>${this.escapeHtml(modifier.label)}: ${this.escapeHtml(this.formatPlanetModifierEffect(modifier))}${this.escapeHtml(expiry)}</span>`;
+        }).join("")}
       </div>
     `;
   }
 
   private formatPlanetModifierEffect(modifier: PlanetModifier): string {
-    const target = modifier.target
+    const districtKind = modifier.target.startsWith("districtLimit:")
+      ? modifier.target.slice("districtLimit:".length)
+      : null;
+    const target = (districtKind ? `${districtKind} district limit` : modifier.target)
       .replace(/^jobOutput:/, "")
       .replace(/^jobUpkeep:/, "")
       .replace(/^jobCapacity:/, "")
@@ -2408,11 +2733,14 @@ export class CelestialObjectPanel {
     const enabled = isPlanetBuildingEnabled(building);
     const queued = this.getQueuedBuildingForSlot(planetState, target.area, target.slotIndex, target.subDistrictIndex);
     const targetLevel = getBuildingUpgradeTargetLevel(building);
+    const displayLabel = getBuildingDisplayLabel(buildingKind, level);
+    const displayDescription = getBuildingDisplayDescription(buildingKind, level);
     const technologyUnlocked = targetLevel !== null && this.isBuildingLevelUnlocked(data.technology, buildingKind, targetLevel);
     const populationMet = targetLevel !== null && meetsCapitalUpgradePopulation(buildingKind, targetLevel, planetState.population);
     const canManage = Boolean(data.onPlanetCommand);
     const canUpgrade = canManage && targetLevel !== null && technologyUnlocked && populationMet && !queued;
-    const canDowngrade = canManage && !queued && !(level <= 1 && definition.autoPlaced);
+    const canDowngrade = canManage && !queued && buildingKind !== "planetaryCapital" && !(level <= 1 && definition.autoPlaced);
+    const canToggle = canManage && buildingKind !== "planetaryCapital";
     const upgradeReason = targetLevel === null
       ? "Maximum level"
       : queued
@@ -2431,7 +2759,7 @@ export class CelestialObjectPanel {
       <aside class="coBuildingDetails" data-co-side-panel="building">
         <div class="coBuildTrayHeader">
           <div>
-            <strong>${this.escapeHtml(definition.label)}</strong>
+            <strong>${this.escapeHtml(displayLabel)}</strong>
             <span>${this.escapeHtml(location)}</span>
           </div>
           <button type="button" data-co-close-building-details aria-label="Close building overview">X</button>
@@ -2446,13 +2774,13 @@ export class CelestialObjectPanel {
             <span class="coBuildingStatus ${enabled ? "online" : "offline"}">${enabled ? "Operational" : "Disabled"}</span>
           </div>
         </div>
-        <p class="coBuildingDescription">${this.escapeHtml(definition.description)}</p>
+        <p class="coBuildingDescription">${this.escapeHtml(displayDescription)}</p>
         <div class="coBuildingDetailActions">
-          <button class="danger" type="button" data-co-downgrade-building ${targetAttributes} ${canDowngrade ? "" : "disabled"} title="${this.escapeHtml(level > 1 ? `Downgrade to level ${level - 1}` : definition.autoPlaced ? "This building cannot be deleted" : "Delete this building")}">
+          <button class="danger" type="button" data-co-downgrade-building ${targetAttributes} ${canDowngrade ? "" : "disabled"} title="${this.escapeHtml(buildingKind === "planetaryCapital" ? "Planetary capitals cannot be downgraded" : level > 1 ? `Downgrade to level ${level - 1}` : definition.autoPlaced ? "This building cannot be deleted" : "Delete this building")}">
             ${level > 1 ? "Downgrade" : "Delete"}
           </button>
           <button type="button" data-co-upgrade-building ${targetAttributes} ${canUpgrade ? "" : "disabled"} title="${this.escapeHtml(upgradeReason)}">Upgrade</button>
-          <button type="button" data-co-toggle-building ${targetAttributes} ${canManage ? "" : "disabled"}>${enabled ? "Disable" : "Enable"}</button>
+          <button type="button" data-co-toggle-building ${targetAttributes} ${canToggle ? "" : "disabled"} title="${buildingKind === "planetaryCapital" ? "Planetary capitals cannot be disabled" : ""}">${enabled ? "Disable" : "Enable"}</button>
         </div>
         <section class="coBuildingWorkforce">
           <div class="coBuildingWorkforceHeader">
@@ -2486,11 +2814,10 @@ export class CelestialObjectPanel {
     level: number,
   ): Array<{ group: PopGroup; amount: number }> {
     const capacityByJob = new Map<JobKind, number>();
-    const levelMultiplier = getBuildingLevelEffectMultiplier(level);
-    for (const effect of definition.jobs ?? []) {
+    for (const effect of getBuildingJobEffects(definition.kind, level)) {
       if (effect.amount <= 0) continue;
       const districtMultiplier = effect.perDistrict ? planetState.builtDistricts[effect.perDistrict] : 1;
-      capacityByJob.set(effect.job, (capacityByJob.get(effect.job) ?? 0) + effect.amount * districtMultiplier * levelMultiplier);
+      capacityByJob.set(effect.job, (capacityByJob.get(effect.job) ?? 0) + effect.amount * districtMultiplier);
     }
     return planetState.economy.popGroups
       .map((group) => {
@@ -2502,28 +2829,654 @@ export class CelestialObjectPanel {
       .sort((a, b) => b.amount - a.amount);
   }
 
+  private renderPlanetManagementBody(data: CelestialObjectPanelData): string {
+    const planetState = data.planetState;
+    if (!planetState) return '<section class="coBody coManagementBody" data-co-body="management"></section>';
+    const featureIntel = this.planetIntel(data, "features");
+    const freshness = featureIntel ? formatIntelFreshness(featureIntel, getClientIntelYear()) : null;
+    if (featureIntel?.status === "unknown") {
+      return `
+        <section class="coBody coManagementBody coIntelUnknown" data-co-body="management">
+          <div class="coManagementDashboard">
+            <article class="coFeatureManagementCard">
+              <header><strong>Major Features</strong><span>Environmental intelligence required</span></header>
+              <div class="coMajorFeatureSlots">
+                ${[0, 1, 2].map(() => '<div class="coMajorFeatureSlot unknown"><strong>?</strong><span>Unknown feature</span></div>').join("")}
+              </div>
+            </article>
+            <article class="coFeatureManagementCard coMinorFeaturePanel">
+              <header><strong>Minor Features</strong><span>Unknown</span></header>
+              <div class="coMinorFeatureList"><div class="coFeatureEmpty">Planetary features have not been resolved by current intelligence.</div></div>
+            </article>
+            ${this.renderConstructionQueue(data)}
+          </div>
+        </section>
+      `;
+    }
+    const definitions = planetState.features.map((kind) => PLANET_FEATURE_DEFINITIONS[kind]);
+    const majorFeatures = definitions.filter((definition) => definition.tier !== "minor").slice(0, 3);
+    const minorFeatures = definitions.filter((definition) => definition.tier === "minor");
+    const staleClass = featureIntel?.status === "stale" ? " coIntelStale" : "";
+    return `
+      <section class="coBody coManagementBody${staleClass}" data-co-body="management"${freshness ? ` data-co-tooltip="${this.tooltipAttr(freshness)}"` : ""}>
+        <div class="coManagementDashboard">
+          <article class="coFeatureManagementCard">
+            <header><strong>Major Features</strong><span>${majorFeatures.length} / 3 occupied</span></header>
+            <div class="coMajorFeatureSlots">
+              ${[0, 1, 2].map((index) => majorFeatures[index]
+                ? this.renderManagedFeatureCard(data, majorFeatures[index], true)
+                : '<div class="coMajorFeatureSlot empty"><strong>Empty slot</strong><span>No major feature</span></div>').join("")}
+            </div>
+          </article>
+          <article class="coFeatureManagementCard coMinorFeaturePanel">
+            <header><strong>Minor Features</strong><span>${minorFeatures.length} catalogued</span></header>
+            <div class="coMinorFeatureList">
+              ${minorFeatures.length > 0
+                ? minorFeatures.map((definition) => this.renderManagedFeatureCard(data, definition, false)).join("")
+                : '<div class="coFeatureEmpty">No minor planetary features catalogued.</div>'}
+            </div>
+          </article>
+          ${this.renderConstructionQueue(data)}
+        </div>
+      </section>
+    `;
+  }
+
+  private renderManagedFeatureCard(
+    data: CelestialObjectPanelData,
+    definition: (typeof PLANET_FEATURE_DEFINITIONS)[PlanetFeatureKind],
+    major: boolean,
+  ): string {
+    const planetState = data.planetState!;
+    const canManage = data.isHabited
+      && data.canManageLeaders === true
+      && hasClientEntityCommandLink("planet", data.objectId);
+    const queued = hasQueuedFeatureRemoval(planetState, definition.kind);
+    const requiredTechIds = getRequiredTechIdsForPlanetFeatureRemoval(definition.kind);
+    const technologyUnlocked = requiredTechIds.length === 0
+      || requiredTechIds.some((techId) => this.isTechnologyCompleted(data.technology, techId));
+    const affordable = !definition.removal || RESOURCE_KINDS.every((resource) => (
+      (data.factionEconomy?.stockpiles[resource] ?? 0) >= definition.removal!.cost[resource]
+    ));
+    const removalNote = queued
+      ? "Removal queued"
+      : !technologyUnlocked
+        ? `Requires ${getFirstRequiredTechName(requiredTechIds)}`
+        : definition.removal
+          ? `${this.formatResourceCost(definition.removal.cost)} · ${definition.removal.buildDays} days`
+          : "Permanent feature";
+    const action = canManage && definition.removal
+      ? `<button class="coFeatureRemoveButton" type="button" data-co-remove-feature="${this.escapeHtml(definition.kind)}"${queued || !technologyUnlocked || !affordable ? " disabled" : ""}>${queued ? "Queued" : "Remove"}</button>`
+      : "";
+    return `
+      <article class="${major ? "coMajorFeatureSlot" : "coMinorFeatureRow"}${definition.negative ? " negative" : " positive"}">
+        <span class="coManagedFeatureGlyph">${this.escapeHtml(definition.initials)}</span>
+        <div class="coManagedFeatureCopy">
+          <div><strong>${this.escapeHtml(definition.label)}</strong><small>${this.escapeHtml(definition.rarity)}</small></div>
+          <p>${this.escapeHtml(definition.description)}</p>
+          <div class="coManagedFeatureEffects">${definition.modifiers.map((modifier) => `<span>${this.escapeHtml(this.formatPlanetModifierEffect(modifier))}</span>`).join("")}</div>
+          ${definition.removal && canManage ? `<small class="coFeatureRemovalNote">${this.escapeHtml(removalNote)}</small>` : ""}
+        </div>
+        ${action}
+      </article>
+    `;
+  }
+
   private renderPlanetDefenses(data: CelestialObjectPanelData): string {
     const planetState = data.planetState;
     const habitationIntel = this.planetIntel(data, "isHabited");
     if (!planetState || (!data.isHabited && habitationIntel?.status !== "unknown")) return "";
-
+    const active = getActivePlanetDefenseBuildings(planetState);
+    const sensorTier = active
+      .filter((building) => building.kind === "sensorArray")
+      .reduce((highest, building) => Math.max(highest, building.level), 0);
+    const shieldOnline = active.some((building) => building.kind === "planetaryShield");
+    const platformCapacity = getPlanetDefensePlatformCapacity(planetState);
+    const platformUsage = Math.max(0, Math.floor(data.planetPlatformUsage ?? 0))
+      + planetState.defense.shipQueue.filter((item) => item.kind === "build" && item.shipKind === "defensePlatform").length;
+    const soldiers = this.getEmployedJobPopulation(planetState, "soldier");
+    const trainees = this.getEmployedJobPopulation(planetState, "trainee");
     return `
       <aside class="coPlanetDefenses" data-co-side-panel="defenses">
         <div class="coSidePanelHeader">
           <div>
             <strong>Planet Defenses</strong>
-            <span>Surface security placeholder</span>
+            <span>${countPlanetShipyards(planetState)} active shipyard lane${countPlanetShipyards(planetState) === 1 ? "" : "s"}</span>
           </div>
         </div>
         <div class="coDefenseGrid">
-          ${this.renderDefenseStat("population", "Soldiers", "0", this.planetIntel(data, "defenses.soldiers"))}
-          ${this.renderDefenseStat("districts", "Defense Armies", "0", this.planetIntel(data, "defenses.armies"))}
-          ${this.renderDefenseStat("stability", "Fortification", "0%", this.planetIntel(data, "defenses.fortification"))}
-          ${this.renderDefenseStat("habitability", "Orbital Defense", "None", this.planetIntel(data, "defenses.orbitalDefense"))}
+          ${this.renderDefenseStat("population", "Soldiers", this.formatPeople(soldiers), this.planetIntel(data, "defenses.soldiers"))}
+          ${this.renderDefenseStat("districts", "Stationed Armies", String(data.armies?.length ?? 0), this.planetIntel(data, "defenses.armies"))}
+          ${this.renderDefenseStat("stability", "Sensor Array", sensorTier > 0 ? `Tier ${sensorTier}` : "Capital L1", this.planetIntel(data, "defenses.sensorTier"))}
+          ${this.renderDefenseStat("habitability", "Orbital Defense", `${platformUsage} / ${platformCapacity}`, this.planetIntel(data, "defenses.orbitalDefense"))}
+          ${this.renderDefenseStat("amenities", "Trainees", this.formatPeople(trainees), this.planetIntel(data, "defenses.trainees"))}
+          ${this.renderDefenseStat("housing", "Planetary Shield", shieldOnline ? "Online" : "Offline", this.planetIntel(data, "defenses.shield"))}
         </div>
         ${this.renderConstructionQueue(data)}
       </aside>
     `;
+  }
+
+  private renderMinorFeatureTooltip(data: CelestialObjectPanelData): string {
+    const features = (data.planetState?.features ?? [])
+      .map((kind) => PLANET_FEATURE_DEFINITIONS[kind])
+      .filter((definition) => definition.tier === "minor");
+    return `
+      <div class="coTooltipTitle">Minor Planet Features</div>
+      <div class="coTooltipSectionTitle">${features.length} catalogued</div>
+      <div class="coTooltipList">
+        ${features.map((definition) => `<span><strong>${this.escapeHtml(definition.label)}</strong>: ${definition.modifiers.map((modifier) => this.escapeHtml(this.formatPlanetModifierEffect(modifier))).join(", ")}</span>`).join("")}
+      </div>
+    `;
+  }
+
+  public refreshFactionEconomy(factionEconomy: FactionEconomyState | null): void {
+    if (!this.currentData || this.currentData.kind !== "planet") return;
+    this.show({ ...this.currentData, factionEconomy });
+  }
+
+  private renderPlanetDefenseBody(data: CelestialObjectPanelData): string {
+    const planet = data.planetState;
+    if (!planet) return '<section class="coBody" data-co-body="defenses"></section>';
+    const defenseUnlocked = getUnlockedPlanetDefenseSlots(planet);
+    const shipyardUnlocked = getUnlockedPlanetShipyardSlots(planet);
+    const active = getActivePlanetDefenseBuildings(planet);
+    const sensorTier = active
+      .filter((building) => building.kind === "sensorArray")
+      .reduce((highest, building) => Math.max(highest, building.level), 0);
+    const shieldOnline = active.some((building) => building.kind === "planetaryShield");
+    const platformCapacity = getPlanetDefensePlatformCapacity(planet);
+    const platformUsage = Math.max(0, Math.floor(data.planetPlatformUsage ?? 0))
+      + planet.defense.shipQueue.filter((item) => item.kind === "build" && item.shipKind === "defensePlatform").length;
+    const lanes = countPlanetShipyards(planet);
+    const soldiers = this.getEmployedJobPopulation(planet, "soldier");
+    const trainees = this.getEmployedJobPopulation(planet, "trainee");
+    const residentArmies = (data.armies ?? []).filter((army) => army.location.kind === "planet" && army.location.planetId === planet.id);
+    const stationed = residentArmies.reduce((sum, army) => sum + Math.max(0, army.manpower), 0);
+    const armyPower = data.armyPower ?? residentArmies.reduce((sum, army) => sum + getArmyCurrentPower(army).nominal, 0);
+    const crew = Math.max(0, Math.floor(data.factionEconomy?.crewStockpile ?? 0));
+    const reservedCrew = planet.defense.shipQueue.reduce((sum, item) => sum + Math.max(0, item.reservedCrew), 0);
+    const canManage = data.canManageLeaders === true;
+
+    return `
+      <section class="coBody coDefenseBody" data-co-body="defenses">
+        <div class="coDefenseDashboard">
+          ${this.defenseBuildingTarget ? this.renderPlanetDefenseBuildingPanel(data) : `
+          <article class="coDefenseSummaryCard">
+            <header><strong>Defense Network</strong><span>Planetary command overview</span></header>
+            <div class="coDefenseSummaryGrid">
+              <div class="wide" data-co-tooltip="${this.tooltipAttr(this.renderPlanetSensorCoverageTooltip(sensorTier))}"><span>Sensor Level</span><strong>L${Math.max(1, sensorTier)}</strong></div>
+              <div><span>Planetary shield</span><strong>${shieldOnline ? "Online" : "Offline"}</strong></div>
+              <div><span>Platforms</span><strong>${platformUsage} / ${platformCapacity}</strong></div>
+              <div><span>Shipyard lanes</span><strong>${lanes}</strong></div>
+              <div><span>Crew available</span><strong>${this.formatPeople(crew)}</strong></div>
+            </div>
+          </article>
+          <article class="coDefenseSummaryCard">
+            <header><strong>Stationed Armies</strong><span>Planetary defense manpower</span></header>
+            <div class="coDefenseSummaryGrid">
+              <div><span>Employed Soldiers</span><strong>${this.formatPeople(soldiers)}</strong></div>
+              <div><span>Stationed armies</span><strong>${this.formatPeople(stationed)}</strong></div>
+              <div><span>Army Power</span><strong>${this.formatPower(armyPower)}</strong></div>
+              <div class="wide"><span>Total defense manpower</span><strong>${this.formatPeople(soldiers + trainees + stationed)}</strong></div>
+            </div>
+            ${canManage && residentArmies.some((army) => army.mobility === "mobile") ? `
+              <div class="coArmyEmbarkList">
+                ${residentArmies.filter((army) => army.mobility === "mobile").map((army) => `<label><input type="checkbox" data-co-embark-army value="${this.escapeHtml(army.id)}" checked> ${this.escapeHtml(ARMY_TYPE_DEFINITIONS[army.typeId].name)} · ${this.formatPeople(army.manpower)}</label>`).join("")}
+                <label><input type="checkbox" data-co-embark-commander> Embark military commander</label>
+                <button class="coArmyTransferButton" type="button" data-co-embark-armies>Embark Armies</button>
+              </div>
+            ` : ""}
+          </article>
+          `}
+        </div>
+
+        <div class="coDefenseFacilityColumns">
+          <section class="coDefenseFacilityGroup">
+            <header><div><strong>Defensive Facilities</strong><span>${defenseUnlocked} / 6 slots unlocked · 2 per enabled Fortress</span></div></header>
+            <div class="coEmbeddedBuildings coDefenseSlots">
+              ${planet.defense.defenseSlots.map((building, index) => this.renderPlanetDefenseSlot(
+                data,
+                "defense",
+                index,
+                building,
+                defenseUnlocked,
+              )).join("")}
+            </div>
+          </section>
+          <section class="coDefenseFacilityGroup">
+            <header><div><strong>Orbital Shipyard Facilities</strong><span>${shipyardUnlocked} / 3 slots unlocked · 1 per enabled Alloy Foundry</span></div></header>
+            <div class="coEmbeddedBuildings coDefenseSlots shipyard">
+              ${planet.defense.shipyardSlots.map((building, index) => this.renderPlanetDefenseSlot(
+                data,
+                "shipyard",
+                index,
+                building,
+                shipyardUnlocked,
+              )).join("")}
+            </div>
+          </section>
+        </div>
+
+        <section class="coPlanetShipyardPanel">
+          <header>
+            <div><strong>Planetary Shipyard</strong><span>${lanes} active lane${lanes === 1 ? "" : "s"} · Crew reserved ${this.formatPeople(reservedCrew)}</span></div>
+            <div class="coPlanetShipBuild">
+              ${this.renderPlanetShipDesignPicker(data)}
+              <button type="button" data-co-build-planet-ship ${lanes > 0 && canManage ? "" : "disabled"}>Queue Ship</button>
+            </div>
+          </header>
+          <div class="coPlanetShipQueue">
+            ${this.renderPlanetShipQueueItems(data, lanes, canManage)}
+          </div>
+        </section>
+        ${this.renderPlanetArmyRecruitment(data, lanes, canManage)}
+      </section>
+    `;
+  }
+
+  private getEmployedJobPopulation(planet: PlanetState, job: JobKind): number {
+    return planet.economy.popGroups
+      .filter((group) => group.job === job)
+      .reduce((sum, group) => sum + Math.max(0, group.population), 0);
+  }
+
+  private renderPlanetArmyRecruitment(data: CelestialObjectPanelData, lanes: number, canManage: boolean): string {
+    const planet = data.planetState;
+    if (!planet) return "";
+    const ownerId = planet.ownerId;
+    const populationBySpecies = new Map<string, number>();
+    const queuedBySpecies = new Map<string, number>();
+    for (const ownedPlanet of data.empirePlanetStates ?? [planet]) {
+      if (!ownedPlanet.isHabited || ownedPlanet.ownerId !== ownerId) continue;
+      for (const entry of ownedPlanet.speciesPopulations) populationBySpecies.set(entry.speciesId, (populationBySpecies.get(entry.speciesId) ?? 0) + entry.population);
+      for (const item of ownedPlanet.defense.shipQueue) if (item.kind === "armyBuild" && item.speciesId) queuedBySpecies.set(item.speciesId, (queuedBySpecies.get(item.speciesId) ?? 0) + 1);
+    }
+    const existingBySpecies = new Map<string, number>();
+    for (const army of data.empireArmies ?? data.armies ?? []) {
+      if (army.ownerId === ownerId && army.mobility === "mobile") existingBySpecies.set(army.speciesId, (existingBySpecies.get(army.speciesId) ?? 0) + 1);
+    }
+    const species = (data.species ?? []).filter((entry) => (populationBySpecies.get(entry.id) ?? 0) > 0).map((entry) => {
+      const localGroups = planet.economy.popGroups.filter((group) => group.speciesId === entry.id && group.population > 0);
+      const localPopulation = localGroups.reduce((sum, group) => sum + group.population, 0);
+      const habitability = localPopulation > 0
+        ? localGroups.reduce((sum, group) => sum + group.habitability * group.population, 0) / localPopulation
+        : Number(planet.habitability ?? 0);
+      return { ...entry, habitability };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    const crew = Math.max(0, data.factionEconomy?.crewStockpile ?? 0);
+    return `
+      <section class="coPlanetShipyardPanel coArmyRecruitmentPanel">
+        <header><div><strong>Recruit Army</strong><span>One persistent unit and one fixed transport per order</span></div></header>
+        <div class="coArmyRecruitmentList">
+          ${MOBILE_ARMY_TYPE_IDS.flatMap((typeId) => {
+            const definition = ARMY_TYPE_DEFINITIONS[typeId];
+            const techUnlocked = !definition.requiredTechnologyId || data.technology?.completedTechIds.includes(definition.requiredTechnologyId as TechId) === true;
+            return species.map((entry) => {
+              const cap = Math.floor((populationBySpecies.get(entry.id) ?? 0) / 100_000_000);
+              const used = (existingBySpecies.get(entry.id) ?? 0) + (queuedBySpecies.get(entry.id) ?? 0);
+              const environment = getArmyHabitabilityMultiplier(entry.habitability);
+              const maxHp = getArmyMaxHp(entry.traitIds);
+              const requiredTechName = definition.requiredTechnologyId ? TECHNOLOGY_BY_ID[definition.requiredTechnologyId]?.name ?? definition.requiredTechnologyId : null;
+              const disabledReason = lanes <= 0 ? "No completed orbital shipyard" : !canManage ? "Planet is not under your control" : !techUnlocked ? `Requires ${requiredTechName}` : crew < ARMY_TOTAL_CREW_DEMAND ? "Insufficient Crew" : used >= cap ? `Species army cap reached (${used}/${cap})` : "";
+              return `<article class="coArmyRecruitmentRow">
+                <div><strong>${this.escapeHtml(definition.name)}</strong><small>${this.escapeHtml(entry.name)} · ${Math.round(entry.habitability)}% habitability · ${maxHp} max HP</small></div>
+                <div><span>${this.formatCompact(definition.attackPower)} / ${this.formatCompact(definition.defensePower)} nominal</span><small>Local ${this.formatCompact(definition.attackPower * environment)} / ${this.formatCompact(definition.defensePower * environment)} · ${ARMY_TRANSPORT_BUILD_DAYS + definition.trainingDays} days · ${this.formatPeople(ARMY_TOTAL_CREW_DEMAND)} Crew</small></div>
+                <div><small>${this.escapeHtml(this.formatResourceCost(definition.cost))} · species cap ${used}/${cap}${requiredTechName ? ` · ${this.escapeHtml(requiredTechName)}` : " · Starting technology"}</small><button type="button" data-co-recruit-army="${typeId}:${this.escapeHtml(entry.id)}" ${disabledReason ? `disabled title="${this.escapeHtml(disabledReason)}"` : ""}>Recruit</button></div>
+              </article>`;
+            });
+          }).join("") || '<p class="coEmptyState">No resident species are eligible.</p>'}
+        </div>
+      </section>`;
+  }
+
+  private renderPlanetBattleBody(data: CelestialObjectPanelData): string {
+    const armies = data.armies ?? [];
+    const battle = data.groundBattle ?? null;
+    const byId = new Map(armies.map((army) => [army.id, army]));
+    const attackers = battle ? battle.attackerArmyIds.map((id) => byId.get(id)).filter((army): army is ArmyUnit => Boolean(army)) : [];
+    const defenders = battle ? battle.defenderArmyIds.map((id) => byId.get(id)).filter((army): army is ArmyUnit => Boolean(army)) : armies;
+    const strongest = (units: ArmyUnit[], attacking: boolean) => [...units].sort((a, b) => {
+      const left = getArmyCurrentPower(a)[attacking ? "attack" : "defense"];
+      const right = getArmyCurrentPower(b)[attacking ? "attack" : "defense"];
+      return right - left || a.id.localeCompare(b.id);
+    });
+    const width = battle
+      ? getPlanetCombatWidth(data.objectDetails.typeName as PlanetType, data.planetState?.features ?? [])
+      : 0;
+    const engagedAttackers = strongest(attackers, true).slice(0, width);
+    const engagedDefenders = strongest(defenders, false).slice(0, width);
+    const attackerReserve = attackers.filter((army) => !engagedAttackers.includes(army));
+    const defenderReserve = defenders.filter((army) => !engagedDefenders.includes(army));
+    const stats = (units: ArmyUnit[], attacking: boolean) => {
+      const manpower = units.reduce((sum, army) => sum + army.manpower, 0);
+      const maxManpower = units.reduce((sum, army) => sum + army.maxManpower, 0);
+      const hp = units.reduce((sum, army) => sum + army.hp, 0);
+      const maxHp = units.reduce((sum, army) => sum + army.maxHp, 0);
+      return {
+        manpower,
+        power: units.reduce((sum, army) => sum + getArmyCurrentPower(army)[attacking ? "attack" : "defense"], 0),
+        ratio: units.length > 0 ? Math.min(1, hp / Math.max(1, maxHp)) * Math.min(1, manpower / Math.max(1, maxManpower)) : 0,
+      };
+    };
+    const marker = (side: "attacker" | "defender", ratio: number) => `<div class="coBattleTrack"><span class="coBattleMarker ${side}" style="top:${10 + (1 - ratio) * 80}%;filter:brightness(${0.45 + ratio * 0.75})"></span></div>`;
+    const aReserve = stats(attackerReserve, true);
+    const dReserve = stats(defenderReserve, false);
+    const aTotal = stats(attackers, true);
+    const dTotal = stats(defenders, false);
+    const aEngaged = stats(engagedAttackers, true);
+    const dEngaged = stats(engagedDefenders, false);
+    const playerIsAttacker = battle?.attackerFactionId === data.playerFactionId;
+    const playerIsDefender = battle?.defenderFactionId === data.playerFactionId;
+    const commander = (leader: LeaderState | null | undefined, control: string) => `<div class="coBattleCommander"><span>${this.escapeHtml(control)}</span><strong>${this.escapeHtml(leader?.name ?? "Unassigned")}</strong><small>${leader ? `Level ${leader.level}` : "Military commander"}</small></div>`;
+    return `
+      <section class="coBody coBattleBody" data-co-body="battle">
+        <div class="coBattleColumns">
+          <article class="coBattleSide attacker">
+            <header><strong>Attacker Reserve</strong><span>${this.formatPeople(aTotal.manpower)} total manpower · ${this.formatPower(aTotal.power)} total power</span></header>
+            ${commander(data.battleCommander, "Invasion command")}
+            ${marker("attacker", aReserve.ratio)}
+            <div class="coBattleUnitList">${attackerReserve.map((army) => `<span>${this.escapeHtml(ARMY_TYPE_DEFINITIONS[army.typeId].name)} · ${Math.round(army.hp)} HP · ${this.formatPeople(army.manpower)}</span>`).join("") || "No reserves"}</div>
+            ${playerIsAttacker ? `<button type="button" data-co-assign-ground-commander>Assign Commander</button>${battle ? `<button type="button" data-co-withdraw-ground ${battle.withdrawalRequestedAtYear ? "disabled" : ""}>${battle.withdrawalRequestedAtYear ? "Withdrawal Pending" : "Withdraw"}</button>` : ""}` : ""}
+          </article>
+          <article class="coBattlefield">
+            <header><strong>Battlefield</strong><span>${battle ? `Combat width ${width}` : "No active battle"}</span></header>
+            <div><strong>Attacker</strong><span>${this.formatPeople(aEngaged.manpower)} · ${this.formatPower(aEngaged.power)}</span></div>
+            <div class="coBattleOpposition">VS</div>
+            <div><strong>Defender</strong><span>${this.formatPeople(dEngaged.manpower)} · ${this.formatPower(dEngaged.power)}</span></div>
+          </article>
+          <article class="coBattleSide defender">
+            <header><strong>Defender Reserve</strong><span>${this.formatPeople(dTotal.manpower)} total manpower · ${this.formatPower(dTotal.power)} total power</span></header>
+            ${commander(data.militaryCommander, "Planetary command")}
+            ${marker("defender", dReserve.ratio)}
+            <div class="coBattleUnitList">${defenderReserve.map((army) => `<span>${this.escapeHtml(ARMY_TYPE_DEFINITIONS[army.typeId].name)} · ${Math.round(army.hp)} HP · ${this.formatPeople(army.manpower)}</span>`).join("") || "No reserves"}</div>
+            ${playerIsDefender || (!battle && data.canManageLeaders) ? '<button type="button" data-co-assign-planet-military>Assign Commander</button>' : ""}
+          </article>
+        </div>
+      </section>`;
+  }
+
+  private renderPlanetDefenseBuildingPanel(data: CelestialObjectPanelData): string {
+    const planet = data.planetState;
+    const target = this.defenseBuildingTarget;
+    if (!planet || !target) return "";
+    const slots = target.section === "defense"
+      ? planet.defense.defenseSlots
+      : planet.defense.shipyardSlots;
+    const building = slots[target.slotIndex] ?? null;
+    const canManage = data.canManageLeaders === true;
+    const targetAttributes = `data-co-section="${target.section}" data-co-slot-index="${target.slotIndex}"`;
+
+    if (building) {
+      const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind];
+      const enabled = building.enabled !== false;
+      const queued = planet.constructionQueue.find((item) => (
+        item.defenseSection === target.section && item.slotIndex === target.slotIndex
+      ));
+      const nextLevel = building.level + 1;
+      const canUpgrade = nextLevel <= definition.maxLevel
+        && this.isPlanetDefenseBuildingLevelUnlocked(data.technology, building.kind, nextLevel)
+        && !queued;
+      const upgradeReason = nextLevel > definition.maxLevel
+        ? "Maximum level"
+        : queued
+          ? "Construction already queued"
+          : !this.isPlanetDefenseBuildingLevelUnlocked(data.technology, building.kind, nextLevel)
+            ? `Requires ${this.getRequiredPlanetDefenseBuildingLevelTechnologyName(building.kind, nextLevel)}`
+            : `Upgrade to level ${nextLevel}`;
+      return `
+        <aside class="coBuildingDetails coDefenseBuildingTray">
+          <div class="coBuildTrayHeader">
+            <div>
+              <strong>${this.escapeHtml(definition.label)}</strong>
+              <span>${target.section === "defense" ? "Defense" : "Shipyard"} slot ${target.slotIndex + 1}</span>
+            </div>
+            <button type="button" data-co-close-defense-building aria-label="Close facility details">X</button>
+          </div>
+          <div class="coBuildingDetailIntro">
+            <span class="coBuildingDetailIcon"><span class="coBuildingInitials">${this.escapeHtml(definition.initials)}</span></span>
+            <div>
+              <strong>Level ${building.level}</strong>
+              <span class="coBuildingStatus ${enabled ? "online" : "offline"}">${enabled ? "Operational" : "Disabled"}</span>
+            </div>
+          </div>
+          <p class="coBuildingDescription">${this.escapeHtml(definition.description)}</p>
+          <div class="coDefenseFacilityFacts">
+            <div><span>Upkeep</span><strong>${this.escapeHtml(this.formatResourceCost(definition.levels[building.level].upkeep))}</strong></div>
+            ${queued ? `<div><span>Construction</span><strong>${this.formatConstructionDays(queued.remainingDays)}</strong></div>` : ""}
+          </div>
+          <div class="coBuildingDetailActions">
+            <button class="danger" type="button" data-co-defense-action="demolish" ${targetAttributes} ${canManage ? "" : "disabled"}>Demolish</button>
+            ${nextLevel <= definition.maxLevel
+              ? `<button type="button" data-co-defense-action="upgrade" ${targetAttributes} ${canManage && canUpgrade ? "" : "disabled"} title="${this.escapeHtml(upgradeReason)}">Upgrade</button>`
+              : ""}
+            <button type="button" data-co-defense-action="toggle" ${targetAttributes} data-co-enabled="${enabled}" ${canManage ? "" : "disabled"}>${enabled ? "Disable" : "Enable"}</button>
+          </div>
+        </aside>
+      `;
+    }
+
+    const compatible = (Object.keys(PLANET_DEFENSE_BUILDING_DEFINITIONS) as PlanetDefenseBuildingKind[])
+      .filter((kind) => PLANET_DEFENSE_BUILDING_DEFINITIONS[kind].sections.includes(target.section));
+    const builtKinds = new Set(
+      [
+        ...[...planet.defense.defenseSlots, ...planet.defense.shipyardSlots]
+          .flatMap((candidate) => candidate ? [candidate.kind] : []),
+        ...planet.constructionQueue.flatMap((item) => item.defenseBuildingKind ? [item.defenseBuildingKind] : []),
+      ],
+    );
+    return `
+      <aside class="coBuildTray coDefenseBuildingTray">
+        <div class="coBuildTrayHeader">
+          <div>
+            <strong>Construct Facility</strong>
+            <span>${target.section === "defense" ? "Defense" : "Shipyard"} slot ${target.slotIndex + 1}</span>
+          </div>
+          <button type="button" data-co-close-defense-building aria-label="Close facility list">X</button>
+        </div>
+        <div class="coBuildList coDefenseBuildList">
+          ${compatible.map((kind) => {
+            const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[kind];
+            const level = definition.levels[1];
+            const technologyUnlocked = this.isPlanetDefenseBuildingUnlocked(data.technology, kind);
+            const duplicateUnique = definition.unique === true && builtKinds.has(kind);
+            const disabled = !canManage || !technologyUnlocked || duplicateUnique;
+            const note = !technologyUnlocked
+              ? `Requires ${this.getRequiredPlanetDefenseBuildingTechnologyName(kind)}`
+              : duplicateUnique
+                ? "Only one may be built per planet"
+                : `${this.formatResourceCost(level.cost)} · ${level.buildDays} days`;
+            return `
+              <button
+                type="button"
+                data-co-pick-defense-building="${kind}"
+                class="${disabled ? "locked" : ""}"
+                data-co-tooltip="${this.tooltipAttr(`<div class="coTooltipTitle">${this.escapeHtml(definition.label)}</div><p>${this.escapeHtml(definition.description)}</p>`)}"
+                ${disabled ? "disabled" : ""}
+              >
+                <span class="coBuildCardIcon"><span class="coBuildingInitials">${this.escapeHtml(definition.initials)}</span></span>
+                <span class="coBuildCardCopy">
+                  <strong>${this.escapeHtml(definition.label)}</strong>
+                  <small>${this.escapeHtml(note)}</small>
+                </span>
+              </button>
+            `;
+          }).join("")}
+        </div>
+      </aside>
+    `;
+  }
+
+  private renderPlanetSensorCoverageTooltip(sensorTier: number): string {
+    const strongest = sensorTier > 0 ? `Planetary Sensor Array L${sensorTier}` : "Capital Sensor L1";
+    const dedicatedCoverage = sensorTier === 1
+      ? "Full intelligence at ranges 0–1; identity, classification, and contact intelligence at range 2."
+      : sensorTier === 2
+        ? "Full intelligence at ranges 0–1; defense and classification intelligence at range 2; topology and contacts at range 3."
+        : sensorTier >= 3
+          ? "Full intelligence at ranges 0–2; defense and classification intelligence at range 3; topology and contacts at range 4."
+          : "No dedicated sensor facility is active.";
+    return `
+      <div class="coTooltipTitle">Planetary Sensor Coverage</div>
+      <p><strong>Strongest sensor:</strong> ${strongest}</p>
+      <div class="coTooltipList">
+        <span><strong>Capital Sensor L1:</strong> Full intelligence at ranges 0–1.</span>
+        <span><strong>${sensorTier > 0 ? `Planetary Sensor Array L${sensorTier}` : "Dedicated Sensor"}:</strong> ${dedicatedCoverage}</span>
+      </div>
+    `;
+  }
+
+  private renderPlanetDefenseSlot(
+    data: CelestialObjectPanelData,
+    section: PlanetDefenseSection,
+    slotIndex: number,
+    building: PlanetState["defense"]["defenseSlots"][number],
+    unlocked: number,
+  ): string {
+    const planet = data.planetState!;
+    const queued = planet.constructionQueue.find((item) => (
+      item.defenseSection === section && item.slotIndex === slotIndex
+    ));
+    const suspended = slotIndex >= unlocked && Boolean(building || queued);
+    const locked = slotIndex >= unlocked && !suspended;
+    const canManage = data.canManageLeaders === true;
+    const selected = this.defenseBuildingTarget?.section === section
+      && this.defenseBuildingTarget.slotIndex === slotIndex;
+    const targetAttributes = `data-co-section="${section}" data-co-slot-index="${slotIndex}"`;
+    if (building) {
+      const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind];
+      const enabled = building.enabled !== false;
+      const upgradeAvailable = definition.maxLevel > building.level
+        && this.isPlanetDefenseBuildingLevelUnlocked(data.technology, building.kind, building.level + 1);
+      const status = suspended ? "Suspended — unlock capacity lost" : enabled ? "Operational" : "Disabled";
+      const tooltip = `
+        <div class="coTooltipTitle">${this.escapeHtml(definition.label)}${definition.maxLevel > 1 ? ` L${building.level}` : ""}</div>
+        <p>${this.escapeHtml(definition.description)}</p>
+        <div class="coTooltipGrid">
+          ${this.renderTooltipGridItem("Status", status)}
+          ${this.renderTooltipGridItem("Slot", `${section === "defense" ? "Defense" : "Shipyard"} ${slotIndex + 1}`)}
+        </div>
+        <p>Click to manage this facility.</p>
+      `;
+      return `
+        <button
+          class="filled coBuildingIconSlot coDefenseBuildingIcon${enabled ? "" : " disabledBuilding"}${upgradeAvailable ? " upgradeable" : ""}${queued ? " queuedUpgrade" : ""}${suspended ? " suspended" : ""}${selected ? " selected" : ""}"
+          type="button"
+          data-co-open-defense-building
+          ${targetAttributes}
+          data-co-tooltip="${this.tooltipAttr(tooltip)}"
+          aria-label="Manage ${this.escapeHtml(definition.label)}"
+          ${canManage ? "" : "disabled"}
+        >
+          <span class="coBuildingInitials">${this.escapeHtml(definition.initials)}</span>
+          <small class="coBuildingLevel">Lv ${building.level}</small>
+          ${upgradeAvailable ? '<span class="coBuildingUpgradeArrow" aria-hidden="true">^</span>' : ""}
+          ${queued ? `<small data-co-queued-building-days>${this.formatConstructionDays(queued.remainingDays)}</small>` : ""}
+        </button>
+      `;
+    }
+    if (queued) {
+      const definition = queued.defenseBuildingKind
+        ? PLANET_DEFENSE_BUILDING_DEFINITIONS[queued.defenseBuildingKind]
+        : null;
+      return `
+        <span
+          class="queued coBuildingIconSlot coDefenseBuildingIcon${suspended ? " suspended" : ""}"
+          data-co-tooltip="${this.tooltipAttr(`<div class="coTooltipTitle">${this.escapeHtml(queued.label)}</div><p>${suspended ? "Construction suspended until this slot is unlocked again." : `${this.formatConstructionDays(queued.remainingDays)} remaining.`}</p>`)}"
+        >
+          <span class="coBuildingInitials">${this.escapeHtml(definition?.initials ?? "…")}</span>
+          <small data-co-queued-building-days>${this.formatConstructionDays(queued.remainingDays)}</small>
+        </span>
+      `;
+    }
+    if (locked) {
+      return `
+        <span
+          class="coBuildingSlot coDefenseBuildingIcon coDefenseBuildingLocked"
+          data-co-tooltip="${section === "defense" ? "Build and enable a Fortress to unlock two defense slots." : "Build and enable an Alloy Foundry to unlock one shipyard slot."}"
+          aria-label="Locked ${section} slot ${slotIndex + 1}"
+        >L</span>
+      `;
+    }
+    return `
+      <button
+        class="coBuildingSlot coDefenseBuildingIcon${selected ? " selected" : ""}"
+        type="button"
+        data-co-defense-building-slot
+        ${targetAttributes}
+        data-co-tooltip="Build in ${section === "defense" ? "defense" : "shipyard"} slot ${slotIndex + 1}"
+        aria-label="Build in ${section} slot ${slotIndex + 1}"
+        ${canManage ? "" : "disabled"}
+      >+</button>
+    `;
+  }
+
+  private renderPlanetShipDesignPicker(data: CelestialObjectPanelData): string {
+    const ownerId = data.planetState?.ownerId;
+    const designs = (data.shipDesigns ?? [])
+      .filter((design) => design.ownerId === ownerId && design.status === "active")
+      .sort((left, right) => (
+        STARBASE_SHIP_KINDS.indexOf(left.shipKind) - STARBASE_SHIP_KINDS.indexOf(right.shipKind)
+        || left.name.localeCompare(right.name)
+      ));
+    const options = designs.length > 0
+      ? designs.map((design) => {
+        const stats = calculateShipDesignStats(design);
+        const hull = STARBASE_SHIP_DEFINITIONS[design.shipKind].label;
+        return `<option value="${this.escapeHtml(design.id)}" data-co-ship-kind="${design.shipKind}" title="${this.escapeHtml(`${design.name} — ${hull} — ${this.formatPeople(stats.crewDemand)} Crew`)}">${this.escapeHtml(design.name)} — ${this.escapeHtml(hull)}</option>`;
+      }).join("")
+      : '<option value="">No active ship designs</option>';
+    return `<select data-co-planet-ship-picker aria-label="Ship design">${options}</select>`;
+  }
+
+  private renderPlanetShipQueueItems(
+    data: CelestialObjectPanelData,
+    shipyardCount: number,
+    canManage: boolean,
+  ): string {
+    const shipQueue = data.planetState?.defense.shipQueue ?? [];
+    if (shipQueue.length === 0) return '<div class="coPlanetShipQueueEmpty">No ships queued.</div>';
+    return shipQueue.map((item, index) => {
+      const totalDays = Math.max(1, item.totalDays);
+      const progress = Math.max(0, Math.min(100, ((totalDays - item.remainingDays) / totalDays) * 100));
+      const isActive = index < shipyardCount;
+      const designId = item.kind === "upgrade" ? item.targetDesignId : item.designId;
+      const exactDesign = designId
+        ? (data.shipDesigns ?? []).find((candidate) => candidate.id === designId)
+        : undefined;
+      const design = exactDesign ?? (data.shipDesigns ?? []).find((candidate) => (
+        candidate.ownerId === data.planetState?.ownerId
+        && candidate.shipKind === item.shipKind
+        && candidate.status === "active"
+      ));
+      const designName = design?.name ?? item.label;
+      const hullName = STARBASE_SHIP_DEFINITIONS[item.shipKind].label;
+      const verb = item.kind === "upgrade" ? "Upgrading" : "Building";
+      const waitingVerb = item.kind === "upgrade" ? "Upgrade queued" : "Waiting";
+      return `
+        <article class="coPlanetShipQueueItem ${isActive ? "active" : ""}">
+          <div class="coPlanetShipQueueTop">
+            <span>${isActive ? `Lane ${index + 1}` : "Waiting"}</span>
+            <strong title="${this.escapeHtml(designName)}">${this.escapeHtml(designName)}</strong>
+            <button type="button" data-co-cancel-planet-ship="${this.escapeHtml(item.id)}" ${canManage ? "" : "disabled"}>Cancel</button>
+          </div>
+          <div class="coPlanetShipQueueStatus">${isActive ? verb : waitingVerb} · ${this.escapeHtml(hullName)} · ${Math.ceil(item.remainingDays)}d</div>
+          <div class="coPlanetShipQueueCosts">
+            <small><span>Demand</span><strong>${this.renderPlanetShipDailyDemand(item.resourceUpkeepPerDay)}</strong></small>
+            <small><span>Cost</span><strong>${this.escapeHtml(this.formatResourceCost(item.cost))}</strong></small>
+            <small><span>Crew</span><strong>${this.formatPeople(item.reservedCrew)}</strong></small>
+          </div>
+          <div class="coPlanetShipProgress"><i style="width:${progress.toFixed(2)}%"></i></div>
+        </article>
+      `;
+    }).join("");
+  }
+
+  private renderPlanetShipDailyDemand(counts: ResourceCounts): string {
+    const parts = RESOURCE_KINDS
+      .filter((resource) => Math.abs(counts[resource]) > 0.0001)
+      .map((resource) => `${this.formatCompact(dailyToRealMinute(counts[resource]))} ${RESOURCE_LABELS[resource]}${RESOURCE_RATE_LABEL}`);
+    return parts.length > 0 ? parts.join(", ") : "None";
   }
 
   private renderDefenseStat(icon: string, label: string, value: string, intel?: IntelValue<unknown>): string {
@@ -2576,7 +3529,7 @@ export class CelestialObjectPanel {
 
   private renderDistrictTooltip(kind: DistrictKind): string {
     const rows: string[] = [
-      `<div><span>Cost</span><strong>${DISTRICT_MINERAL_COSTS[kind]} Minerals</strong></div>`,
+      `<div><span>Cost</span><strong>${this.escapeHtml(this.formatResourceCost(DISTRICT_COSTS[kind]))}</strong></div>`,
       `<div><span>Build Time</span><strong>${DISTRICT_BUILD_DAYS[kind]} days</strong></div>`,
     ];
     if (kind === "city") {
@@ -2584,10 +3537,10 @@ export class CelestialObjectPanel {
       rows.push(`<div><span>Jobs</span><strong>+100M ${this.escapeHtml(JOB_LABELS.clerk)}</strong></div>`);
     } else if (kind === "generator") {
       rows.push(`<div><span>Jobs</span><strong>+1B ${this.escapeHtml(JOB_LABELS.technician)}</strong></div>`);
-      rows.push(`<div><span>Base Output</span><strong>+5 Energy / 1M workers</strong></div>`);
+      rows.push(`<div><span>Base Output</span><strong>+0.072 Energy / 1M workers</strong></div>`);
     } else if (kind === "mining") {
       rows.push(`<div><span>Jobs</span><strong>+1B ${this.escapeHtml(JOB_LABELS.miner)}</strong></div>`);
-      rows.push(`<div><span>Base Output</span><strong>+5 Minerals / 1M workers</strong></div>`);
+      rows.push(`<div><span>Base Output</span><strong>+0.09 Minerals / 1M workers</strong></div>`);
     } else {
       rows.push(`<div><span>Jobs</span><strong>+1B ${this.escapeHtml(JOB_LABELS.farmer)}</strong></div>`);
       rows.push(`<div><span>Base Output</span><strong>+6 Food / 1M workers</strong></div>`);
@@ -2795,6 +3748,7 @@ export class CelestialObjectPanel {
     const economy = planetState.economy;
     const productionRows = this.getResourceProductionContributions(planetState, resource);
     const upkeepRows = this.getResourceUpkeepContributions(planetState, resource);
+    const buildingUpkeep = this.getDirectBuildingUpkeepTotal(planetState, resource);
     return `
       <div class="coTooltipTitle">${this.escapeHtml(RESOURCE_LABELS[resource])}</div>
       <p>Planetary ${this.escapeHtml(RESOURCE_LABELS[resource].toLowerCase())} flow per real minute at standard speed.</p>
@@ -2802,6 +3756,7 @@ export class CelestialObjectPanel {
         ${this.renderTooltipGridItem("Net", `${this.formatSignedCompact(monthlyToRealMinute(economy.net[resource]))}${RESOURCE_RATE_LABEL}`)}
         ${this.renderTooltipGridItem("Production", `${this.formatCompact(monthlyToRealMinute(economy.production[resource]))}${RESOURCE_RATE_LABEL}`, this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Production`, productionRows, (value) => `${this.formatSignedCompact(monthlyToRealMinute(value))}${RESOURCE_RATE_LABEL}`))}
         ${this.renderTooltipGridItem("Upkeep", `${this.formatCompact(monthlyToRealMinute(economy.upkeep[resource]))}${RESOURCE_RATE_LABEL}`, this.renderJobContributionTooltip(`${RESOURCE_LABELS[resource]} Upkeep`, upkeepRows, (value) => `${this.formatCompact(monthlyToRealMinute(value))}${RESOURCE_RATE_LABEL}`))}
+        ${buildingUpkeep > 0 ? this.renderTooltipGridItem("Buildings", `${this.formatCompact(monthlyToRealMinute(buildingUpkeep))}${RESOURCE_RATE_LABEL}`) : ""}
         ${this.renderTooltipGridItem("Deficit", economy.deficit[resource] > 0 ? `${this.formatCompact(monthlyToRealMinute(economy.deficit[resource]))}${RESOURCE_RATE_LABEL}` : "0/min")}
       </div>
     `;
@@ -2824,20 +3779,53 @@ export class CelestialObjectPanel {
 
   private renderGrowthTooltip(planetState: PlanetState): string {
     const growth = planetState.economy.populationGrowth;
-    const minuteGrowth = quarterlyToRealMinute(growth.netPerQuarter);
+    const minuteGrowth = weeklyToRealMinute(growth.netPerWeek);
     return `
       <div class="coTooltipTitle">Population Growth</div>
-      <p>Growth is calculated quarterly and displayed as its equivalent change per real minute at standard speed.</p>
+      <p>Natural growth is calculated weekly and displayed as its equivalent change per real minute at standard speed.</p>
       <div class="coTooltipGrid">
         ${this.renderTooltipGridItem("Growth / min", `${this.formatSignedPeople(minuteGrowth)}${RESOURCE_RATE_LABEL}`)}
-        ${this.renderTooltipGridItem("Quarter Rate", `${(growth.ratePerQuarter * 100).toFixed(3)}%`)}
-        ${this.renderTooltipGridItem("Capacity", this.formatPeople(growth.capacity))}
-        ${this.renderTooltipGridItem("Housing", this.formatSignedPercent(growth.factors.housing * 100))}
-        ${this.renderTooltipGridItem("Amenities", this.formatSignedPercent(growth.factors.amenities * 100), this.renderAmenitiesTooltip(planetState))}
-        ${this.renderTooltipGridItem("Stability", this.formatSignedPercent(growth.factors.stability * 100), this.renderStabilityTooltip(planetState))}
-        ${this.renderTooltipGridItem("Crime", this.formatSignedPercent(growth.factors.crime * 100), this.renderCrimeTooltip(planetState))}
-        ${this.renderTooltipGridItem("Employment", this.formatSignedPercent(growth.factors.employment * 100), this.renderUnemploymentTooltip(planetState))}
-        ${this.renderTooltipGridItem("Capacity", this.formatSignedPercent(growth.factors.capacity * 100))}
+        ${this.renderTooltipGridItem("Weekly Rate", `${(growth.ratePerWeek * 100).toFixed(3)}%`)}
+        ${this.renderTooltipGridItem("Weekly Change", this.formatSignedPeople(growth.netPerWeek))}
+        ${this.renderTooltipGridItem("Population pressure", `${growth.factors.capacityMultiplier.toFixed(2)}x`)}
+        ${this.renderTooltipGridItem("Quality of life", `${growth.factors.qualityOfLifeMultiplier.toFixed(2)}x`)}
+        ${this.renderTooltipGridItem("Birth modifiers", `${growth.factors.modifierMultiplier.toFixed(2)}x`)}
+        ${this.renderTooltipGridItem("Species traits", `${growth.factors.speciesMultiplier.toFixed(2)}x`)}
+      </div>
+    `;
+  }
+
+  private renderMigrationTooltip(planetState: PlanetState): string {
+    const migration = planetState.economy.migration;
+    return `
+      <div class="coTooltipTitle">Migration</div>
+      <p>Movement is the actual result of the last completed month. Attractiveness is recalculated from current conditions.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Inbound", this.formatPeople(migration.lastMonthInbound))}
+        ${this.renderTooltipGridItem("Outbound", this.formatPeople(migration.lastMonthOutbound))}
+        ${this.renderTooltipGridItem("Net", this.formatSignedPeople(migration.lastMonthNet))}
+        ${this.renderTooltipGridItem("Intake", `${this.formatPeople(migration.lastMonthInbound)} / ${this.formatPeople(migration.lastMonthIntakeCapacity)}`)}
+        ${this.renderTooltipGridItem("Attractiveness", `${migration.attractiveness.toFixed(1)} / 100`)}
+        ${this.renderTooltipGridItem("Happiness (25%)", `${(migration.factors.happiness * 25).toFixed(1)} pts`)}
+        ${this.renderTooltipGridItem("Stability (20%)", `${(migration.factors.stability * 20).toFixed(1)} pts`)}
+        ${this.renderTooltipGridItem("Safety (15%)", `${(migration.factors.safety * 15).toFixed(1)} pts`)}
+        ${this.renderTooltipGridItem("Amenities (15%)", `${(migration.factors.amenities * 15).toFixed(1)} pts`)}
+        ${this.renderTooltipGridItem("Vacant jobs (25%)", `${(migration.factors.jobs * 25).toFixed(1)} pts`)}
+      </div>
+    `;
+  }
+
+  private renderDeclineTooltip(planetState: PlanetState): string {
+    const decline = planetState.economy.populationDecline;
+    return `
+      <div class="coTooltipTitle">Population Decline</div>
+      <p>Decline is projected only from the planet's active famine conditions.</p>
+      <div class="coTooltipGrid">
+        ${this.renderTooltipGridItem("Famine", decline.active ? "Active" : "Inactive")}
+        ${this.renderTooltipGridItem("Monthly deaths", this.formatPeople(Math.abs(decline.netPerMonth)))}
+        ${this.renderTooltipGridItem("Shortage progress", `${decline.shortageProgress.toFixed(1)}%`)}
+        ${this.renderTooltipGridItem("Local food deficit", `${(decline.foodDeficitRatio * 100).toFixed(1)}%`)}
+        ${this.renderTooltipGridItem("Crisis factor", `${(decline.crisisFactor * 100).toFixed(1)}%`)}
       </div>
     `;
   }
@@ -2846,7 +3834,9 @@ export class CelestialObjectPanel {
     const planetState = data.planetState;
     const rows = DISTRICTS.map((district) => {
       const used = planetState?.builtDistricts[district.kind] ?? data.objectDetails.builtDistricts[district.kind];
-      const limit = data.objectDetails.districtLimits[district.kind];
+      const limit = data.planetState
+        ? getEffectivePlanetDistrictLimits(data.objectDetails.districtLimits, data.planetState.features)[district.kind]
+        : data.objectDetails.districtLimits[district.kind];
       return this.renderTooltipListRow(district.label, `${used}/${limit}`, this.renderDistrictTooltip(district.kind));
     }).join("");
     return `
@@ -3006,8 +3996,8 @@ export class CelestialObjectPanel {
         const buildingKind = getPlanetBuildingKind(building);
         if (!buildingKind) continue;
         const level = getPlanetBuildingLevel(building);
-        const housing = (BUILDING_DEFINITIONS[buildingKind]?.housing ?? 0) * getBuildingLevelEffectMultiplier(level);
-        if (housing) rows.push({ label: `${BUILDING_LABELS[buildingKind]} Lv ${level}`, amount: housing });
+        const housing = getBuildingHousing(buildingKind, level);
+        if (housing) rows.push({ label: `${getBuildingDisplayLabel(buildingKind, level)} Lv ${level}`, amount: housing });
       }
     }
     for (const [kind, amount] of subDistrictTotals) rows.push({ label: URBAN_SUB_DISTRICT_LABELS[kind], amount });
@@ -3015,8 +4005,8 @@ export class CelestialObjectPanel {
       const buildingKind = getPlanetBuildingKind(building);
       if (!buildingKind) continue;
       const level = getPlanetBuildingLevel(building);
-      const housing = (BUILDING_DEFINITIONS[buildingKind]?.housing ?? 0) * getBuildingLevelEffectMultiplier(level);
-      if (housing) rows.push({ label: `${BUILDING_LABELS[buildingKind]} Lv ${level}`, amount: housing });
+      const housing = getBuildingHousing(buildingKind, level);
+      if (housing) rows.push({ label: `${getBuildingDisplayLabel(buildingKind, level)} Lv ${level}`, amount: housing });
     }
     return rows;
   }
@@ -3031,6 +4021,20 @@ export class CelestialObjectPanel {
 
   private getResourceUpkeepContributions(planetState: PlanetState, resource: ResourceKind): TooltipJobContribution[] {
     return this.getGroupedContributions(planetState, (group) => this.getGroupResourceUpkeep(planetState, group, resource));
+  }
+
+  private getDirectBuildingUpkeepTotal(planetState: PlanetState, resource: ResourceKind): number {
+    let total = 0;
+    const add = (building: PlanetBuildingSlot): void => {
+      const kind = getPlanetBuildingKind(building);
+      if (!kind || !isPlanetBuildingEnabled(building)) return;
+      total += getBuildingUpkeep(kind, getPlanetBuildingLevel(building))[resource];
+    };
+    for (const building of Object.values(planetState.buildings).flat()) add(building);
+    for (const subDistrict of planetState.urbanSubDistricts) {
+      for (const building of subDistrict.buildings) add(building);
+    }
+    return total;
   }
 
   private getCrimePressureContributions(planetState: PlanetState): TooltipJobContribution[] {
@@ -3102,7 +4106,7 @@ export class CelestialObjectPanel {
       }
     }
     if (resource === "goods") {
-      const goodsUpkeep = group.job === "unemployed" ? 0.025 : this.getClassGoodsUpkeep(group.class);
+      const goodsUpkeep = group.job === "unemployed" ? 0.0005 : this.getClassGoodsUpkeep(group.class);
       amount += this.applyPlanetModifiers(
         units * goodsUpkeep,
         planetState.economy.activeModifiers,
@@ -3111,7 +4115,7 @@ export class CelestialObjectPanel {
     }
     if (resource === "food") {
       amount += this.applyPlanetModifiers(
-        units * 1.1 * getHabitabilityUpkeepMultiplier(group.habitability),
+        units * 0.022 * getHabitabilityUpkeepMultiplier(group.habitability),
         planetState.economy.activeModifiers,
         "popUpkeep:food",
       );
@@ -3217,6 +4221,13 @@ export class CelestialObjectPanel {
     return value.toFixed(2).replace(/0$/, "").replace(/\.0$/, "");
   }
 
+  private formatResourceCost(cost: ResourceCounts): string {
+    const parts = RESOURCE_KINDS
+      .filter((resource) => cost[resource] > 0)
+      .map((resource) => `${this.formatCompact(cost[resource])} ${RESOURCE_LABELS[resource]}`);
+    return parts.length > 0 ? parts.join(" · ") : "Free";
+  }
+
   private renderBuildingTooltip(
     definition: BuildingDefinition,
     planetState: PlanetState,
@@ -3240,14 +4251,14 @@ export class CelestialObjectPanel {
           : null;
     const levelLabel = targetLevel && canUpgrade
       ? `Level ${level} -> ${targetLevel}`
-      : `Level ${level}${level >= BUILDING_MAX_LEVEL ? " (max)" : ""}`;
+      : `Level ${level}${level >= getBuildingMaxLevel(definition.kind) ? " (max)" : ""}`;
     const buildCost = queued?.kind === "buildingUpgrade" && queued.targetLevel
-      ? queued.mineralCost
+      ? queued.cost
       : building
         ? targetLevel
-          ? getBuildingUpgradeMineralCost(definition.kind, level)
-          : 0
-        : getBuildingMineralCost(definition.kind, 1);
+          ? getBuildingUpgradeCost(definition.kind, level)
+          : null
+        : getBuildingCost(definition.kind, 1);
     const buildDays = queued?.kind === "buildingUpgrade"
       ? queued.remainingDays
       : building
@@ -3257,13 +4268,14 @@ export class CelestialObjectPanel {
         : getBuildingBuildDays(definition.kind, 1);
     const jobLines = this.renderBuildingJobLines(definition, planetState, level);
     const productionLines = this.renderBuildingProductionLines(definition, planetState, level);
+    const directUpkeep = getBuildingUpkeep(definition.kind, level);
     const compatible = this.isDefinitionCompatible(definition, area, subDistrictIndex, planetState);
     return `
-      <div class="coTooltipTitle">${this.escapeHtml(definition.label)}</div>
-      <p>${this.escapeHtml(definition.description)}</p>
+      <div class="coTooltipTitle">${this.escapeHtml(getBuildingDisplayLabel(definition.kind, level))}</div>
+      <p>${this.escapeHtml(getBuildingDisplayDescription(definition.kind, level))}</p>
       <div class="coTooltipGrid">
         <div><span>Level</span><strong>${this.escapeHtml(levelLabel)}</strong></div>
-        <div><span>${building ? "Upgrade Cost" : "Cost"}</span><strong>${buildCost > 0 ? `${buildCost} Minerals` : "Maxed"}</strong></div>
+        <div><span>${building ? "Upgrade Cost" : "Cost"}</span><strong>${buildCost ? this.escapeHtml(this.formatResourceCost(buildCost)) : "Maxed"}</strong></div>
         <div><span>${building ? "Upgrade Time" : "Build Time"}</span><strong>${queued ? `${this.formatConstructionDays(queued.remainingDays)} left` : buildDays > 0 ? `${this.formatConstructionDays(buildDays)}` : "Maxed"}</strong></div>
         <div><span>Slot</span><strong>${compatible ? "Compatible" : "Incompatible"}</strong></div>
       </div>
@@ -3276,15 +4288,17 @@ export class CelestialObjectPanel {
       <div class="coTooltipList">${jobLines.length ? jobLines.map((line) => `<span>${line}</span>`).join("") : "<span>No direct jobs.</span>"}</div>
       <div class="coTooltipSectionTitle">Predicted Output / min</div>
       <div class="coTooltipList">${productionLines.length ? productionLines.map((line) => `<span>${line}</span>`).join("") : "<span>No direct production.</span>"}</div>
+      <div class="coTooltipSectionTitle">Building Upkeep / month</div>
+      <div class="coTooltipList"><span>${this.escapeHtml(this.formatResourceCost(directUpkeep))}</span></div>
     `;
   }
 
   private renderBuildingJobLines(definition: BuildingDefinition, planetState: PlanetState, level = 1): string[] {
     const lines: string[] = [];
-    const levelMultiplier = getBuildingLevelEffectMultiplier(level);
-    if (definition.housing) lines.push(`+${this.formatPeople(definition.housing * levelMultiplier)} Housing`);
-    for (const effect of definition.jobs ?? []) {
-      const amount = effect.amount * (effect.perDistrict ? planetState.builtDistricts[effect.perDistrict] : 1) * levelMultiplier;
+    const housing = getBuildingHousing(definition.kind, level);
+    if (housing) lines.push(`+${this.formatPeople(housing)} Housing`);
+    for (const effect of getBuildingJobEffects(definition.kind, level)) {
+      const amount = effect.amount * (effect.perDistrict ? planetState.builtDistricts[effect.perDistrict] : 1);
       const sign = amount >= 0 ? "+" : "-";
       lines.push(`${sign}${this.formatPeople(Math.abs(amount))} ${this.escapeHtml(JOB_LABELS[effect.job])}`);
     }
@@ -3295,10 +4309,9 @@ export class CelestialObjectPanel {
     const habitability = getEffectiveSpeciesHabitability(planetState);
     const outputMultiplier = getHabitabilityProductionMultiplier(habitability) * Math.max(0, 1 + (planetState.economy.stability - 50) * 0.005);
     const upkeepMultiplier = getHabitabilityUpkeepMultiplier(habitability);
-    const levelMultiplier = getBuildingLevelEffectMultiplier(level);
     const lines: string[] = [];
-    for (const effect of definition.jobs ?? []) {
-      const amount = effect.amount * (effect.perDistrict ? planetState.builtDistricts[effect.perDistrict] : 1) * levelMultiplier;
+    for (const effect of getBuildingJobEffects(definition.kind, level)) {
+      const amount = effect.amount * (effect.perDistrict ? planetState.builtDistricts[effect.perDistrict] : 1);
       if (amount === 0) continue;
       const units = amount / 1_000_000;
       const job = JOB_DEFINITIONS[effect.job];
@@ -3363,6 +4376,7 @@ export class CelestialObjectPanel {
   }
 
   private renderQueueItem(item: PlanetConstructionQueueItem, canCancel: boolean): string {
+    const darkMatterCost = getConstructionDarkMatterCost(item.remainingDays);
     return `
       <div class="coQueueItem" data-co-queue-item="${this.escapeHtml(item.id)}">
         ${canCancel ? `
@@ -3373,12 +4387,19 @@ export class CelestialObjectPanel {
             aria-label="Cancel ${this.escapeHtml(item.label)}"
             title="Cancel construction"
           >X</button>
+          <button
+            class="coQueueSkip"
+            type="button"
+            data-co-skip-planet-queue="${this.escapeHtml(item.id)}"
+            aria-label="Finish ${this.escapeHtml(item.label)} instantly for ${darkMatterCost} Dark Matter"
+            title="Finish instantly · ${darkMatterCost} Dark Matter"
+          ><span aria-hidden="true">»</span></button>
         ` : ""}
         <div class="coQueueItemMain">
           <strong title="${this.escapeHtml(item.label)}">${this.escapeHtml(item.label)}</strong>
           <span data-co-queue-days>${this.formatConstructionDays(item.remainingDays)} remaining</span>
         </div>
-        <small>${item.mineralCost} minerals</small>
+        <small>${this.escapeHtml(this.formatResourceCost(item.cost))}</small>
         <div class="coQueueProgress"><span data-co-queue-progress-fill style="width:${this.getConstructionProgressPercent(item)}"></span></div>
       </div>
     `;
@@ -3423,8 +4444,7 @@ export class CelestialObjectPanel {
       { className: "lower", label: "Lower Class" },
     ];
     const selectedJob = this.economyDetailMode ? null : this.resolveSelectedEconomyJob(planetState);
-    const growth = planetState.economy.populationGrowth;
-    const capacityRemaining = Math.max(0, growth.capacity - planetState.population);
+    const migration = planetState.economy.migration;
     const selectedDetail = this.economyDetailMode
       ? this.renderEconomyDetail(planetState, this.economyDetailMode)
       : selectedJob
@@ -3442,10 +4462,10 @@ export class CelestialObjectPanel {
         <aside class="coDemographicsPanel">
           <div class="coBodyHeader">Demographics</div>
           <div class="coDemographicOverview">
-            <button class="coCapacityCard${this.economyDetailMode === "capacity" ? " selected" : ""}" type="button" data-co-demographic="capacity">
-              <span><strong>Planet Capacity</strong><small>${(growth.capacityPressure * 100).toFixed(0)}% occupied</small></span>
-              <span class="coCapacityCardNumbers"><strong>${this.formatPeople(planetState.population)} / ${this.formatPeople(growth.capacity)}</strong><small>${this.formatPeople(capacityRemaining)} available</small></span>
-              <i><b style="width:${Math.min(100, growth.capacityPressure * 100).toFixed(1)}%"></b></i>
+            <button class="coCapacityCard${this.economyDetailMode === "migration" ? " selected" : ""}" type="button" data-co-demographic="migration" data-co-tooltip="${this.tooltipAttr(this.renderMigrationTooltip(planetState))}">
+              <span><strong>Migration</strong><small>Last completed month</small></span>
+              <span class="coCapacityCardNumbers"><strong class="${migration.lastMonthNet < 0 ? "negative" : "positive"}">${this.formatSignedPeople(migration.lastMonthNet)}</strong><small>${migration.attractiveness.toFixed(1)} / 100 attractiveness</small></span>
+              <i><b style="width:${migration.attractiveness.toFixed(1)}%"></b></i>
             </button>
             <div class="coPopulationChangeGrid">
               ${this.renderPopulationChangeCard(planetState, "growth")}
@@ -3506,10 +4526,11 @@ export class CelestialObjectPanel {
   private renderJobRow(planetState: PlanetState, job: JobKind, selectedJob: JobKind | null): string {
     const population = this.getPopForJob(planetState, job);
     const capacity = this.getJobCapacity(planetState, job);
+    const lock = (planetState.jobLocks ?? []).find((candidate) => candidate.job === job);
     const selected = selectedJob === job ? " selected" : "";
     return `
       <button
-        class="coJobRow${selected}"
+        class="coJobRow${selected}${lock ? " locked" : ""}"
         type="button"
         data-co-job="${job}"
         data-co-tooltip="${this.tooltipAttr(this.renderJobTooltip(planetState, job))}">
@@ -3521,6 +4542,7 @@ export class CelestialObjectPanel {
         <span class="coJobNumbers">
           <strong>${this.formatPeople(population)}</strong>
           <small>cap ${this.formatPeople(capacity)}</small>
+          ${lock ? `<small class="coJobLockMark">${lock.allocations.length} species locked</small>` : ""}
         </span>
         <span class="coJobRecipe">
           ${this.renderJobConversion(job, PEOPLE_PER_MONTHLY_UNIT)}
@@ -3533,6 +4555,8 @@ export class CelestialObjectPanel {
     const groups = planetState.economy.popGroups.filter((candidate) => candidate.job === job);
     const population = groups.reduce((sum, group) => sum + group.population, 0);
     const jobClass = this.getJobClass(job);
+    const lock = (planetState.jobLocks ?? []).find((candidate) => candidate.job === job);
+    const lockable = job !== "criminal" && job !== "unemployed";
     return `
       <div class="coSelectedJobHeader">
         <span class="coSelectedJobIcon">${this.renderJobIcon(job)}</span>
@@ -3540,6 +4564,17 @@ export class CelestialObjectPanel {
           <h4>${this.escapeHtml(JOB_LABELS[job])}</h4>
           <p>${this.escapeHtml(this.formatJobClassLabel(jobClass))} | ${this.formatPeople(population)} / ${this.formatPeople(this.getJobCapacity(planetState, job))}</p>
         </div>
+        ${lockable ? `
+          <button
+            class="coJobLockButton ${lock ? "locked" : ""}"
+            type="button"
+            data-co-toggle-job-lock="${job}"
+            data-co-job-locked="${lock ? "true" : "false"}"
+            ${!lock && population <= 0 ? "disabled" : ""}
+            title="${lock ? "Unlock all reserved species groups" : "Lock every species currently working this job"}">
+            ${lock ? "Locked" : "Lock Job"}
+          </button>
+        ` : ""}
       </div>
       <div class="coSelectedJobRecipe">
         ${this.renderJobConversion(job, PEOPLE_PER_MONTHLY_UNIT, "Per 1M")}
@@ -3547,7 +4582,12 @@ export class CelestialObjectPanel {
       <div class="coPopGroupList">
         ${groups.length === 0
           ? '<div class="coEmptyLine">No assigned population</div>'
-          : groups.map((group, index) => `
+          : groups.map((group, index) => {
+            const lockedPopulation = Math.min(
+              group.population,
+              lock?.allocations.find((allocation) => allocation.speciesId === group.speciesId)?.population ?? 0,
+            );
+            return `
             <article class="coPopGroupCard">
               <img class="coPopPortrait" src="${this.escapeHtml(this.getSpeciesPortraitImage(group, group.speciesName, index))}" alt="" />
               <div class="coPopGroupMain">
@@ -3559,13 +4599,15 @@ export class CelestialObjectPanel {
                   <span>Population <strong>${this.formatPeople(group.population)}</strong></span>
                   <span>Happy <strong>${group.happiness}%</strong></span>
                   <span>Hab <strong>${group.habitability}%</strong></span>
+                  ${lockedPopulation > 0 ? `<span class="coLockedPop">Locked <strong>${this.formatPeople(lockedPopulation)}</strong></span>` : ""}
                 </div>
                 <div class="coPopGroupFlow">
                   ${this.renderJobConversion(job, group.population)}
                 </div>
               </div>
             </article>
-          `).join("")}
+          `;
+          }).join("")}
       </div>
     `;
   }
@@ -3643,9 +4685,9 @@ export class CelestialObjectPanel {
   }
 
   private getClassGoodsUpkeep(jobClass: JobClass): number {
-    if (jobClass === "upper") return 0.45;
-    if (jobClass === "middle") return 0.25;
-    return 0.08;
+    if (jobClass === "upper") return 0.009;
+    if (jobClass === "middle") return 0.005;
+    return 0.0016;
   }
 
   private resolveSelectedEconomyJob(planetState: PlanetState): JobKind | null {
@@ -3707,14 +4749,19 @@ export class CelestialObjectPanel {
     const icons: Record<JobKind, string> = {
       ruler: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 11l5 5 6-9 6 9 5-5v12H5z"/><path d="M5 25h22"/><circle cx="5" cy="9" r="1.6"/><circle cx="27" cy="9" r="1.6"/><circle cx="16" cy="5" r="1.8"/></svg>',
       administrator: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 12h22L16 5 5 12z"/><path d="M8 13v11M14 13v11M20 13v11M26 13v11"/><path d="M5 25h22"/></svg>',
+      sensorManager: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="3"/><path d="M6 16a10 10 0 0 1 20 0M3 16a13 13 0 0 1 26 0"/><path d="M16 16l8-7"/></svg>',
+      shieldOperator: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4l10 4v7c0 7-4 10-10 13C10 25 6 22 6 15V8l10-4z"/><circle cx="16" cy="15" r="5"/></svg>',
       researcher: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="2.5"/><path d="M5 16c3-5 19-5 22 0-3 5-19 5-22 0z"/><path d="M16 5c5 3 5 19 0 22-5-3-5-19 0-22z"/><path d="M9 9c5 1 12 8 14 14"/></svg>',
       artisan: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M10 22l8-8"/><path d="M15 7l10 10-4 4L11 11l4-4z"/><path d="M7 25l4-1 13-13-3-3L8 21l-1 4z"/></svg>',
       metallurgist: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M8 25h16l2-10H6l2 10z"/><path d="M11 14c0-5 5-6 5-10 4 4 6 7 4 10"/><path d="M14 21h4"/></svg>',
       entertainer: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 5l3 7 8 1-6 5 2 8-7-4-7 4 2-8-6-5 8-1 3-7z"/><path d="M12 17c2 2 6 2 8 0"/></svg>',
       enforcer: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4l10 4v7c0 7-4 10-10 13C10 25 6 22 6 15V8l10-4z"/><path d="M12 16h8"/><path d="M16 12v8"/></svg>',
+      soldier: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4l10 4v7c0 7-4 10-10 13C10 25 6 22 6 15V8l10-4z"/><path d="M9 22L23 8M10 8l14 14"/></svg>',
+      trainee: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="9" r="4"/><path d="M9 27c0-7 3-11 7-11s7 4 7 11"/><path d="M6 18h5M21 18h5"/></svg>',
       farmer: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 25V8"/><path d="M16 13c-5-5-9-4-11 0 4 4 8 4 11 0z"/><path d="M16 18c5-5 9-4 11 0-4 4-8 4-11 0z"/><path d="M8 26h16"/></svg>',
       miner: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 24l10-10"/><path d="M14 7c5 0 9 4 11 9"/><path d="M13 8l11 11"/><path d="M5 25l3 3"/></svg>',
       technician: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M18 3L8 17h8l-2 12 10-15h-8l2-11z"/><path d="M7 25h6M20 7h5"/></svg>',
+      colonizer: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4c5 4 7 9 7 15l-7 7-7-7c0-6 2-11 7-15z"/><circle cx="16" cy="13" r="3"/><path d="M9 18l-4 5 7-1M23 18l4 5-7-1M16 26v3"/></svg>',
       clerk: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M9 5h14v22H9z"/><path d="M12 11h8M12 16h8M12 21h5"/><path d="M22 5l3 3"/></svg>',
       criminal: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><path d="M8 14V9c0-5 16-5 16 0v5"/><path d="M7 14h18l-2 13H9L7 14z"/><path d="M13 20h6"/><path d="M16 17v6"/></svg>',
       unemployed: '<svg class="coJobGlyph" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="11" r="5"/><path d="M7 27c1-6 5-9 9-9s8 3 9 9"/><path d="M10 5l12 22"/></svg>',
@@ -3849,7 +4896,7 @@ export class CelestialObjectPanel {
       ? this.getSpeciesPortraitImage(representative.group, representative.name, representative.index)
       : this.getPopGroupPlaceholderImage({ speciesName: "Unknown" }, 0);
     return `
-      <button class="coPopulationChangeCard ${mode}${selected}" type="button" data-co-demographic="${mode}">
+      <button class="coPopulationChangeCard ${mode}${selected}" type="button" data-co-demographic="${mode}" data-co-tooltip="${this.tooltipAttr(mode === "growth" ? this.renderGrowthTooltip(planetState) : this.renderDeclineTooltip(planetState))}">
         <img class="coDemographicPortrait" src="${this.escapeHtml(image)}" alt="" />
         <span class="coPopulationChangeCopy">
           <strong>${label}</strong>
@@ -3861,29 +4908,47 @@ export class CelestialObjectPanel {
   }
 
   private renderEconomyDetail(planetState: PlanetState, mode: EconomyDetailMode): string {
-    if (mode === "capacity") return this.renderCapacityDetail(planetState);
+    if (mode === "migration") return this.renderMigrationDetail(planetState);
     const growth = planetState.economy.populationGrowth;
-    const species = this.getSpeciesBreakdown(planetState)
+    const decline = planetState.economy.populationDecline;
+    const species = this.getSpeciesBreakdown(planetState, mode)
       .filter((entry) => mode === "growth" ? entry.minuteChange > 0 : entry.minuteChange < 0)
       .sort((a, b) => mode === "growth" ? b.minuteChange - a.minuteChange : a.minuteChange - b.minuteChange);
     const activeChange = species.reduce((sum, entry) => sum + entry.minuteChange, 0);
     const label = mode === "growth" ? "Population Growth" : "Population Decline";
-    const factors = [
-      ["Housing", growth.factors.housing],
-      ["Amenities", growth.factors.amenities],
-      ["Stability", growth.factors.stability],
-      ["Crime", growth.factors.crime],
-      ["Employment", growth.factors.employment],
-      ["Capacity", growth.factors.capacity],
-    ] as const;
+    const factors = mode === "growth"
+      ? [
+        ["Population pressure", growth.factors.capacityMultiplier],
+        ["Quality of life", growth.factors.qualityOfLifeMultiplier],
+        ["Birth modifiers", growth.factors.modifierMultiplier],
+        ["Species traits", growth.factors.speciesMultiplier],
+      ] as const
+      : [
+        ["Shortage progress", decline.shortageProgress / 100],
+        ["Local food deficit", decline.foodDeficitRatio],
+        ["Crisis factor", decline.crisisFactor],
+      ] as const;
+    const famineScale = decline.foodDeficitRatio * decline.crisisFactor;
+    const famineRates = mode === "decline"
+      ? `
+        <div class="coEconomySectionTitle">Monthly famine rates</div>
+        <div class="coEconomyFactorGrid">
+          <span><small>Lower class</small><strong>${(0.2 * famineScale).toFixed(4)}%</strong></span>
+          <span><small>Farmers</small><strong>${(0.002 * famineScale).toFixed(4)}%</strong></span>
+          <span><small>Middle class</small><strong>${(0.05 * famineScale).toFixed(4)}%</strong></span>
+          <span><small>Upper class</small><strong>${decline.classChanges.find((entry) => entry.class === "upper")?.deltaPerMonth ? `${(0.02 * famineScale).toFixed(4)}%` : "Immune"}</strong></span>
+        </div>
+      `
+      : "";
     return `
       <div class="coEconomyDetailHeader">
         <div><h4>${label}</h4><p>Projected from current planetary conditions</p></div>
         <strong class="${activeChange < 0 ? "negative" : "positive"}">${activeChange === 0 ? "No change" : `${this.formatSignedPeople(activeChange)}${RESOURCE_RATE_LABEL}`}</strong>
       </div>
       <div class="coEconomyFactorGrid">
-        ${factors.map(([factor, value]) => `<span><small>${factor}</small><strong class="${value < 0 ? "negative" : "positive"}">${this.formatSignedPercent(value * 100)}</strong></span>`).join("")}
+        ${factors.map(([factor, value]) => `<span><small>${factor}</small><strong>${mode === "growth" ? `${value.toFixed(2)}x` : `${(value * 100).toFixed(1)}%`}</strong></span>`).join("")}
       </div>
+      ${famineRates}
       <div class="coEconomySectionTitle">Species breakdown</div>
       <div class="coEconomySpeciesBreakdown">
         ${activeChange === 0 || species.length === 0
@@ -3899,35 +4964,38 @@ export class CelestialObjectPanel {
     `;
   }
 
-  private renderCapacityDetail(planetState: PlanetState): string {
-    const growth = planetState.economy.populationGrowth;
-    const remaining = growth.capacity - planetState.population;
-    const urbanCapacity = planetState.builtDistricts.city * 520_000_000;
-    const buildingCapacity = this.getBuildingCapacityBonus(planetState);
-    const foundationCapacity = Math.max(0, growth.capacity - urbanCapacity - buildingCapacity);
+  private renderMigrationDetail(planetState: PlanetState): string {
+    const migration = planetState.economy.migration;
+    const factors = [
+      ["Happiness", migration.factors.happiness, 25],
+      ["Stability", migration.factors.stability, 20],
+      ["Safety", migration.factors.safety, 15],
+      ["Amenities", migration.factors.amenities, 15],
+      ["Vacant jobs", migration.factors.jobs, 25],
+    ] as const;
     return `
       <div class="coEconomyDetailHeader">
-        <div><h4>Planet Capacity</h4><p>Population space and supporting infrastructure</p></div>
-        <strong>${(growth.capacityPressure * 100).toFixed(1)}%</strong>
+        <div><h4>Migration</h4><p>Actual movement from the last completed month</p></div>
+        <strong class="${migration.lastMonthNet < 0 ? "negative" : "positive"}">${this.formatSignedPeople(migration.lastMonthNet)}</strong>
       </div>
       <div class="coCapacityMetrics">
-        <span><small>Population</small><strong>${this.formatPeople(planetState.population)}</strong></span>
-        <span><small>Total capacity</small><strong>${this.formatPeople(growth.capacity)}</strong></span>
-        <span><small>${remaining >= 0 ? "Available" : "Over capacity"}</small><strong class="${remaining < 0 ? "negative" : "positive"}">${this.formatPeople(Math.abs(remaining))}</strong></span>
+        <span><small>Inbound</small><strong class="positive">${this.formatPeople(migration.lastMonthInbound)}</strong></span>
+        <span><small>Outbound</small><strong class="negative">${this.formatPeople(migration.lastMonthOutbound)}</strong></span>
+        <span><small>Intake used</small><strong>${this.formatPeople(migration.lastMonthInbound)} / ${this.formatPeople(migration.lastMonthIntakeCapacity)}</strong></span>
       </div>
-      <div class="coCapacityDetailBar"><i style="width:${Math.min(100, growth.capacityPressure * 100).toFixed(1)}%"></i></div>
-      <div class="coEconomySectionTitle">Capacity sources</div>
+      <div class="coCapacityDetailBar"><i style="width:${migration.attractiveness.toFixed(1)}%"></i></div>
+      <div class="coEconomySectionTitle">Attractiveness ${migration.attractiveness.toFixed(1)} / 100</div>
       <div class="coCapacityBreakdown">
-        <span><small>Planet size, natural potential &amp; modifiers</small><strong>${this.formatPeople(foundationCapacity)}</strong></span>
-        <span><small>City districts</small><strong>${this.formatPeople(urbanCapacity)}</strong></span>
-        <span><small>Buildings</small><strong>${this.formatPeople(buildingCapacity)}</strong></span>
+        ${factors.map(([label, value, weight]) => `<span><small>${label} (${weight}%)</small><strong>${(value * weight).toFixed(1)}</strong></span>`).join("")}
       </div>
     `;
   }
 
-  private getSpeciesBreakdown(planetState: PlanetState): Array<{ name: string; population: number; share: number; minuteChange: number; group?: PopGroup; index: number }> {
+  private getSpeciesBreakdown(planetState: PlanetState, mode: "growth" | "decline"): Array<{ name: string; population: number; share: number; minuteChange: number; group?: PopGroup; index: number }> {
     const total = planetState.speciesPopulations.reduce((sum, entry) => sum + entry.population, 0);
-    const changeBySpecies = new Map(planetState.economy.populationGrowth.speciesChanges.map((entry) => [entry.speciesId, entry.deltaPerQuarter]));
+    const changeBySpecies = mode === "growth"
+      ? new Map(planetState.economy.populationGrowth.speciesChanges.map((entry) => [entry.speciesId, entry.deltaPerWeek]))
+      : new Map(planetState.economy.populationDecline.speciesChanges.map((entry) => [entry.speciesId, entry.deltaPerMonth]));
     return planetState.speciesPopulations
       .map((entry, index) => {
         const group = planetState.economy.popGroups.find((candidate) => candidate.speciesId === entry.speciesId);
@@ -3935,7 +5003,9 @@ export class CelestialObjectPanel {
           name: group?.speciesName ?? String(entry.speciesId),
           population: entry.population,
           share: total > 0 ? entry.population / total : 0,
-          minuteChange: quarterlyToRealMinute(changeBySpecies.get(entry.speciesId) ?? 0),
+          minuteChange: mode === "growth"
+            ? weeklyToRealMinute(changeBySpecies.get(entry.speciesId) ?? 0)
+            : monthlyToRealMinute(changeBySpecies.get(entry.speciesId) ?? 0),
           group,
           index,
         };
@@ -3944,22 +5014,8 @@ export class CelestialObjectPanel {
   }
 
   private getMostChangingSpecies(planetState: PlanetState, mode: "growth" | "decline"): ReturnType<CelestialObjectPanel["getSpeciesBreakdown"]>[number] | undefined {
-    const matching = this.getSpeciesBreakdown(planetState).filter((entry) => mode === "growth" ? entry.minuteChange > 0 : entry.minuteChange < 0);
+    const matching = this.getSpeciesBreakdown(planetState, mode).filter((entry) => mode === "growth" ? entry.minuteChange > 0 : entry.minuteChange < 0);
     return matching.sort((a, b) => mode === "growth" ? b.minuteChange - a.minuteChange : a.minuteChange - b.minuteChange)[0];
-  }
-
-  private getBuildingCapacityBonus(planetState: PlanetState): number {
-    let capacity = 0;
-    const add = (building: PlanetBuildingSlot): void => {
-      const kind = getPlanetBuildingKind(building);
-      if (!kind) return;
-      const multiplier = getBuildingLevelEffectMultiplier(getPlanetBuildingLevel(building));
-      if (kind === "housingComplex") capacity += 650_000_000 * multiplier;
-      else if (kind === "administrativeComplex" || kind === "commercialForum" || kind === "entertainmentForum" || kind === "securityOffice") capacity += 120_000_000 * multiplier;
-    };
-    Object.values(planetState.buildings).flat().forEach(add);
-    planetState.urbanSubDistricts.forEach((subDistrict) => subDistrict.buildings.forEach(add));
-    return capacity;
   }
 
   private openBuildingDetails(data: CelestialObjectPanelData, target: BuildingSlotTarget): void {
@@ -4127,6 +5183,25 @@ export class CelestialObjectPanel {
     return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
   }
 
+  private isPlanetDefenseBuildingUnlocked(
+    technology: FactionTechnologyView | null | undefined,
+    building: PlanetDefenseBuildingKind,
+  ): boolean {
+    const requiredTechIds = getRequiredTechIdsForPlanetDefenseBuilding(building);
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
+  }
+
+  private isPlanetDefenseBuildingLevelUnlocked(
+    technology: FactionTechnologyView | null | undefined,
+    building: PlanetDefenseBuildingKind,
+    level: number,
+  ): boolean {
+    const requiredTechIds = getRequiredTechIdsForPlanetDefenseBuildingLevel(building, level);
+    if (requiredTechIds.length === 0) return true;
+    return requiredTechIds.some((techId) => this.isTechnologyCompleted(technology, techId));
+  }
+
   private isTechnologyCompleted(technology: FactionTechnologyView | null | undefined, techId: TechId): boolean {
     return technology?.completedTechIds.includes(techId) === true;
   }
@@ -4137,6 +5212,17 @@ export class CelestialObjectPanel {
 
   private getRequiredBuildingLevelTechnologyName(building: BuildingKind, level: number): string {
     return getFirstRequiredTechName(getRequiredTechIdsForBuildingLevel(building, level));
+  }
+
+  private getRequiredPlanetDefenseBuildingTechnologyName(building: PlanetDefenseBuildingKind): string {
+    return getFirstRequiredTechName(getRequiredTechIdsForPlanetDefenseBuilding(building));
+  }
+
+  private getRequiredPlanetDefenseBuildingLevelTechnologyName(
+    building: PlanetDefenseBuildingKind,
+    level: number,
+  ): string {
+    return getFirstRequiredTechName(getRequiredTechIdsForPlanetDefenseBuildingLevel(building, level));
   }
 
   private openSubDistrictPicker(button: HTMLButtonElement, data: CelestialObjectPanelData, subDistrictIndex: number): void {
@@ -4175,6 +5261,10 @@ export class CelestialObjectPanel {
     return `${Math.round(value)}`;
   }
 
+  private formatPower(value: number): string {
+    return Math.max(0, Math.round(value)).toLocaleString();
+  }
+
   private formatSignedPeople(value: number): string {
     return `${value >= 0 ? "+" : ""}${this.formatPeople(value)}`;
   }
@@ -4192,6 +5282,7 @@ export class CelestialObjectPanel {
 
   private describeModifier(target: PlanetModifierTarget, value: number): string {
     if (target === "habitability:human") return `${value >= 0 ? "+" : ""}${value}% Human Habitability`;
+    if (target.startsWith("districtLimit:")) return `${value >= 0 ? "+" : ""}${value} ${target.slice("districtLimit:".length)} district limit`;
     const label = target.replace(/:/g, " ");
     return `${value >= 0 ? "+" : ""}${value} ${label}`;
   }
@@ -5746,6 +6837,496 @@ button.coBuildingIconSlot {
   font-size: 12px;
 }
 
+.coDefenseHint {
+  margin: 2px 8px 8px;
+  color: rgba(204, 232, 224, 0.68);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.coDefenseBody {
+  flex: 1 1 360px;
+  height: 360px;
+  max-height: 360px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr) 285px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 8px;
+  min-height: 0;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.coDefenseDashboard {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.coDefenseDashboard .coDefenseSummaryCard:nth-child(2) {
+  order: -1;
+}
+
+.coDefenseFacilityColumns {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.coDefenseSummaryCard,
+.coDefenseFacilityGroup,
+.coPlanetShipyardPanel {
+  border: 1px solid rgba(96, 196, 164, 0.52);
+  background: linear-gradient(180deg, rgba(12, 39, 37, 0.94), rgba(5, 16, 18, 0.97));
+  box-shadow: inset 0 1px 0 rgba(150, 255, 224, 0.05);
+}
+
+.coDefenseSummaryCard {
+  padding: 8px;
+}
+
+.coDefenseSummaryCard > header,
+.coDefenseFacilityGroup > header,
+.coPlanetShipyardPanel > header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.2);
+}
+
+.coDefenseSummaryCard > header {
+  margin: -8px -8px 7px;
+}
+
+.coDefenseSummaryCard header strong,
+.coDefenseSummaryCard header span,
+.coDefenseFacilityGroup header strong,
+.coDefenseFacilityGroup header span,
+.coPlanetShipyardPanel header strong,
+.coPlanetShipyardPanel header span {
+  display: block;
+}
+
+.coDefenseSummaryCard header strong,
+.coDefenseFacilityGroup header strong,
+.coPlanetShipyardPanel header strong {
+  color: #eefaf6;
+  font-size: 12px;
+}
+
+.coDefenseSummaryCard header span,
+.coDefenseFacilityGroup header span,
+.coPlanetShipyardPanel header span {
+  margin-top: 2px;
+  color: rgba(196, 226, 218, 0.64);
+  font-size: 9px;
+}
+
+.coDefenseSummaryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.coDefenseSummaryGrid > div {
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid rgba(103, 255, 221, 0.18);
+  background: rgba(5, 24, 24, 0.5);
+}
+
+.coDefenseSummaryGrid > div.wide {
+  grid-column: 1 / -1;
+}
+
+.coDefenseSummaryGrid span,
+.coDefenseSummaryGrid strong {
+  display: block;
+}
+
+.coDefenseSummaryGrid span {
+  color: rgba(194, 222, 215, 0.64);
+  font-size: 9px;
+}
+
+.coDefenseSummaryGrid strong {
+  margin-top: 3px;
+  color: #8fffe0;
+  font-size: 12px;
+}
+
+.coArmyTransferButton {
+  width: 100%;
+  margin-top: 7px;
+  min-height: 36px;
+  border: 1px solid rgba(255, 197, 96, 0.72);
+  background: linear-gradient(180deg, rgba(90, 59, 16, 0.9), rgba(44, 28, 8, 0.94));
+  color: #ffe3a3;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.coArmyTransferButton small {
+  display: block;
+  margin-top: 2px;
+  color: rgba(255, 226, 165, 0.68);
+  font-size: 8px;
+}
+
+.coDefenseSlots {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 0;
+  padding: 4px;
+}
+
+.coDefenseSlots.shipyard {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.coDefenseBuildingIcon.suspended {
+  border-color: rgba(255, 163, 94, 0.72);
+  background:
+    radial-gradient(circle at 28% 18%, rgba(255, 175, 103, 0.15), transparent 44%),
+    linear-gradient(145deg, rgba(74, 42, 18, 0.9), rgba(22, 15, 15, 0.98));
+}
+
+.coDefenseBuildingLocked {
+  opacity: 0.36;
+  border-style: dashed !important;
+  color: rgba(203, 226, 220, 0.54) !important;
+}
+
+.coDefenseBuildingTray {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+.coDefenseBuildList {
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
+.coDefenseBuildList::-webkit-scrollbar {
+  display: none;
+}
+
+.coDefenseBuildList button {
+  grid-template-columns: 46px minmax(0, 1fr);
+  min-height: 56px;
+  padding: 5px;
+}
+
+.coDefenseBuildList .coBuildCardIcon {
+  width: 42px;
+  height: 42px;
+}
+
+.coDefenseFacilityFacts {
+  display: grid;
+  gap: 4px;
+  padding: 0 8px 8px;
+}
+
+.coDefenseFacilityFacts > div {
+  padding: 6px;
+  border: 1px solid rgba(103, 255, 221, 0.18);
+  background: rgba(5, 24, 24, 0.5);
+}
+
+.coDefenseFacilityFacts span,
+.coDefenseFacilityFacts strong {
+  display: block;
+}
+
+.coDefenseFacilityFacts span {
+  color: rgba(194, 222, 215, 0.64);
+  font-size: 9px;
+}
+
+.coDefenseFacilityFacts strong {
+  margin-top: 2px;
+  color: #8fffe0;
+  font-size: 10px;
+}
+
+.coDefenseSlot {
+  position: relative;
+  min-height: 96px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-content: start;
+  gap: 3px 5px;
+  padding: 5px;
+  overflow: hidden;
+  border: 1px solid rgba(103, 255, 221, 0.48);
+  background:
+    radial-gradient(circle at 28% 18%, rgba(114, 255, 224, 0.12), transparent 44%),
+    linear-gradient(145deg, rgba(12, 53, 49, 0.86), rgba(3, 18, 21, 0.96));
+}
+
+.coDefenseSlot.locked {
+  opacity: 0.48;
+  border-style: dashed;
+}
+
+.coDefenseSlot.suspended {
+  border-color: rgba(255, 163, 94, 0.58);
+  background: rgba(58, 30, 12, 0.42);
+}
+
+.coDefenseSlotIndex,
+.coDefenseSlotIcon {
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(103, 255, 221, 0.36);
+  color: #9affe3;
+  font-size: 10px;
+}
+
+.coDefenseSlotIndex {
+  width: 19px;
+  height: 18px;
+}
+
+.coDefenseSlotIcon {
+  grid-row: 2;
+  width: 22px;
+  height: 22px;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(205, 255, 239, 0.22), transparent 48%),
+    linear-gradient(145deg, rgba(39, 88, 81, 0.88), rgba(9, 24, 28, 0.94));
+  font-weight: 900;
+}
+
+.coDefenseSlotCopy {
+  min-width: 0;
+}
+
+.coDefenseSlotCopy strong,
+.coDefenseSlotCopy span,
+.coDefenseSlotCopy small {
+  display: block;
+}
+
+.coDefenseSlotCopy strong {
+  color: #ecfaf6;
+  font-size: 9px;
+  line-height: 1.15;
+}
+
+.coDefenseSlotCopy span {
+  margin-top: 2px;
+  color: #79dabb;
+  font-size: 8px;
+  line-height: 1.15;
+}
+
+.coDefenseSlot.occupied .coDefenseSlotCopy small {
+  display: none;
+}
+
+.coDefenseSlot select,
+.coDefenseSlot > button,
+.coDefenseSlotActions button,
+.coPlanetShipBuild select,
+.coPlanetShipBuild button,
+.coPlanetShipQueueTop button {
+  min-height: 26px;
+  border: 1px solid rgba(103, 255, 221, 0.42);
+  background: rgba(7, 38, 34, 0.9);
+  color: #caffef;
+  font: inherit;
+  font-size: 9px;
+}
+
+.coDefenseSlot select {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.coDefenseSlot > button {
+  grid-column: 1 / -1;
+  cursor: pointer;
+}
+
+.coDefenseSlotActions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 2px;
+  margin-top: 1px;
+}
+
+.coDefenseSlotActions button {
+  flex: 1;
+  min-width: 0;
+  min-height: 20px;
+  padding: 0 2px;
+  font-size: 7px;
+  cursor: pointer;
+}
+
+.coDefenseSlotActions button.danger,
+.coPlanetShipQueueTop button {
+  border-color: rgba(255, 125, 99, 0.5);
+  color: #ffc1b2;
+}
+
+.coDefenseQueued {
+  grid-column: 1 / -1;
+  color: #ffe38e;
+  font-size: 8px;
+}
+
+.coPlanetShipyardPanel {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.coPlanetShipyardPanel > header {
+  display: block;
+}
+
+.coPlanetShipBuild {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.coPlanetShipBuild select {
+  min-width: 0;
+}
+
+.coPlanetShipBuild button {
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.coPlanetShipQueue {
+  flex: 1 1 auto;
+  align-content: start;
+  display: grid;
+  gap: 5px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+  padding: 7px;
+}
+
+.coPlanetShipQueue::-webkit-scrollbar {
+  display: none;
+}
+
+.coPlanetShipQueueItem {
+  padding: 7px;
+  border: 1px solid rgba(103, 255, 221, 0.24);
+  background: rgba(4, 21, 22, 0.66);
+}
+
+.coPlanetShipQueueItem.active {
+  border-color: rgba(103, 255, 221, 0.58);
+  background: rgba(8, 40, 37, 0.72);
+}
+
+.coPlanetShipQueueTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.coPlanetShipQueueTop > span {
+  color: #70dabb;
+  font-size: 8px;
+  text-transform: uppercase;
+}
+
+.coPlanetShipQueueTop > strong {
+  flex: 1;
+  color: #eefaf6;
+  font-size: 10px;
+}
+
+.coPlanetShipQueueStatus {
+  margin-top: 5px;
+  color: rgba(199, 226, 219, 0.64);
+  font-size: 8px;
+}
+
+.coPlanetShipQueueCosts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.coPlanetShipQueueCosts small {
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid rgba(103, 255, 221, 0.14);
+  background: rgba(1, 11, 13, 0.4);
+}
+
+.coPlanetShipQueueCosts span,
+.coPlanetShipQueueCosts strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.coPlanetShipQueueCosts span {
+  color: rgba(193, 221, 214, 0.52);
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.coPlanetShipQueueCosts strong {
+  margin-top: 2px;
+  color: #dffaf2;
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.coPlanetShipProgress {
+  height: 4px;
+  margin-top: 6px;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.46);
+}
+
+.coPlanetShipProgress i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #48cda6, #9affe3);
+}
+
+.coPlanetShipQueueEmpty {
+  padding: 16px;
+  text-align: center;
+  color: rgba(199, 226, 219, 0.56);
+  font-size: 10px;
+}
+
 .coQueuePanel {
   flex: 1 1 0;
   display: flex;
@@ -5810,12 +7391,13 @@ button.coBuildingIconSlot {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
   gap: 5px 8px;
+  min-height: 51px;
   padding-right: 32px;
 }
 
-.coQueueCancel {
+.coQueueCancel,
+.coQueueSkip {
   position: absolute;
-  top: 4px;
   right: 4px;
   width: 20px;
   height: 20px;
@@ -5831,10 +7413,30 @@ button.coBuildingIconSlot {
   cursor: pointer;
 }
 
+.coQueueCancel {
+  top: 4px;
+}
+
 .coQueueCancel:hover {
   border-color: rgba(255, 151, 151, 0.92);
   background: rgba(116, 20, 34, 0.94);
   color: #ffe2e2;
+}
+
+.coQueueSkip {
+  top: 27px;
+  border-color: rgba(199, 105, 255, 0.7);
+  background: linear-gradient(145deg, rgba(75, 18, 106, 0.94), rgba(26, 9, 50, 0.94));
+  color: #efc4ff;
+  font-size: 17px;
+  text-shadow: 0 0 7px rgba(215, 99, 255, 0.85);
+}
+
+.coQueueSkip:hover {
+  border-color: rgba(225, 158, 255, 0.96);
+  background: linear-gradient(145deg, rgba(112, 29, 155, 0.98), rgba(45, 12, 78, 0.98));
+  color: #fff;
+  box-shadow: 0 0 8px rgba(190, 71, 255, 0.44);
 }
 
 .coQueueItemMain,
@@ -6096,6 +7698,14 @@ button.coBuildingIconSlot {
 .coJobRow.selected {
   border-color: rgba(248, 218, 103, 0.82);
   background: rgba(67, 54, 18, 0.54);
+}
+
+.coJobRow.locked {
+  box-shadow: inset 3px 0 rgba(248, 218, 103, 0.82);
+}
+
+.coJobLockMark {
+  color: #f8da67 !important;
 }
 
 .coJobIcon,
@@ -6472,9 +8082,32 @@ button.coBuildingIconSlot {
 
 .coSelectedJobHeader {
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
+  grid-template-columns: 38px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
+}
+
+.coJobLockButton {
+  min-width: 70px;
+  padding: 6px 8px;
+  border: 1px solid rgba(103, 255, 221, 0.38);
+  background: rgba(6, 26, 26, 0.72);
+  color: #9cffcc;
+  font: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.coJobLockButton.locked {
+  border-color: rgba(248, 218, 103, 0.78);
+  color: #f8da67;
+}
+
+.coJobLockButton:disabled {
+  opacity: 0.38;
+  cursor: default;
 }
 
 .coSelectedJob h4 {
@@ -6547,9 +8180,13 @@ button.coBuildingIconSlot {
 
 .coPopStats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   margin-top: 5px;
+}
+
+.coLockedPop {
+  color: #f8da67 !important;
 }
 
 .coPopStats span {
@@ -6740,6 +8377,159 @@ button.coBuildingIconSlot {
   gap: 4px;
 }
 
+.coManagementBody {
+  min-height: 0;
+  padding: 5px;
+}
+
+.coManagementDashboard {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(250px, 0.8fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 6px;
+}
+
+.coFeatureManagementCard,
+.coManagementDashboard > .coQueuePanel {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid rgba(76, 158, 133, 0.46);
+  background: rgba(8, 20, 19, 0.74);
+}
+
+.coFeatureManagementCard > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(103, 255, 221, 0.22);
+}
+
+.coFeatureManagementCard > header strong { color: #eefaf6; font-size: 12px; }
+.coFeatureManagementCard > header span { color: rgba(202, 225, 219, 0.65); font-size: 9px; }
+
+.coMajorFeatureSlots {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 7px;
+}
+
+.coMajorFeatureSlot,
+.coMinorFeatureRow {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 7px;
+  padding: 7px;
+  border: 1px solid rgba(103, 255, 221, 0.3);
+  background: linear-gradient(145deg, rgba(11, 42, 39, 0.82), rgba(4, 17, 19, 0.94));
+}
+
+.coMajorFeatureSlot.negative,
+.coMinorFeatureRow.negative {
+  border-color: rgba(255, 116, 116, 0.48);
+  background: linear-gradient(145deg, rgba(65, 21, 24, 0.78), rgba(18, 10, 14, 0.94));
+}
+
+.coMajorFeatureSlot.empty,
+.coMajorFeatureSlot.unknown {
+  min-height: 126px;
+  display: grid;
+  grid-template-columns: 1fr;
+  place-content: center;
+  text-align: center;
+  opacity: 0.48;
+}
+
+.coMajorFeatureSlot.empty strong,
+.coMajorFeatureSlot.unknown strong { color: #c7e4dc; }
+.coMajorFeatureSlot.empty span,
+.coMajorFeatureSlot.unknown span { margin-top: 4px; color: rgba(202, 225, 219, 0.58); font-size: 9px; }
+
+.coManagedFeatureGlyph {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(124, 255, 221, 0.52);
+  background: rgba(5, 30, 29, 0.86);
+  color: #9cffdc;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.negative .coManagedFeatureGlyph {
+  border-color: rgba(255, 128, 128, 0.58);
+  background: rgba(55, 12, 18, 0.88);
+  color: #ffaaa5;
+}
+
+.coManagedFeatureCopy { min-width: 0; }
+.coManagedFeatureCopy > div:first-child { display: flex; align-items: baseline; justify-content: space-between; gap: 5px; }
+.coManagedFeatureCopy strong { color: #effbf7; font-size: 11px; }
+.coManagedFeatureCopy small { color: rgba(202, 225, 219, 0.58); font-size: 8px; text-transform: capitalize; }
+.coManagedFeatureCopy p { margin: 4px 0 0; color: rgba(205, 230, 223, 0.68); font-size: 9px; line-height: 1.3; }
+
+.coManagedFeatureEffects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 6px;
+}
+
+.coManagedFeatureEffects span {
+  padding: 2px 4px;
+  border: 1px solid rgba(248, 218, 103, 0.28);
+  background: rgba(47, 38, 12, 0.48);
+  color: #ffe989;
+  font-size: 8px;
+}
+
+.coFeatureRemoveButton {
+  grid-column: 1 / -1;
+  min-height: 25px;
+  border: 1px solid rgba(255, 117, 117, 0.58);
+  background: rgba(66, 12, 20, 0.72);
+  color: #ffb8b8;
+  font: inherit;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.coFeatureRemoveButton:disabled { opacity: 0.38; cursor: default; }
+.coFeatureRemovalNote { display: block; margin-top: 5px; color: rgba(242, 193, 151, 0.76) !important; text-transform: none !important; }
+
+.coMinorFeaturePanel {
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+}
+
+.coMinorFeatureList {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  padding: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.coMinorFeatureList::-webkit-scrollbar { width: 6px; }
+.coMinorFeatureList::-webkit-scrollbar-thumb { background: rgba(103, 255, 221, 0.34); border-radius: 999px; }
+.coManagementDashboard > .coQueuePanel { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
+.coModifier-feature-minor { --modifier-color: #91d8c5; }
+.coModifier-feature-major { --modifier-color: #f8da67; }
+.coModifier-feature-special { --modifier-color: #8ed8ff; }
+.coModifier-feature-negative { --modifier-color: #ff837c; }
+
 .coTabs {
   flex: 0 0 auto;
   display: grid;
@@ -6764,6 +8554,24 @@ button.coBuildingIconSlot {
   opacity: 0.42;
 }
 
+.coBattleBody { padding: 9px; min-height: 330px; }
+.coBattleColumns { display: grid; grid-template-columns: 1fr 1.15fr 1fr; gap: 8px; min-height: 310px; }
+.coBattleSide, .coBattlefield, .coArmyRecruitmentRow { border: 1px solid rgba(111, 214, 186, .25); background: rgba(5, 20, 21, .82); padding: 9px; }
+.coBattleSide header, .coBattlefield header { display: flex; flex-direction: column; gap: 3px; }
+.coBattleTrack { height: 105px; margin: 8px 0; position: relative; border-left: 2px solid rgba(255,255,255,.15); }
+.coBattleMarker { position: absolute; left: -8px; width: 14px; height: 14px; border-radius: 50%; transition: top .25s ease; }
+.coBattleMarker.attacker { background: #ef5350; box-shadow: 0 0 12px #ef5350; }
+.coBattleMarker.defender { background: #55d487; box-shadow: 0 0 12px #55d487; }
+.coBattleUnitList, .coArmyRecruitmentList, .coArmyEmbarkList { display: grid; gap: 5px; overflow-y: auto; max-height: 145px; }
+.coBattleUnitList span, .coArmyEmbarkList label { font-size: 9px; color: rgba(226,242,237,.82); }
+.coBattlefield { display: grid; align-content: space-between; text-align: center; }
+.coBattleOpposition { font-size: 25px; color: #f8da67; }
+.coBattleCommander { display: grid; margin: 8px 0; padding: 6px; background: rgba(27,64,57,.45); }
+.coArmyRecruitmentPanel { margin-top: 8px; }
+.coArmyRecruitmentList { max-height: 210px; padding: 6px; }
+.coArmyRecruitmentRow { display: grid; grid-template-columns: 1.1fr 1fr 1.5fr; gap: 8px; align-items: center; }
+.coArmyRecruitmentRow > div { display: grid; gap: 2px; }
+
 @media (max-width: 760px) {
   .celestialObjectPanel {
     width: calc(100vw - 16px);
@@ -6772,9 +8580,14 @@ button.coBuildingIconSlot {
   .coHeroRow,
   .coDistrictGrid,
   .coEconomyBody,
+  .coManagementDashboard,
   .coSurfaceLayout.withSide {
     grid-template-columns: 1fr;
   }
+
+  .coManagementDashboard > .coQueuePanel { grid-column: 1; grid-row: auto; }
+  .coBattleColumns, .coArmyRecruitmentRow { grid-template-columns: 1fr; }
+  .coMajorFeatureSlots { grid-template-columns: 1fr; }
 
   .coDistrictCity,
   .coInfoCard {

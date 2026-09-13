@@ -21,31 +21,39 @@ Domain terms used across the codebase and these docs.
   lane network between systems.
 - **Hyperlane** — an undirected connection between two stars; fleets travel only along lanes. Stored
   as `hyperlanes` pairs with a derived `adjacency` list.
-- **Visible vs. known** — *visible* systems are those a faction can currently see (within
-  `DISCOVERY_JUMPS` = 2 of a home/starbase/fleet); *known/discovered* systems are any ever seen. Fog
-  of war redacts the rest. See [`../systems/galaxy-map-and-visibility.md`](../systems/galaxy-map-and-visibility.md).
-- **Met** — two factions that have made first contact; recorded symmetrically in `metByFaction`.
+- **Current / stale / unknown intel** — each known entity field has its own observation status.
+  Active sensors make it current; remembered observations become stale; never-observed fields remain
+  unknown. See [`../systems/galaxy-map-and-visibility.md`](../systems/galaxy-map-and-visibility.md).
+- **Command link** — the authority-and-relay sensor network that permits remote orders. Seeing an
+  entity does not by itself guarantee command access.
 
 ### Economy & planets
 
 - **District** — a planetary land-use category (city, generator, mining, agriculture) with a build
   limit; provides base jobs and building slots.
 - **Building** — a structure occupying a district (or urban sub-district) slot that adds jobs/housing.
-  Some are **auto-placed** (the Planetary Capital) and can't be queued or demolished.
+  The five-tier planetary capital is **auto-placed** and cannot be queued, disabled, downgraded, or
+  demolished.
 - **Urban sub-district** — a specialization layer inside city space (residential, research campus,
   industry variants) with its own building slots and compatibility rules.
 - **Job** — work a unit of population performs (e.g. farmer, researcher, ruler), with output, upkeep,
   and amenity/crime effects, organized into upper/middle/lower **classes**.
+- **Job lock** — a persisted per-job snapshot of every species allocation working that productive
+  job. Targets reserve assignment and protect actually staffed workers from outbound migration.
 - **Amenities / happiness / crime / stability** — derived planet metrics that drive population growth
   and production multipliers. See [`../systems/population-and-planets.md`](../systems/population-and-planets.md).
 
 ### Fleets & combat
 
 - **Fleet** — a group of ships sharing a position, speed (the slowest member), and orders.
+- **Colonization order** — a persistent fleet order that moves to an eligible planet, revalidates on
+  arrival, and consumes one colonization ship only after successful founding.
 - **Phase** — a fleet's movement state (idle, departing, jumping, arriving); see `ShipTransitPhase`.
 - **Range band** — discrete distance bucket used to resolve weapon effectiveness in combat.
 - **Doctrine / stance / retreat policy** — tactical behavior settings governing how a fleet engages
   and when it retreats ([`src/game/CombatTypes.ts`](../../src/game/CombatTypes.ts)).
+- **Dark Matter** — an account-scoped progression reward spent on 10× fleet travel boosts and
+  immediate planetary construction completion. It carries across games.
 
 ### Protocol & state
 

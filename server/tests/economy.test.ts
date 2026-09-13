@@ -6,6 +6,7 @@ import {
   BUILDING_DEFINITIONS,
   BUILDING_MINERAL_COSTS,
   calculatePlanetEconomy,
+  completePlanetConstructionQueueItem,
   createBuildingConstructionQueueItem,
   createBuildingUpgradeConstructionQueueItem,
   createEmptyResourceCounts,
@@ -13,6 +14,8 @@ import {
   createPlanetBuildingState,
   createPlanetStateFromSeed,
   getEffectiveSpeciesHabitability,
+  getBuildingCost,
+  getBuildingUpkeep,
   getPlanetBuildingKind,
   getPlanetBuildingLevel,
   getHabitabilityProductionMultiplier,
@@ -33,6 +36,7 @@ import {
   monthlyToRealMinute,
   quarterlyToRealMinute,
   realMinuteToGameHour,
+  weeklyToRealMinute,
 } from "../../src/game/ResourceRate";
 
 const DEFAULT_LIMITS: DistrictCounts = {
@@ -53,6 +57,7 @@ test("economy display rates consistently convert to real minutes", () => {
   assert.equal(dailyToRealMinute(24), 60);
   assert.equal(monthlyToRealMinute(120), 10);
   assert.equal(quarterlyToRealMinute(48), 1);
+  assert.equal(weeklyToRealMinute(168), 60);
   assert.equal(gameHourToRealMinute(2), 120);
   assert.equal(realMinuteToGameHour(120), 2);
 });
@@ -170,9 +175,9 @@ test("resource deltas and deficits are computed from assigned population", () =>
   const economy = calculatePlanetEconomy(planet);
 
   assert.ok(economy.production.food > 0);
-  assert.equal(economy.upkeep.food, (planet.population / PEOPLE_PER_MONTHLY_UNIT) * 1.1);
+  assert.equal(economy.upkeep.food, (planet.population / PEOPLE_PER_MONTHLY_UNIT) * 0.022);
   assert.equal(economy.net.food, economy.production.food - economy.upkeep.food);
-  assert.equal(economy.upkeep.goods, 80);
+  assert.equal(economy.upkeep.goods, 1.6);
   assert.equal(economy.deficit.goods, economy.upkeep.goods);
   assert.ok(economy.stability < 50);
   assert.ok(economy.crime > 0);
@@ -249,7 +254,7 @@ test("population growth increases managed planets under capacity", () => {
   const planet = createHabitedPlanet();
   const next = applyPopulationGrowth(planet, DEFAULT_LIMITS, 1);
 
-  assert.ok(planet.economy.populationGrowth.netPerQuarter > 0);
+  assert.ok(planet.economy.populationGrowth.netPerWeek > 0);
   assert.ok(next.population > planet.population);
 });
 
@@ -264,11 +269,11 @@ test("housing pressure slows growth without fully stopping it alone", () => {
     },
   }, DEFAULT_LIMITS);
 
-  assert.ok(cramped.economy.populationGrowth.netPerQuarter > 0);
-  assert.ok(cramped.economy.populationGrowth.netPerQuarter < baseline.economy.populationGrowth.netPerQuarter);
+  assert.ok(cramped.economy.populationGrowth.netPerWeek > 0);
+  assert.ok(cramped.economy.populationGrowth.netPerWeek < baseline.economy.populationGrowth.netPerWeek);
 });
 
-test("overcrowding and unemployment can cause population decline", () => {
+test("overcrowding and unemployment cannot turn natural growth negative", () => {
   const planet = createHabitedPlanet();
   const stressed = recalculatePlanetStateEconomy({
     ...planet,
@@ -292,8 +297,8 @@ test("overcrowding and unemployment can cause population decline", () => {
   }, DEFAULT_LIMITS);
   const next = applyPopulationGrowth(stressed, DEFAULT_LIMITS, 1);
 
-  assert.ok(stressed.economy.populationGrowth.netPerQuarter < 0);
-  assert.ok(next.population < stressed.population);
+  assert.ok(stressed.economy.populationGrowth.netPerWeek >= 0);
+  assert.ok(next.population >= stressed.population);
 });
 
 test("existing habited population below starter value persists during normalization", () => {
@@ -398,7 +403,7 @@ test("planet modifiers alter job output, capacity, and growth", () => {
 
   assert.ok(modified.economy.production.food > baseline.economy.production.food);
   assert.ok(modified.economy.populationGrowth.capacity > baseline.economy.populationGrowth.capacity);
-  assert.ok(modified.economy.populationGrowth.netPerQuarter > baseline.economy.populationGrowth.netPerQuarter);
+  assert.ok(modified.economy.populationGrowth.netPerWeek > baseline.economy.populationGrowth.netPerWeek);
   assert.equal(modified.economy.activeModifiers.length, 3);
 });
 
@@ -423,6 +428,63 @@ test("construction queue completes districts and buildings over time", () => {
   assert.equal(result.completed.length, 2);
 });
 
+test("Dark Matter construction skips complete only the selected valid queue item", () => {
+  const planet = createHabitedPlanet();
+  const districtItem = createDistrictConstructionQueueItem("agriculture", "district-skip");
+  const buildingItem = createBuildingConstructionQueueItem(
+    "housingComplex",
+    "city",
+    3,
+    undefined,
+    "building-after-skip",
+  );
+  const queued = recalculatePlanetStateEconomy({
+    ...planet,
+    constructionQueue: [districtItem, buildingItem],
+  }, DEFAULT_LIMITS);
+
+  const skipped = completePlanetConstructionQueueItem(
+    queued,
+    districtItem.id,
+    DEFAULT_LIMITS,
+  );
+
+  assert.ok(skipped);
+  assert.equal(skipped.completed.id, districtItem.id);
+  assert.equal(skipped.completed.remainingDays, 0);
+  assert.equal(
+    skipped.state.builtDistricts.agriculture,
+    planet.builtDistricts.agriculture + 1,
+  );
+  assert.deepEqual(
+    skipped.state.constructionQueue.map((item) => item.id),
+    [buildingItem.id],
+  );
+});
+
+test("Dark Matter construction skips reject missing or no-longer-valid targets", () => {
+  const planet = createHabitedPlanet();
+  const districtItem = createDistrictConstructionQueueItem("agriculture", "district-invalid");
+  const queued = {
+    ...planet,
+    builtDistricts: {
+      ...planet.builtDistricts,
+      agriculture: DEFAULT_LIMITS.agriculture,
+    },
+    constructionQueue: [districtItem],
+  };
+
+  assert.equal(
+    completePlanetConstructionQueueItem(queued, "missing-item", DEFAULT_LIMITS),
+    null,
+  );
+  assert.equal(
+    completePlanetConstructionQueueItem(queued, districtItem.id, DEFAULT_LIMITS),
+    null,
+  );
+  assert.equal(queued.constructionQueue.length, 1);
+});
+
 test("building upgrades complete through construction and scale building effects", () => {
   const planet = createHabitedPlanet();
   const baseline = recalculatePlanetStateEconomy(planet, DEFAULT_LIMITS);
@@ -443,6 +505,38 @@ test("building upgrades complete through construction and scale building effects
 test("building mineral costs are exposed for server validation and UI", () => {
   assert.equal(BUILDING_MINERAL_COSTS.housingComplex, BUILDING_DEFINITIONS.housingComplex.mineralCost);
   assert.ok(BUILDING_MINERAL_COSTS.alloyFoundries > BUILDING_MINERAL_COSTS.housingComplex);
+});
+
+test("building levels use authored mixed-resource costs and direct energy upkeep", () => {
+  const levelOne = getBuildingCost("researchLabs", 1);
+  const levelFour = getBuildingCost("researchLabs", 4);
+  assert.deepEqual(
+    { minerals: levelOne.minerals, energy: levelOne.energy, goods: levelOne.goods, alloys: levelOne.alloys },
+    { minerals: 500, energy: 150, goods: 50, alloys: 0 },
+  );
+  assert.deepEqual(
+    { minerals: levelFour.minerals, energy: levelFour.energy, goods: levelFour.goods, alloys: levelFour.alloys },
+    { minerals: 32_000, energy: 10_000, goods: 5_000, alloys: 1_200 },
+  );
+  assert.equal(getBuildingUpkeep("researchLabs", 1).energy, 3);
+  assert.equal(getBuildingUpkeep("researchLabs", 4).energy, 16);
+
+  const planet = createHabitedPlanet();
+  planet.population = 0;
+  planet.speciesPopulations = [];
+  planet.builtDistricts = { ...ZERO_DISTRICTS };
+  planet.buildings = {
+    city: [createPlanetBuildingState("housingComplex"), null, null, null, null, null],
+    generator: [null, null, null],
+    mining: [null, null, null],
+    agriculture: [null, null, null],
+  };
+  planet.urbanSubDistricts = [
+    { kind: "residential", buildings: [null, null, null] },
+    { kind: "mixedIndustry", buildings: [null, null, null] },
+  ];
+  const economy = calculatePlanetEconomy(planet);
+  assert.equal(economy.upkeep.energy, 1);
 });
 
 test("species traits and living standards feed habitability, happiness, growth, and upkeep", () => {
@@ -475,7 +569,7 @@ test("species traits and living standards feed habitability, happiness, growth, 
   assert.equal(getEffectiveSpeciesHabitability(modified, species.id, context), 90);
   assert.ok(modified.economy.happiness > baseline.economy.happiness);
   assert.ok(modified.economy.upkeep.goods > baseline.economy.upkeep.goods);
-  assert.ok(modified.economy.populationGrowth.netPerQuarter > baseline.economy.populationGrowth.netPerQuarter);
+  assert.ok(modified.economy.populationGrowth.netPerWeek > baseline.economy.populationGrowth.netPerWeek);
 });
 
 test("work eligibility filters job assignment by species rights", () => {
@@ -506,7 +600,7 @@ test("work eligibility filters job assignment by species rights", () => {
       [species.id]: {
         livingStandard: "basic",
         citizenship: "fullCitizenship",
-        migration: "controlled",
+        migration: "internalOnly",
         workEligibility: "allJobs",
       },
     },
@@ -517,7 +611,7 @@ test("work eligibility filters job assignment by species rights", () => {
       [species.id]: {
         livingStandard: "basic",
         citizenship: "limitedRights",
-        migration: "controlled",
+        migration: "internalOnly",
         workEligibility: "laborOnly",
       },
     },

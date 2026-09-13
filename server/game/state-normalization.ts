@@ -32,6 +32,7 @@ import {
   normalizeShipDesign,
 } from "../../src/data/ShipDesigns";
 import type { ShipDesign } from "../../src/data/ShipDesigns";
+import { isArmyTypeId } from "../../src/data/Armies";
 import {
   HUMAN_SPECIES_ID,
   normalizeSpeciesState,
@@ -147,10 +148,12 @@ export function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<Serve
           const resourceUpkeepPerDay = normalizeResourceCounts(item.resourceUpkeepPerDay ?? fallbackDaily);
           return {
             ...item,
-            kind: item.kind === "upgrade" ? "upgrade" : "build",
+            kind: item.kind === "upgrade" ? "upgrade" : item.kind === "armyBuild" ? "armyBuild" : "build",
             designId: typeof item.designId === "string" ? item.designId : null,
             targetDesignId: typeof item.targetDesignId === "string" ? item.targetDesignId : null,
             shipId: typeof item.shipId === "string" ? item.shipId : null,
+            armyTypeId: isArmyTypeId(item.armyTypeId) ? item.armyTypeId : undefined,
+            speciesId: typeof item.speciesId === "string" ? item.speciesId : undefined,
             cost,
             upfrontCost,
             resourceUpkeepPerDay,
@@ -158,6 +161,7 @@ export function normalizeStarbase(starbase: Partial<ServerStarbase> & Pick<Serve
             totalDays,
             alloyUpkeepPerDay: Math.max(0, Number(item.alloyUpkeepPerDay) || resourceUpkeepPerDay.alloys),
             crewDemand: Math.max(0, Number(item.crewDemand) || 0),
+            reservedCrew: Math.max(0, Number(item.reservedCrew ?? item.crewDemand) || 0),
           };
         })
       : [],
@@ -186,14 +190,23 @@ export function normalizeShip(
   const maxShieldValue = Number(ship.maxShield);
   const maxArmorValue = Number(ship.maxArmor);
   const maxHull = Math.max(1, Number.isFinite(maxHullValue) ? maxHullValue : combat.maxHull);
-  const maxShield = Math.max(0, Number.isFinite(maxShieldValue) ? maxShieldValue : combat.maxShield);
-  const maxArmor = Math.max(0, Number.isFinite(maxArmorValue) ? maxArmorValue : combat.maxArmor);
+  const maxShield = shipKind === "armyShip"
+    ? 0
+    : Math.max(0, Number.isFinite(maxShieldValue) ? maxShieldValue : combat.maxShield);
+  const maxArmor = shipKind === "armyShip"
+    ? 0
+    : Math.max(0, Number.isFinite(maxArmorValue) ? maxArmorValue : combat.maxArmor);
   const hullValue = Number(ship.hull ?? ship.hp);
   const shieldValue = Number(ship.shield);
   const armorValue = Number(ship.armor);
   const hull = Math.max(0, Math.min(maxHull, Number.isFinite(hullValue) ? hullValue : maxHull));
   const shield = Math.max(0, Math.min(maxShield, Number.isFinite(shieldValue) ? shieldValue : maxShield));
   const armor = Math.max(0, Math.min(maxArmor, Number.isFinite(armorValue) ? armorValue : maxArmor));
+  const crewCapacity = Math.max(0, Math.round(stats.crewDemand));
+  const crew = Math.max(0, Math.min(
+    crewCapacity,
+    Number.isFinite(Number(ship.crew)) ? Math.floor(Number(ship.crew)) : crewCapacity,
+  ));
   return {
     id: ship.id,
     ownerId,
@@ -225,6 +238,9 @@ export function normalizeShip(
       emergencyMobility: ship.subsystemState?.emergencyMobility === true,
     },
     disabled: ship.disabled === true,
+    crew,
+    crewCapacity,
+    armyUnitId: typeof ship.armyUnitId === "string" ? ship.armyUnitId : undefined,
   };
 }
 
@@ -241,7 +257,7 @@ export function normalizeFleet(
   const phase = (fleet.phase ?? "idle") as ShipTransitPhase;
   const targetStarId = Number.isInteger(fleet.targetStarId) ? Number(fleet.targetStarId) : null;
   const formation = isFleetFormation(fleet.formation) ? fleet.formation : "line";
-  const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "attack" || fleet.orderType === "orbit" || fleet.orderType === "merge" || fleet.orderType === "retreat"
+  const orderType: FleetOrderType = fleet.orderType === "move" || fleet.orderType === "build" || fleet.orderType === "attack" || fleet.orderType === "orbit" || fleet.orderType === "colonize" || fleet.orderType === "merge" || fleet.orderType === "retreat"
     ? fleet.orderType
     : null;
   const shipIds = Array.isArray(fleet.shipIds) ? fleet.shipIds.filter((id) => typeof id === "string") : [];
@@ -264,10 +280,12 @@ export function normalizeFleet(
   }
   const systemPosition = fleet.systemPosition ?? systemCenterPosition();
   const stationaryStarbaseId = typeof fleet.stationaryStarbaseId === "string" ? fleet.stationaryStarbaseId : null;
+  const stationaryPlanetId = typeof fleet.stationaryPlanetId === "string" ? fleet.stationaryPlanetId : null;
   return {
     id: fleet.id,
     ownerId: Number.isInteger(fleet.ownerId) ? fleet.ownerId : 0,
     stationaryStarbaseId,
+    stationaryPlanetId,
     shipIds,
     formation,
     currentStarId,
@@ -280,12 +298,19 @@ export function normalizeFleet(
     phaseProgress: Math.max(0, Math.min(1, Number(fleet.phaseProgress) || 0)),
     phaseElapsedMs: fleet.phaseElapsedMs ?? Math.round((fleet.phaseProgress ?? 0) * phaseDuration(ctx, phase)),
     orderType,
-    speed: stationaryStarbaseId ? 0 : Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
+    pendingStarbaseBuildCost: fleet.pendingStarbaseBuildCost
+      ? normalizeResourceCounts(fleet.pendingStarbaseBuildCost)
+      : null,
+    speed: stationaryStarbaseId || stationaryPlanetId ? 0 : Math.max(0.05, Number(fleet.speed) || DEFAULT_SHIP_SPEED),
     combatStance: normalizeCombatStance(fleet.combatStance),
     retreatState: normalizeFleetRetreatState(fleet.retreatState),
     systemPosition,
     hyperlanePosition: fleet.hyperlanePosition ?? null,
     movementPlan: fleet.movementPlan ?? null,
+    darkMatterBoostActive: fleet.darkMatterBoostActive === true,
+    darkMatterBoostPaidUntilYear: Number.isFinite(fleet.darkMatterBoostPaidUntilYear)
+      ? fleet.darkMatterBoostPaidUntilYear!
+      : null,
     orbitTargetPlanetId: typeof fleet.orbitTargetPlanetId === "string" ? fleet.orbitTargetPlanetId : null,
     orbitOffset: fleet.orbitOffset ?? null,
     orbitTarget: fleet.orbitTarget ?? null,
@@ -377,6 +402,31 @@ export function createLegacyFleetFromShip(ctx: RuntimeContext, ship: Partial<Ser
 
 export function syncFleetMembership(ctx: RuntimeContext, nextState: GameState): boolean {
   let changed = false;
+  for (const fleet of [...nextState.fleets]) {
+    const fleetShips = nextState.ships.filter((ship) => ship.fleetId === fleet.id);
+    const armyShips = fleetShips.filter((ship) => ship.shipKind === "armyShip");
+    if (armyShips.length === 0 || armyShips.length === fleetShips.length) continue;
+    let armyFleetId = `${fleet.id}-army`;
+    let suffix = 2;
+    while (nextState.fleets.some((candidate) => candidate.id === armyFleetId)) {
+      armyFleetId = `${fleet.id}-army-${suffix}`;
+      suffix += 1;
+    }
+    const armyFleet = createFleet(ctx, fleet.ownerId, fleet.currentStarId, armyShips.map((ship) => ship.id), armyFleetId);
+    armyFleet.systemPosition = { ...fleet.systemPosition };
+    armyFleet.phaseStartedAtYear = nextState.clock.year;
+    armyFleet.orbitTarget = fleet.orbitTarget ? { ...fleet.orbitTarget, position: { ...fleet.orbitTarget.position } } : null;
+    armyFleet.orbitTargetPlanetId = fleet.orbitTargetPlanetId;
+    armyFleet.orbitOffset = fleet.orbitOffset ? { ...fleet.orbitOffset } : null;
+    if (armyFleet.orbitTarget?.kind === "planet") {
+      armyFleet.phase = "orbitingPlanet";
+    } else if (armyFleet.orbitTarget) {
+      armyFleet.phase = "orbiting";
+    }
+    for (const ship of armyShips) ship.fleetId = armyFleet.id;
+    nextState.fleets.push(armyFleet);
+    changed = true;
+  }
   const fleetsById = new Map(nextState.fleets.map((fleet) => [fleet.id, fleet]));
   const shipsByFleet = new Map<string, GameShip[]>();
 
@@ -412,7 +462,7 @@ export function syncFleetMembership(ctx: RuntimeContext, nextState: GameState): 
       fleet.shipIds = shipIds;
       changed = true;
     }
-    const nextSpeed = fleet.stationaryStarbaseId
+    const nextSpeed = fleet.stationaryStarbaseId || fleet.stationaryPlanetId
       ? 0
       : Math.min(...ships.map((ship) => Math.max(0.05, ship.speed)));
     if (Math.abs(fleet.speed - nextSpeed) > 0.0001) {
@@ -477,6 +527,7 @@ export function normalizeFactionEconomies(
     return {
       factionId: faction.id,
       stockpiles: existing?.stockpiles ? cloneResourceCounts(normalizeResourceCounts(existing.stockpiles)) : economy.stockpiles,
+      crewStockpile: Math.max(0, Math.floor(Number(existing?.crewStockpile) || 0)),
       monthlyDelta: existing?.monthlyDelta ? cloneResourceCounts(normalizeResourceCounts(existing.monthlyDelta)) : economy.monthlyDelta,
       lastProcessedMonth: existing?.lastProcessedMonth ?? month,
       lastProcessedHour: existing?.lastProcessedHour ?? gameYearToHourIndex(nextState.clock.year),
@@ -511,8 +562,12 @@ export function normalizeShipDesignsForFactions(
     }
   }
 
+  const playerDesignKinds = STARBASE_SHIP_KINDS.filter((shipKind) => shipKind !== "armyShip");
+  for (let index = designs.length - 1; index >= 0; index -= 1) {
+    if (designs[index].shipKind === "armyShip") designs.splice(index, 1);
+  }
   for (const faction of factions) {
-    for (const shipKind of STARBASE_SHIP_KINDS) {
+    for (const shipKind of playerDesignKinds) {
       const hasActive = designs.some((design) => (
         design.ownerId === faction.id
         && design.shipKind === shipKind

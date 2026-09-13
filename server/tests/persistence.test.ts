@@ -19,6 +19,12 @@ test("state saves are single-flight, compact, and atomically replaced", async ()
       lastSaveAt: 0,
       saveInFlight: null,
       saveQueued: false,
+      services: {
+        authStore: {
+          recordGameStateVersions: () => undefined,
+        },
+        now: () => Date.now(),
+      },
     } as unknown as RuntimeContext;
 
     const first = saveState(ctx);

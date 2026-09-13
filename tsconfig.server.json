@@ -3,8 +3,8 @@
   "compilerOptions": {
     "moduleResolution": "bundler",
     "noEmit": true,
-    "lib": ["ES2022"],
-    "types": ["node", "ws"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "ws", "vite/client"]
   },
   "include": ["server/**/*.ts", "src/auth/types.ts", "src/data/**/*.ts", "src/flags/**/*.ts", "src/game/GameProtocol.ts"]
 }

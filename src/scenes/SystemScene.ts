@@ -55,10 +55,13 @@ import {
   withPlanetOrbitFields,
 } from "../data/SystemCoordinates";
 import type { SystemPosition } from "../data/SystemCoordinates";
-import type { PlanetState } from "../data/Economy";
+import type { FactionEconomyState, PlanetState } from "../data/Economy";
+import { getPlanetColonizationEligibility } from "../data/Colonization";
 import type { LeaderState } from "../data/Leaders";
+import type { SpeciesState } from "../data/Species";
+import type { ArmyUnit, GroundBattleState } from "../data/Armies";
 import type { FactionInfo } from "../data/Factions";
-import { STARBASE_LEVEL_DEFINITIONS } from "../data/Starbase";
+import { OUTPOST_CONSTRUCTION_COST, STARBASE_LEVEL_DEFINITIONS } from "../data/Starbase";
 import { SHIP_HULL_DEFINITIONS } from "../data/ShipDesigns";
 import type { ShipDesign } from "../data/ShipDesigns";
 import { OrbitSystem } from "../systems/OrbitSystem";
@@ -138,7 +141,12 @@ export interface SystemSceneOptions {
   playerFactionId?: number;
   planetStates?: PlanetState[];
   leaders?: LeaderState[];
+  species?: SpeciesState[];
+  armies?: ArmyUnit[];
+  groundBattles?: GroundBattleState[];
+  empirePlanetStates?: PlanetState[];
   technology?: FactionTechnologyView | null;
+  factionEconomy?: FactionEconomyState | null;
   shipTransit?: GalaxyShipTransit | null;
   hyperlaneExits?: HyperlaneExitPoint[];
   clockYear?: number;
@@ -149,7 +157,7 @@ export interface SystemSceneOptions {
   onRequestFleetActionInGalaxy?: (fleetId: string, action: ShipAction) => void;
   onPlanetCommand?: (command: ClientCommand) => void;
   onFleetCommand?: (command: ClientCommand) => void;
-  onRequestPlanetDetails?: (planetId: string) => Promise<{ planet: PlanetConfig; planetState: PlanetState }>;
+  onRequestPlanetDetails?: (planetId: string) => Promise<{ planet: PlanetConfig; planetState: PlanetState; armies?: ArmyUnit[]; groundBattle?: GroundBattleState | null }>;
   onReleasePlanetDetails?: (planetId: string) => void;
   onRequestStarbaseDetails?: (starbaseId: string) => Promise<ServerStarbase | null>;
   onReleaseStarbaseDetails?: (starbaseId: string) => void;
@@ -224,6 +232,8 @@ export class SystemScene implements IGameScene {
   private warFactionIds = new Set<number>();
   private playerFactionId: number;
   private planetStates: PlanetState[];
+  private factionEconomy: FactionEconomyState | null;
+  private species: SpeciesState[];
   private leaders: LeaderState[];
   private shipTransit: GalaxyShipTransit | null;
   private clockYear: number;
@@ -398,6 +408,8 @@ export class SystemScene implements IGameScene {
     this.playerFactionId = options.playerFactionId ?? 0;
     this.applyDiplomacyMovement(options.diplomacy);
     this.planetStates = this.systemStore?.getPlanetStates() ?? options.planetStates ?? [];
+    this.factionEconomy = options.factionEconomy ?? null;
+    this.species = options.species ?? [];
     this.leaders = this.systemStore?.getLeaders() ?? options.leaders ?? [];
     applyPlanetStatesToStars([this.star], this.planetStates);
     this.shipTransit = options.shipTransit ?? null;
@@ -1297,6 +1309,30 @@ export class SystemScene implements IGameScene {
       this.clearFleetAction();
       return;
     }
+    if (action === "toggleDarkMatterBoost") {
+      const fleet = this.serverFleets.find((candidate) => candidate.id === fleetId);
+      if (!fleet?.movementPlan) {
+        this.clearFleetAction();
+        return;
+      }
+      const enabled = fleet.darkMatterBoostActive !== true;
+      const confirmed = enabled
+        ? window.confirm(
+          "Activate Dark Matter fleet boost?\n\nEffect: 10x movement speed\nCost: 1 Dark Matter now, then 1 per in-game moving day\nThe boost stops automatically on arrival or when your balance is empty.",
+        )
+        : window.confirm(
+          "Disable the Dark Matter fleet boost?\n\nThe fleet will return to normal movement speed. Prepaid Dark Matter is not refunded.",
+        );
+      if (confirmed) {
+        this.options.onFleetCommand?.({
+          type: "setFleetDarkMatterBoost",
+          fleetId,
+          enabled,
+        });
+      }
+      this.clearFleetAction();
+      return;
+    }
     if (action === "retreatTo" || action === "emergencyRetreatTo") {
       this.options.onRequestFleetActionInGalaxy?.(fleetId, action);
       this.clearFleetAction();
@@ -1502,12 +1538,17 @@ export class SystemScene implements IGameScene {
     if (this.activeFleetAction !== "move" && !isColonize) return [];
 
     const targets: SystemActionTarget[] = [];
+    const selectedFleetId = this.getPrimarySelectedFleetId();
+    const selectedFleet = selectedFleetId
+      ? this.serverFleets.find((fleet) => fleet.id === selectedFleetId) ?? null
+      : null;
 
     // Planets are valid targets for both move (orbit) and colonize.
     for (let i = 0; i < this.planetConfigs.length; i++) {
       const planet = this.planetConfigs[i];
       const mesh = this.planetMeshes[i];
       if (!planet || !mesh) continue;
+      if (isColonize && !this.fleetCanColonizePlanet(selectedFleet, planet)) continue;
       targets.push(this.resolveSystemActionTargetMarkerPosition({
         kind: "planet",
         label: planet.name,
@@ -1636,6 +1677,11 @@ export class SystemScene implements IGameScene {
     const planet = index >= 0 ? this.planetConfigs[index] : null;
     const mesh = index >= 0 ? this.planetMeshes[index] : null;
     if (!planet || !mesh) return null;
+    if (this.activeFleetAction === "colonize") {
+      const fleetId = this.getPrimarySelectedFleetId();
+      const fleet = fleetId ? this.serverFleets.find((candidate) => candidate.id === fleetId) : null;
+      if (!this.fleetCanColonizePlanet(fleet, planet)) return null;
+    }
     return {
       kind: "planet",
       label: planet.name,
@@ -1995,12 +2041,31 @@ export class SystemScene implements IGameScene {
     return this.getShipsForFleet(fleet.id).some((ship) => ship.shipKind === "colonizationShip" && ship.hull > 0);
   }
 
+  private fleetCanColonizePlanet(fleet: ServerFleet | null | undefined, planet: PlanetConfig): boolean {
+    if (!this.fleetCanColonize(fleet)) return false;
+    const planetState = this.planetStates.find((candidate) => candidate.id === planet.id);
+    if (!planetState) return false;
+    const foundingSpeciesId = this.factions.find((faction) => faction.id === this.playerFactionId)?.foundingSpeciesId;
+    if (!foundingSpeciesId) return false;
+    return getPlanetColonizationEligibility({
+      planet,
+      planetState,
+      systemOwnerId: this.starOwnership[planetState.starId] ?? -1,
+      factionId: this.playerFactionId,
+      foundingSpeciesId,
+      speciesContext: { species: this.species },
+      hasColonizationShip: true,
+      fleetAvailable: true,
+    }).eligible;
+  }
+
   private getFleetActions(fleet: ServerFleet): ShipAction[] {
     if (fleet.stationaryStarbaseId) return [];
     const actions: ShipAction[] = ["move"];
     if (this.fleetCanBuildStarbase(fleet)) actions.push("build");
     if (this.fleetCanColonize(fleet)) actions.push("colonize");
     actions.push("attack", "stop", "hold", "guard", "retreat", "retreatTo", "emergencyRetreatTo", "merge");
+    if (fleet.movementPlan) actions.push("toggleDarkMatterBoost");
     return actions;
   }
 
@@ -2061,7 +2126,9 @@ export class SystemScene implements IGameScene {
           : `Star ${fleet.movementPlan.destinationStarId}`);
     return {
       destination,
+      startedYear: fleet.movementPlan.startedAtYear,
       arrivalYear: fleet.movementPlan.endsAtYear,
+      darkMatterBoostActive: fleet.darkMatterBoostActive === true,
     };
   }
 
@@ -2188,6 +2255,11 @@ export class SystemScene implements IGameScene {
       ships: this.serverShips,
       shipDesigns: this.shipDesigns,
       technology: this.options.technology,
+      factionEconomy: this.factionEconomy,
+      planetStates: this.options.empirePlanetStates ?? this.planetStates,
+      species: this.options.species,
+      armies: this.options.armies,
+      playerFactionId: this.playerFactionId,
       nebulaKind: this.options.nebula?.kind ?? null,
       onStarbaseCommand: (command) => this.options.onPlanetCommand?.(command),
       onClose: (starbaseId) => this.options.onReleaseStarbaseDetails?.(starbaseId),
@@ -2261,6 +2333,7 @@ export class SystemScene implements IGameScene {
       case "jumpingHyperlane":
         return "In Transit";
       case "movingSystem":
+        if (fleet.orderType === "colonize") return "Colonizing";
         return fleet.orderType === "merge" ? "Merging" : "Maneuvering";
       case "orbiting":
       case "orbitingPlanet":
@@ -3921,7 +3994,17 @@ export class SystemScene implements IGameScene {
         const planetId = target.id;
         if (planetId) {
           items.push({ label: `Orbit ${target.label ?? "Planet"}`, onSelect: () => this.options.onFleetCommand?.({ type: "orbitPlanet", fleetId: fleet.id, planetId }) });
-          if (this.fleetCanColonize(fleet)) {
+          const planet = this.planetConfigs.find((candidate) => candidate.id === planetId);
+          const planetState = this.planetStates.find((candidate) => candidate.id === planetId);
+          const fleetShips = fleet.shipIds.map((shipId) => this.serverShips.find((ship) => ship.id === shipId)).filter((ship): ship is ServerShip => Boolean(ship));
+          const isArmyFleet = fleetShips.length === fleet.shipIds.length && fleetShips.length > 0 && fleetShips.every((ship) => ship.shipKind === "armyShip" && ship.armyUnitId);
+          const orbitingTarget = fleet.phase === "orbitingPlanet" && fleet.orbitTarget?.kind === "planet" && fleet.orbitTarget.planetId === planetId;
+          if (isArmyFleet && orbitingTarget && planetState?.ownerId === this.playerFactionId) {
+            items.push({ label: "Land Armies", onSelect: () => this.options.onFleetCommand?.({ type: "landArmyFleet", fleetId: fleet.id, planetId }) });
+          } else if (isArmyFleet && orbitingTarget && planetState?.ownerId != null && this.warFactionIds.has(planetState.ownerId)) {
+            items.push({ label: "Begin Invasion", onSelect: () => this.options.onFleetCommand?.({ type: "beginPlanetInvasion", fleetId: fleet.id, planetId }) });
+          }
+          if (planet && this.fleetCanColonizePlanet(fleet, planet)) {
             items.push({ label: `Colonize ${target.label ?? "Planet"}`, onSelect: () => this.options.onFleetCommand?.({ type: "colonizePlanet", fleetId: fleet.id, planetId }) });
           }
         }
@@ -3951,7 +4034,10 @@ export class SystemScene implements IGameScene {
           items.push({ label: "Orbit Star", onSelect: () => this.issueMoveToSystemPosition(target.position!, this.star.id, orbitTarget) });
         }
         if (this.fleetCanBuildStarbase(fleet)) {
-          items.push({ label: "Build Starbase", onSelect: () => this.issueBuildAtStar() });
+          items.push({
+            label: `Build Outpost · ${OUTPOST_CONSTRUCTION_COST.minerals}M ${OUTPOST_CONSTRUCTION_COST.goods}G ${OUTPOST_CONSTRUCTION_COST.alloys}A · 180d · upkeep 4E/mo`,
+            onSelect: () => this.issueBuildAtStar(),
+          });
         }
         break;
       }
@@ -4007,7 +4093,7 @@ export class SystemScene implements IGameScene {
     try {
       const details = await this.options.onRequestPlanetDetails(planet.id);
       if (requestSequence !== this.planetPanelRequestSequence) return;
-      this.renderPlanetObjectPanel(details.planet, details.planetState, true, requestSequence);
+      this.renderPlanetObjectPanel(details.planet, details.planetState, true, requestSequence, details.armies, details.groundBattle);
     } catch (error) {
       console.info(error instanceof Error ? error.message : "Information does not exist.");
     }
@@ -4025,7 +4111,11 @@ export class SystemScene implements IGameScene {
     planetState: PlanetState | undefined,
     interactive: boolean,
     requestSequence: number,
+    detailArmies?: ArmyUnit[],
+    detailBattle?: GroundBattleState | null,
   ): void {
+    const armies = detailArmies ?? this.options.armies?.filter((army) => army.location.kind === "planet" && army.location.planetId === panelPlanet.id) ?? [];
+    const groundBattle = detailBattle === undefined ? this.options.groundBattles?.find((battle) => battle.planetId === panelPlanet.id) ?? null : detailBattle;
     this.objectPanel.show({
       kind: "planet",
       objectId: panelPlanet.id,
@@ -4037,9 +4127,20 @@ export class SystemScene implements IGameScene {
       imageUrl: this.getPlanetTextureUrl(panelPlanet),
       accentColor: "rgba(102, 236, 199, 0.95)",
       technology: this.options.technology,
+      factionEconomy: this.factionEconomy,
+      shipDesigns: this.shipDesigns,
+      planetPlatformUsage: this.getPlanetPlatformUsage(panelPlanet.id),
+      armies,
+      empireArmies: this.options.armies,
+      empirePlanetStates: this.options.empirePlanetStates,
+      species: this.options.species,
+      groundBattle,
+      playerFactionId: this.playerFactionId,
+      militaryCommander: this.getAssignedLeader("planetMilitary", panelPlanet.id),
+      battleCommander: groundBattle ? this.getAssignedLeader("groundBattle", groundBattle.id) : null,
       orbitFleetId: this.getOrbitCapableFleetId(),
       assignedLeader: this.getAssignedLeader("planet", panelPlanet.id),
-      canManageLeaders: interactive && this.getCurrentStarOwnerId() === this.playerFactionId,
+      canManageLeaders: interactive && planetState?.ownerId === this.playerFactionId,
       onPlanetCommand: interactive ? (command) => this.options.onPlanetCommand?.(command) : undefined,
       onClose: (objectId, kind) => {
         if (kind === "planet") {
@@ -4069,6 +4170,15 @@ export class SystemScene implements IGameScene {
       && fleet.currentStarId === this.star.id
       && (fleet.phase === "idle" || fleet.phase === "orbitingPlanet" || fleet.phase === "orbiting")
     ))?.id ?? null;
+  }
+
+  private getPlanetPlatformUsage(planetId: string): number {
+    const platformShipIds = new Set(this.serverShips
+      .filter((ship) => ship.shipKind === "defensePlatform")
+      .map((ship) => ship.id));
+    return this.serverFleets
+      .filter((fleet) => fleet.stationaryPlanetId === planetId)
+      .reduce((total, fleet) => total + fleet.shipIds.filter((shipId) => platformShipIds.has(shipId)).length, 0);
   }
 
   private showStarObjectPanel(): void {
@@ -4105,9 +4215,20 @@ export class SystemScene implements IGameScene {
       imageUrl: this.getPlanetTextureUrl(planet),
       accentColor: "rgba(102, 236, 199, 0.95)",
       technology: this.options.technology,
+      factionEconomy: this.factionEconomy,
+      shipDesigns: this.shipDesigns,
+      planetPlatformUsage: this.getPlanetPlatformUsage(planet.id),
+      armies: this.options.armies?.filter((army) => army.location.kind === "planet" && army.location.planetId === planet.id) ?? [],
+      empireArmies: this.options.armies,
+      empirePlanetStates: this.options.empirePlanetStates,
+      species: this.options.species,
+      groundBattle: this.options.groundBattles?.find((battle) => battle.planetId === planet.id) ?? null,
+      playerFactionId: this.playerFactionId,
+      militaryCommander: this.getAssignedLeader("planetMilitary", planet.id),
+      battleCommander: this.options.groundBattles?.find((battle) => battle.planetId === planet.id) ? this.getAssignedLeader("groundBattle", this.options.groundBattles!.find((battle) => battle.planetId === planet.id)!.id) : null,
       orbitFleetId: this.getOrbitCapableFleetId(),
       assignedLeader: this.getAssignedLeader("planet", planet.id),
-      canManageLeaders: interactive && this.getCurrentStarOwnerId() === this.playerFactionId,
+      canManageLeaders: interactive && planetState.ownerId === this.playerFactionId,
       onPlanetCommand: interactive ? (command) => this.options.onPlanetCommand?.(command) : undefined,
       onClose: (objectId, kind) => {
         if (kind === "planet") this.options.onReleasePlanetDetails?.(objectId);
@@ -4394,6 +4515,12 @@ export class SystemScene implements IGameScene {
     this.options.technology = technology;
   }
 
+  setFactionEconomy(economy: FactionEconomyState | null): void {
+    this.factionEconomy = economy;
+    this.objectPanel?.refreshFactionEconomy(economy);
+    this.starbasePanel?.refreshFactionEconomy(economy);
+  }
+
   applySystemPayload(
     payload: SystemDetailPayload,
     context: { leaders?: LeaderState[]; selectedFleetIds?: Iterable<string>; clockYear?: number } = {},
@@ -4487,6 +4614,29 @@ export class SystemScene implements IGameScene {
     }
   }
 
+  setArmyState(armies: ArmyUnit[], groundBattles: GroundBattleState[]): void {
+    this.options.armies = armies;
+    this.options.groundBattles = groundBattles;
+    const planetId = this.objectPanel?.getCurrentKind() === "planet" ? this.objectPanel.getCurrentObjectId() : null;
+    if (planetId) {
+      const battle = groundBattles.find((candidate) => candidate.planetId === planetId) ?? null;
+      this.objectPanel.refreshArmyState(
+        planetId,
+        armies.filter((army) => army.location.kind === "planet" && army.location.planetId === planetId),
+        battle,
+        this.getAssignedLeader("planetMilitary", planetId),
+        battle ? this.getAssignedLeader("groundBattle", battle.id) : null,
+        armies,
+      );
+    }
+    this.starbasePanel?.refreshArmyContext(armies, this.options.empirePlanetStates);
+  }
+
+  setArmyRecruitmentPlanetStates(planetStates: PlanetState[]): void {
+    this.options.empirePlanetStates = planetStates;
+    this.starbasePanel?.refreshArmyContext(this.options.armies ?? [], planetStates);
+  }
+
   setStarOwnerships(ownerByStar: number[]): void {
     this.starOwnership = ownerByStar;
     if (this.activeFleetAction) {
@@ -4525,7 +4675,7 @@ export class SystemScene implements IGameScene {
     this.disposeStarbaseCombatRangeRing();
   }
 
-  private getAssignedLeader(kind: "planet" | "fleet", targetId: string): LeaderState | null {
+  private getAssignedLeader(kind: "planet" | "fleet" | "planetMilitary" | "groundBattle", targetId: string): LeaderState | null {
     return this.leaders.find((leader) => (
       leader.status === "recruited"
       && leader.assignment?.kind === kind

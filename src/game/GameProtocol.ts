@@ -7,18 +7,28 @@ import type {
   BuildingSlotArea,
   DistrictKind,
   FactionEconomyState,
+  JobKind,
   PlanetState,
+  PlanetDefenseBuildingKind,
+  PlanetDefenseSection,
   ResourceKind,
   ResourceCounts,
   UrbanSubDistrictKind,
 } from "../data/Economy";
+import type { PlanetFeatureKind } from "../data/PlanetFeatures";
+import type { ArmyTypeId, ArmyUnit, GroundBattleState } from "../data/Armies";
+import type { ColonizationEligibility } from "../data/Colonization";
 import type {
   MarketPlayerStats,
   MarketAutoTradeOrder,
   MarketPriceSnapshot,
+  MarketResourceKind,
   MarketTransactionRecord,
   MarketTradeAlert,
 } from "../data/Market";
+
+/** Wire protocols accepted by the current browser client, newest last. */
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8, 9, 10, 11];
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
@@ -74,7 +84,8 @@ export type ShipAction =
   | "orbit"
   | "hold"
   | "guard"
-  | "protect";
+  | "protect"
+  | "toggleDarkMatterBoost";
 
 export type FleetFormation = "line" | "vanguard" | "echelon" | "defensive";
 
@@ -97,6 +108,8 @@ export interface GameClock {
   paused: boolean;
   syncedAtMs: number;
   lastProcessedLeaderDay?: number;
+  lastProcessedPopulationWeek?: number;
+  lastProcessedPopulationMonth?: number;
 }
 
 export type ServerUpdateField =
@@ -120,7 +133,9 @@ export type ServerUpdateField =
   | "combatReports"
   | "situations"
   | "events"
-  | "tradeAlerts";
+  | "tradeAlerts"
+  | "armies"
+  | "groundBattles";
 
 export interface ServerStar extends StarData {}
 
@@ -204,12 +219,16 @@ export interface PlanetDetailPayload {
   starId: number;
   planet: PlanetConfig;
   planetState: PlanetState;
+  armies?: ArmyUnit[];
+  groundBattle?: GroundBattleState | null;
+  armyPower?: number;
 }
 
 export interface StarbaseDetailPayload {
   intelligence?: IntelEntityView[];
   commandLinked?: boolean;
   starbase: ServerStarbase;
+  armies?: ArmyUnit[];
 }
 
 export interface FleetDetailPayload {
@@ -217,6 +236,7 @@ export interface FleetDetailPayload {
   commandLinked?: boolean;
   fleet: ServerFleet;
   ships: ServerShip[];
+  armies?: ArmyUnit[];
 }
 
 export interface FleetManagerDetailPayload {
@@ -228,14 +248,20 @@ export interface FleetManagerDetailPayload {
   leaders: LeaderState[];
   factionEconomies: FactionEconomyState[];
   combatReports: CombatAfterActionReport[];
+  armies?: ArmyUnit[];
 }
 
 export interface PlanetManagerPlanetEntry {
   starId: number;
   starName: string;
   ownerId: number;
+  systemOwnerId?: number;
   planet: PlanetConfig;
   planetState: PlanetState;
+  foundingSpeciesId?: string | null;
+  foundingSpeciesName?: string | null;
+  foundingSpeciesHabitability?: number | null;
+  colonizationEligibility?: ColonizationEligibility;
 }
 
 export interface PlanetManagerDetailPayload {
@@ -247,24 +273,23 @@ export interface PlanetManagerDetailPayload {
 export type MarketTrend = "up" | "down" | "flat";
 
 export interface MarketResourceQuote {
-  resourceId: ResourceKind;
+  resourceId: MarketResourceKind;
+  marketMemberIds: number[];
   basePrice: number;
   currentPrice: number;
-  liquidity: number;
-  temporaryPressure: number;
-  persistentPressure: number;
-  marketEnabled: boolean;
-  lastUpdatedAt: number;
+  minimumPrice: number;
   finalQuotePrice: number;
   buyPrice: number;
   sellPrice: number;
   marketFee: number;
   ownedAmount: number;
-  productionPerHour: number;
-  consumptionPerHour: number;
-  internalSupply: number;
-  internalDemand: number;
-  playerInternalModifier: number;
+  monthlyProduction: number;
+  monthlyUpkeep: number;
+  baselineSupply: number;
+  baselineDemand: number;
+  tradeBalance: number;
+  effectiveSupply: number;
+  effectiveDemand: number;
   totalExportsEnergy: number;
   totalImportsEnergy: number;
   priceHistory: MarketPriceSnapshot[];
@@ -273,6 +298,7 @@ export interface MarketResourceQuote {
 
 export interface MarketDetailPayload {
   resources: MarketResourceQuote[];
+  marketMemberIds: number[];
   playerStats: MarketPlayerStats | null;
   autoTrades: MarketAutoTradeOrder[];
   transactions: MarketTransactionRecord[];
@@ -320,6 +346,7 @@ export interface SocietyDetailPayload {
   laws: {
     civilRights: string;
     speciesPolicy: string;
+    migrationPolicy: string;
   };
 }
 
@@ -399,7 +426,7 @@ export interface ShipHyperlanePosition {
   progress: number;
 }
 
-export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "merge" | "retreat" | null;
+export type FleetOrderType = "move" | "build" | "attack" | "orbit" | "colonize" | "merge" | "retreat" | null;
 
 export type FleetOrbitTargetKind = "star" | "planet" | "starbase" | "hyperlane" | "fleet";
 
@@ -525,6 +552,9 @@ export interface ServerShip {
   lastShieldDamageAtYear?: number | null;
   subsystemState?: ShipSubsystemState;
   disabled?: boolean;
+  crew: number;
+  crewCapacity: number;
+  armyUnitId?: string | null;
 }
 
 export interface ServerFleet {
@@ -532,6 +562,8 @@ export interface ServerFleet {
   ownerId: number;
   /** Non-null for a defense-platform group permanently anchored to a starbase. */
   stationaryStarbaseId?: string | null;
+  /** Non-null for a defense-platform group permanently anchored to a planet. */
+  stationaryPlanetId?: string | null;
   shipIds: string[];
   formation: FleetFormation;
   currentStarId: number;
@@ -543,12 +575,16 @@ export interface ServerFleet {
   routeIndex: number;
   phaseProgress: number;
   orderType: FleetOrderType;
+  /** Resources reserved for an active outpost construction order. */
+  pendingStarbaseBuildCost?: ResourceCounts | null;
   speed: number;
   combatStance: CombatStance;
   retreatState: FleetRetreatState | null;
   systemPosition: ShipSystemPosition;
   hyperlanePosition: ShipHyperlanePosition | null;
   movementPlan: FleetMovementPlan | null;
+  darkMatterBoostActive?: boolean;
+  darkMatterBoostPaidUntilYear?: number | null;
   orbitTargetPlanetId: string | null;
   orbitOffset: ShipSystemPosition | null;
   orbitTarget: FleetOrbitTarget | null;
@@ -684,6 +720,12 @@ export interface StopFleetCommand {
   fleetId: string;
 }
 
+export interface SetFleetDarkMatterBoostCommand {
+  type: "setFleetDarkMatterBoost";
+  fleetId: string;
+  enabled: boolean;
+}
+
 export interface SetSpeedCommand {
   type: "setSpeedMultiplier";
   multiplier: number;
@@ -693,6 +735,12 @@ export interface BuildDistrictCommand {
   type: "buildDistrict";
   planetId: string;
   districtKind: DistrictKind;
+}
+
+export interface QueuePlanetFeatureRemovalCommand {
+  type: "queuePlanetFeatureRemoval";
+  planetId: string;
+  featureKind: PlanetFeatureKind;
 }
 
 export interface BuildPlanetBuildingCommand {
@@ -729,6 +777,13 @@ export interface SetPlanetBuildingEnabledCommand {
   enabled: boolean;
 }
 
+export interface SetPlanetJobLockCommand {
+  type: "setPlanetJobLock";
+  planetId: string;
+  job: Exclude<JobKind, "criminal" | "unemployed">;
+  locked: boolean;
+}
+
 export interface SetUrbanSubDistrictCommand {
   type: "setUrbanSubDistrict";
   planetId: string;
@@ -740,6 +795,88 @@ export interface CancelPlanetConstructionCommand {
   type: "cancelPlanetConstruction";
   planetId: string;
   queueItemId: string;
+}
+
+export interface SkipPlanetConstructionCommand {
+  type: "skipPlanetConstruction";
+  planetId: string;
+  queueItemId: string;
+}
+
+export interface BuildPlanetDefenseBuildingCommand {
+  type: "buildPlanetDefenseBuilding";
+  planetId: string;
+  section: PlanetDefenseSection;
+  slotIndex: number;
+  buildingKind: PlanetDefenseBuildingKind;
+}
+
+export interface UpgradePlanetDefenseBuildingCommand {
+  type: "upgradePlanetDefenseBuilding";
+  planetId: string;
+  section: PlanetDefenseSection;
+  slotIndex: number;
+}
+
+export interface SetPlanetDefenseBuildingEnabledCommand {
+  type: "setPlanetDefenseBuildingEnabled";
+  planetId: string;
+  section: PlanetDefenseSection;
+  slotIndex: number;
+  enabled: boolean;
+}
+
+export interface DemolishPlanetDefenseBuildingCommand {
+  type: "demolishPlanetDefenseBuilding";
+  planetId: string;
+  section: PlanetDefenseSection;
+  slotIndex: number;
+}
+
+export interface BuildPlanetShipCommand {
+  type: "buildPlanetShip";
+  planetId: string;
+  shipKind: StarbaseShipKind;
+  designId?: string;
+}
+
+export interface CancelShipConstructionCommand {
+  type: "cancelShipConstruction";
+  yardKind: "planet" | "starbase";
+  yardId: string;
+  queueItemId: string;
+}
+
+export interface QueueArmyRecruitmentCommand {
+  type: "queueArmyRecruitment";
+  yardKind: "planet" | "starbase";
+  yardId: string;
+  armyTypeId: ArmyTypeId;
+  speciesId: string;
+}
+
+export interface LandArmyFleetCommand {
+  type: "landArmyFleet";
+  fleetId: string;
+  planetId: string;
+}
+
+export interface EmbarkPlanetArmiesCommand {
+  type: "embarkPlanetArmies";
+  planetId: string;
+  armyIds: string[];
+  embarkCommander: boolean;
+}
+
+export interface BeginPlanetInvasionCommand {
+  type: "beginPlanetInvasion";
+  fleetId: string;
+  planetId: string;
+}
+
+export interface WithdrawGroundBattleCommand {
+  type: "withdrawGroundBattle";
+  battleId: string;
 }
 
 export interface BuildStarbaseBuildingCommand {
@@ -877,14 +1014,14 @@ export interface RepairFleetCommand {
 
 export interface MarketTradeCommand {
   type: "marketTrade";
-  resourceId: ResourceKind;
+  resourceId: MarketResourceKind;
   tradeType: "buy" | "sell";
   amount: number;
 }
 
 export interface AddMarketAutoTradeCommand {
   type: "addMarketAutoTrade";
-  resourceId: ResourceKind;
+  resourceId: MarketResourceKind;
   tradeType: "auto_buy" | "auto_sell";
   amountPerHour: number;
 }
@@ -972,7 +1109,7 @@ export interface AdminCommandCommand {
   requestId?: string;
 }
 
-export type ClientCommand =
+type ClientCommandPayload =
   | JoinCommand
   | AdminCommandCommand
   | MoveCommand
@@ -981,13 +1118,28 @@ export type ClientCommand =
   | ColonizePlanetCommand
   | MergeFleetsCommand
   | StopFleetCommand
+  | SetFleetDarkMatterBoostCommand
   | SetSpeedCommand
   | BuildDistrictCommand
+  | QueuePlanetFeatureRemovalCommand
   | BuildPlanetBuildingCommand
   | UpgradePlanetBuildingCommand
   | DowngradePlanetBuildingCommand
   | SetPlanetBuildingEnabledCommand
+  | SetPlanetJobLockCommand
   | CancelPlanetConstructionCommand
+  | SkipPlanetConstructionCommand
+  | BuildPlanetDefenseBuildingCommand
+  | UpgradePlanetDefenseBuildingCommand
+  | SetPlanetDefenseBuildingEnabledCommand
+  | DemolishPlanetDefenseBuildingCommand
+  | BuildPlanetShipCommand
+  | CancelShipConstructionCommand
+  | QueueArmyRecruitmentCommand
+  | LandArmyFleetCommand
+  | EmbarkPlanetArmiesCommand
+  | BeginPlanetInvasionCommand
+  | WithdrawGroundBattleCommand
   | BuildStarbaseBuildingCommand
   | UpgradeStarbaseCommand
   | BuildStarbaseShipCommand
@@ -1025,9 +1177,18 @@ export type ClientCommand =
   | IssueFleetTacticalOrderCommand
   | RepairFleetCommand;
 
+/**
+ * Protocol 8 correlates normal command results with the command that produced
+ * them. The field remains optional so the same client types can adapt protocols
+ * 5-7 and the specialized join/detail/admin flows.
+ */
+export type ClientCommand = ClientCommandPayload & {
+  requestId?: string;
+};
+
 export interface GameSnapshot {
   type: "snapshot";
-  protocolVersion?: 4;
+  protocolVersion?: number;
   perspective: GalaxyPerspective;
   intelligence: GalaxyIntelligenceView;
   clock: GameClock;
@@ -1045,6 +1206,8 @@ export interface GameSnapshot {
   knownStarIds: number[] | null;
   ships: ServerShip[];
   shipDesigns: ShipDesign[];
+  armies: ArmyUnit[];
+  groundBattles: GroundBattleState[];
   fleets: ServerFleet[];
   starbases: ServerStarbaseSummary[];
   technologies: FactionTechnologyView[];
@@ -1062,7 +1225,7 @@ export interface GameSnapshot {
 
 export interface GameUpdate {
   type: "update";
-  protocolVersion?: 4;
+  protocolVersion?: number;
   perspective: GalaxyPerspective;
   intelligence?: GalaxyIntelligenceView;
   changed: ServerUpdateField[];
@@ -1079,6 +1242,8 @@ export interface GameUpdate {
   knownStarIds?: number[] | null;
   ships?: ServerShip[];
   shipDesigns?: ShipDesign[];
+  armies?: ArmyUnit[];
+  groundBattles?: GroundBattleState[];
   fleets?: ServerFleet[];
   starbases?: ServerStarbaseSummary[];
   technologies?: FactionTechnologyView[];
@@ -1098,6 +1263,12 @@ export interface CommandResultEvent {
   type: "commandResult";
   ok: boolean;
   message: string;
+  requestId?: string;
+}
+
+export interface AccountResourcesEvent {
+  type: "accountResources";
+  darkMatter: number;
 }
 
 export interface ServerInfoEvent {
@@ -1116,6 +1287,9 @@ export interface PlanetDetailsEvent {
   starId: number;
   planet: PlanetConfig;
   planetState: PlanetState;
+  armies?: ArmyUnit[];
+  groundBattle?: GroundBattleState | null;
+  armyPower?: number;
 }
 
 export interface GameDetailEvent {
@@ -1132,6 +1306,7 @@ export type ServerEvent =
   | GameSnapshot
   | GameUpdate
   | CommandResultEvent
+  | AccountResourcesEvent
   | AdminCommandResult
   | ServerInfoEvent
   | PlanetDetailsEvent

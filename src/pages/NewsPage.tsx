@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ApiRequestError,
   createNewsComment,
   createNewsPost,
   deleteNewsPost,
@@ -13,6 +14,8 @@ import {
   uploadNewsImage,
   voteNewsComment,
 } from '@/auth/client';
+import { UserErrorPage } from '@/components/UserErrorPage';
+import type { UserErrorKind } from '@/components/UserErrorPage';
 import type {
   AuthAccount,
   NewsComment,
@@ -410,6 +413,7 @@ export default function NewsPage() {
   const [editingPost, setEditingPost] = useState<NewsPost | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [fatalError, setFatalError] = useState<UserErrorKind | null>(null);
   const [editorError, setEditorError] = useState('');
   const [editorBusy, setEditorBusy] = useState(false);
   const [commentBody, setCommentBody] = useState('');
@@ -439,12 +443,15 @@ export default function NewsPage() {
     }
     setLoading(true);
     try {
+      setFatalError(null);
       setError('');
       const post = adminMode ? await getAdminNewsPost(slug) : await getNewsPost(slug);
       setSelectedPost(post);
     } catch (loadError) {
       setSelectedPost(null);
-      setError(loadError instanceof Error ? loadError.message : 'Could not load news post');
+      setFatalError(loadError instanceof ApiRequestError && loadError.status === 404
+        ? 'pageNotFound'
+        : 'serviceUnavailable');
     } finally {
       setLoading(false);
     }
@@ -461,6 +468,7 @@ export default function NewsPage() {
   useEffect(() => {
     void getCurrentSession()
       .then(setAccount)
+      .catch(() => setAccount(null))
       .finally(() => setSessionReady(true));
   }, []);
 
@@ -474,11 +482,12 @@ export default function NewsPage() {
     void (async () => {
       try {
         setLoading(true);
+        setFatalError(null);
         setError('');
         await loadPosts();
         await loadSelectedPost(selectedSlug, account?.accountType === 'admin');
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : 'Could not load news');
+      } catch {
+        setFatalError('serviceUnavailable');
       } finally {
         setLoading(false);
       }
@@ -609,6 +618,20 @@ export default function NewsPage() {
       setError(voteError instanceof Error ? voteError.message : 'Could not update vote');
     }
   };
+
+  if (fatalError) {
+    return (
+      <UserErrorPage
+        kind={fatalError}
+        primaryLabel={fatalError === 'pageNotFound' ? 'Back to News' : 'Try Again'}
+        onPrimary={fatalError === 'pageNotFound'
+          ? () => window.location.assign('/news')
+          : () => window.location.reload()}
+        secondaryLabel="Home"
+        onSecondary={() => window.location.assign('/')}
+      />
+    );
+  }
 
   return (
     <main className="news-page">

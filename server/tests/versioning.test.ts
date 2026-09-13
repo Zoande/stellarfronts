@@ -5,7 +5,15 @@ import path from "node:path";
 import { test } from "node:test";
 import { AuthStore } from "../auth-store";
 import type { StoredGameVersion } from "../auth-store";
-import { VERSION_MANIFEST, canMigrateFromSchema } from "../versionManifest";
+import {
+  CURRENT_PROTOCOL_VERSION,
+  CURRENT_RUNTIME_API_VERSION,
+  CURRENT_SCHEMA_VERSION,
+  VERSION_MANIFEST,
+  canMigrateFromSchema,
+} from "../versionManifest";
+import { readStaticVersionManifest } from "../version-artifacts";
+import { SUPPORTED_SERVER_PROTOCOL_VERSIONS } from "../../src/game/GameProtocol";
 
 function freshStore(): AuthStore {
   const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-version-"));
@@ -105,4 +113,22 @@ test("compatibility gate matches a version's declared migratesFromSchema", () =>
   assert.equal(target.migratesFromSchema.includes(17), false);
   // The current build accepts its own schema.
   assert.equal(canMigrateFromSchema(VERSION_MANIFEST, VERSION_MANIFEST.schemaVersion), true);
+});
+
+test("schema and wire protocol manifests stay aligned with current compatibility", () => {
+  assert.equal(CURRENT_SCHEMA_VERSION, 30);
+  assert.equal(VERSION_MANIFEST.schemaVersion, CURRENT_SCHEMA_VERSION);
+  assert.deepEqual(VERSION_MANIFEST.migratesFromSchema, [30]);
+  assert.equal(CURRENT_PROTOCOL_VERSION, 11);
+  assert.equal(VERSION_MANIFEST.protocolVersion, CURRENT_PROTOCOL_VERSION);
+  assert.deepEqual(SUPPORTED_SERVER_PROTOCOL_VERSIONS, [5, 6, 7, 8, 9, 10, 11]);
+  assert.equal(CURRENT_RUNTIME_API_VERSION, 1);
+});
+
+test("static version manifest matches executable constants without importing a server entry", async () => {
+  const manifest = await readStaticVersionManifest(process.cwd());
+  assert.equal(manifest.protocolVersion, CURRENT_PROTOCOL_VERSION);
+  assert.equal(manifest.schemaVersion, CURRENT_SCHEMA_VERSION);
+  assert.deepEqual(manifest.migratesFromSchema, VERSION_MANIFEST.migratesFromSchema);
+  assert.equal(manifest.runtimeApiVersion, CURRENT_RUNTIME_API_VERSION);
 });

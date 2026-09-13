@@ -21,12 +21,11 @@ export interface ShortageEffect {
  */
 export const SHORTAGE_EFFECTS: Partial<Record<ResourceKind, ShortageEffect[]>> = {
   food: [
-    { label: "Population happiness", full: -50, kind: "flat", scope: "empire" },
-    { label: "Planet stability", full: -28, kind: "flat", scope: "empire" },
-    { label: "Population growth", full: -0.8, kind: "percent", scope: "empire" },
-    { label: "All job output", full: -0.2, kind: "percent", scope: "empire" },
-    { label: "Fleet speed", full: -0.1, kind: "percent", scope: "fleet" },
-    { label: "Fleet weapon damage", full: -0.1, kind: "percent", scope: "fleet" },
+    { label: "Population happiness", full: -40, kind: "flat", scope: "empire" },
+    { label: "Planet stability", full: -22, kind: "flat", scope: "empire" },
+    { label: "All job output", full: -0.15, kind: "percent", scope: "empire" },
+    { label: "Fleet speed", full: -0.08, kind: "percent", scope: "fleet" },
+    { label: "Fleet weapon damage", full: -0.08, kind: "percent", scope: "fleet" },
   ],
   goods: [
     { label: "Population happiness", full: -24, kind: "flat", scope: "empire" },

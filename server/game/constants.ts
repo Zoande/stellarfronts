@@ -6,7 +6,8 @@ export const DISCOVERY_JUMPS = 2;
 export const DEPART_DURATION_MS = 20_000;
 export const JUMP_DURATION_MS = 10_000;
 export const ARRIVE_DURATION_MS = 30_000;
-export const BUILD_DURATION_MS = 180_000;
+/** 180 game days at the standard one-real-second-per-game-hour clock. */
+export const BUILD_DURATION_MS = 180 * 24 * 1_000;
 export const SAVE_INTERVAL_MS = 5_000;
 export const SERVER_TICK_INTERVAL_MS = 100;
 export const RUNTIME_STATS_INTERVAL_MS = 5_000;
@@ -44,17 +45,6 @@ export const FORMATION_EVASION_BONUS: Record<FleetFormation, number> = {
   echelon: 0.04,
   defensive: 0.02,
 };
-export const MIGRATION_BASE_WEEKLY_RATE = 0.00018;
-export const MIGRATION_PRESSURE_WEEKLY_RATE = 0.0034;
-// Cross-faction migration tiers. Foreign migration is gated on first contact ("met")
-// and scales up with diplomatic intimacy. Each tier is multiplied by the source/target
-// migration-policy factors before use.
-export const MIGRATION_FOREIGN_MET_MULTIPLIER = 0.02;
-export const MIGRATION_FOREIGN_OPEN_BORDER_MULTIPLIER = 0.08;
-export const MIGRATION_PACT_MULTIPLIER = 0.35;
-export const MIGRATION_MIN_SOURCE_POPULATION = 50_000_000;
-export const MIGRATION_MIN_FLOW_POPULATION = 10_000;
-export const MIGRATION_DESTINATION_CAPACITY_BUFFER = 1.02;
 // Distance falloff between the source and destination star (in hyperlane jumps).
 // Neighbouring systems exchange the most migrants; distant systems still trickle.
 export const MIGRATION_DISTANCE_DECAY = 0.78;

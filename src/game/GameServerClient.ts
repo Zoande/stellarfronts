@@ -4,6 +4,7 @@ import type {
 } from "./AdminCommands";
 import type {
   ClientCommand,
+  CommandResultEvent,
   GameDetailEvent,
   GameDetailPayload,
   GameDetailScope,
@@ -16,9 +17,16 @@ import type {
   SystemDetailsEvent,
 } from "./GameProtocol";
 import { mergeClientIntelEntities, setClientIntelligence } from "./ClientIntelligence";
+import {
+  decodeServerEvent,
+  ProtocolValidationError,
+  reduceSnapshot,
+} from "./ProtocolAdapter";
 
 type SnapshotHandler = (snapshot: GameSnapshot, changed?: ServerUpdateField[]) => void;
 type MessageHandler = (message: string, ok: boolean) => void;
+type AccountResourcesHandler = (darkMatter: number) => void;
+type DisconnectHandler = () => void;
 type PlanetDetailsHandler = (event: PlanetDetailsEvent) => void;
 type DetailHandler<T extends GameDetailPayload = GameDetailPayload> = (event: GameDetailEvent & { payload?: T }) => void;
 type AdminCommandHandler = (event: AdminCommandResult) => void;
@@ -26,6 +34,14 @@ type PendingRequest<T> = {
   resolve: (event: T) => void;
   reject: (error: Error) => void;
 };
+
+const SPECIALIZED_COMMAND_TYPES = new Set<ClientCommand["type"]>([
+  "join",
+  "adminCommand",
+  "requestDetails",
+  "subscribeDetails",
+  "unsubscribeDetails",
+]);
 
 interface CachedDetail {
   event: GameDetailEvent;
@@ -51,9 +67,12 @@ function withClientClockSync<T extends { clock?: GameSnapshot["clock"] }>(event:
  * server reports a protocol not listed here, the client refuses to connect with
  * a clear message rather than misbehaving.
  */
-export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [4];
-
-export class ClientServerVersionError extends Error {}
+export class ClientServerVersionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ClientServerVersionError';
+  }
+}
 
 function getWebSocketUrl(gameId?: string): string {
   // Support VITE_WS_URL env var for production (set at build time by Vite)
@@ -79,12 +98,18 @@ export class GameServerClient {
   private latestSnapshot: GameSnapshot | null = null;
   private snapshotHandlers = new Set<SnapshotHandler>();
   private messageHandlers = new Set<MessageHandler>();
+  private accountResourcesHandlers = new Set<AccountResourcesHandler>();
+  private disconnectHandlers = new Set<DisconnectHandler>();
   private planetDetailsHandlers = new Set<PlanetDetailsHandler>();
   private detailHandlers = new Map<string, Set<DetailHandler>>();
   private adminCommandHandlers = new Set<AdminCommandHandler>();
   private detailRequests = new Map<string, PendingRequest<GameDetailEvent>>();
   private detailCache = new Map<string, CachedDetail>();
   private adminCommandRequests = new Map<string, PendingRequest<AdminCommandResult>>();
+  private commandRequests = new Map<string, PendingRequest<CommandResultEvent>>();
+  private intentionallyDisposed = false;
+  private negotiatedProtocol: number | undefined;
+  private requestSequence = 0;
 
   constructor(private readonly gameId?: string, private readonly urlOverride?: string) {}
 
@@ -99,24 +124,35 @@ export class GameServerClient {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url);
       this.socket = socket;
+      this.intentionallyDisposed = false;
       let resolved = false;
+      let negotiatedProtocol: number | undefined;
 
       socket.addEventListener("open", () => {
         this.send({ type: "join" });
       });
 
       socket.addEventListener("message", (event) => {
-        const parsed = JSON.parse(String(event.data)) as ServerEvent;
-        if (parsed.type === "snapshot") {
-          const serverProtocol = parsed.protocolVersion;
-          if (typeof serverProtocol === "number" && !SUPPORTED_SERVER_PROTOCOL_VERSIONS.includes(serverProtocol)) {
-            const error = new ClientServerVersionError(
-              `This client doesn't support this game's server (protocol v${serverProtocol}). Supported: ${SUPPORTED_SERVER_PROTOCOL_VERSIONS.join(", ")}.`,
-            );
-            socket.close(1011, "Unsupported server protocol");
-            if (!resolved) { resolved = true; reject(error); }
-            return;
+        let parsed: ServerEvent;
+        try {
+          const decoded: unknown = JSON.parse(String(event.data));
+          parsed = decodeServerEvent(decoded, negotiatedProtocol);
+        } catch (error) {
+          const protocolError = error instanceof ProtocolValidationError
+            ? new ClientServerVersionError(error.message)
+            : new Error("Game server sent an invalid message.");
+          socket.close(1002, "Invalid server protocol");
+          if (!resolved) {
+            resolved = true;
+            reject(protocolError);
+          } else {
+            console.error("[GameClient] Rejected server message", error);
           }
+          return;
+        }
+        if (parsed.type === "snapshot") {
+          negotiatedProtocol = parsed.protocolVersion;
+          this.negotiatedProtocol = parsed.protocolVersion;
           this.latestSnapshot = withClientClockSync(parsed);
           setClientIntelligence(this.latestSnapshot.intelligence, this.latestSnapshot.clock.year);
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot);
@@ -130,44 +166,7 @@ export class GameServerClient {
         if (parsed.type === "update") {
           if (!this.latestSnapshot) return;
           const update = withClientClockSync(parsed);
-          const visibleStarIds = Object.prototype.hasOwnProperty.call(parsed, "visibleStarIds")
-            ? parsed.visibleStarIds!
-            : this.latestSnapshot.visibleStarIds;
-          const knownStarIds = Object.prototype.hasOwnProperty.call(parsed, "knownStarIds")
-            ? parsed.knownStarIds!
-            : this.latestSnapshot.knownStarIds;
-          this.latestSnapshot = {
-            ...this.latestSnapshot,
-            type: "snapshot",
-            perspective: parsed.perspective,
-            clock: update.clock ?? this.latestSnapshot.clock,
-            stars: parsed.stars ?? this.latestSnapshot.stars,
-            nebulae: parsed.nebulae ?? this.latestSnapshot.nebulae,
-            planetStates: parsed.planetStates ?? this.latestSnapshot.planetStates,
-            factionEconomies: parsed.factionEconomies ?? this.latestSnapshot.factionEconomies,
-            habitedPlanetSystemIds: parsed.habitedPlanetSystemIds ?? this.latestSnapshot.habitedPlanetSystemIds,
-            hyperlanes: parsed.hyperlanes ?? this.latestSnapshot.hyperlanes,
-            factions: parsed.factions ?? this.latestSnapshot.factions,
-            starOwnership: parsed.starOwnership ?? this.latestSnapshot.starOwnership,
-            visibleStarIds,
-            knownStarIds,
-            ships: parsed.ships ?? this.latestSnapshot.ships,
-            shipDesigns: parsed.shipDesigns ?? this.latestSnapshot.shipDesigns,
-            fleets: parsed.fleets ?? this.latestSnapshot.fleets,
-            starbases: parsed.starbases ?? this.latestSnapshot.starbases,
-            technologies: parsed.technologies ?? this.latestSnapshot.technologies,
-            leaders: parsed.leaders ?? this.latestSnapshot.leaders,
-            governments: parsed.governments ?? this.latestSnapshot.governments,
-            species: parsed.species ?? this.latestSnapshot.species,
-            recentCombatContacts: parsed.recentCombatContacts ?? this.latestSnapshot.recentCombatContacts,
-            combatProjectiles: parsed.combatProjectiles ?? this.latestSnapshot.combatProjectiles,
-            combatReports: parsed.combatReports ?? this.latestSnapshot.combatReports,
-            diplomacy: parsed.diplomacy ?? this.latestSnapshot.diplomacy,
-            intelligence: parsed.intelligence ?? this.latestSnapshot.intelligence,
-            situations: parsed.situations ?? this.latestSnapshot.situations,
-            events: parsed.events ?? this.latestSnapshot.events,
-            tradeAlerts: parsed.tradeAlerts ?? this.latestSnapshot.tradeAlerts,
-          };
+          this.latestSnapshot = reduceSnapshot(this.latestSnapshot, update);
           setClientIntelligence(this.latestSnapshot.intelligence, this.latestSnapshot.clock.year);
           for (const handler of this.snapshotHandlers) handler(this.latestSnapshot, parsed.changed);
           return;
@@ -207,9 +206,18 @@ export class GameServerClient {
 
         if (parsed.type === "commandResult") {
           for (const handler of this.messageHandlers) handler(parsed.message, parsed.ok);
-          if (!parsed.ok) {
-            this.rejectOldestPendingRequest(new Error(parsed.message));
+          if (parsed.requestId) {
+            const pending = this.commandRequests.get(parsed.requestId);
+            if (pending) {
+              this.commandRequests.delete(parsed.requestId);
+              pending.resolve(parsed);
+            }
           }
+          return;
+        }
+
+        if (parsed.type === "accountResources") {
+          for (const handler of this.accountResourcesHandlers) handler(parsed.darkMatter);
           return;
         }
 
@@ -230,7 +238,14 @@ export class GameServerClient {
       });
 
       socket.addEventListener("close", () => {
-        if (!resolved) reject(new Error("Game server connection closed before snapshot arrived"));
+        if (!resolved) {
+          reject(new Error("Game server connection closed before snapshot arrived"));
+          return;
+        }
+        this.rejectAllPendingRequests(new Error("Game server connection was lost."));
+        if (!this.intentionallyDisposed) {
+          for (const handler of this.disconnectHandlers) handler();
+        }
       });
     });
   }
@@ -246,6 +261,16 @@ export class GameServerClient {
     return () => this.messageHandlers.delete(handler);
   }
 
+  onAccountResources(handler: AccountResourcesHandler): () => void {
+    this.accountResourcesHandlers.add(handler);
+    return () => this.accountResourcesHandlers.delete(handler);
+  }
+
+  onDisconnect(handler: DisconnectHandler): () => void {
+    this.disconnectHandlers.add(handler);
+    return () => this.disconnectHandlers.delete(handler);
+  }
+
   onPlanetDetails(handler: PlanetDetailsHandler): () => void {
     this.planetDetailsHandlers.add(handler);
     return () => this.planetDetailsHandlers.delete(handler);
@@ -257,6 +282,36 @@ export class GameServerClient {
   }
 
   send(command: ClientCommand): void {
+    if (
+      this.negotiatedProtocol !== undefined
+      && this.negotiatedProtocol >= 8
+      && !SPECIALIZED_COMMAND_TYPES.has(command.type)
+      && !command.requestId
+    ) {
+      this.sendRaw({ ...command, requestId: this.createRequestId() });
+      return;
+    }
+    this.sendRaw(command);
+  }
+
+  executeCommand(command: ClientCommand): Promise<CommandResultEvent> {
+    if (SPECIALIZED_COMMAND_TYPES.has(command.type)) {
+      return Promise.reject(new Error("This command uses a specialized response flow."));
+    }
+    if (this.negotiatedProtocol === undefined || this.negotiatedProtocol < 8) {
+      this.send(command);
+      return Promise.reject(new Error("Correlated commands require server protocol 8 or newer."));
+    }
+    const requestId = this.createRequestId();
+    return this.requestWithTimeout(
+      this.commandRequests,
+      requestId,
+      { ...command, requestId },
+      "Timed out waiting for command result.",
+    );
+  }
+
+  private sendRaw(command: ClientCommand): void {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify(command));
   }
@@ -280,6 +335,9 @@ export class GameServerClient {
         starId: payload.starId,
         planet: payload.planet,
         planetState: payload.planetState,
+        armies: payload.armies,
+        groundBattle: payload.groundBattle,
+        armyPower: payload.armyPower,
       };
     });
   }
@@ -355,14 +413,18 @@ export class GameServerClient {
   }
 
   dispose(): void {
+    this.intentionallyDisposed = true;
     this.snapshotHandlers.clear();
     this.messageHandlers.clear();
+    this.accountResourcesHandlers.clear();
+    this.disconnectHandlers.clear();
     this.planetDetailsHandlers.clear();
     this.detailHandlers.clear();
     this.adminCommandHandlers.clear();
     this.rejectAllPendingRequests(new Error("Game server client disposed."));
     this.socket?.close();
     this.socket = null;
+    this.negotiatedProtocol = undefined;
   }
 
   private requestDetails<K, T>(
@@ -386,10 +448,24 @@ export class GameServerClient {
       });
     }
 
+    return this.requestWithTimeout(
+      requests,
+      key,
+      command,
+      "Timed out waiting for server details.",
+    );
+  }
+
+  private requestWithTimeout<K, T>(
+    requests: Map<K, PendingRequest<T>>,
+    key: K,
+    command: ClientCommand,
+    timeoutMessage: string,
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
       const timeout = window.setTimeout(() => {
         requests.delete(key);
-        reject(new Error("Timed out waiting for server details."));
+        reject(new Error(timeoutMessage));
       }, 8_000);
       requests.set(key, {
         resolve: (event) => {
@@ -401,28 +477,21 @@ export class GameServerClient {
           reject(error);
         },
       });
-      this.send(command);
+      this.sendRaw(command);
     });
   }
 
-  private rejectOldestPendingRequest(error: Error): void {
-    const adminEntry = this.adminCommandRequests.entries().next();
-    if (!adminEntry.done) {
-      this.adminCommandRequests.delete(adminEntry.value[0]);
-      adminEntry.value[1].reject(error);
-      return;
-    }
-    const detailEntry = this.detailRequests.entries().next();
-    if (!detailEntry.done) {
-      this.detailRequests.delete(detailEntry.value[0]);
-      detailEntry.value[1].reject(error);
-    }
+  private createRequestId(): string {
+    this.requestSequence = (this.requestSequence + 1) % Number.MAX_SAFE_INTEGER;
+    return `cmd-${Date.now().toString(36)}-${this.requestSequence.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
   private rejectAllPendingRequests(error: Error): void {
     for (const [, pending] of this.detailRequests) pending.reject(error);
     for (const [, pending] of this.adminCommandRequests) pending.reject(error);
+    for (const [, pending] of this.commandRequests) pending.reject(error);
     this.detailRequests.clear();
     this.adminCommandRequests.clear();
+    this.commandRequests.clear();
   }
 }

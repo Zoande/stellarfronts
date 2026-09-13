@@ -5,8 +5,7 @@ export type DiplomacyProposalStatus = "pending" | "accepted" | "declined" | "can
 export type PeaceMode = "whitePeace" | "statusQuo";
 
 export interface TreatyArticleEffect {
-  type: "marketSharedSupply" | "migrationMultiplier";
-  shareFraction?: number;
+  type: "marketMerge" | "migrationAccess";
   multiplier?: number;
 }
 
@@ -103,18 +102,18 @@ export const TREATY_ARTICLE_DEFINITIONS: TreatyArticleDefinition[] = [
   {
     id: TRADE_PRIVILEGE_ARTICLE_ID,
     name: "Trade Privilege",
-    summary: "Share 25% of internal market supply and demand.",
-    description: "Both countries include one quarter of the partner's production and consumption when calculating internal market quotes. Stockpiles are not transferred.",
+    summary: "Merge both countries into one connected internal market.",
+    description: "Connected treaty partners fully pool production, upkeep, and recent trade pressure when calculating prices. Stockpiles and orders remain separate.",
     suspendOnWar: true,
-    effects: [{ type: "marketSharedSupply", shareFraction: 0.25 }],
+    effects: [{ type: "marketMerge" }],
   },
   {
     id: MIGRATION_PACT_ARTICLE_ID,
     name: "Migration Pact",
-    summary: "Greatly increases voluntary population movement between both empires.",
-    description: "Both countries allow managed civilian relocation. Stable, housed, job-rich planets become much stronger migration targets, while failing worlds lose population faster.",
+    summary: "Authorizes voluntary population movement between both empires.",
+    description: "Species with Free Migration rights in both countries may relocate through this pact. War suspends all movement until the pact becomes active again.",
     suspendOnWar: true,
-    effects: [{ type: "migrationMultiplier", multiplier: 4 }],
+    effects: [{ type: "migrationAccess" }],
   },
 ];
 

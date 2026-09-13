@@ -13,7 +13,10 @@ pathname:
 - `/game/:gameId` — the BabylonJS command view ([`src/pages/GamePage.tsx`](../../src/pages/GamePage.tsx)).
 - `/dev` — developer panel ([`src/pages/DevPage.tsx`](../../src/pages/DevPage.tsx),
   [`DevVersionPanel.tsx`](../../src/pages/DevVersionPanel.tsx)).
-- `/news`, plus `EmailVerificationPage`/`SuccessPage` shells.
+- `/news` and `/news/:slug` — public news list/article views.
+
+`EmailVerificationPage` and `SuccessPage` exist as UI shells but are not part of the active route
+switch.
 
 ## `useAppFlow`
 
@@ -22,14 +25,28 @@ session (via [`src/auth/client.ts`](../../src/auth/client.ts)), drives loading s
 login→home transition, and coordinates asset warm-up. Auth assets are preloaded in
 [`src/utils/preloadAuthAssets.ts`](../../src/utils/preloadAuthAssets.ts); the procedural login
 backdrop is [`src/components/BackgroundScene.tsx`](../../src/components/BackgroundScene.tsx).
+Routes and the backdrop are code-split. The authentication backdrop intentionally uses BabylonJS
+and authored ship models, so its larger renderer/model chunk loads when the login experience starts.
+
+## Player-facing failure states
+
+[`src/components/UserErrorPage.tsx`](../../src/components/UserErrorPage.tsx) provides the shared,
+non-technical presentation for unavailable services, expired sessions, unknown routes, games that
+are starting/stopped/unavailable/full, unsupported backend protocols, failed page chunks, and lost
+in-game connections. Public game summaries expose only a coarse availability value; runtime errors,
+ports, versions, and stack details remain in `/dev`. Expected form validation stays inline.
 
 ## In-game boot
 
-Opening a game runs [`src/game/boot.ts`](../../src/game/boot.ts), which:
+Opening a game runs the small composition root [`src/game/boot.ts`](../../src/game/boot.ts), which
+constructs a [`GameSessionController`](../../src/game/GameSessionController.ts), its canonical
+[`GameSessionStore`](../../src/game/GameSessionStore.ts), and the
+[`GameUiCoordinator`](../../src/game/GameUiCoordinator.ts):
 
-1. **Connects** a `GameServerClient` ([`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts))
-   over WebSocket and awaits the first `snapshot`. It checks `protocolVersion` against
-   `SUPPORTED_SERVER_PROTOCOL_VERSIONS` and refuses an unsupported server.
+1. **Loads account resources and connects** a `GameServerClient`
+   ([`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts)) over WebSocket, awaiting the
+   first `snapshot`. It checks `protocolVersion` against `SUPPORTED_SERVER_PROTOCOL_VERSIONS` and
+   refuses an unsupported server. Account-resource events keep Dark Matter synchronized afterward.
 2. **Initializes the engine** via [`src/SceneManager.ts`](../../src/SceneManager.ts) (WebGPU with a
    WebGL2 fallback) and starts the render loop.
 3. **Starts in GalaxyScene** ([`src/scenes/GalaxyScene.ts`](../../src/scenes/GalaxyScene.ts)); clicking
@@ -37,13 +54,14 @@ Opening a game runs [`src/game/boot.ts`](../../src/game/boot.ts), which:
 4. **Builds the HUD and panels** ([`src/ui/HudOverlay.ts`](../../src/ui/HudOverlay.ts) plus the
    `src/ui/*Panel.ts` family and `EventModal`/`SituationModal`), wiring each panel's data subscription
    and command callbacks.
-5. **Returns a cleanup function** that disposes the scene manager, panels, and subscriptions.
+5. **Returns a cleanup function** backed by an idempotent reverse-order registry. Partial startup
+   also closes the socket and every resource already registered.
 
 ## How to extend / rules
 
 - New pages are React under `src/pages/` and a route in `src/App.tsx`.
-- New in-game UI/scene wiring is registered in `src/game/boot.ts` (it's the composition root for the
-  game view).
+- New in-game UI/scene wiring belongs in `GameUiCoordinator`; session state and indexed selectors
+  belong in `GameSessionStore`. Keep `boot.ts` limited to composition and lifecycle.
 - Keep React out of the in-game view; use the DOM-panel pattern instead (see
   [ui-panels.md](ui-panels.md)).
 

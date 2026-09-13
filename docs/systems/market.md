@@ -1,50 +1,48 @@
 # Market
 
-A galactic resource market with supply/demand price pressure and player auto-trade. Model:
-[`src/data/Market.ts`](../../src/data/Market.ts); server processing:
-[`server/game/economy-market.ts`](../../server/game/economy-market.ts).
+Faction-scoped resource markets with production/upkeep depth, rolling trade pressure, player
+auto-trade, and treaty market blocs. Model: [`src/data/Market.ts`](../../src/data/Market.ts);
+server processing: [`server/game/economy-market.ts`](../../server/game/economy-market.ts).
 
 ## What trades
 
-Tradeable resources are a subset of the economy's six (energy and research are not freely traded — see
-[economy.md](economy.md)). **Energy is the settlement currency**: trades are denominated in energy and
-charged a fee (`MARKET_FEE_RATE` = 0.05).
+Food, minerals, consumer goods, and alloys are tradable. Energy is the settlement currency and is
+not itself listed; research cannot be bought or sold. Trades pay a 5% energy fee.
 
 ## Pricing
 
-Each `MarketResourceState` has a base price scaled by **temporary** and **persistent** pressure, the
-result clamped between `MARKET_MIN_PRICE_MULTIPLIER` (0.25) and `MARKET_MAX_PRICE_MULTIPLIER` (4).
+Every faction has a private market unless Trade Privilege connects it to other factions. A connected
+treaty component is one market bloc, including transitive connections. War suspends the affected
+treaty edge. Members pool market calculations, but not stockpiles, orders, statistics, or ownership.
 
-- Buying pushes price up, selling pushes it down: manual trades apply
-  `MARKET_MANUAL_PRESSURE_FACTOR` (0.04) per unit, auto-trades `MARKET_AUTO_PRESSURE_FACTOR` (0.01).
-- Pressure decays each hour: temporary by `MARKET_TEMPORARY_DECAY_PER_HOUR` (0.96), persistent by
-  `MARKET_PERSISTENT_DECAY_PER_HOUR` (0.995) — so sustained trading keeps prices moved while one-off
-  trades fade quickly.
-- A price snapshot is recorded every `MARKET_PRICE_SNAPSHOT_INTERVAL_HOURS` (6), keeping up to
-  `MARKET_PRICE_SNAPSHOT_LIMIT_PER_RESOURCE` (180) points for history charts.
+For each resource:
 
-## Trading & auto-trade
+- Baseline supply is five times the bloc's gross monthly production, with a 10-unit minimum.
+- Baseline demand is five times the bloc's gross monthly upkeep, with a 10-unit minimum.
+- Purchases minus sales from the current and previous four game months form rolling trade balance.
+- Positive balance adds demand; negative balance adds supply.
+- Price is `base × sqrt(effective demand / effective supply)`, floored at 25% of base with no ceiling.
 
-`MarketTradeType` is `buy` / `sell` / `auto_buy` / `auto_sell`. Manual trades are immediate; auto-trade
-orders (`MarketAutoTradeOrder`) execute a configured amount per hour. Transactions are logged
-(`MarketTransactionRecord`) and per-player stats kept (`MarketPlayerStats`). Treaty `tradePrivilege`
-articles let allies share a portion of internal supply/demand (see [diplomacy.md](diplomacy.md)).
+Base prices are 1.1 energy for food, 1.4 for minerals, 3.2 for goods, and 5.5 for alloys.
+Bulk orders use the average of the pre-trade and post-trade marginal prices, so the displayed total
+includes slippage. Buying adds the fee and selling subtracts it.
 
-`processMarketTicks` ([`server/game/economy-market.ts`](../../server/game/economy-market.ts)) decays
-pressure, recomputes prices, runs auto-trades, and snapshots — called from `advanceState` on the
-economy hour. Commands: `marketTrade`, `addMarketAutoTrade`, `removeMarketAutoTrade`
-([`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts)).
+## Trading and persistence
 
-## How to extend / rules
+Manual trades execute immediately. Automatic orders execute their configured hourly quantity;
+purchases shrink to the maximum affordable amount and sales stop at available stockpile. Both paths
+use identical pricing and record their actual average price, fee, and faction-owned trade volume.
 
-- Tune via the `MARKET_*` constants in [`src/data/Market.ts`](../../src/data/Market.ts), not inline
-  literals.
-- Trades are server-authoritative and require sufficient energy/resources; no buying on credit.
-- New market state needs normalizer defaults so old saves load.
+Trade volume is stored in monthly faction/resource buckets. Market-bloc quotes aggregate the active
+members' buckets dynamically, so treaty joins and splits do not migrate state. Faction-specific price
+history is sampled every six game hours and retains five game months.
 
-## Key files
+Save normalization removes legacy global pressure and history, drops energy/research market data,
+and preserves eligible player totals, transactions, alerts, and automatic orders.
 
-- Model + constants: [`src/data/Market.ts`](../../src/data/Market.ts).
-- Server: [`server/game/economy-market.ts`](../../server/game/economy-market.ts).
-- UI: [`src/ui/MarketPanel.ts`](../../src/ui/MarketPanel.ts).
-- Tests: [`server/tests/market.test.ts`](../../server/tests/market.test.ts).
+## Rules
+
+- Trades are server-authoritative and never use credit.
+- Use `MarketResourceKind` for market-facing state and commands.
+- Keep pricing in shared pure helpers so client previews and server execution remain identical.
+- Tune through the `MARKET_*` constants rather than inline values.

@@ -1,5 +1,12 @@
 import type { DistrictCounts, DistrictKind } from "./StarMap";
 import {
+  PLANET_FEATURE_DEFINITIONS,
+  PLANET_FEATURE_GENERATION_VERSION,
+  PLANET_FEATURE_KINDS,
+  isPlanetFeatureKind,
+} from "./PlanetFeatures";
+import type { PlanetFeatureDefinition, PlanetFeatureKind } from "./PlanetFeatures";
+import {
   DEFAULT_SPECIES_RIGHTS,
   HUMAN_SPECIES_ID,
   canRightsWorkJob,
@@ -8,9 +15,43 @@ import {
   normalizeSpeciesRights,
 } from "./Species";
 import type { SpeciesId, SpeciesRights, SpeciesState } from "./Species";
+import {
+  MIN_HABITED_POPULATION,
+  calculateFamineProjection,
+  calculateBlendedPlanetCapacity,
+  calculateMigrationAttractiveness,
+  calculateMigrationIntakeCapacity,
+  calculatePopulationCapacityMultiplier,
+  calculatePopulationQuality,
+  calculateWeeklyNaturalGrowthRate,
+  createEmptyMigrationLedger,
+  createEmptyMigrationSummary,
+  createEmptyPopulationDecline,
+  createEmptyPopulationGrowth,
+} from "./Population";
+import type {
+  PlanetMigrationLedger,
+  PlanetMigrationSummary,
+  PlanetPopulationDecline,
+  PlanetPopulationGrowth,
+  PlanetPopulationGrowthFactors,
+} from "./Population";
 
 export type { DistrictCounts, DistrictKind } from "./StarMap";
 export type { SpeciesId } from "./Species";
+export type { PlanetFeatureDefinition, PlanetFeatureKind } from "./PlanetFeatures";
+export {
+  PLANET_FEATURE_DEFINITIONS,
+  PLANET_FEATURE_GENERATION_VERSION,
+  PLANET_FEATURE_KINDS,
+} from "./PlanetFeatures";
+export type {
+  PlanetMigrationLedger,
+  PlanetMigrationSummary,
+  PlanetPopulationDecline,
+  PlanetPopulationGrowth,
+  PlanetPopulationGrowthFactors,
+} from "./Population";
 
 export type ResourceKind = "food" | "minerals" | "energy" | "goods" | "alloys" | "research";
 
@@ -26,14 +67,19 @@ export type JobClass = "upper" | "middle" | "lower";
 export type JobKind =
   | "ruler"
   | "administrator"
+  | "sensorManager"
+  | "shieldOperator"
   | "researcher"
   | "artisan"
   | "metallurgist"
   | "entertainer"
   | "enforcer"
+  | "soldier"
+  | "trainee"
   | "farmer"
   | "miner"
   | "technician"
+  | "colonizer"
   | "clerk"
   | "criminal"
   | "unemployed";
@@ -53,7 +99,50 @@ export type BuildingKind =
   | "energyGrid"
   | "capacitorWorkshops"
   | "entertainmentForum"
-  | "securityOffice";
+  | "securityOffice"
+  | "fortress";
+
+export type PlanetDefenseSection = "defense" | "shipyard";
+
+export type PlanetDefenseBuildingKind =
+  | "sensorArray"
+  | "planetaryShield"
+  | "barracks"
+  | "platformSupport"
+  | "orbitalShipyard";
+
+export interface PlanetDefenseBuildingState {
+  kind: PlanetDefenseBuildingKind;
+  level: number;
+  enabled?: boolean;
+}
+
+export interface PlanetDefenseBuildingDefinition {
+  kind: PlanetDefenseBuildingKind;
+  label: string;
+  initials: string;
+  description: string;
+  sections: PlanetDefenseSection[];
+  unique?: boolean;
+  maxLevel: number;
+  levels: Record<number, BuildingLevelDefinition>;
+  jobs?: Record<number, BuildingJobEffect[]>;
+  platformCapacity?: number;
+  shipyards?: number;
+  sensorSuiteIds?: Record<number, import("./Intelligence").SensorSuiteId>;
+}
+
+export interface PlanetTraineeRemainder {
+  speciesId: SpeciesId;
+  population: number;
+}
+
+export interface PlanetDefenseState {
+  defenseSlots: Array<PlanetDefenseBuildingState | null>;
+  shipyardSlots: Array<PlanetDefenseBuildingState | null>;
+  shipQueue: import("./Starbase").StarbaseShipQueueItem[];
+  traineeRemainders: PlanetTraineeRemainder[];
+}
 
 export type UrbanSubDistrictKind =
   | "residential"
@@ -63,8 +152,6 @@ export type UrbanSubDistrictKind =
   | "heavyIndustry";
 
 export type BuildingSlotArea = DistrictKind | "urbanSubDistrict";
-
-export type PlanetFeatureKind = "homePlanet";
 
 export type PlanetModifierOperation = "add" | "multiply";
 
@@ -81,6 +168,10 @@ export type PlanetModifierTarget =
   | "constructionSpeed"
   | "districtConstructionSpeed"
   | "buildingConstructionSpeed"
+  | "migrationAttractiveness"
+  | "migrationIntakeCapacity"
+  | "combatWidth"
+  | `districtLimit:${DistrictKind}`
   | `habitability:${SpeciesId}`
   | `jobCapacity:${JobKind}`
   | `jobOutput:${JobKind}:${ResourceKind}`
@@ -96,13 +187,17 @@ export interface PlanetModifier {
   target: PlanetModifierTarget;
   operation: PlanetModifierOperation;
   value: number;
+  expiresAtYear?: number;
 }
 
-export interface PlanetFeatureDefinition {
-  kind: PlanetFeatureKind;
-  label: string;
-  description: string;
-  modifiers: PlanetModifier[];
+export interface PlanetJobLockAllocation {
+  speciesId: SpeciesId;
+  population: number;
+}
+
+export interface PlanetJobLock {
+  job: Exclude<JobKind, "criminal" | "unemployed">;
+  allocations: PlanetJobLockAllocation[];
 }
 
 export type ResourceDelta = Partial<Record<ResourceKind, number>>;
@@ -147,6 +242,12 @@ export interface BuildingDefinition {
   sensorSuiteIds?: import("./Intelligence").SensorSuiteId[];
 }
 
+export interface BuildingLevelDefinition {
+  cost: ResourceCounts;
+  upkeep: ResourceCounts;
+  buildDays: number;
+}
+
 export interface PlanetBuildingState {
   kind: BuildingKind;
   level: number;
@@ -155,12 +256,20 @@ export interface PlanetBuildingState {
 
 export type PlanetBuildingSlot = BuildingKind | PlanetBuildingState | null;
 
-export type PlanetConstructionKind = "district" | "building" | "buildingUpgrade";
+export type PlanetConstructionKind =
+  | "district"
+  | "building"
+  | "buildingUpgrade"
+  | "defenseBuilding"
+  | "defenseBuildingUpgrade"
+  | "featureRemoval";
 
 export interface PlanetConstructionQueueItem {
   id: string;
   kind: PlanetConstructionKind;
   label: string;
+  cost: ResourceCounts;
+  /** Legacy mirror retained so older clients and saves remain readable. */
   mineralCost: number;
   totalDays: number;
   remainingDays: number;
@@ -170,6 +279,9 @@ export interface PlanetConstructionQueueItem {
   area?: BuildingSlotArea;
   slotIndex?: number;
   subDistrictIndex?: number;
+  defenseBuildingKind?: PlanetDefenseBuildingKind;
+  defenseSection?: PlanetDefenseSection;
+  featureKind?: PlanetFeatureKind;
 }
 
 export interface PopGroup {
@@ -193,14 +305,19 @@ export type DistrictBuildingSlots = Record<DistrictKind, PlanetBuildingSlot[]>;
 export interface JobCapacity {
   ruler: number;
   administrator: number;
+  sensorManager: number;
+  shieldOperator: number;
   researcher: number;
   artisan: number;
   metallurgist: number;
   entertainer: number;
   enforcer: number;
+  soldier: number;
+  trainee: number;
   farmer: number;
   miner: number;
   technician: number;
+  colonizer: number;
   clerk: number;
   criminal: number;
   unemployed: number;
@@ -221,30 +338,15 @@ export interface PlanetEconomySummary {
   crime: number;
   stability: number;
   populationGrowth: PlanetPopulationGrowth;
+  populationDecline: PlanetPopulationDecline;
+  migration: PlanetMigrationSummary;
   activeModifiers: PlanetModifier[];
-}
-
-export interface PlanetPopulationGrowthFactors {
-  housing: number;
-  amenities: number;
-  stability: number;
-  crime: number;
-  employment: number;
-  capacity: number;
-}
-
-export interface PlanetPopulationGrowth {
-  capacity: number;
-  capacityPressure: number;
-  ratePerQuarter: number;
-  netPerQuarter: number;
-  speciesChanges: Array<{ speciesId: SpeciesId; deltaPerQuarter: number }>;
-  factors: PlanetPopulationGrowthFactors;
 }
 
 export interface PlanetEconomySpeciesContext {
   species: SpeciesState[];
   rightsBySpeciesId?: Record<SpeciesId, SpeciesRights | undefined>;
+  foodShortageProgress?: number;
 }
 
 export interface PlanetState {
@@ -257,17 +359,22 @@ export interface PlanetState {
   population: number;
   speciesPopulations: SpeciesPopulation[];
   features: PlanetFeatureKind[];
+  featureGenerationVersion: number;
   builtDistricts: DistrictCounts;
   buildings: DistrictBuildingSlots;
   urbanSubDistricts: UrbanSubDistrictState[];
   constructionQueue: PlanetConstructionQueueItem[];
+  defense: PlanetDefenseState;
   modifiers: PlanetModifier[];
+  populationMigration: PlanetMigrationLedger;
+  jobLocks: PlanetJobLock[];
   economy: PlanetEconomySummary;
 }
 
 export interface FactionEconomyState {
   factionId: number;
   stockpiles: ResourceCounts;
+  crewStockpile: number;
   monthlyDelta: ResourceCounts;
   marketMonthlyDelta?: ResourceCounts;
   lastProcessedMonth: number;
@@ -282,6 +389,7 @@ export interface PlanetEconomySeed {
   isHabited: boolean;
   habitability: number | null;
   features?: PlanetFeatureKind[];
+  featureGenerationVersion?: number;
   builtDistricts: DistrictCounts;
   districtLimits: DistrictCounts;
   starterInfrastructure?: boolean;
@@ -297,24 +405,68 @@ export function getAmenityNeed(population: number): number {
 }
 export const STARTING_HABITED_POPULATION = 10_000_000_000;
 export const NEW_COLONY_POPULATION = 500_000_000;
+export const FRONTIER_SETTLEMENT_DURATION_YEARS = 10;
 export const BUILDING_MAX_LEVEL = 5;
-const BASE_POPULATION_GROWTH_RATE_PER_QUARTER = 0.01;
-const POP_FOOD_UPKEEP_PER_UNIT = 1.1;
-const UNEMPLOYED_GOODS_UPKEEP_PER_UNIT = 0.025;
+const POP_FOOD_UPKEEP_PER_UNIT = 0.022;
+const UNEMPLOYED_GOODS_UPKEEP_PER_UNIT = 0.0005;
 const CRIMINAL_JOB_POPULATION_SHARE_AT_MAX_CRIME = 0.25;
 
+export function createFrontierSettlementModifiers(foundedAtYear: number): PlanetModifier[] {
+  const expiresAtYear = foundedAtYear + FRONTIER_SETTLEMENT_DURATION_YEARS;
+  const create = (
+    id: string,
+    label: string,
+    target: PlanetModifierTarget,
+    operation: PlanetModifierOperation,
+    value: number,
+  ): PlanetModifier => ({
+    id,
+    label,
+    source: "colony:frontierSettlement",
+    target,
+    operation,
+    value,
+    expiresAtYear,
+  });
+  return [
+    create("frontier-settlement-attractiveness", "Frontier Settlement", "migrationAttractiveness", "add", 20),
+    create("frontier-settlement-intake", "Frontier Settlement", "migrationIntakeCapacity", "add", 20_000_000),
+    create("frontier-settlement-stability", "Frontier Settlement", "stability", "add", 10),
+    create("frontier-settlement-construction", "Frontier Settlement", "constructionSpeed", "multiply", 0.25),
+    create("frontier-settlement-growth", "Frontier Settlement", "populationGrowth", "multiply", 0.25),
+  ];
+}
+
+export function removeExpiredPlanetModifiers(
+  state: PlanetState,
+  currentYear: number,
+): { state: PlanetState; changed: boolean } {
+  const modifiers = (state.modifiers ?? []).filter((modifier) => (
+    modifier.expiresAtYear === undefined || currentYear < modifier.expiresAtYear
+  ));
+  if (modifiers.length === (state.modifiers ?? []).length) return { state, changed: false };
+  return { state: { ...state, modifiers }, changed: true };
+}
+
+export const DISTRICT_COSTS: Record<DistrictKind, ResourceCounts> = {
+  city: { food: 0, minerals: 800, energy: 200, goods: 50, alloys: 0, research: 0 },
+  generator: { food: 0, minerals: 600, energy: 150, goods: 0, alloys: 0, research: 0 },
+  mining: { food: 0, minerals: 650, energy: 150, goods: 0, alloys: 0, research: 0 },
+  agriculture: { food: 50, minerals: 550, energy: 100, goods: 0, alloys: 0, research: 0 },
+};
+
 export const DISTRICT_MINERAL_COSTS: Record<DistrictKind, number> = {
-  city: 520,
-  generator: 420,
-  mining: 420,
-  agriculture: 390,
+  city: DISTRICT_COSTS.city.minerals,
+  generator: DISTRICT_COSTS.generator.minerals,
+  mining: DISTRICT_COSTS.mining.minerals,
+  agriculture: DISTRICT_COSTS.agriculture.minerals,
 };
 
 export const DISTRICT_BUILD_DAYS: Record<DistrictKind, number> = {
-  city: 14,
-  generator: 10,
-  mining: 10,
-  agriculture: 9,
+  city: 240,
+  generator: 180,
+  mining: 180,
+  agriculture: 180,
 };
 
 export const RESOURCE_KINDS: ResourceKind[] = ["food", "minerals", "energy", "goods", "alloys", "research"];
@@ -322,14 +474,19 @@ export const RESOURCE_KINDS: ResourceKind[] = ["food", "minerals", "energy", "go
 export const JOB_KINDS: JobKind[] = [
   "ruler",
   "administrator",
+  "sensorManager",
+  "shieldOperator",
   "researcher",
   "artisan",
   "metallurgist",
   "entertainer",
   "enforcer",
+  "soldier",
+  "trainee",
   "farmer",
   "miner",
   "technician",
+  "colonizer",
   "clerk",
   "criminal",
   "unemployed",
@@ -338,28 +495,38 @@ export const JOB_KINDS: JobKind[] = [
 export const JOB_FILL_ORDER: JobKind[] = [
   "ruler",
   "administrator",
+  "sensorManager",
+  "shieldOperator",
   "researcher",
   "enforcer",
+  "soldier",
+  "trainee",
   "entertainer",
   "artisan",
   "metallurgist",
   "farmer",
   "miner",
   "technician",
+  "colonizer",
   "clerk",
 ];
 
 export const JOB_CLASS_BY_KIND: Record<JobKind, JobClass> = {
   ruler: "upper",
   administrator: "upper",
+  sensorManager: "middle",
+  shieldOperator: "middle",
   researcher: "middle",
   artisan: "middle",
   metallurgist: "middle",
   entertainer: "middle",
   enforcer: "middle",
+  soldier: "middle",
+  trainee: "lower",
   farmer: "lower",
   miner: "lower",
   technician: "lower",
+  colonizer: "lower",
   clerk: "lower",
   criminal: "lower",
   unemployed: "lower",
@@ -382,7 +549,7 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Rulers",
     class: "upper",
     description: "The planetary governing council and its household. Sets policy, upholds public order, and keeps the populace content.",
-    upkeep: { energy: 1, goods: 1.5 },
+    upkeep: { energy: 0.02, goods: 0.03 },
     amenities: 6,
     crimeReduction: 0.02,
   },
@@ -391,39 +558,53 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Administrators",
     class: "upper",
     description: "Coordinates planetary bureaucracy, services, and strategic direction.",
-    upkeep: { energy: 1, goods: 1 },
+    upkeep: { energy: 0.02, goods: 0.02 },
     amenities: 3,
+  },
+  sensorManager: {
+    kind: "sensorManager",
+    label: "Sensor Managers",
+    class: "middle",
+    description: "Coordinates planetary sensor arrays and intelligence processing.",
+    upkeep: { energy: 0.01, goods: 0.005 },
+  },
+  shieldOperator: {
+    kind: "shieldOperator",
+    label: "Shield Operators",
+    class: "middle",
+    description: "Maintains the planetary shield grid and its alloy-intensive field hardware.",
+    upkeep: { alloys: 0.01 },
   },
   researcher: {
     kind: "researcher",
     label: "Researchers",
     class: "middle",
     description: "Turns energy and goods into stockpiled research.",
-    output: { research: 3 },
-    upkeep: { energy: 2.5, goods: 1.2 },
+    output: { research: 0.06 },
+    upkeep: { energy: 0.05, goods: 0.024 },
   },
   artisan: {
     kind: "artisan",
     label: "Artisans",
     class: "middle",
     description: "Refines minerals into civilian goods.",
-    output: { goods: 2.5 },
-    upkeep: { minerals: 4.5, energy: 0.5 },
+    output: { goods: 0.05 },
+    upkeep: { minerals: 0.09, energy: 0.01 },
   },
   metallurgist: {
     kind: "metallurgist",
     label: "Metallurgists",
     class: "middle",
     description: "Refines minerals into military and industrial alloys.",
-    output: { alloys: 1.6 },
-    upkeep: { minerals: 5.5, energy: 0.6 },
+    output: { alloys: 0.032 },
+    upkeep: { minerals: 0.11, energy: 0.012 },
   },
   entertainer: {
     kind: "entertainer",
     label: "Entertainers",
     class: "middle",
     description: "Provides culture, recreation, and morale services.",
-    upkeep: { goods: 0.6 },
+    upkeep: { goods: 0.012 },
     amenities: 7,
   },
   enforcer: {
@@ -431,36 +612,58 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Enforcers",
     class: "middle",
     description: "Maintains public order and suppresses organized crime.",
-    upkeep: { energy: 0.6, goods: 0.25 },
+    upkeep: { energy: 0.012, goods: 0.005 },
     crimeReduction: 0.025,
+  },
+  soldier: {
+    kind: "soldier",
+    label: "Soldiers",
+    class: "middle",
+    description: "Planetary defense personnel maintained by fortress infrastructure.",
+    upkeep: { goods: 0.005, alloys: 0.002 },
+  },
+  trainee: {
+    kind: "trainee",
+    label: "Trainees",
+    class: "lower",
+    description: "Personnel undergoing training before entering the faction Crew reserve.",
+    upkeep: { goods: 0.003, alloys: 0.001 },
   },
   farmer: {
     kind: "farmer",
     label: "Farmers",
     class: "lower",
     description: "Produces food from agricultural land and hydroponic infrastructure.",
-    output: { food: 4.5 },
+    output: { food: 0.09 },
   },
   miner: {
     kind: "miner",
     label: "Miners",
     class: "lower",
     description: "Extracts minerals from planetary deposits.",
-    output: { minerals: 4.5 },
+    output: { minerals: 0.09 },
   },
   technician: {
     kind: "technician",
     label: "Technicians",
     class: "lower",
     description: "Operates power grids, reactors, and energy collection systems.",
-    output: { energy: 3.6 },
+    output: { energy: 0.072 },
+  },
+  colonizer: {
+    kind: "colonizer",
+    label: "Colonizers",
+    class: "lower",
+    description: "Frontier settlers who maintain the first communal services and small local food plots while relying on the wider empire for development.",
+    output: { food: 0.016 },
+    amenities: 0.75,
   },
   clerk: {
     kind: "clerk",
     label: "Clerks",
     class: "lower",
     description: "Handles services, commerce, and local administration.",
-    output: { energy: 0.6 },
+    output: { energy: 0.012 },
     amenities: 1.5,
   },
   criminal: {
@@ -468,7 +671,7 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     label: "Criminals",
     class: "lower",
     description: "Organized illicit work that consumes supplies and intensifies local crime.",
-    upkeep: { energy: 0.15, goods: 0.08 },
+    upkeep: { energy: 0.003, goods: 0.0016 },
     crimeReduction: -0.01,
   },
   unemployed: {
@@ -491,42 +694,121 @@ export const URBAN_SUB_DISTRICT_LABELS: Record<UrbanSubDistrictKind, string> = {
   heavyIndustry: "Heavy Industry",
 };
 
-export const PLANET_FEATURE_DEFINITIONS: Record<PlanetFeatureKind, PlanetFeatureDefinition> = {
-  homePlanet: {
-    kind: "homePlanet",
-    label: "Home Planet",
-    description: "The species' cradle world, with familiar biospheres, culture, infrastructure, and settlement patterns.",
+export interface CapitalTierDefinition {
+  level: number;
+  label: string;
+  description: string;
+  jobs: BuildingJobEffect[];
+  housing: number;
+  modifiers: PlanetModifier[];
+}
+
+function capitalTierModifier(
+  level: number,
+  suffix: string,
+  label: string,
+  target: PlanetModifierTarget,
+  operation: PlanetModifierOperation,
+  value: number,
+): PlanetModifier {
+  return {
+    id: `capital-tier-${level}-${suffix}`,
+    label,
+    source: `building:planetaryCapital:${level}`,
+    target,
+    operation,
+    value,
+  };
+}
+
+export const CAPITAL_TIER_DEFINITIONS: Record<number, CapitalTierDefinition> = {
+  1: {
+    level: 1,
+    label: "Colony Headquarters",
+    description: "A prefabricated frontier hub that houses and organizes the first colonists while the settlement remains dependent on imperial supply.",
+    jobs: [
+      { job: "colonizer", amount: 500_000_000 },
+      { job: "sensorManager", amount: 1_000_000 },
+    ],
+    housing: 750_000_000,
+    modifiers: [],
+  },
+  2: {
+    level: 2,
+    label: "Planetary Administration",
+    description: "A permanent seat of planetary government centered on a ruler-heavy civil administration.",
+    jobs: [
+      { job: "ruler", amount: 500_000_000 },
+      { job: "sensorManager", amount: 2_000_000 },
+      { job: "enforcer", amount: 100_000_000 },
+      { job: "entertainer", amount: 100_000_000 },
+    ],
+    housing: 0,
+    modifiers: [],
+  },
+  3: {
+    level: 3,
+    label: "Planetary Capital",
+    description: "A mature planetary government that coordinates large public works and stabilizes a developed world.",
+    jobs: [
+      { job: "ruler", amount: 900_000_000 },
+      { job: "sensorManager", amount: 3_000_000 },
+      { job: "enforcer", amount: 150_000_000 },
+      { job: "entertainer", amount: 150_000_000 },
+    ],
+    housing: 0,
     modifiers: [
-      {
-        id: "feature-home-planet-human-habitability",
-        label: "Home Planet",
-        source: "planetFeature:homePlanet",
-        target: "habitability:human",
-        operation: "add",
-        value: 20,
-      },
+      capitalTierModifier(3, "stability", "Planetary Capital", "stability", "add", 5),
+      capitalTierModifier(3, "construction", "Planetary Capital", "constructionSpeed", "multiply", 0.1),
+    ],
+  },
+  4: {
+    level: 4,
+    label: "Planetary Directorate",
+    description: "An expansive directorate that directs planetary institutions and major construction programs.",
+    jobs: [
+      { job: "ruler", amount: 1_500_000_000 },
+      { job: "sensorManager", amount: 4_000_000 },
+      { job: "enforcer", amount: 200_000_000 },
+      { job: "entertainer", amount: 200_000_000 },
+    ],
+    housing: 0,
+    modifiers: [
+      capitalTierModifier(4, "stability", "Planetary Directorate", "stability", "add", 8),
+      capitalTierModifier(4, "construction", "Planetary Directorate", "constructionSpeed", "multiply", 0.15),
+    ],
+  },
+  5: {
+    level: 5,
+    label: "Planetary Nexus",
+    description: "A planet-spanning governing nexus with the authority and logistics to coordinate the largest inhabited worlds.",
+    jobs: [
+      { job: "ruler", amount: 2_400_000_000 },
+      { job: "sensorManager", amount: 5_000_000 },
+      { job: "enforcer", amount: 250_000_000 },
+      { job: "entertainer", amount: 250_000_000 },
+    ],
+    housing: 0,
+    modifiers: [
+      capitalTierModifier(5, "stability", "Planetary Nexus", "stability", "add", 12),
+      capitalTierModifier(5, "construction", "Planetary Nexus", "constructionSpeed", "multiply", 0.25),
     ],
   },
 };
 
-export const PLANET_FEATURE_KINDS: PlanetFeatureKind[] = ["homePlanet"];
-
 export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
   planetaryCapital: {
     kind: "planetaryCapital",
-    label: "Planetary Capital",
+    label: "Colony Headquarters",
     initials: "CAP",
-    description: "The seat of planetary government. Always anchors the first city slot, providing baseline rulers, entertainers, and enforcers so a young colony can stay stable while you build out its economy.",
+    description: CAPITAL_TIER_DEFINITIONS[1].description,
     mineralCost: 0,
     buildDays: 1,
     compatibility: [{ area: "city" }],
     autoPlaced: true,
     sensorSuiteIds: ["planetaryCapitalSensors"],
-    jobs: [
-      { job: "ruler", amount: 200_000_000 },
-      { job: "entertainer", amount: 400_000_000 },
-      { job: "enforcer", amount: 300_000_000 },
-    ],
+    jobs: CAPITAL_TIER_DEFINITIONS[1].jobs,
+    housing: CAPITAL_TIER_DEFINITIONS[1].housing,
   },
   housingComplex: {
     kind: "housingComplex",
@@ -534,7 +816,7 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     initials: "HC",
     description: "Dense residential towers and life-support extensions that expand planetary housing.",
     mineralCost: 220,
-    buildDays: 4,
+    buildDays: 30,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     housing: 1_200_000_000,
   },
@@ -543,8 +825,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Administrative Complex",
     initials: "AD",
     description: "Offices, courts, and planning bureaus that create administrator jobs.",
-    mineralCost: 420,
-    buildDays: 8,
+    mineralCost: 350,
+    buildDays: 45,
     compatibility: [{ area: "city" }],
     jobs: [{ job: "administrator", amount: 300_000_000 }],
   },
@@ -553,8 +835,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Research Labs",
     initials: "RL",
     description: "Laboratory campuses that create researcher jobs.",
-    mineralCost: 620,
-    buildDays: 14,
+    mineralCost: 500,
+    buildDays: 60,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["researchCampus"] }],
     jobs: [{ job: "researcher", amount: 500_000_000 }],
   },
@@ -563,8 +845,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Civilian Fabricators",
     initials: "CF",
     description: "Factory halls that create artisan jobs for civilian goods production.",
-    mineralCost: 520,
-    buildDays: 12,
+    mineralCost: 450,
+    buildDays: 60,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["mixedIndustry", "civilianIndustry"] }],
     jobs: [{ job: "artisan", amount: 500_000_000 }],
   },
@@ -573,8 +855,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Alloy Foundries",
     initials: "AF",
     description: "Heavy furnace and forge facilities that create metallurgist jobs.",
-    mineralCost: 680,
-    buildDays: 15,
+    mineralCost: 550,
+    buildDays: 75,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["mixedIndustry", "heavyIndustry"] }],
     jobs: [{ job: "metallurgist", amount: 500_000_000 }],
   },
@@ -583,8 +865,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Commercial Forum",
     initials: "CM",
     description: "Market districts and service hubs that create clerk jobs.",
-    mineralCost: 260,
-    buildDays: 5,
+    mineralCost: 250,
+    buildDays: 30,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     jobs: [{ job: "clerk", amount: 500_000_000 }],
   },
@@ -593,8 +875,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Food Processing Plant",
     initials: "FP",
     description: "Agricultural logistics and preservation plants that expand farmer jobs per agriculture district.",
-    mineralCost: 210,
-    buildDays: 4,
+    mineralCost: 250,
+    buildDays: 30,
     compatibility: [{ area: "agriculture" }],
     jobs: [{ job: "farmer", amount: 250_000_000, perDistrict: "agriculture" }],
   },
@@ -603,8 +885,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Agro-Industrial Kitchens",
     initials: "AK",
     description: "Food industry complexes that convert some farmer demand into artisan jobs.",
-    mineralCost: 460,
-    buildDays: 11,
+    mineralCost: 450,
+    buildDays: 60,
     compatibility: [{ area: "agriculture" }],
     jobs: [
       { job: "farmer", amount: -250_000_000, perDistrict: "agriculture" },
@@ -616,8 +898,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Mineral Purification Plant",
     initials: "MP",
     description: "Ore sorting and purification works that expand miner jobs per mining district.",
-    mineralCost: 230,
-    buildDays: 4,
+    mineralCost: 270,
+    buildDays: 30,
     compatibility: [{ area: "mining" }],
     jobs: [{ job: "miner", amount: 250_000_000, perDistrict: "mining" }],
   },
@@ -626,8 +908,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Ore Smelter",
     initials: "OS",
     description: "Industrial smelters that convert some miner demand into metallurgist jobs.",
-    mineralCost: 520,
-    buildDays: 12,
+    mineralCost: 500,
+    buildDays: 60,
     compatibility: [{ area: "mining" }],
     jobs: [
       { job: "miner", amount: -250_000_000, perDistrict: "mining" },
@@ -639,8 +921,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Energy Grid",
     initials: "EG",
     description: "Planetary power routing that expands technician jobs per generator district.",
-    mineralCost: 230,
-    buildDays: 4,
+    mineralCost: 270,
+    buildDays: 30,
     compatibility: [{ area: "generator" }],
     jobs: [{ job: "technician", amount: 250_000_000, perDistrict: "generator" }],
   },
@@ -649,8 +931,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Capacitor Workshops",
     initials: "CW",
     description: "Power component workshops that convert some technician demand into artisan jobs.",
-    mineralCost: 460,
-    buildDays: 11,
+    mineralCost: 450,
+    buildDays: 60,
     compatibility: [{ area: "generator" }],
     jobs: [
       { job: "technician", amount: -250_000_000, perDistrict: "generator" },
@@ -662,8 +944,8 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Entertainment Forum",
     initials: "EF",
     description: "Theaters, parks, and media venues that create entertainer jobs for amenities.",
-    mineralCost: 340,
-    buildDays: 7,
+    mineralCost: 300,
+    buildDays: 45,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     jobs: [{ job: "entertainer", amount: 500_000_000 }],
   },
@@ -672,12 +954,416 @@ export const BUILDING_DEFINITIONS: Record<BuildingKind, BuildingDefinition> = {
     label: "Security Office",
     initials: "SO",
     description: "Precincts and public safety offices that create enforcer jobs to reduce crime.",
-    mineralCost: 340,
-    buildDays: 7,
+    mineralCost: 300,
+    buildDays: 45,
     compatibility: [{ area: "city" }, { area: "urbanSubDistrict", subDistrictKinds: ["residential"] }],
     jobs: [{ job: "enforcer", amount: 500_000_000 }],
   },
+  fortress: {
+    kind: "fortress",
+    label: "Fortress",
+    initials: "FT",
+    description: "A hardened planetary garrison that creates soldier jobs and unlocks two planetary defense slots.",
+    mineralCost: 1_200,
+    buildDays: 120,
+    compatibility: [{ area: "city" }],
+    jobs: [{ job: "soldier", amount: 10_000_000 }],
+  },
 };
+
+function authoredBuildingLevel(
+  cost: ResourceDelta,
+  energyUpkeep: number,
+  buildDays: number,
+): BuildingLevelDefinition {
+  return {
+    cost: {
+      food: cost.food ?? 0,
+      minerals: cost.minerals ?? 0,
+      energy: cost.energy ?? 0,
+      goods: cost.goods ?? 0,
+      alloys: cost.alloys ?? 0,
+      research: cost.research ?? 0,
+    },
+    upkeep: {
+      food: 0,
+      minerals: 0,
+      energy: energyUpkeep,
+      goods: 0,
+      alloys: 0,
+      research: 0,
+    },
+    buildDays,
+  };
+}
+
+/**
+ * Authored independently by building and target level. These values deliberately
+ * avoid formula-driven scaling so later tiers can introduce distinct resource
+ * requirements without changing earlier construction.
+ */
+export const BUILDING_LEVEL_DEFINITIONS: Record<BuildingKind, Record<number, BuildingLevelDefinition>> = {
+  planetaryCapital: {
+    1: authoredBuildingLevel({}, 0, 1),
+    2: authoredBuildingLevel({ food: 200, minerals: 1_200, energy: 800, goods: 200, alloys: 100 }, 2, 240),
+    3: authoredBuildingLevel({ food: 500, minerals: 3_000, energy: 2_000, goods: 600, alloys: 300 }, 5, 720),
+    4: authoredBuildingLevel({ food: 1_000, minerals: 7_000, energy: 5_000, goods: 1_500, alloys: 800 }, 10, 1_800),
+    5: authoredBuildingLevel({ food: 2_000, minerals: 15_000, energy: 10_000, goods: 3_500, alloys: 2_000 }, 18, 3_600),
+  },
+  housingComplex: {
+    1: authoredBuildingLevel({ minerals: 220, energy: 60 }, 1, 30),
+    2: authoredBuildingLevel({ minerals: 1_800, energy: 600, goods: 150 }, 2, 180),
+    3: authoredBuildingLevel({ minerals: 6_000, energy: 2_000, goods: 600 }, 4, 540),
+    4: authoredBuildingLevel({ minerals: 18_000, energy: 6_000, goods: 2_000, alloys: 300 }, 7, 1_440),
+    5: authoredBuildingLevel({ minerals: 50_000, energy: 16_000, goods: 6_000, alloys: 1_200 }, 11, 3_600),
+  },
+  administrativeComplex: {
+    1: authoredBuildingLevel({ minerals: 350, energy: 100, goods: 25 }, 2, 45),
+    2: authoredBuildingLevel({ minerals: 2_500, energy: 900, goods: 300 }, 4, 240),
+    3: authoredBuildingLevel({ minerals: 8_000, energy: 2_800, goods: 1_000 }, 7, 720),
+    4: authoredBuildingLevel({ minerals: 24_000, energy: 8_000, goods: 3_000, alloys: 400 }, 11, 1_800),
+    5: authoredBuildingLevel({ minerals: 65_000, energy: 20_000, goods: 8_000, alloys: 1_500 }, 16, 3_600),
+  },
+  researchLabs: {
+    1: authoredBuildingLevel({ minerals: 500, energy: 150, goods: 50 }, 3, 60),
+    2: authoredBuildingLevel({ minerals: 3_500, energy: 1_200, goods: 500, alloys: 100 }, 6, 300),
+    3: authoredBuildingLevel({ minerals: 11_000, energy: 3_500, goods: 1_800, alloys: 400 }, 10, 900),
+    4: authoredBuildingLevel({ minerals: 32_000, energy: 10_000, goods: 5_000, alloys: 1_200 }, 16, 2_160),
+    5: authoredBuildingLevel({ minerals: 90_000, energy: 28_000, goods: 14_000, alloys: 4_000 }, 24, 3_600),
+  },
+  civilianFabricators: {
+    1: authoredBuildingLevel({ minerals: 450, energy: 120 }, 3, 60),
+    2: authoredBuildingLevel({ minerals: 3_200, energy: 1_000, goods: 200 }, 6, 300),
+    3: authoredBuildingLevel({ minerals: 10_000, energy: 3_000, goods: 900, alloys: 200 }, 11, 900),
+    4: authoredBuildingLevel({ minerals: 30_000, energy: 9_000, goods: 3_000, alloys: 1_000 }, 18, 2_160),
+    5: authoredBuildingLevel({ minerals: 80_000, energy: 24_000, goods: 8_000, alloys: 3_000 }, 27, 3_600),
+  },
+  alloyFoundries: {
+    1: authoredBuildingLevel({ minerals: 550, energy: 180, alloys: 25 }, 4, 75),
+    2: authoredBuildingLevel({ minerals: 4_000, energy: 1_200, alloys: 500 }, 8, 360),
+    3: authoredBuildingLevel({ minerals: 13_000, energy: 4_000, alloys: 1_800 }, 14, 1_080),
+    4: authoredBuildingLevel({ minerals: 38_000, energy: 12_000, goods: 1_000, alloys: 6_000 }, 23, 2_400),
+    5: authoredBuildingLevel({ minerals: 100_000, energy: 30_000, goods: 4_000, alloys: 18_000 }, 35, 3_600),
+  },
+  commercialForum: {
+    1: authoredBuildingLevel({ minerals: 250, energy: 60, goods: 15 }, 2, 30),
+    2: authoredBuildingLevel({ minerals: 2_000, energy: 700, goods: 250 }, 4, 180),
+    3: authoredBuildingLevel({ minerals: 6_500, energy: 2_200, goods: 800 }, 7, 600),
+    4: authoredBuildingLevel({ minerals: 19_000, energy: 6_500, goods: 2_500, alloys: 250 }, 11, 1_500),
+    5: authoredBuildingLevel({ minerals: 52_000, energy: 17_000, goods: 7_000, alloys: 1_000 }, 16, 3_600),
+  },
+  foodProcessingPlant: {
+    1: authoredBuildingLevel({ minerals: 250, energy: 60 }, 2, 30),
+    2: authoredBuildingLevel({ minerals: 1_800, energy: 600, goods: 100 }, 4, 180),
+    3: authoredBuildingLevel({ minerals: 6_000, energy: 2_000, goods: 400 }, 7, 600),
+    4: authoredBuildingLevel({ minerals: 18_000, energy: 6_000, goods: 1_500, alloys: 200 }, 11, 1_500),
+    5: authoredBuildingLevel({ minerals: 50_000, energy: 16_000, goods: 4_500, alloys: 800 }, 17, 3_600),
+  },
+  agroIndustrialKitchens: {
+    1: authoredBuildingLevel({ minerals: 450, energy: 120, goods: 25 }, 3, 60),
+    2: authoredBuildingLevel({ minerals: 3_000, energy: 1_000, goods: 350 }, 6, 300),
+    3: authoredBuildingLevel({ minerals: 9_500, energy: 3_000, goods: 1_200, alloys: 150 }, 10, 900),
+    4: authoredBuildingLevel({ minerals: 28_000, energy: 9_000, goods: 3_500, alloys: 700 }, 17, 2_040),
+    5: authoredBuildingLevel({ minerals: 75_000, energy: 23_000, goods: 10_000, alloys: 2_500 }, 25, 3_600),
+  },
+  mineralPurificationPlant: {
+    1: authoredBuildingLevel({ minerals: 270, energy: 60 }, 2, 30),
+    2: authoredBuildingLevel({ minerals: 2_000, energy: 650, goods: 100 }, 4, 180),
+    3: authoredBuildingLevel({ minerals: 6_500, energy: 2_100, goods: 450 }, 7, 600),
+    4: authoredBuildingLevel({ minerals: 19_000, energy: 6_200, goods: 1_500, alloys: 250 }, 11, 1_500),
+    5: authoredBuildingLevel({ minerals: 52_000, energy: 17_000, goods: 4_500, alloys: 900 }, 17, 3_600),
+  },
+  oreSmelter: {
+    1: authoredBuildingLevel({ minerals: 500, energy: 140, alloys: 20 }, 4, 60),
+    2: authoredBuildingLevel({ minerals: 3_500, energy: 1_100, alloys: 400 }, 8, 360),
+    3: authoredBuildingLevel({ minerals: 11_000, energy: 3_500, alloys: 1_500 }, 14, 1_080),
+    4: authoredBuildingLevel({ minerals: 32_000, energy: 10_000, goods: 800, alloys: 5_000 }, 22, 2_400),
+    5: authoredBuildingLevel({ minerals: 88_000, energy: 27_000, goods: 3_000, alloys: 15_000 }, 34, 3_600),
+  },
+  energyGrid: {
+    1: authoredBuildingLevel({ minerals: 270, energy: 60 }, 1, 30),
+    2: authoredBuildingLevel({ minerals: 2_000, energy: 700, goods: 100 }, 2, 180),
+    3: authoredBuildingLevel({ minerals: 6_500, energy: 2_200, goods: 450 }, 4, 600),
+    4: authoredBuildingLevel({ minerals: 19_000, energy: 6_500, goods: 1_500, alloys: 250 }, 7, 1_500),
+    5: authoredBuildingLevel({ minerals: 52_000, energy: 18_000, goods: 4_500, alloys: 900 }, 11, 3_600),
+  },
+  capacitorWorkshops: {
+    1: authoredBuildingLevel({ minerals: 450, energy: 120, goods: 20 }, 3, 60),
+    2: authoredBuildingLevel({ minerals: 3_000, energy: 1_000, goods: 300 }, 6, 300),
+    3: authoredBuildingLevel({ minerals: 9_500, energy: 3_200, goods: 1_000, alloys: 150 }, 10, 900),
+    4: authoredBuildingLevel({ minerals: 28_000, energy: 9_500, goods: 3_200, alloys: 700 }, 17, 2_040),
+    5: authoredBuildingLevel({ minerals: 75_000, energy: 25_000, goods: 9_000, alloys: 2_500 }, 25, 3_600),
+  },
+  entertainmentForum: {
+    1: authoredBuildingLevel({ minerals: 300, energy: 80, goods: 20 }, 2, 45),
+    2: authoredBuildingLevel({ minerals: 2_200, energy: 750, goods: 300 }, 4, 240),
+    3: authoredBuildingLevel({ minerals: 7_000, energy: 2_400, goods: 1_000 }, 7, 720),
+    4: authoredBuildingLevel({ minerals: 21_000, energy: 7_000, goods: 3_000, alloys: 300 }, 12, 1_680),
+    5: authoredBuildingLevel({ minerals: 58_000, energy: 19_000, goods: 8_500, alloys: 1_200 }, 18, 3_600),
+  },
+  securityOffice: {
+    1: authoredBuildingLevel({ minerals: 300, energy: 80, goods: 20 }, 2, 45),
+    2: authoredBuildingLevel({ minerals: 2_200, energy: 750, goods: 300 }, 4, 240),
+    3: authoredBuildingLevel({ minerals: 7_000, energy: 2_400, goods: 1_000 }, 7, 720),
+    4: authoredBuildingLevel({ minerals: 21_000, energy: 7_000, goods: 3_000, alloys: 300 }, 12, 1_680),
+    5: authoredBuildingLevel({ minerals: 58_000, energy: 19_000, goods: 8_500, alloys: 1_200 }, 18, 3_600),
+  },
+  fortress: {
+    1: authoredBuildingLevel({ minerals: 1_200, goods: 100, alloys: 150 }, 4, 120),
+  },
+};
+
+function authoredDefenseLevel(
+  cost: ResourceDelta,
+  upkeep: ResourceDelta,
+  buildDays: number,
+): BuildingLevelDefinition {
+  return {
+    cost: { ...createEmptyResourceCounts(), ...cost },
+    upkeep: { ...createEmptyResourceCounts(), ...upkeep },
+    buildDays,
+  };
+}
+
+export const PLANET_DEFENSE_BUILDING_DEFINITIONS: Record<PlanetDefenseBuildingKind, PlanetDefenseBuildingDefinition> = {
+  sensorArray: {
+    kind: "sensorArray",
+    label: "Planetary Sensor Array",
+    initials: "SA",
+    description: "A dedicated planetary intelligence array with progressively wider hyperlane coverage.",
+    sections: ["defense"],
+    unique: true,
+    maxLevel: 3,
+    levels: {
+      1: authoredDefenseLevel({ minerals: 2_500, goods: 150, alloys: 300 }, { energy: 3, goods: 0.25 }, 120),
+      2: authoredDefenseLevel({ minerals: 6_000, goods: 600, alloys: 1_200 }, { energy: 7, goods: 0.75 }, 360),
+      3: authoredDefenseLevel({ minerals: 15_000, goods: 1_800, alloys: 4_000 }, { energy: 15, goods: 1.5, alloys: 0.25 }, 900),
+    },
+    jobs: {
+      1: [{ job: "sensorManager", amount: 2_000_000 }],
+      2: [{ job: "sensorManager", amount: 4_000_000 }],
+      3: [{ job: "sensorManager", amount: 6_000_000 }],
+    },
+    sensorSuiteIds: {
+      1: "planetarySensorArray1",
+      2: "planetarySensorArray2",
+      3: "planetarySensorArray3",
+    },
+  },
+  planetaryShield: {
+    kind: "planetaryShield",
+    label: "Planetary Shield",
+    initials: "PS",
+    description: "A planet-spanning shield grid. Its defensive effect will be activated with planetary invasions.",
+    sections: ["defense"],
+    unique: true,
+    maxLevel: 1,
+    levels: {
+      1: authoredDefenseLevel({ minerals: 3_000, goods: 250, alloys: 800 }, { energy: 10 }, 180),
+    },
+    jobs: { 1: [{ job: "shieldOperator", amount: 2_000_000 }] },
+  },
+  barracks: {
+    kind: "barracks",
+    label: "Barracks",
+    initials: "BR",
+    description: "Military training grounds that turn employed trainees into faction Crew.",
+    sections: ["defense"],
+    maxLevel: 1,
+    levels: {
+      1: authoredDefenseLevel({ minerals: 1_500, goods: 250, alloys: 200 }, { energy: 3, goods: 0.25 }, 120),
+    },
+    jobs: { 1: [{ job: "trainee", amount: 5_000_000 }] },
+  },
+  platformSupport: {
+    kind: "platformSupport",
+    label: "Platform Support",
+    initials: "PF",
+    description: "Orbital control and supply infrastructure that supports two defense platforms.",
+    sections: ["defense", "shipyard"],
+    maxLevel: 1,
+    levels: {
+      1: authoredDefenseLevel({ minerals: 2_500, alloys: 400 }, { energy: 3, alloys: 0.25 }, 150),
+    },
+    platformCapacity: 2,
+  },
+  orbitalShipyard: {
+    kind: "orbitalShipyard",
+    label: "Orbital Shipyard",
+    initials: "OY",
+    description: "A planetary orbital construction slip capable of assembling any unlocked hull.",
+    sections: ["shipyard"],
+    maxLevel: 1,
+    levels: {
+      1: authoredDefenseLevel({ minerals: 3_500, alloys: 500 }, { energy: 3, goods: 0.5, alloys: 0.25 }, 180),
+    },
+    shipyards: 1,
+  },
+};
+
+export const PLANET_DEFENSE_BUILDING_KINDS = Object.keys(
+  PLANET_DEFENSE_BUILDING_DEFINITIONS,
+) as PlanetDefenseBuildingKind[];
+
+export function createEmptyPlanetDefenseState(): PlanetDefenseState {
+  return {
+    defenseSlots: Array<PlanetDefenseBuildingState | null>(6).fill(null),
+    shipyardSlots: Array<PlanetDefenseBuildingState | null>(3).fill(null),
+    shipQueue: [],
+    traineeRemainders: [],
+  };
+}
+
+export function normalizePlanetDefenseBuilding(
+  value: unknown,
+  section: PlanetDefenseSection,
+): PlanetDefenseBuildingState | null {
+  if (!value || typeof value !== "object") return null;
+  const source = value as Partial<PlanetDefenseBuildingState>;
+  if (!source.kind || !PLANET_DEFENSE_BUILDING_KINDS.includes(source.kind)) return null;
+  const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[source.kind];
+  if (!definition.sections.includes(section)) return null;
+  return {
+    kind: source.kind,
+    level: Math.max(1, Math.min(definition.maxLevel, Math.round(Number(source.level) || 1))),
+    enabled: source.enabled !== false,
+  };
+}
+
+export function normalizePlanetDefenseState(value?: Partial<PlanetDefenseState>): PlanetDefenseState {
+  const defaults = createEmptyPlanetDefenseState();
+  const normalizeSlots = (
+    slots: Array<PlanetDefenseBuildingState | null> | undefined,
+    section: PlanetDefenseSection,
+    length: number,
+  ) => Array.from({ length }, (_, index) => normalizePlanetDefenseBuilding(slots?.[index], section));
+  const traineeRemainders = (value?.traineeRemainders ?? [])
+    .filter((item) => item && typeof item.speciesId === "string")
+    .map((item) => ({
+      speciesId: item.speciesId,
+      population: Math.max(0, Math.min(PEOPLE_PER_MONTHLY_UNIT - 1, Math.floor(Number(item.population) || 0))),
+    }))
+    .filter((item) => item.population > 0)
+    .sort((left, right) => left.speciesId.localeCompare(right.speciesId));
+  return {
+    ...defaults,
+    defenseSlots: normalizeSlots(value?.defenseSlots, "defense", 6),
+    shipyardSlots: normalizeSlots(value?.shipyardSlots, "shipyard", 3),
+    shipQueue: Array.isArray(value?.shipQueue)
+      ? value.shipQueue.flatMap((rawItem, index) => {
+        if (!rawItem || typeof rawItem !== "object") return [];
+        const item = rawItem as Partial<import("./Starbase").StarbaseShipQueueItem>;
+        const validShipKinds: import("./Starbase").StarbaseShipKind[] = [
+          "corvette",
+          "destroyer",
+          "cruiser",
+          "battleship",
+          "defensePlatform",
+          "scienceShip",
+          "armyShip",
+          "constructionShip",
+          "colonizationShip",
+        ];
+        if (!item.shipKind || !validShipKinds.includes(item.shipKind)) return [];
+        const normalizeCounts = (counts: Partial<ResourceCounts> | undefined): ResourceCounts => {
+          const normalized = createEmptyResourceCounts();
+          for (const resource of RESOURCE_KINDS) {
+            normalized[resource] = Math.max(0, Number(counts?.[resource]) || 0);
+          }
+          return normalized;
+        };
+        const totalDays = Math.max(1, Number(item.totalDays) || 1);
+        const cost = normalizeCounts(item.cost);
+        const upfrontCost = item.upfrontCost
+          ? normalizeCounts(item.upfrontCost)
+          : Object.fromEntries(RESOURCE_KINDS.map((resource) => [resource, cost[resource] * 0.05])) as unknown as ResourceCounts;
+        const resourceUpkeepPerDay = item.resourceUpkeepPerDay
+          ? normalizeCounts(item.resourceUpkeepPerDay)
+          : Object.fromEntries(RESOURCE_KINDS.map((resource) => [
+            resource,
+            Math.max(0, cost[resource] - upfrontCost[resource]) / totalDays,
+          ])) as unknown as ResourceCounts;
+        const crewDemand = Math.max(0, Math.floor(Number(item.crewDemand) || 0));
+        return [{
+          id: typeof item.id === "string" && item.id ? item.id : `planet-ship-queue-${index}`,
+          kind: item.kind === "upgrade" ? "upgrade" as const : item.kind === "armyBuild" ? "armyBuild" as const : "build" as const,
+          shipKind: item.shipKind,
+          designId: typeof item.designId === "string" ? item.designId : null,
+          targetDesignId: typeof item.targetDesignId === "string" ? item.targetDesignId : null,
+          shipId: typeof item.shipId === "string" ? item.shipId : null,
+          label: typeof item.label === "string" && item.label ? item.label : `Queued ${item.shipKind}`,
+          cost,
+          upfrontCost,
+          resourceUpkeepPerDay,
+          totalDays,
+          remainingDays: Math.max(0, Math.min(totalDays, Number(item.remainingDays) || 0)),
+          alloyUpkeepPerDay: Math.max(0, Number(item.alloyUpkeepPerDay) || resourceUpkeepPerDay.alloys),
+          crewDemand,
+          reservedCrew: Math.max(0, Math.floor(Number(item.reservedCrew ?? crewDemand) || 0)),
+          armyTypeId: typeof item.armyTypeId === "string" ? item.armyTypeId as import("./Armies").ArmyTypeId : undefined,
+          speciesId: typeof item.speciesId === "string" ? item.speciesId : undefined,
+        }];
+      })
+      : [],
+    traineeRemainders,
+  };
+}
+
+export function getUnlockedPlanetDefenseSlots(state: Pick<PlanetState, "buildings" | "urbanSubDistricts">): number {
+  const fortresses = [
+    ...Object.values(state.buildings).flat(),
+    ...state.urbanSubDistricts.flatMap((subDistrict) => subDistrict.buildings),
+  ].filter((building) => (
+    getPlanetBuildingKind(building) === "fortress" && isPlanetBuildingEnabled(building)
+  )).length;
+  return Math.min(6, fortresses * 2);
+}
+
+export function getUnlockedPlanetShipyardSlots(state: Pick<PlanetState, "buildings" | "urbanSubDistricts">): number {
+  const foundries = [
+    ...Object.values(state.buildings).flat(),
+    ...state.urbanSubDistricts.flatMap((subDistrict) => subDistrict.buildings),
+  ].filter((building) => (
+    getPlanetBuildingKind(building) === "alloyFoundries" && isPlanetBuildingEnabled(building)
+  )).length;
+  return Math.min(3, foundries);
+}
+
+export function getActivePlanetDefenseBuildings(
+  state: Pick<PlanetState, "buildings" | "urbanSubDistricts" | "defense">,
+): Array<PlanetDefenseBuildingState & { section: PlanetDefenseSection; slotIndex: number }> {
+  const active: Array<PlanetDefenseBuildingState & { section: PlanetDefenseSection; slotIndex: number }> = [];
+  const collect = (
+    slots: Array<PlanetDefenseBuildingState | null>,
+    section: PlanetDefenseSection,
+    unlocked: number,
+  ): void => {
+    slots.forEach((building, slotIndex) => {
+      if (building && slotIndex < unlocked && building.enabled !== false) {
+        active.push({ ...building, section, slotIndex });
+      }
+    });
+  };
+  collect(state.defense.defenseSlots, "defense", getUnlockedPlanetDefenseSlots(state));
+  collect(state.defense.shipyardSlots, "shipyard", getUnlockedPlanetShipyardSlots(state));
+  return active;
+}
+
+export function getPlanetDefensePlatformCapacity(
+  state: Pick<PlanetState, "buildings" | "urbanSubDistricts" | "defense">,
+): number {
+  return getActivePlanetDefenseBuildings(state).reduce((total, building) => (
+    total + (PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind].platformCapacity ?? 0)
+  ), 0);
+}
+
+export function countPlanetShipyards(
+  state: Pick<PlanetState, "buildings" | "urbanSubDistricts" | "defense">,
+): number {
+  return getActivePlanetDefenseBuildings(state).reduce((total, building) => (
+    total + (PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind].shipyards ?? 0)
+  ), 0);
+}
 
 export const BUILDING_KINDS = Object.keys(BUILDING_DEFINITIONS) as BuildingKind[];
 
@@ -686,11 +1372,11 @@ export const BUILDING_LABELS: Record<BuildingKind, string> = Object.fromEntries(
 ) as Record<BuildingKind, string>;
 
 export const BUILDING_MINERAL_COSTS: Record<BuildingKind, number> = Object.fromEntries(
-  BUILDING_KINDS.map((building) => [building, BUILDING_DEFINITIONS[building].mineralCost]),
+  BUILDING_KINDS.map((building) => [building, BUILDING_LEVEL_DEFINITIONS[building][1].cost.minerals]),
 ) as Record<BuildingKind, number>;
 
 export const BUILDING_BUILD_DAYS: Record<BuildingKind, number> = Object.fromEntries(
-  BUILDING_KINDS.map((building) => [building, BUILDING_DEFINITIONS[building].buildDays]),
+  BUILDING_KINDS.map((building) => [building, BUILDING_LEVEL_DEFINITIONS[building][1].buildDays]),
 ) as Record<BuildingKind, number>;
 
 export const BUILDING_LEVEL_EFFECT_MULTIPLIERS: Record<number, number> = {
@@ -706,10 +1392,18 @@ export function clampBuildingLevel(level: unknown): number {
   return Math.max(1, Math.min(BUILDING_MAX_LEVEL, numeric));
 }
 
+export function getBuildingMaxLevel(building: BuildingKind): number {
+  return Math.max(...Object.keys(BUILDING_LEVEL_DEFINITIONS[building]).map(Number));
+}
+
+function clampLevelForBuilding(building: BuildingKind, level: unknown): number {
+  return Math.max(1, Math.min(getBuildingMaxLevel(building), Math.round(Number(level) || 1)));
+}
+
 export function createPlanetBuildingState(kind: BuildingKind, level = 1, enabled = true): PlanetBuildingState {
   return {
     kind,
-    level: clampBuildingLevel(level),
+    level: clampLevelForBuilding(kind, level),
     enabled,
   };
 }
@@ -723,7 +1417,7 @@ export function getPlanetBuildingKind(slot: PlanetBuildingSlot | undefined): Bui
 export function getPlanetBuildingLevel(slot: PlanetBuildingSlot | undefined): number {
   if (!slot) return 0;
   if (typeof slot === "string") return 1;
-  return clampBuildingLevel(slot.level);
+  return clampLevelForBuilding(slot.kind, slot.level);
 }
 
 export function isPlanetBuildingEnabled(slot: PlanetBuildingSlot | undefined): boolean {
@@ -735,30 +1429,75 @@ export function getBuildingLevelEffectMultiplier(level: number): number {
   return BUILDING_LEVEL_EFFECT_MULTIPLIERS[clampBuildingLevel(level)] ?? 1;
 }
 
+export function getCapitalTierDefinition(level: number): CapitalTierDefinition {
+  return CAPITAL_TIER_DEFINITIONS[clampBuildingLevel(level)];
+}
+
+export function getBuildingDisplayLabel(building: BuildingKind, level = 1): string {
+  return building === CAPITAL_BUILDING_KIND
+    ? getCapitalTierDefinition(level).label
+    : BUILDING_DEFINITIONS[building].label;
+}
+
+export function getBuildingDisplayDescription(building: BuildingKind, level = 1): string {
+  return building === CAPITAL_BUILDING_KIND
+    ? getCapitalTierDefinition(level).description
+    : BUILDING_DEFINITIONS[building].description;
+}
+
+export function getBuildingJobEffects(building: BuildingKind, level = 1): BuildingJobEffect[] {
+  if (building === CAPITAL_BUILDING_KIND) {
+    return getCapitalTierDefinition(level).jobs.map((effect) => ({ ...effect }));
+  }
+  const multiplier = getBuildingLevelEffectMultiplier(level);
+  return (BUILDING_DEFINITIONS[building].jobs ?? []).map((effect) => ({
+    ...effect,
+    amount: effect.amount * multiplier,
+  }));
+}
+
+export function getBuildingHousing(building: BuildingKind, level = 1): number {
+  if (building === CAPITAL_BUILDING_KIND) return getCapitalTierDefinition(level).housing;
+  return (BUILDING_DEFINITIONS[building].housing ?? 0) * getBuildingLevelEffectMultiplier(level);
+}
+
+export function getBuildingLevelModifiers(building: BuildingKind, level = 1): PlanetModifier[] {
+  return building === CAPITAL_BUILDING_KIND
+    ? getCapitalTierDefinition(level).modifiers.map((modifier) => cloneModifier(modifier))
+    : [];
+}
+
+export function getBuildingCost(building: BuildingKind, targetLevel = 1): ResourceCounts {
+  const level = clampLevelForBuilding(building, targetLevel);
+  return { ...BUILDING_LEVEL_DEFINITIONS[building][level].cost };
+}
+
+export function getBuildingUpkeep(building: BuildingKind, level = 1): ResourceCounts {
+  return { ...BUILDING_LEVEL_DEFINITIONS[building][clampLevelForBuilding(building, level)].upkeep };
+}
+
 export function getBuildingMineralCost(building: BuildingKind, targetLevel = 1): number {
-  const definition = BUILDING_DEFINITIONS[building];
-  const level = clampBuildingLevel(targetLevel);
-  const multiplier = level <= 1 ? 1 : 1.35 * Math.pow(level, 1.35);
-  return Math.round((definition?.mineralCost ?? 0) * multiplier);
+  return getBuildingCost(building, targetLevel).minerals;
 }
 
 export function getBuildingBuildDays(building: BuildingKind, targetLevel = 1): number {
-  const definition = BUILDING_DEFINITIONS[building];
-  const level = clampBuildingLevel(targetLevel);
-  const multiplier = level <= 1 ? 1 : 1.9 * Math.pow(level, 1.45);
-  return Math.max(1, Math.round((definition?.buildDays ?? 1) * multiplier));
+  const level = clampLevelForBuilding(building, targetLevel);
+  return BUILDING_LEVEL_DEFINITIONS[building][level].buildDays;
 }
 
 export function getBuildingUpgradeTargetLevel(slot: PlanetBuildingSlot | undefined): number | null {
   const kind = getPlanetBuildingKind(slot);
   if (!kind) return null;
   const nextLevel = getPlanetBuildingLevel(slot) + 1;
-  return nextLevel <= BUILDING_MAX_LEVEL ? nextLevel : null;
+  return nextLevel <= getBuildingMaxLevel(kind) ? nextLevel : null;
 }
 
 export function getBuildingUpgradeMineralCost(building: BuildingKind, currentLevel: number): number {
-  const targetLevel = clampBuildingLevel(currentLevel + 1);
-  return Math.max(0, getBuildingMineralCost(building, targetLevel) - Math.round(getBuildingMineralCost(building, currentLevel) * 0.35));
+  return getBuildingUpgradeCost(building, currentLevel).minerals;
+}
+
+export function getBuildingUpgradeCost(building: BuildingKind, currentLevel: number): ResourceCounts {
+  return getBuildingCost(building, clampBuildingLevel(currentLevel + 1));
 }
 
 export function getBuildingUpgradeBuildDays(building: BuildingKind, currentLevel: number): number {
@@ -774,10 +1513,10 @@ export const CAPITAL_BUILDING_KIND: BuildingKind = "planetaryCapital";
  * apparatus that only makes sense once a world is sufficiently populous.
  */
 export const CAPITAL_UPGRADE_POPULATION_THRESHOLDS: Record<number, number> = {
-  2: 14_000_000_000,
-  3: 28_000_000_000,
-  4: 48_000_000_000,
-  5: 72_000_000_000,
+  2: 5_000_000_000,
+  3: 15_000_000_000,
+  4: 35_000_000_000,
+  5: 65_000_000_000,
 };
 
 export function getCapitalUpgradePopulationThreshold(targetLevel: number): number {
@@ -807,7 +1546,16 @@ export function ensureCapitalBuilding(buildings: DistrictBuildingSlots, isHabite
   if (!isHabited) return buildings;
   const city = buildings.city;
   const existingIndex = city.findIndex((slot) => getPlanetBuildingKind(slot) === CAPITAL_BUILDING_KIND);
-  if (existingIndex === 0) return buildings;
+  if (existingIndex === 0) {
+    if (isPlanetBuildingEnabled(city[0])) return buildings;
+    const nextCity = [...city];
+    nextCity[0] = createPlanetBuildingState(
+      CAPITAL_BUILDING_KIND,
+      getPlanetBuildingLevel(city[0]),
+      true,
+    );
+    return { ...buildings, city: nextCity };
+  }
 
   const nextCity = [...city];
   if (existingIndex > 0) {
@@ -835,11 +1583,11 @@ export const URBAN_SUB_DISTRICT_KINDS: UrbanSubDistrictKind[] = [
 ];
 
 export const STARTING_RESOURCE_STOCKPILES: ResourceCounts = {
-  food: 6_000,
+  food: 3_000,
   minerals: 6_000,
-  energy: 6_000,
-  goods: 2_500,
-  alloys: 1_200,
+  energy: 4_000,
+  goods: 1_200,
+  alloys: 800,
   research: 0,
 };
 
@@ -847,14 +1595,19 @@ function emptyJobCapacity(): JobCapacity {
   return {
     ruler: 0,
     administrator: 0,
+    sensorManager: 0,
+    shieldOperator: 0,
     researcher: 0,
     artisan: 0,
     metallurgist: 0,
     entertainer: 0,
     enforcer: 0,
+    soldier: 0,
+    trainee: 0,
     farmer: 0,
     miner: 0,
     technician: 0,
+    colonizer: 0,
     clerk: 0,
     criminal: 0,
     unemployed: 0,
@@ -881,6 +1634,18 @@ export function cloneResourceCounts(counts: ResourceCounts): ResourceCounts {
     alloys: counts.alloys,
     research: counts.research,
   };
+}
+
+function normalizeResourceCost(
+  counts: Partial<ResourceCounts> | undefined,
+  legacyMineralCost = 0,
+): ResourceCounts {
+  const normalized = createEmptyResourceCounts();
+  for (const resource of RESOURCE_KINDS) {
+    const fallback = resource === "minerals" ? legacyMineralCost : 0;
+    normalized[resource] = Math.max(0, Math.round(Number(counts?.[resource]) || fallback));
+  }
+  return normalized;
 }
 
 export function addResourceCounts(a: ResourceCounts, b: ResourceCounts): ResourceCounts {
@@ -936,24 +1701,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function createEmptyPopulationGrowth(): PlanetPopulationGrowth {
-  return {
-    capacity: 0,
-    capacityPressure: 0,
-    ratePerQuarter: 0,
-    netPerQuarter: 0,
-    speciesChanges: [],
-    factors: {
-      housing: 0,
-      amenities: 0,
-      stability: 0,
-      crime: 0,
-      employment: 0,
-      capacity: 0,
-    },
-  };
-}
-
 function cloneModifier(modifier: PlanetModifier): PlanetModifier {
   return { ...modifier };
 }
@@ -970,6 +1717,9 @@ function normalizeModifier(modifier: Partial<PlanetModifier> | undefined): Plane
   if (modifier.operation !== "add" && modifier.operation !== "multiply") return null;
   const value = Number(modifier.value);
   if (!Number.isFinite(value)) return null;
+  const expiresAtYear = modifier.expiresAtYear === undefined || modifier.expiresAtYear === null
+    ? Number.NaN
+    : Number(modifier.expiresAtYear);
   return {
     id: modifier.id,
     label: modifier.label,
@@ -977,6 +1727,7 @@ function normalizeModifier(modifier: Partial<PlanetModifier> | undefined): Plane
     target: modifier.target,
     operation: modifier.operation,
     value,
+    ...(Number.isFinite(expiresAtYear) ? { expiresAtYear } : {}),
   };
 }
 
@@ -989,8 +1740,13 @@ function normalizeModifiers(modifiers: PlanetModifier[] | undefined): PlanetModi
 export function normalizePlanetFeatures(features: PlanetFeatureKind[] | undefined): PlanetFeatureKind[] {
   const seen = new Set<PlanetFeatureKind>();
   const normalized: PlanetFeatureKind[] = [];
+  let occupiedMajorSlots = 0;
   for (const feature of features ?? []) {
-    if (!PLANET_FEATURE_KINDS.includes(feature) || seen.has(feature)) continue;
+    if (!isPlanetFeatureKind(feature) || seen.has(feature)) continue;
+    if (PLANET_FEATURE_DEFINITIONS[feature].tier !== "minor") {
+      if (occupiedMajorSlots >= 3) continue;
+      occupiedMajorSlots += 1;
+    }
     seen.add(feature);
     normalized.push(feature);
   }
@@ -1060,14 +1816,30 @@ export function getFeatureModifiers(features: PlanetFeatureKind[] | undefined): 
 }
 
 function getActiveModifiers(
-  state: Pick<PlanetState, "features" | "modifiers">,
+  state: Pick<PlanetState, "features" | "modifiers"> & Partial<Pick<PlanetState, "buildings">>,
   externalModifiers: PlanetModifier[] = [],
 ): PlanetModifier[] {
+  const capital = state.buildings?.city.find((building) => getPlanetBuildingKind(building) === CAPITAL_BUILDING_KIND);
   return [
     ...normalizeModifiers(state.modifiers).map((modifier) => cloneModifier(modifier)),
     ...normalizeModifiers(externalModifiers).map((modifier) => cloneModifier(modifier)),
     ...getFeatureModifiers(state.features),
+    ...(capital && isPlanetBuildingEnabled(capital)
+      ? getBuildingLevelModifiers(CAPITAL_BUILDING_KIND, getPlanetBuildingLevel(capital))
+      : []),
   ];
+}
+
+export function getEffectivePlanetDistrictLimits(
+  baseLimits: DistrictCounts,
+  features: PlanetFeatureKind[] | undefined,
+): DistrictCounts {
+  const modifiers = getFeatureModifiers(features);
+  const effective = {} as DistrictCounts;
+  for (const kind of ["city", "generator", "mining", "agriculture"] as const) {
+    effective[kind] = Math.max(0, Math.floor(applyModifiers(baseLimits[kind], modifiers, `districtLimit:${kind}`)));
+  }
+  return effective;
 }
 
 function applyModifiers(value: number, modifiers: PlanetModifier[], target: PlanetModifierTarget): number {
@@ -1155,20 +1927,67 @@ function getHabitabilityHappinessModifier(habitability: number): number {
 function normalizeConstructionQueueItem(
   item: Partial<PlanetConstructionQueueItem> | undefined,
 ): PlanetConstructionQueueItem | null {
-  if (!item?.id || !item.label || (item.kind !== "district" && item.kind !== "building" && item.kind !== "buildingUpgrade")) return null;
+  if (
+    !item?.id
+    || !item.label
+    || !["district", "building", "buildingUpgrade", "defenseBuilding", "defenseBuildingUpgrade", "featureRemoval"].includes(item.kind ?? "")
+  ) return null;
   const totalDays = Math.max(1, Number(item.totalDays) || 1);
   const remainingDays = Math.max(0, Math.min(totalDays, Number(item.remainingDays) || totalDays));
-  const mineralCost = Math.max(0, Math.round(Number(item.mineralCost) || 0));
+  const legacyMineralCost = Math.max(0, Math.round(Number(item.mineralCost) || 0));
+  const cost = normalizeResourceCost(item.cost, legacyMineralCost);
+  const mineralCost = cost.minerals;
   if (item.kind === "district") {
     if (!item.districtKind || !["city", "generator", "mining", "agriculture"].includes(item.districtKind)) return null;
     return {
       id: item.id,
       kind: "district",
       label: item.label,
+      cost,
       mineralCost,
       totalDays,
       remainingDays,
       districtKind: item.districtKind,
+    };
+  }
+  if (item.kind === "featureRemoval") {
+    if (!isPlanetFeatureKind(item.featureKind) || !PLANET_FEATURE_DEFINITIONS[item.featureKind].removal) return null;
+    return {
+      id: item.id,
+      kind: "featureRemoval",
+      label: item.label,
+      cost,
+      mineralCost,
+      totalDays,
+      remainingDays,
+      featureKind: item.featureKind,
+    };
+  }
+  if (item.kind === "defenseBuilding" || item.kind === "defenseBuildingUpgrade") {
+    if (
+      !item.defenseBuildingKind
+      || !PLANET_DEFENSE_BUILDING_KINDS.includes(item.defenseBuildingKind)
+      || (item.defenseSection !== "defense" && item.defenseSection !== "shipyard")
+    ) return null;
+    const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[item.defenseBuildingKind];
+    if (!definition.sections.includes(item.defenseSection)) return null;
+    const slotIndex = Math.max(0, Math.round(Number(item.slotIndex) || 0));
+    const targetLevel = Math.max(1, Math.min(
+      definition.maxLevel,
+      Math.round(Number(item.targetLevel) || 1),
+    ));
+    return {
+      id: item.id,
+      kind: item.kind,
+      label: item.label,
+      cost,
+      mineralCost,
+      totalDays,
+      remainingDays,
+      defenseBuildingKind: item.defenseBuildingKind,
+      defenseSection: item.defenseSection,
+      slotIndex,
+      targetLevel,
     };
   }
   if (!item.buildingKind || !BUILDING_KINDS.includes(item.buildingKind)) return null;
@@ -1178,8 +1997,9 @@ function normalizeConstructionQueueItem(
   const targetLevel = item.targetLevel === undefined ? undefined : clampBuildingLevel(item.targetLevel);
   return {
     id: item.id,
-    kind: item.kind,
+    kind: item.kind as "building" | "buildingUpgrade",
     label: item.label,
+    cost,
     mineralCost,
     totalDays,
     remainingDays,
@@ -1274,18 +2094,32 @@ export function createPlanetStateFromSeed(
   seed: PlanetEconomySeed,
   existing?: Partial<PlanetState>,
 ): PlanetState {
-  const baseBuiltDistricts = normalizeDistrictCounts(existing?.builtDistricts ?? seed.builtDistricts, seed.districtLimits);
+  const features = normalizePlanetFeatures(existing?.features ?? seed.features);
+  const effectiveDistrictLimits = getEffectivePlanetDistrictLimits(seed.districtLimits, features);
+  const baseBuiltDistricts = normalizeDistrictCounts(existing?.builtDistricts ?? seed.builtDistricts, effectiveDistrictLimits);
   const isHabited = (existing?.isHabited ?? false) || seed.isHabited;
   const useStarterInfrastructure = isHabited && seed.starterInfrastructure !== false;
   const builtDistricts = useStarterInfrastructure
-    ? createStarterBuiltDistricts(seed.districtLimits, baseBuiltDistricts)
+    ? createStarterBuiltDistricts(effectiveDistrictLimits, baseBuiltDistricts)
     : baseBuiltDistricts;
-  const buildings = ensureCapitalBuilding(
+  let buildings = ensureCapitalBuilding(
     useStarterInfrastructure
-      ? normalizeBuildings(existing?.buildings ?? createStarterBuildings(seed.districtLimits))
+      ? normalizeBuildings(existing?.buildings ?? createStarterBuildings(effectiveDistrictLimits))
       : normalizeBuildings(existing?.buildings),
     isHabited,
   );
+  if (isHabited && features.includes("homePlanet")) {
+    const capital = buildings.city[0];
+    if (getPlanetBuildingKind(capital) === CAPITAL_BUILDING_KIND && getPlanetBuildingLevel(capital) < 2) {
+      buildings = {
+        ...buildings,
+        city: [
+          createPlanetBuildingState(CAPITAL_BUILDING_KIND, 2, true),
+          ...buildings.city.slice(1),
+        ],
+      };
+    }
+  }
   const urbanSubDistricts = isHabited
     ? normalizeUrbanSubDistricts(existing?.urbanSubDistricts)
     : normalizeUrbanSubDistricts([]);
@@ -1309,15 +2143,24 @@ export function createPlanetStateFromSeed(
     habitability: existing?.habitability ?? seed.habitability,
     population,
     speciesPopulations,
-    features: normalizePlanetFeatures(existing?.features ?? seed.features),
+    features,
+    featureGenerationVersion: Math.max(0, Math.floor(existing?.featureGenerationVersion ?? seed.featureGenerationVersion ?? PLANET_FEATURE_GENERATION_VERSION)),
     builtDistricts,
     buildings,
     urbanSubDistricts,
     constructionQueue: normalizeConstructionQueue(existing?.constructionQueue),
+    defense: normalizePlanetDefenseState(existing?.defense),
     modifiers: normalizeModifiers(existing?.modifiers),
+    jobLocks: normalizePlanetJobLocks(existing?.jobLocks),
+    populationMigration: {
+      monthIndex: Math.max(0, Math.floor(existing?.populationMigration?.monthIndex ?? 0)),
+      inbound: Math.max(0, Math.floor(existing?.populationMigration?.inbound ?? 0)),
+      outbound: Math.max(0, Math.floor(existing?.populationMigration?.outbound ?? 0)),
+      intakeCapacity: Math.max(0, Math.floor(existing?.populationMigration?.intakeCapacity ?? 0)),
+    },
     economy: createEmptyPlanetEconomySummary(),
   };
-  state.economy = calculatePlanetEconomy(state, seed.districtLimits);
+  state.economy = calculatePlanetEconomy(state, effectiveDistrictLimits);
   return state;
 }
 
@@ -1337,8 +2180,42 @@ export function createEmptyPlanetEconomySummary(): PlanetEconomySummary {
     crime: 0,
     stability: 50,
     populationGrowth: createEmptyPopulationGrowth(),
+    populationDecline: createEmptyPopulationDecline(),
+    migration: createEmptyMigrationSummary(),
     activeModifiers: [],
   };
+}
+
+export function normalizePlanetJobLocks(locks: PlanetJobLock[] | undefined): PlanetJobLock[] {
+  const byJob = new Map<PlanetJobLock["job"], Map<SpeciesId, number>>();
+  for (const lock of locks ?? []) {
+    const runtimeJob = (lock as { job?: JobKind }).job;
+    if (
+      !lock
+      || !runtimeJob
+      || !JOB_KINDS.includes(runtimeJob)
+      || runtimeJob === "criminal"
+      || runtimeJob === "unemployed"
+    ) continue;
+    const job = runtimeJob as PlanetJobLock["job"];
+    const allocations = byJob.get(job) ?? new Map<SpeciesId, number>();
+    for (const allocation of lock.allocations ?? []) {
+      if (!allocation || typeof allocation.speciesId !== "string" || !allocation.speciesId.trim()) continue;
+      const population = Math.max(0, Math.floor(Number(allocation.population) || 0));
+      if (population <= 0) continue;
+      const speciesId = allocation.speciesId.trim();
+      allocations.set(speciesId, (allocations.get(speciesId) ?? 0) + population);
+    }
+    if (allocations.size > 0) byJob.set(job, allocations);
+  }
+  return Array.from(byJob.entries())
+    .sort(([left], [right]) => JOB_FILL_ORDER.indexOf(left) - JOB_FILL_ORDER.indexOf(right))
+    .map(([job, allocations]) => ({
+      job,
+      allocations: Array.from(allocations.entries())
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([speciesId, population]) => ({ speciesId, population })),
+    }));
 }
 
 function addJobCapacity(capacity: JobCapacity, job: JobKind, amount: number, modifiers: PlanetModifier[] = []): void {
@@ -1394,7 +2271,7 @@ function applyGoodsUpkeep(
   context?: PlanetEconomySpeciesContext,
 ): void {
   const units = population / PEOPLE_PER_MONTHLY_UNIT;
-  const upkeepPerUnit = perUnitOverride ?? (jobClass === "upper" ? 0.45 : jobClass === "middle" ? 0.25 : 0.08);
+  const upkeepPerUnit = perUnitOverride ?? (jobClass === "upper" ? 0.009 : jobClass === "middle" ? 0.005 : 0.0016);
   addResource(
     upkeep,
     "goods",
@@ -1438,16 +2315,15 @@ function applyBuildingEffect(
   const buildingKind = getPlanetBuildingKind(building);
   if (!buildingKind) return 0;
   const level = getPlanetBuildingLevel(building);
-  const levelMultiplier = getBuildingLevelEffectMultiplier(level);
   const definition = BUILDING_DEFINITIONS[buildingKind];
   if (!definition) return context?.housing ?? 0;
   if (isPlanetBuildingEnabled(building)) {
-    for (const effect of definition.jobs ?? []) {
+    for (const effect of getBuildingJobEffects(buildingKind, level)) {
       const multiplier = effect.perDistrict ? builtDistricts[effect.perDistrict] : 1;
-      addJobCapacity(capacity, effect.job, effect.amount * multiplier * levelMultiplier, modifiers);
+      addJobCapacity(capacity, effect.job, effect.amount * multiplier, modifiers);
     }
   }
-  return (definition.housing ?? 0) * levelMultiplier;
+  return getBuildingHousing(buildingKind, level);
 }
 
 interface PopAssignment {
@@ -1455,6 +2331,39 @@ interface PopAssignment {
   class: JobClass;
   speciesId: SpeciesId;
   population: number;
+}
+
+function allocateIntegerProportionally(
+  requests: Array<{ id: string; amount: number }>,
+  limit: number,
+): Map<string, number> {
+  const normalized = requests
+    .map((request) => ({ ...request, amount: Math.max(0, Math.floor(request.amount)) }))
+    .filter((request) => request.amount > 0)
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const total = normalized.reduce((sum, request) => sum + request.amount, 0);
+  const cappedLimit = Math.max(0, Math.min(total, Math.floor(limit)));
+  if (total <= cappedLimit) return new Map(normalized.map((request) => [request.id, request.amount]));
+  const minimumPerRequest = cappedLimit >= normalized.length ? 1 : 0;
+  const residualLimit = cappedLimit - minimumPerRequest * normalized.length;
+  const residualTotal = total - minimumPerRequest * normalized.length;
+  const shares = normalized.map((request) => {
+    const residualAmount = request.amount - minimumPerRequest;
+    const exact = residualTotal > 0 ? residualAmount * residualLimit / residualTotal : 0;
+    return {
+      ...request,
+      allocated: minimumPerRequest + Math.floor(exact),
+      remainder: exact - Math.floor(exact),
+    };
+  });
+  let remainder = cappedLimit - shares.reduce((sum, share) => sum + share.allocated, 0);
+  shares.sort((left, right) => right.remainder - left.remainder || left.id.localeCompare(right.id));
+  for (const share of shares) {
+    if (remainder <= 0) break;
+    share.allocated += 1;
+    remainder -= 1;
+  }
+  return new Map(shares.map((share) => [share.id, share.allocated]));
 }
 
 function getHousingHappinessModifier(housingRatio: number): number {
@@ -1595,6 +2504,12 @@ export function calculatePlanetEconomy(
   for (const building of state.buildings.agriculture) {
     applyBuildingEffect(building, capacity, built, activeModifiers);
   }
+  const defenseState = normalizePlanetDefenseState(state.defense);
+  const activeDefenseBuildings = getActivePlanetDefenseBuildings({ ...state, defense: defenseState });
+  for (const building of activeDefenseBuildings) {
+    const jobs = PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind].jobs?.[building.level] ?? [];
+    for (const effect of jobs) addJobCapacity(capacity, effect.job, effect.amount, activeModifiers);
+  }
 
   for (const job of JOB_KINDS) {
     capacity[job] = Math.max(0, Math.floor(capacity[job]));
@@ -1607,9 +2522,54 @@ export function calculatePlanetEconomy(
   const remainingBySpecies = new Map(speciesPopulations.map((entry) => [entry.speciesId, entry.population]));
   const assignments: PopAssignment[] = [];
   let employedPopulation = 0;
+  const lockedAssignedByJob = new Map<JobKind, number>();
+  const normalizedJobLocks = normalizePlanetJobLocks(state.jobLocks);
+  const scaledLocksBySpecies = new Map<SpeciesId, Map<string, number>>();
+
+  for (const species of speciesPopulations) {
+    const requests = normalizedJobLocks.flatMap((lock) => {
+      const allocation = lock.allocations.find((candidate) => candidate.speciesId === species.speciesId);
+      if (!allocation || !canSpeciesWorkJob(species.speciesId, JOB_CLASS_BY_KIND[lock.job], speciesContext)) return [];
+      return [{ id: lock.job, amount: allocation.population }];
+    });
+    scaledLocksBySpecies.set(
+      species.speciesId,
+      allocateIntegerProportionally(requests, species.population),
+    );
+  }
+  for (const lock of normalizedJobLocks) {
+    const capacityRemaining = capacity[lock.job];
+    if (capacityRemaining <= 0) continue;
+    const requests = lock.allocations.map((allocation) => ({
+      id: allocation.speciesId,
+      amount: scaledLocksBySpecies.get(allocation.speciesId)?.get(lock.job) ?? 0,
+    }));
+    const allocated = allocateIntegerProportionally(requests, capacityRemaining);
+    let jobAssigned = 0;
+    for (const allocation of lock.allocations) {
+      const population = Math.min(
+        allocated.get(allocation.speciesId) ?? 0,
+        remainingBySpecies.get(allocation.speciesId) ?? 0,
+      );
+      if (population <= 0) continue;
+      assignments.push({
+        job: lock.job,
+        class: JOB_CLASS_BY_KIND[lock.job],
+        speciesId: allocation.speciesId,
+        population,
+      });
+      remainingBySpecies.set(
+        allocation.speciesId,
+        (remainingBySpecies.get(allocation.speciesId) ?? 0) - population,
+      );
+      jobAssigned += population;
+      employedPopulation += population;
+    }
+    lockedAssignedByJob.set(lock.job, jobAssigned);
+  }
 
   for (const job of JOB_FILL_ORDER) {
-    let capacityRemaining = capacity[job];
+    let capacityRemaining = capacity[job] - (lockedAssignedByJob.get(job) ?? 0);
     if (capacityRemaining <= 0) continue;
     const jobClass = JOB_CLASS_BY_KIND[job];
     for (const species of speciesPopulations) {
@@ -1770,7 +2730,6 @@ export function calculatePlanetEconomy(
 
   const production = createEmptyResourceCounts();
   const upkeep = createEmptyResourceCounts();
-
   for (const group of popGroups) {
     const habitabilityProductionMultiplier = getHabitabilityProductionMultiplier(group.habitability);
     const habitabilityUpkeepMultiplier = getHabitabilityUpkeepMultiplier(group.habitability);
@@ -1813,6 +2772,21 @@ export function calculatePlanetEconomy(
     ));
   }
 
+  const applyDirectBuildingUpkeep = (building: PlanetBuildingSlot): void => {
+    const buildingKind = getPlanetBuildingKind(building);
+    if (!buildingKind || !isPlanetBuildingEnabled(building)) return;
+    const buildingUpkeep = getBuildingUpkeep(buildingKind, getPlanetBuildingLevel(building));
+    for (const resource of RESOURCE_KINDS) addResource(upkeep, resource, buildingUpkeep[resource]);
+  };
+  for (const building of Object.values(state.buildings).flat()) applyDirectBuildingUpkeep(building);
+  for (const subDistrict of state.urbanSubDistricts) {
+    for (const building of subDistrict.buildings) applyDirectBuildingUpkeep(building);
+  }
+  for (const building of activeDefenseBuildings) {
+    const buildingUpkeep = PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind].levels[building.level].upkeep;
+    for (const resource of RESOURCE_KINDS) addResource(upkeep, resource, buildingUpkeep[resource]);
+  }
+
   const net = createEmptyResourceCounts();
   const deficit = createEmptyResourceCounts();
   for (const resource of RESOURCE_KINDS) {
@@ -1820,7 +2794,10 @@ export function calculatePlanetEconomy(
     deficit[resource] = Math.max(0, -net[resource]);
   }
 
-  const summaryWithoutGrowth: Omit<PlanetEconomySummary, "populationGrowth"> = {
+  const summaryWithoutDemographics: Omit<
+    PlanetEconomySummary,
+    "populationGrowth" | "populationDecline" | "migration"
+  > = {
     production,
     upkeep,
     net,
@@ -1838,111 +2815,235 @@ export function calculatePlanetEconomy(
   };
 
   return {
-    ...summaryWithoutGrowth,
-    populationGrowth: calculatePopulationGrowth(state, summaryWithoutGrowth, districtLimits, externalModifiers, speciesContext),
+    ...summaryWithoutDemographics,
+    populationGrowth: calculatePopulationGrowth(
+      state,
+      summaryWithoutDemographics,
+      districtLimits,
+      externalModifiers,
+      speciesContext,
+    ),
+    populationDecline: calculateFamineProjection({
+      population: state.population,
+      groups: popGroups,
+      foodProduction: production.food,
+      foodUpkeep: upkeep.food,
+      shortageProgress: speciesContext?.foodShortageProgress ?? 0,
+    }),
+    migration: calculatePlanetMigrationSummary(state, summaryWithoutDemographics),
   };
+}
+
+type PlanetEconomyDemographicInputs = Omit<
+  PlanetEconomySummary,
+  "populationGrowth" | "populationDecline" | "migration"
+>;
+
+const PRODUCTIVE_JOB_KINDS = JOB_KINDS.filter(
+  (job): job is Exclude<JobKind, "criminal" | "unemployed"> => job !== "criminal" && job !== "unemployed",
+);
+
+export function calculateVacantProductiveJobs(economy: Pick<PlanetEconomySummary, "jobCapacity" | "popGroups">): number {
+  const occupiedByJob = new Map<JobKind, number>();
+  for (const group of economy.popGroups) {
+    if (group.job === "criminal" || group.job === "unemployed") continue;
+    occupiedByJob.set(group.job, (occupiedByJob.get(group.job) ?? 0) + group.population);
+  }
+  return PRODUCTIVE_JOB_KINDS.reduce(
+    (total, job) => total + Math.max(0, economy.jobCapacity[job] - (occupiedByJob.get(job) ?? 0)),
+    0,
+  );
+}
+
+function getPotentialBuildingJobs(
+  area: BuildingSlotArea,
+  limits: DistrictCounts,
+  subDistrictKind?: UrbanSubDistrictKind,
+): number {
+  let best = 0;
+  for (const definition of Object.values(BUILDING_DEFINITIONS)) {
+    if (definition.kind === "planetaryCapital") continue;
+    const compatible = definition.compatibility.some((rule) => (
+      rule.area === area
+      && (
+        area !== "urbanSubDistrict"
+        || !rule.subDistrictKinds
+        || (subDistrictKind !== undefined && rule.subDistrictKinds.includes(subDistrictKind))
+      )
+    ));
+    if (!compatible) continue;
+    const jobs = (definition.jobs ?? []).reduce((total, effect) => {
+      if (effect.job === "criminal" || effect.job === "unemployed") return total;
+      return total + effect.amount * (effect.perDistrict ? limits[effect.perDistrict] : 1);
+    }, 0);
+    best = Math.max(best, jobs);
+  }
+  return best;
+}
+
+function calculatePotentialProductiveJobs(state: PlanetState, limits: DistrictCounts): number {
+  let total = limits.agriculture * 1_000_000_000
+    + limits.mining * 1_000_000_000
+    + limits.generator * 1_000_000_000
+    + limits.city * 100_000_000;
+
+  const citySlots = Math.max(1, state.buildings.city.length);
+  total += 900_000_000;
+  total += Math.max(0, citySlots - 1) * getPotentialBuildingJobs("city", limits);
+  for (const area of ["generator", "mining", "agriculture"] as DistrictKind[]) {
+    total += state.buildings[area].length * getPotentialBuildingJobs(area, limits);
+  }
+
+  const subDistrictSlots = state.urbanSubDistricts[0]?.buildings.length ?? 3;
+  for (let index = 0; index < state.urbanSubDistricts.length; index += 1) {
+    let best = 0;
+    for (const kind of URBAN_SUB_DISTRICT_KINDS) {
+      let baseJobs = 0;
+      if (kind === "residential") baseJobs = limits.city * 100_000_000;
+      if (kind === "researchCampus") baseJobs = limits.city * 500_000_000;
+      if (kind === "mixedIndustry" || kind === "civilianIndustry" || kind === "heavyIndustry") {
+        baseJobs = limits.city * 500_000_000;
+      }
+      best = Math.max(
+        best,
+        baseJobs + subDistrictSlots * getPotentialBuildingJobs("urbanSubDistrict", limits, kind),
+      );
+    }
+    total += best;
+  }
+  return Math.max(0, total);
+}
+
+function calculatePotentialHousing(state: PlanetState, limits: DistrictCounts): number {
+  const citySlots = Math.max(1, state.buildings.city.length);
+  const cityHousing = limits.city * 1_600_000_000
+    + Math.max(0, citySlots - 1) * (BUILDING_DEFINITIONS.housingComplex.housing ?? 0);
+  const subDistrictSlots = state.urbanSubDistricts[0]?.buildings.length ?? 3;
+  const residentialHousing = limits.city * 1_100_000_000
+    + subDistrictSlots * (BUILDING_DEFINITIONS.housingComplex.housing ?? 0);
+  return Math.max(0, cityHousing + state.urbanSubDistricts.length * residentialHousing);
 }
 
 export function calculatePlanetCapacity(
   state: PlanetState,
   districtLimits?: DistrictCounts,
   externalModifiers: PlanetModifier[] = [],
+  currentEconomy?: Pick<PlanetEconomySummary, "jobCapacity" | "popGroups">,
 ): number {
   if (!state.isHabited) return 0;
   const limits = districtLimits ?? state.builtDistricts;
-  const sizeProxy = Math.max(1, limits.city, state.builtDistricts.city);
-  const resourcePotential = Math.max(0, limits.generator + limits.mining + limits.agriculture);
-  const baseCapacity = sizeProxy * 1_750_000_000;
-  const resourceCapacity = resourcePotential * 260_000_000;
-  const urbanizedCapacity = state.builtDistricts.city * 520_000_000;
-  const infrastructureCapacity = calculateBuildingCapacityBonus(state);
+  const potentialJobs = calculatePotentialProductiveJobs(state, limits);
+  const potentialHousing = calculatePotentialHousing(state, limits);
+  const economy = currentEconomy ?? state.economy;
+  const vacantJobs = economy ? calculateVacantProductiveJobs(economy) : 0;
   const modifiedCapacity = applyModifiers(
-    baseCapacity + resourceCapacity + urbanizedCapacity + infrastructureCapacity,
+    calculateBlendedPlanetCapacity(potentialJobs, potentialHousing, vacantJobs),
     getActiveModifiers(state, externalModifiers),
     "planetCapacity",
   );
-  return Math.max(3_000_000_000, Math.floor(modifiedCapacity));
-}
-
-function calculateBuildingCapacityBonus(state: PlanetState): number {
-  let capacity = 0;
-  const add = (building: PlanetBuildingSlot): void => {
-    const kind = getPlanetBuildingKind(building);
-    if (!kind) return;
-    const levelMultiplier = getBuildingLevelEffectMultiplier(getPlanetBuildingLevel(building));
-    if (kind === "housingComplex") {
-      capacity += 650_000_000 * levelMultiplier;
-      return;
-    }
-    if (
-      kind === "administrativeComplex"
-      || kind === "commercialForum"
-      || kind === "entertainmentForum"
-      || kind === "securityOffice"
-    ) {
-      capacity += 120_000_000 * levelMultiplier;
-    }
-  };
-  for (const building of Object.values(state.buildings).flat()) add(building);
-  for (const subDistrict of state.urbanSubDistricts) {
-    for (const building of subDistrict.buildings) add(building);
-  }
-  return capacity;
+  return Math.max(MIN_HABITED_POPULATION, Math.floor(modifiedCapacity));
 }
 
 export function calculatePopulationGrowth(
   state: PlanetState,
-  economy: Omit<PlanetEconomySummary, "populationGrowth">,
+  economy: PlanetEconomyDemographicInputs,
   districtLimits?: DistrictCounts,
   externalModifiers: PlanetModifier[] = [],
   speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetPopulationGrowth {
   if (!state.isHabited || state.population <= 0) return createEmptyPopulationGrowth();
 
-  const capacity = calculatePlanetCapacity(state, districtLimits, externalModifiers);
+  const capacity = calculatePlanetCapacity(state, districtLimits, externalModifiers, economy);
   const capacityPressure = capacity > 0 ? state.population / capacity : 1;
-  const capacityCurve = clamp(1 - capacityPressure, -0.75, 1.15);
   const speciesPopulations = normalizeSpeciesPopulations(state.speciesPopulations, state.population, state.isHabited);
   const housingNeedPopulation = getSpeciesHousingNeedPopulation(speciesPopulations, speciesContext);
   const housingRatio = housingNeedPopulation > 0 ? economy.housing / housingNeedPopulation : 1;
   const amenityNeed = getAmenityNeed(state.population);
   const amenityRatio = amenityNeed > 0 ? economy.amenities / amenityNeed : 1;
-  const unemploymentRatio = state.population > 0 ? economy.unemployedPopulation / state.population : 0;
-
+  const quality = calculatePopulationQuality({
+    housingRatio,
+    amenityRatio,
+    stability: economy.stability,
+    crime: economy.crime,
+  });
+  const capacityMultiplier = calculatePopulationCapacityMultiplier(capacityPressure);
+  const modifierMultiplier = Math.max(
+    0,
+    getModifierMultiplier(getActiveModifiers(state, externalModifiers), "populationGrowth"),
+  );
+  const speciesMultiplier = Math.max(0, getWeightedSpeciesGrowthMultiplier(state.speciesPopulations, speciesContext));
   const factors: PlanetPopulationGrowthFactors = {
-    housing: clamp((housingRatio - 1) * 0.55, -0.35, 0.2),
-    amenities: clamp((amenityRatio - 1) * 0.18, -0.18, 0.08),
-    stability: clamp((economy.stability - 50) / 100 * 0.9, -0.45, 0.35),
-    crime: clamp(-economy.crime / 100 * 0.2, -0.2, 0),
-    employment: clamp(-unemploymentRatio * 0.72 + (unemploymentRatio <= 0.03 ? 0.04 : 0), -0.36, 0.04),
-    capacity: capacityCurve,
+    ...quality.factors,
+    qualityOfLifeMultiplier: quality.multiplier,
+    capacityMultiplier,
+    modifierMultiplier,
+    speciesMultiplier,
   };
-  const managementPressure = factors.housing + factors.amenities + factors.stability + factors.crime + factors.employment;
-  const managementMultiplier = factors.capacity < 0
-    ? clamp(1 - managementPressure, 0.35, 2.2)
-    : clamp(1 + managementPressure, -0.6, 1.8);
-  const ratePerQuarter = applyModifiers(
-    BASE_POPULATION_GROWTH_RATE_PER_QUARTER * factors.capacity * managementMultiplier,
-    getActiveModifiers(state, externalModifiers),
-    "populationGrowth",
-  ) * getWeightedSpeciesGrowthMultiplier(state.speciesPopulations, speciesContext);
-  const netPerQuarter = Math.round(state.population * ratePerQuarter);
-  const projectedPopulations = applyPopulationDeltaToSpecies(speciesPopulations, netPerQuarter, speciesContext);
+  const ratePerWeek = calculateWeeklyNaturalGrowthRate(
+    capacityMultiplier,
+    quality.multiplier,
+    modifierMultiplier,
+    speciesMultiplier,
+  );
+  const netPerWeek = Math.max(0, Math.round(state.population * ratePerWeek));
+  const projectedPopulations = applyPopulationDeltaToSpecies(speciesPopulations, netPerWeek, speciesContext);
   const projectedBySpecies = new Map(projectedPopulations.map((entry) => [entry.speciesId, entry.population]));
   const currentBySpecies = new Map(speciesPopulations.map((entry) => [entry.speciesId, entry.population]));
   const speciesIds = new Set([...currentBySpecies.keys(), ...projectedBySpecies.keys()]);
   const speciesChanges = [...speciesIds].map((speciesId) => ({
     speciesId,
-    deltaPerQuarter: (projectedBySpecies.get(speciesId) ?? 0) - (currentBySpecies.get(speciesId) ?? 0),
+    deltaPerWeek: (projectedBySpecies.get(speciesId) ?? 0) - (currentBySpecies.get(speciesId) ?? 0),
   }));
 
   return {
     capacity,
     capacityPressure,
-    ratePerQuarter,
-    netPerQuarter,
+    ratePerWeek,
+    netPerWeek,
     speciesChanges,
     factors,
+  };
+}
+
+function calculatePlanetMigrationSummary(
+  state: PlanetState,
+  economy: PlanetEconomyDemographicInputs,
+): PlanetMigrationSummary {
+  if (!state.isHabited) return createEmptyMigrationSummary();
+  const amenityNeed = getAmenityNeed(state.population);
+  const calculated = calculateMigrationAttractiveness({
+    happiness: economy.happiness,
+    stability: economy.stability,
+    crime: economy.crime,
+    amenityRatio: amenityNeed > 0 ? economy.amenities / amenityNeed : 1,
+    vacantProductiveJobs: calculateVacantProductiveJobs(economy),
+    population: state.population,
+  });
+  const activeModifiers = getActiveModifiers(state);
+  const attractiveness = clamp(
+    applyModifiers(calculated.attractiveness, activeModifiers, "migrationAttractiveness"),
+    0,
+    100,
+  );
+  const capital = state.buildings.city.find((building) => getPlanetBuildingKind(building) === "planetaryCapital");
+  const monthlyIntakeCapacity = Math.max(0, Math.round(applyModifiers(
+    calculateMigrationIntakeCapacity(
+      capital ? getPlanetBuildingLevel(capital) : 1,
+      state.builtDistricts.city,
+    ),
+    activeModifiers,
+    "migrationIntakeCapacity",
+  )));
+  const ledger = state.populationMigration ?? createEmptyMigrationLedger();
+  return {
+    attractiveness,
+    factors: calculated.factors,
+    monthlyIntakeCapacity,
+    lastMonthIntakeCapacity: ledger.intakeCapacity,
+    lastMonthIndex: ledger.monthIndex,
+    lastMonthInbound: ledger.inbound,
+    lastMonthOutbound: ledger.outbound,
+    lastMonthNet: ledger.inbound - ledger.outbound,
   };
 }
 
@@ -1957,16 +3058,39 @@ export function recalculatePlanetStateEconomy(
     state.population,
     state.isHabited,
   );
+  const populationBySpecies = new Map(speciesPopulations.map((entry) => [entry.speciesId, entry.population]));
+  const defense = normalizePlanetDefenseState(state.defense);
+  defense.traineeRemainders = defense.traineeRemainders.filter((entry) => (
+    entry.population > 0
+    && entry.population <= (populationBySpecies.get(entry.speciesId) ?? 0)
+  ));
+  const jobLocks = normalizePlanetJobLocks(state.jobLocks)
+    .filter((lock) => lock.job !== "trainee");
+  if (defense.traineeRemainders.length > 0) {
+    jobLocks.push({
+      job: "trainee",
+      allocations: defense.traineeRemainders.map((entry) => ({ ...entry })),
+    });
+  }
   const normalized = {
     ...state,
     population: sumSpeciesPopulation(speciesPopulations),
     speciesPopulations,
     features: normalizePlanetFeatures(state.features),
+    featureGenerationVersion: Math.max(0, Math.floor(state.featureGenerationVersion ?? PLANET_FEATURE_GENERATION_VERSION)),
     builtDistricts: cloneDistricts(state.builtDistricts),
     buildings: normalizeBuildings(state.buildings),
     urbanSubDistricts: normalizeUrbanSubDistricts(state.urbanSubDistricts),
     constructionQueue: normalizeConstructionQueue(state.constructionQueue),
+    defense,
     modifiers: normalizeModifiers(state.modifiers),
+    jobLocks,
+    populationMigration: {
+      monthIndex: Math.max(0, Math.floor(state.populationMigration?.monthIndex ?? 0)),
+      inbound: Math.max(0, Math.floor(state.populationMigration?.inbound ?? 0)),
+      outbound: Math.max(0, Math.floor(state.populationMigration?.outbound ?? 0)),
+      intakeCapacity: Math.max(0, Math.floor(state.populationMigration?.intakeCapacity ?? 0)),
+    },
   };
   return {
     ...normalized,
@@ -1977,15 +3101,15 @@ export function recalculatePlanetStateEconomy(
 export function applyPopulationGrowth(
   state: PlanetState,
   districtLimits?: DistrictCounts,
-  quarters = 1,
+  weeks = 1,
   externalModifiers: PlanetModifier[] = [],
   speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetState {
   let next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers, speciesContext);
-  if (!next.isHabited || quarters <= 0) return next;
+  if (!next.isHabited || weeks <= 0) return next;
 
-  for (let i = 0; i < quarters; i++) {
-    const growth = next.economy.populationGrowth.netPerQuarter;
+  for (let i = 0; i < weeks; i++) {
+    const growth = next.economy.populationGrowth.netPerWeek;
     const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth, speciesContext);
     next = recalculatePlanetStateEconomy({
       ...next,
@@ -2000,14 +3124,14 @@ export function applyPopulationGrowth(
 export function applyPopulationGrowthFraction(
   state: PlanetState,
   districtLimits: DistrictCounts | undefined,
-  quarterFraction: number,
+  weekFraction: number,
   externalModifiers: PlanetModifier[] = [],
   speciesContext?: PlanetEconomySpeciesContext,
 ): PlanetState {
   const next = recalculatePlanetStateEconomy(state, districtLimits, externalModifiers, speciesContext);
-  if (!next.isHabited || quarterFraction <= 0) return next;
+  if (!next.isHabited || weekFraction <= 0) return next;
 
-  const growth = Math.round(next.economy.populationGrowth.netPerQuarter * quarterFraction);
+  const growth = Math.round(next.economy.populationGrowth.netPerWeek * weekFraction);
   const speciesPopulations = applyPopulationDeltaToSpecies(next.speciesPopulations, growth, speciesContext);
   return recalculatePlanetStateEconomy({
     ...next,
@@ -2016,7 +3140,7 @@ export function applyPopulationGrowthFraction(
   }, districtLimits, externalModifiers, speciesContext);
 }
 
-function applyPopulationDeltaToSpecies(
+export function applyPopulationDeltaToSpecies(
   populations: SpeciesPopulation[],
   delta: number,
   speciesContext?: PlanetEconomySpeciesContext,
@@ -2061,11 +3185,13 @@ export function createDistrictConstructionQueueItem(
   districtKind: DistrictKind,
   id = createConstructionId("district", [districtKind]),
 ): PlanetConstructionQueueItem {
+  const cost = { ...DISTRICT_COSTS[districtKind] };
   return {
     id,
     kind: "district",
     label: `${districtKind[0].toUpperCase()}${districtKind.slice(1)} District`,
-    mineralCost: DISTRICT_MINERAL_COSTS[districtKind],
+    cost,
+    mineralCost: cost.minerals,
     totalDays: DISTRICT_BUILD_DAYS[districtKind],
     remainingDays: DISTRICT_BUILD_DAYS[districtKind],
     districtKind,
@@ -2079,11 +3205,13 @@ export function createBuildingConstructionQueueItem(
   subDistrictIndex?: number,
   id = createConstructionId("building", [buildingKind, area, subDistrictIndex, slotIndex]),
 ): PlanetConstructionQueueItem {
+  const cost = getBuildingCost(buildingKind, 1);
   return {
     id,
     kind: "building",
     label: BUILDING_LABELS[buildingKind],
-    mineralCost: getBuildingMineralCost(buildingKind, 1),
+    cost,
+    mineralCost: cost.minerals,
     totalDays: getBuildingBuildDays(buildingKind, 1),
     remainingDays: getBuildingBuildDays(buildingKind, 1),
     buildingKind,
@@ -2104,11 +3232,13 @@ export function createBuildingUpgradeConstructionQueueItem(
 ): PlanetConstructionQueueItem {
   const targetLevel = clampBuildingLevel(currentLevel + 1);
   const totalDays = getBuildingUpgradeBuildDays(buildingKind, currentLevel);
+  const cost = getBuildingUpgradeCost(buildingKind, currentLevel);
   return {
     id,
     kind: "buildingUpgrade",
-    label: `${BUILDING_LABELS[buildingKind]} Level ${targetLevel}`,
-    mineralCost: getBuildingUpgradeMineralCost(buildingKind, currentLevel),
+    label: `${getBuildingDisplayLabel(buildingKind, targetLevel)} (Level ${targetLevel})`,
+    cost,
+    mineralCost: cost.minerals,
     totalDays,
     remainingDays: totalDays,
     buildingKind,
@@ -2153,6 +3283,37 @@ function canCompleteConstructionItem(
   if (item.kind === "district") {
     return Boolean(item.districtKind && state.builtDistricts[item.districtKind] < districtLimits[item.districtKind]);
   }
+  if (item.kind === "featureRemoval") {
+    return Boolean(
+      item.featureKind
+      && state.features.includes(item.featureKind)
+      && PLANET_FEATURE_DEFINITIONS[item.featureKind].removal,
+    );
+  }
+  if (item.kind === "defenseBuilding" || item.kind === "defenseBuildingUpgrade") {
+    if (!item.defenseBuildingKind || !item.defenseSection || item.slotIndex === undefined) return false;
+    const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[item.defenseBuildingKind];
+    if (!definition?.sections.includes(item.defenseSection)) return false;
+    const unlocked = item.defenseSection === "defense"
+      ? getUnlockedPlanetDefenseSlots(state)
+      : getUnlockedPlanetShipyardSlots(state);
+    const slots = item.defenseSection === "defense"
+      ? state.defense.defenseSlots
+      : state.defense.shipyardSlots;
+    if (item.slotIndex < 0 || item.slotIndex >= slots.length || item.slotIndex >= unlocked) return false;
+    const existing = slots[item.slotIndex];
+    if (item.kind === "defenseBuildingUpgrade") {
+      return existing?.kind === item.defenseBuildingKind
+        && existing.level + 1 === item.targetLevel
+        && (item.targetLevel ?? 1) <= definition.maxLevel;
+    }
+    if (existing) return false;
+    if (definition.unique) {
+      const allSlots = [...state.defense.defenseSlots, ...state.defense.shipyardSlots];
+      if (allSlots.some((building) => building?.kind === item.defenseBuildingKind)) return false;
+    }
+    return true;
+  }
   if (!item.buildingKind || !item.area || item.slotIndex === undefined) return false;
   if (item.area === "urbanSubDistrict") {
     if (item.subDistrictIndex === undefined) return false;
@@ -2192,6 +3353,37 @@ function completeConstructionItem(
       },
     };
   }
+  if (item.kind === "featureRemoval" && item.featureKind) {
+    return {
+      ...state,
+      features: state.features.filter((feature) => feature !== item.featureKind),
+    };
+  }
+  if (
+    (item.kind === "defenseBuilding" || item.kind === "defenseBuildingUpgrade")
+    && item.defenseBuildingKind
+    && item.defenseSection
+    && item.slotIndex !== undefined
+  ) {
+    const slots = item.defenseSection === "defense"
+      ? state.defense.defenseSlots
+      : state.defense.shipyardSlots;
+    const existing = slots[item.slotIndex];
+    const completed: PlanetDefenseBuildingState = {
+      kind: item.defenseBuildingKind,
+      level: item.targetLevel ?? 1,
+      enabled: item.kind === "defenseBuildingUpgrade" ? existing?.enabled !== false : true,
+    };
+    return {
+      ...state,
+      defense: {
+        ...state.defense,
+        [item.defenseSection === "defense" ? "defenseSlots" : "shipyardSlots"]: slots.map(
+          (building, index) => index === item.slotIndex ? completed : building,
+        ),
+      },
+    };
+  }
 
   if ((item.kind !== "building" && item.kind !== "buildingUpgrade") || !item.buildingKind || !item.area || item.slotIndex === undefined) return state;
   const existingBuilding = item.area === "urbanSubDistrict"
@@ -2204,10 +3396,15 @@ function completeConstructionItem(
     item.targetLevel ?? 1,
     item.kind === "buildingUpgrade" ? isPlanetBuildingEnabled(existingBuilding) : true,
   );
+  const jobLocks = item.buildingKind === CAPITAL_BUILDING_KIND
+    && (item.targetLevel ?? 1) >= 2
+    ? state.jobLocks.filter((lock) => lock.job !== "colonizer")
+    : state.jobLocks;
   if (item.area === "urbanSubDistrict") {
     if (item.subDistrictIndex === undefined) return state;
     return {
       ...state,
+      jobLocks,
       urbanSubDistricts: state.urbanSubDistricts.map((subDistrict, index) => (
         index === item.subDistrictIndex
           ? {
@@ -2223,6 +3420,7 @@ function completeConstructionItem(
 
   return {
     ...state,
+    jobLocks,
     buildings: {
       ...state.buildings,
       [item.area]: state.buildings[item.area].map((building, index) => (
@@ -2241,7 +3439,7 @@ export function getConstructionSpeedMultiplier(
   const base = getModifierMultiplier(activeModifiers, "constructionSpeed");
   const typed = kind === "district"
     ? getModifierMultiplier(activeModifiers, "districtConstructionSpeed")
-    : kind === "building" || kind === "buildingUpgrade"
+    : kind === "building" || kind === "buildingUpgrade" || kind === "defenseBuilding" || kind === "defenseBuildingUpgrade"
       ? getModifierMultiplier(activeModifiers, "buildingConstructionSpeed")
       : 1;
   return Math.max(0.1, base * typed);
@@ -2262,6 +3460,10 @@ export function progressPlanetConstructionQueue(
 
   while (days > 0 && next.constructionQueue.length > 0) {
     const [current, ...rest] = next.constructionQueue;
+    if (
+      (current.kind === "defenseBuilding" || current.kind === "defenseBuildingUpgrade")
+      && !canCompleteConstructionItem(next, current, limits)
+    ) break;
     const speed = getConstructionSpeedMultiplier(next, current.kind, externalModifiers);
     const workDays = days * speed;
     if (workDays < current.remainingDays) {
@@ -2285,6 +3487,92 @@ export function progressPlanetConstructionQueue(
   }
 
   return { state: next, changed, completed };
+}
+
+export function createDefenseBuildingConstructionQueueItem(
+  buildingKind: PlanetDefenseBuildingKind,
+  section: PlanetDefenseSection,
+  slotIndex: number,
+  targetLevel = 1,
+  id = createConstructionId("defense-building", [buildingKind, section, slotIndex, targetLevel]),
+): PlanetConstructionQueueItem {
+  const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[buildingKind];
+  const level = Math.max(1, Math.min(definition.maxLevel, Math.round(targetLevel)));
+  const authored = definition.levels[level];
+  return {
+    id,
+    kind: level > 1 ? "defenseBuildingUpgrade" : "defenseBuilding",
+    label: level > 1 ? `${definition.label} (Level ${level})` : definition.label,
+    cost: { ...authored.cost },
+    mineralCost: authored.cost.minerals,
+    totalDays: authored.buildDays,
+    remainingDays: authored.buildDays,
+    defenseBuildingKind: buildingKind,
+    defenseSection: section,
+    slotIndex,
+    targetLevel: level,
+  };
+}
+
+export function createFeatureRemovalConstructionQueueItem(
+  featureKind: PlanetFeatureKind,
+  id = createConstructionId("feature-removal", [featureKind]),
+): PlanetConstructionQueueItem {
+  const definition = PLANET_FEATURE_DEFINITIONS[featureKind];
+  if (!definition.removal) throw new Error(`${definition.label} cannot be removed.`);
+  return {
+    id,
+    kind: "featureRemoval",
+    label: `Remove ${definition.label}`,
+    cost: { ...definition.removal.cost },
+    mineralCost: definition.removal.cost.minerals,
+    totalDays: definition.removal.buildDays,
+    remainingDays: definition.removal.buildDays,
+    featureKind,
+  };
+}
+
+export function hasQueuedFeatureRemoval(state: PlanetState, featureKind: PlanetFeatureKind): boolean {
+  return state.constructionQueue.some((item) => item.kind === "featureRemoval" && item.featureKind === featureKind);
+}
+
+export function hasQueuedDefenseBuildingTarget(
+  state: PlanetState,
+  section: PlanetDefenseSection,
+  slotIndex: number,
+): boolean {
+  return state.constructionQueue.some((item) => (
+    (item.kind === "defenseBuilding" || item.kind === "defenseBuildingUpgrade")
+    && item.defenseSection === section
+    && item.slotIndex === slotIndex
+  ));
+}
+
+export function completePlanetConstructionQueueItem(
+  state: PlanetState,
+  queueItemId: string,
+  districtLimits?: DistrictCounts,
+  externalModifiers: PlanetModifier[] = [],
+  speciesContext?: PlanetEconomySpeciesContext,
+): { state: PlanetState; completed: PlanetConstructionQueueItem } | null {
+  const item = state.constructionQueue.find((candidate) => candidate.id === queueItemId);
+  if (!item) return null;
+  const limits = districtLimits ?? state.builtDistricts;
+  const withoutItem = {
+    ...state,
+    constructionQueue: state.constructionQueue.filter((candidate) => candidate.id !== queueItemId),
+  };
+  const completed = { ...item, remainingDays: 0 };
+  if (!canCompleteConstructionItem(withoutItem, completed, limits)) return null;
+  return {
+    state: recalculatePlanetStateEconomy(
+      completeConstructionItem(withoutItem, completed),
+      limits,
+      externalModifiers,
+      speciesContext,
+    ),
+    completed,
+  };
 }
 
 export function filterInvalidQueuedBuildingsForSubDistrictChange(
@@ -2327,6 +3615,7 @@ export function createInitialFactionEconomyState(factionId: number, currentMonth
   return {
     factionId,
     stockpiles: cloneResourceCounts(STARTING_RESOURCE_STOCKPILES),
+    crewStockpile: 0,
     monthlyDelta: createEmptyResourceCounts(),
     lastProcessedMonth: currentMonth,
     lastProcessedHour: currentMonth * 30 * 24,

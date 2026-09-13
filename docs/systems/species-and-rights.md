@@ -1,7 +1,7 @@
 # Species & Rights
 
 Species define a population's innate traits; rights define how a faction treats each species. Both
-feed directly into the economy (habitability, growth, upkeep, happiness, crime, work eligibility).
+feed directly into the economy (habitability, births, upkeep, happiness, crime, work eligibility).
 Model: [`src/data/Species.ts`](../../src/data/Species.ts); economy hooks live in
 [`src/data/Economy.ts`](../../src/data/Economy.ts).
 
@@ -23,7 +23,8 @@ Per faction, per species (`FactionSpeciesRightsState` → `SpeciesRights`), acro
   `oppressed` — trades upkeep against happiness.
 - **Citizenship** (`CitizenshipStatusId`): `fullCitizenship`, `residence`, `limitedRights`,
   `nonCitizen` — affects happiness/crime.
-- **Migration** (`MigrationRightsId`): `free`, `controlled`, `prohibited` — affects growth/migration.
+- **Migration** (`MigrationRightsId`): `notAllowed`, `internalOnly`, `free`. Happiness effects are
+  -4/-2/0; migration rights do not modify natural growth.
 - **Work eligibility** (`WorkEligibilityId`): `allJobs`, `noAuthority`, `laborOnly` — limits which job
   classes the species can fill (enforced during job assignment in
   [`src/data/Economy.ts`](../../src/data/Economy.ts) via `canRightsWorkJob`).
@@ -37,10 +38,15 @@ stability adjustments. The planet economy receives these via a `PlanetEconomySpe
 
 ## Law constraints
 
-Government laws (especially `speciesPolicy` and `civilRights`) constrain which rights are legal — e.g.
+Government laws (especially `speciesPolicy`, `civilRights`, and `migrationPolicy`) constrain which rights are legal — e.g.
 pluralist protections block `oppressed`/restricted work, stratified codes allow harsher settings.
 Normalization (`normalizeSpeciesRights`) clamps rights to the allowed range. See
 [government-and-leaders.md](government-and-leaders.md).
+
+Migration Policy is an eligibility controller: Free Movement permits Internal Only/Free; Managed
+Migration permits all three; Migration Controls permits Not Allowed/Internal Only; Closed Movement
+permits only Not Allowed. Legacy saves map `prohibited → notAllowed`, `controlled → internalOnly`,
+and `free → free`.
 
 ## How to extend / rules
 

@@ -16,6 +16,7 @@ import {
   TECHNOLOGY_BY_ID,
 } from "../../src/data/Technology";
 import type { ResearchContext } from "../../src/data/Technology";
+import { completeTechnology, ensureActiveTechnology } from "../game/research";
 
 const EMPTY_CONTEXT: ResearchContext = {
   farmerJobs: 0,
@@ -85,6 +86,9 @@ test("all current buildings, hulls, modules, and sections have a technology mapp
     if (getRequiredTechIdsForStarbaseBuilding(building).length === 0) missing.push(`starbaseBuilding:${building}`);
   }
   for (const shipKind of STARBASE_SHIP_KINDS) {
+    // Army transports are an internal fixed hull created by army recruitment,
+    // not a player-buildable hull unlocked through the ship technology tree.
+    if (shipKind === "armyShip") continue;
     if (getRequiredTechIdsForShipHull(shipKind).length === 0) missing.push(`hull:${shipKind}`);
   }
   for (const moduleId of Object.keys(SHIP_MODULE_DEFINITIONS)) {
@@ -115,4 +119,26 @@ test("passive research cap defaults to eighty percent", () => {
   const tech = TECHNOLOGY_BY_ID.industrial_tooling;
 
   assert.equal(getPassiveProgressCap(tech), tech.cost * 0.8);
+});
+
+test("server research selects one available technology deterministically", () => {
+  const state = normalizeFactionTechState(1, undefined);
+  state.activeTechId = undefined;
+  assert.equal(ensureActiveTechnology(state), true);
+  assert.ok(state.activeTechId);
+  const selected = state.activeTechId;
+  assert.equal(ensureActiveTechnology(state), false);
+  assert.equal(state.activeTechId, selected);
+});
+
+test("technology completion is exact and idempotent", () => {
+  const state = normalizeFactionTechState(1, undefined);
+  const techId = "field_biochemistry";
+  state.activeTechId = techId;
+  assert.equal(completeTechnology(state, techId), true);
+  assert.equal(state.progressByTechId[techId]?.totalProgress, TECHNOLOGY_BY_ID[techId].cost);
+  assert.equal(state.progressByTechId[techId]?.completed, true);
+  assert.equal(state.completedTechIds.includes(techId), true);
+  assert.equal(state.activeTechId, undefined);
+  assert.equal(completeTechnology(state, techId), false);
 });

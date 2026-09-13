@@ -16,7 +16,8 @@ drives them.
 
 ## Where things live
 
-- [`server/index.ts`](../../server/index.ts) — game server entry: the tick loop and command handlers.
+- [`server/index.ts`](../../server/index.ts) — game-server dependency composition and startup.
+- [`server/game-runtime.ts`](../../server/game-runtime.ts) — runtime lifecycle, tick pipeline, and command handlers.
 - [`server/game/`](../../server/game/) — the simulation, split by concern (clock, economy-tick,
   fleet-combat, research, persistence, snapshot, state-bootstrap/normalization, visibility, …).
 - [`server/auth-server.ts`](../../server/auth-server.ts), [`server/auth-store.ts`](../../server/auth-store.ts) — auth.
@@ -32,7 +33,7 @@ state + `hasDirtyState = true`, `accept`/`reject`, and `broadcastUpdates([...])`
 ## Add-a-tick-phase pattern
 
 A new periodic system is a function `processX(ctx, …): { somethingChanged: boolean }` in
-`server/game/`, called from `advanceState` ([`server/index.ts`](../../server/index.ts)) at the right
+`server/game/`, called from `advanceState` ([`server/game-runtime.ts`](../../server/game-runtime.ts)) at the right
 point in the order, adding the relevant `ServerUpdateField`s to the `changed` set. Gate "once per
 hour/week/day" work on the corresponding game-time index (see
 [runtime-and-tick.md](runtime-and-tick.md)).

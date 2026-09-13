@@ -1,8 +1,9 @@
 // =============================================================================
 // Game state birth & rehydration — extracted from server/index.ts
 //
-// createInitialState builds a fresh galaxy; loadState reads persisted JSON,
-// migrates/normalizes it (falling back to a fresh galaxy on any read failure).
+// createInitialState builds a fresh galaxy; loadState reads persisted JSON and
+// migrates/normalizes it. Only a genuinely missing file creates a fresh state;
+// unreadable, malformed, or incompatible saves fail closed and are preserved.
 // Both take RuntimeContext for game config (seed, statePath) and dirty-flagging;
 // they delegate all shaping to the already-extracted normalizer modules.
 // =============================================================================
@@ -27,12 +28,12 @@ import {
 } from "../../src/data/Nebula";
 import {
   STARBASE_LEVEL_DEFINITIONS,
-  STARBASE_SHIP_KINDS,
+  PLAYER_DESIGNABLE_SHIP_KINDS,
   calculateStarbaseEconomy,
   createEmptyStarbaseSlots,
 } from "../../src/data/Starbase";
 import type { StarbaseLevel } from "../../src/data/Starbase";
-import { createDefaultShipDesign } from "../../src/data/ShipDesigns";
+import { calculateShipDesignStats, createDefaultShipDesign } from "../../src/data/ShipDesigns";
 import { createInitialFactionEconomyState } from "../../src/data/Economy";
 import { normalizeFactionTechState } from "../../src/data/Technology";
 import { createInitialGovernmentStates, normalizeGovernmentStatesForFactions } from "../../src/data/Government";
@@ -40,6 +41,7 @@ import { createDefaultSpeciesRightsState } from "../../src/data/Species";
 import { createInitialDiplomacyState, normalizeDiplomacyState } from "../../src/data/Diplomacy";
 import { createInitialMarketState, normalizeMarketState } from "../../src/data/Market";
 import { createInitialLeaders, getLeaderArchetypesByFaction, normalizeLeadersForFactions } from "../../src/data/Leaders";
+import { ARMY_TOTAL_CREW_DEMAND, normalizeArmyUnit, normalizeGroundBattle } from "../../src/data/Armies";
 import {
   GAME_START_YEAR,
   gameYearToMonthIndex,
@@ -47,13 +49,13 @@ import {
   gameYearToWeekIndex,
 } from "../../src/game/GameTime";
 import type { ServerShip, ServerStarbase } from "../../src/game/GameProtocol";
-import { VERSION_MANIFEST, canMigrateFromSchema } from "../versionManifest";
+import { VERSION_MANIFEST } from "../versionManifest";
 import {
   DEFAULT_TICK_SIZE_DAYS,
   DEFAULT_TICK_SPEED_SECONDS,
 } from "./constants";
 import { computeSpeedMultiplier, normalizeClock } from "./clock";
-import { saveState } from "./persistence";
+import { GameStateLoadError, migrateGameStateEnvelope } from "./state-migrations";
 import { getLeaderDayIndex } from "./state-queries";
 import { resolveShipDesign } from "./ship-designs";
 import { createFleet, createShipFromDesign } from "./fleet-factory";
@@ -71,7 +73,7 @@ import {
   syncFleetMembership,
   syncSystemOwnershipFromStarbases,
 } from "./state-normalization";
-import { recalculatePlanetEconomies, refreshFactionEconomyDeltas } from "./economy-market";
+import { ensureInitialMarketPriceSnapshots, recalculatePlanetEconomies, refreshFactionEconomyDeltas } from "./economy-market";
 import { refreshDiscovery } from "./visibility";
 import type { GameFleet, GameShip, GameState, RuntimeContext } from "./types";
 
@@ -127,13 +129,13 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     maxHull: starbaseCombat.maxHull,
     lastShieldDamageAtYear: null,
     level: "starbase",
-    economy: calculateStarbaseEconomy("starbase"),
+    economy: calculateStarbaseEconomy("starbase", createEmptyStarbaseSlots()),
     buildingSlots: createEmptyStarbaseSlots(),
     constructionQueue: [],
     shipQueue: [],
   }));
   const shipDesigns = factions.flatMap((faction) => (
-    STARBASE_SHIP_KINDS.map((shipKind) => createDefaultShipDesign(faction.id, shipKind, GAME_START_YEAR))
+    PLAYER_DESIGNABLE_SHIP_KINDS.map((shipKind) => createDefaultShipDesign(faction.id, shipKind, GAME_START_YEAR))
   ));
   const ships: GameShip[] = [];
   const fleets = factions.flatMap<GameFleet>((faction) => {
@@ -168,7 +170,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
-    schemaVersion: 24,
+    schemaVersion: 30,
     stars,
     nebulae,
     planetStates,
@@ -194,6 +196,8 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     starOwnership,
     starbases,
     shipDesigns,
+    armies: [],
+    groundBattles: [],
     ships,
     fleets,
     recentCombatContacts: [],
@@ -210,6 +214,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
       syncedAtMs: now,
       lastUpdatedAt: now,
       lastProcessedPopulationWeek: startPopulationWeek,
+      lastProcessedPopulationMonth: startMonth,
       lastProcessedLeaderDay: startLeaderDay,
     },
   };
@@ -218,25 +223,37 @@ export function createInitialState(ctx: RuntimeContext): GameState {
   created.speciesRights = normalizeSpeciesRightsForFactions(created);
   recalculatePlanetEconomies(created);
   refreshFactionEconomyDeltas(created);
+  ensureInitialMarketPriceSnapshots(created);
 
   refreshDiscovery(created);
   return created;
 }
 
 export async function loadState(ctx: RuntimeContext): Promise<GameState> {
+  let raw: string;
   try {
-    const raw = await readFile(ctx.statePath, "utf8");
-    const parsed = JSON.parse(raw) as GameState;
-    // Refuse to load a ctx.state this build cannot migrate (e.g. a newer schema
-    // opened by an older version). The orchestrator gates updates so this is a
-    // last-line guard against save corruption.
-    const onDiskSchema = Number(parsed.schemaVersion);
-    if (!canMigrateFromSchema(VERSION_MANIFEST, onDiskSchema)) {
-      throw new Error(
-        `Game ${ctx.game.id} ctx.state schema ${onDiskSchema} is not loadable by version ${SF_VERSION_ID} (supports ${VERSION_MANIFEST.migratesFromSchema.join(",")}).`,
-      );
+    raw = await readFile(ctx.statePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return createInitialState(ctx);
     }
-    parsed.schemaVersion = 24;
+    throw new GameStateLoadError(
+      ctx.game.id,
+      ctx.statePath,
+      `Could not read save for game ${ctx.game.id}. The existing file was preserved.`,
+      { cause: error },
+    );
+  }
+
+  try {
+    const decoded: unknown = JSON.parse(raw);
+    const { state: parsed, originalSchema: onDiskSchema } = migrateGameStateEnvelope(decoded);
+    parsed.armies = Array.isArray(parsed.armies)
+      ? parsed.armies.map(normalizeArmyUnit).filter((army): army is NonNullable<typeof army> => army !== null)
+      : [];
+    parsed.groundBattles = Array.isArray(parsed.groundBattles)
+      ? parsed.groundBattles.map(normalizeGroundBattle).filter((battle): battle is NonNullable<typeof battle> => battle !== null)
+      : [];
     delete (parsed as GameState & { battles?: unknown }).battles;
     // Backfill nebulas for pre-nebula saves: regenerate deterministically from the
     // game seed and re-stamp each star's nebulaId, then let refreshDiscovery (run by
@@ -336,6 +353,43 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       parsed.factions.map((faction) => faction.homeStarId),
     );
     parsed.planetStates = normalizedPlanetStates.planetStates;
+    const normalizeQueuedCrew = (
+      ownerId: number,
+      queue: import("../../src/data/Starbase").StarbaseShipQueueItem[],
+    ): import("../../src/data/Starbase").StarbaseShipQueueItem[] => queue.map((item) => {
+      const design = resolveShipDesign(parsed.shipDesigns, ownerId, item.shipKind, item.targetDesignId ?? item.designId, parsed.clock.year);
+      const crewDemand = item.kind === "armyBuild"
+        ? ARMY_TOTAL_CREW_DEMAND
+        : Math.max(0, Math.floor(calculateShipDesignStats(design).crewDemand));
+      const currentShip = item.kind === "upgrade" && item.shipId
+        ? parsed.ships.find((ship) => ship.id === item.shipId)
+        : null;
+      const reservedCrew = item.kind === "upgrade"
+        ? Math.max(0, crewDemand - Math.max(0, currentShip?.crewCapacity ?? 0))
+        : crewDemand;
+      return { ...item, crewDemand, reservedCrew };
+    });
+    parsed.starbases = parsed.starbases.map((starbase) => ({
+      ...starbase,
+      shipQueue: normalizeQueuedCrew(starbase.ownerId, starbase.shipQueue),
+    }));
+    parsed.planetStates = parsed.planetStates.map((planet) => ({
+      ...planet,
+      defense: {
+        ...planet.defense,
+        shipQueue: planet.ownerId === null
+          ? []
+          : normalizeQueuedCrew(planet.ownerId, planet.defense.shipQueue),
+      },
+    }));
+    if (onDiskSchema < 26) {
+      const currentMonth = gameYearToMonthIndex(parsed.clock.year);
+      parsed.clock.lastProcessedPopulationMonth = currentMonth;
+      parsed.planetStates = parsed.planetStates.map((planet) => ({
+        ...planet,
+        populationMigration: { monthIndex: currentMonth, inbound: 0, outbound: 0, intakeCapacity: 0 },
+      }));
+    }
     const normalizedGovernments = normalizeGovernmentStatesForFactions(
       parsed.factions.map((faction) => faction.id),
       parsed.governments,
@@ -369,15 +423,20 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     parsed.leaders = normalizedLeaders;
     recalculatePlanetEconomies(parsed);
     refreshFactionEconomyDeltas(parsed);
+    if (ensureInitialMarketPriceSnapshots(parsed)) ctx.hasDirtyState = true;
     const planetStateApplied = applyPlanetStatesToStars(parsed.stars, parsed.planetStates);
     if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || governmentsChanged || speciesChanged || speciesRightsChanged || speciesPopulationChanged || normalizedDiplomacy.changed || leadersChanged || homeStarbaseChanged || ownershipChanged) {
       ctx.hasDirtyState = true;
     }
     refreshDiscovery(parsed);
     return parsed;
-  } catch {
-    const initial = createInitialState(ctx);
-    await saveState(ctx, initial);
-    return initial;
+  } catch (error) {
+    throw new GameStateLoadError(
+      ctx.game.id,
+      ctx.statePath,
+      `Save for game ${ctx.game.id} could not be validated or migrated by version ${SF_VERSION_ID}. `
+      + "The existing file was preserved.",
+      { cause: error },
+    );
   }
 }

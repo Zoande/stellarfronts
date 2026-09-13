@@ -21,6 +21,11 @@ vs. `SHORTAGE_PROGRESS_FALL_PER_DAY` after a `SHORTAGE_GRACE_MONTHS` grace, in
 [`server/game/constants.ts`](../../server/game/constants.ts)), which then applies penalties and can
 escalate into an event. `processSituations` runs on the daily index from `advanceState`.
 
+Food-shortage progress also drives planetary famine. At progress 34 or higher, a planet with a
+negative local monthly food balance projects and applies class-weighted deaths during the monthly
+population pass. Food-shortage penalties cap at -40 happiness, -22 stability, -15% job output, and
+-8% fleet speed/weapon damage; shortage progress no longer applies a population-growth penalty.
+
 ## Events
 
 `EventDefinition` (`EVENT_DEFINITIONS`, `EventCategory`) has a title/body (with token substitution),

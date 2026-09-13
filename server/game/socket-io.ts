@@ -10,15 +10,45 @@
 import { WebSocket } from "ws";
 import type { ServerEvent } from "../../src/game/GameProtocol";
 
+export type CommandResultStatus = "accepted" | "rejected";
+
+const commandRequestIds = new WeakMap<WebSocket, string>();
+const commandResultStatuses = new WeakMap<WebSocket, CommandResultStatus>();
+
+export function beginCommandResult(socket: WebSocket, requestId?: string): void {
+  commandResultStatuses.delete(socket);
+  if (requestId) commandRequestIds.set(socket, requestId);
+  else commandRequestIds.delete(socket);
+}
+
+export function consumeCommandResultStatus(socket: WebSocket): CommandResultStatus | undefined {
+  const status = commandResultStatuses.get(socket);
+  commandResultStatuses.delete(socket);
+  commandRequestIds.delete(socket);
+  return status;
+}
+
 export function sendEvent(socket: WebSocket, event: ServerEvent): void {
   if (socket.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify(event));
 }
 
 export function reject(socket: WebSocket, message: string): void {
-  sendEvent(socket, { type: "commandResult", ok: false, message });
+  commandResultStatuses.set(socket, "rejected");
+  sendEvent(socket, {
+    type: "commandResult",
+    ok: false,
+    message,
+    requestId: commandRequestIds.get(socket),
+  });
 }
 
 export function accept(socket: WebSocket, message: string): void {
-  sendEvent(socket, { type: "commandResult", ok: true, message });
+  commandResultStatuses.set(socket, "accepted");
+  sendEvent(socket, {
+    type: "commandResult",
+    ok: true,
+    message,
+    requestId: commandRequestIds.get(socket),
+  });
 }

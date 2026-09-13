@@ -15,6 +15,7 @@ import type { ActiveEvent } from "../../src/data/Events";
 import type { FactionModifierState } from "../../src/data/GameEffects";
 import type { ShipDesign } from "../../src/data/ShipDesigns";
 import type { IntelligenceByFaction } from "../../src/data/Intelligence";
+import type { ArmyUnit, GroundBattleState } from "../../src/data/Armies";
 import type {
   GameClock,
   GameDetailScope,
@@ -27,16 +28,18 @@ import type {
   ServerUpdateField,
   ShipTransitPhase,
 } from "../../src/game/GameProtocol";
-import type { StoredGame } from "../auth-store";
+import type { GameRuntimeAuthPort, StoredGame } from "../auth-store";
 
 export interface GameFleet extends ServerFleet {
   phaseElapsedMs: number;
+  darkMatterBoostActive: boolean;
+  darkMatterBoostPaidUntilYear: number | null;
 }
 
 export interface GameShip extends ServerShip {}
 
 export interface GameState {
-  schemaVersion: 23 | 24;
+  schemaVersion: 30;
   stars: StarData[];
   nebulae: NebulaRegion[];
   planetStates: PlanetState[];
@@ -57,6 +60,8 @@ export interface GameState {
   starOwnership: number[];
   starbases: ServerStarbase[];
   shipDesigns: ShipDesign[];
+  armies: ArmyUnit[];
+  groundBattles: GroundBattleState[];
   ships: GameShip[];
   fleets: GameFleet[];
   recentCombatContacts: ServerCombatContact[];
@@ -64,7 +69,12 @@ export interface GameState {
   combatReports: CombatAfterActionReport[];
   intelligenceByFaction: IntelligenceByFaction;
   startingIntelligenceSeeded: boolean;
-  clock: GameClock & { lastUpdatedAt: number; lastProcessedPopulationWeek: number; lastProcessedLeaderDay: number };
+  clock: GameClock & {
+    lastUpdatedAt: number;
+    lastProcessedPopulationWeek: number;
+    lastProcessedPopulationMonth: number;
+    lastProcessedLeaderDay: number;
+  };
 }
 
 export interface DetailSubscription {
@@ -87,7 +97,7 @@ export interface GameRuntime {
   touchMembershipNames: () => void;
   tick: (now: number) => void;
   save: () => Promise<void>;
-  dispose: (message?: string, deleteState?: boolean) => Promise<void>;
+  dispose: (message?: string, deleteState?: boolean, saveBeforeRelease?: boolean) => Promise<void>;
   getStats: () => DevGameRuntimeRow;
 }
 
@@ -101,8 +111,13 @@ export interface RuntimeContext {
   lastSaveAt: number;
   saveInFlight: Promise<void> | null;
   saveQueued: boolean;
+  ownershipToken: string | null;
   runtimeIdCounter: number;
   eventInstanceSeq: number;
+  services: {
+    authStore: GameRuntimeAuthPort;
+    now: () => number;
+  };
   // Method fields wired up inside createGameRuntime (hoisted declarations, so safe to reference at ctx init).
   setFleetPhase: (fleet: GameFleet, phase: ShipTransitPhase) => void;
   // Infrastructure callbacks — defined late in createGameRuntime but safe to reference here because

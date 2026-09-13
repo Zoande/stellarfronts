@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { createDevGame, deleteDevGame, getDevStats, loginToDevPanel, logoutFromDevPanel } from '../auth/client';
+import { getDevStats, loginToDevPanel, logoutFromDevPanel } from '../auth/client';
 import type { DevActivitySeriesPoint, DevStatsResponse } from '../auth/types';
 import DevVersionPanel from './DevVersionPanel';
 import '../styles/Dev.css';
@@ -155,8 +155,6 @@ export default function DevPage() {
   const [isChecking, setIsChecking] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [gameName, setGameName] = useState('');
-  const [gameMutationBusy, setGameMutationBusy] = useState(false);
 
   const loadStats = async (showError: boolean) => {
     try {
@@ -217,35 +215,6 @@ export default function DevPage() {
     setStats(null);
     setIsUnlocked(false);
     setPassword('');
-  };
-
-  const handleCreateGame = async (event: React.FormEvent) => {
-    event.preventDefault();
-    try {
-      setGameMutationBusy(true);
-      setError('');
-      await createDevGame(gameName);
-      setGameName('');
-      await loadStats(true);
-    } catch (createError) {
-      setError(getErrorMessage(createError, 'Could not create game'));
-    } finally {
-      setGameMutationBusy(false);
-    }
-  };
-
-  const handleDeleteGame = async (gameId: string, name: string) => {
-    if (!window.confirm(`Delete ${name}? This removes its state and memberships.`)) return;
-    try {
-      setGameMutationBusy(true);
-      setError('');
-      await deleteDevGame(gameId);
-      await loadStats(true);
-    } catch (deleteError) {
-      setError(getErrorMessage(deleteError, 'Could not delete game'));
-    } finally {
-      setGameMutationBusy(false);
-    }
   };
 
   if (isChecking) {
@@ -404,73 +373,6 @@ export default function DevPage() {
               </tbody>
             </table>
           </div>
-        </div>
-      </section>
-
-      <section className="dev-panel dev-games-panel">
-        <div className="dev-panel-heading">
-          <div>
-            <h2>Games</h2>
-            <p>Create game runtimes and remove game state, memberships, and visit history.</p>
-          </div>
-          <form className="dev-game-create" onSubmit={handleCreateGame}>
-            <input
-              value={gameName}
-              maxLength={80}
-              placeholder="Game name"
-              onChange={(event) => setGameName(event.target.value)}
-            />
-            <button type="submit" className="dev-primary-button" disabled={gameMutationBusy}>
-              Create
-            </button>
-          </form>
-        </div>
-        {error && <div className="dev-error dev-games-error">{error}</div>}
-        <div className="dev-table-wrap">
-          <table className="dev-table dev-games-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Status</th>
-                <th>Countries</th>
-                <th>Connections</th>
-                <th>Year</th>
-                <th>Fleets</th>
-                <th>Ships</th>
-                <th>Created</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {stats.game.games.map((game) => (
-                <tr key={game.id}>
-                  <td>{game.name}</td>
-                  <td>{game.online ? 'Live' : 'Loading'}</td>
-                  <td>{game.controlledCountries} / {game.countryCapacity}</td>
-                  <td>{formatNumber(game.activeConnections)}</td>
-                  <td>{formatGameYear(game.gameYear)}</td>
-                  <td>{formatNumber(game.fleetCount)}</td>
-                  <td>{formatNumber(game.shipCount)}</td>
-                  <td>{formatDate(game.createdAt)}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="dev-secondary-button dev-delete-button"
-                      disabled={gameMutationBusy}
-                      onClick={() => void handleDeleteGame(game.id, game.name)}
-                    >
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {stats.game.games.length === 0 && (
-                <tr>
-                  <td colSpan={9}>No games created.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
         </div>
       </section>
 

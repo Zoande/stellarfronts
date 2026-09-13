@@ -1,68 +1,117 @@
 # Population & Planets
 
-Population is the engine of the economy: it fills jobs, consumes housing and food, and grows or
-shrinks based on quality-of-life metrics. This doc covers the planet lifecycle and the derived social
-metrics. The model lives alongside the economy in [`src/data/Economy.ts`](../../src/data/Economy.ts);
-population growth ticks weekly in [`server/game/population.ts`](../../server/game/population.ts).
+Population fills jobs, consumes housing and food, grows naturally, migrates between worlds, and can
+decline during famine. Shared formulas and demographic view types live in
+[`src/data/Population.ts`](../../src/data/Population.ts); the economy supplies housing, jobs,
+amenities, happiness, stability, crime, and food inputs.
 
-## `PlanetState` lifecycle
+## State and cadence
 
-A planet's persisted state (`PlanetState`) holds `builtDistricts`, `buildings` (per-district slot
-arrays), `urbanSubDistricts`, `constructionQueue`, `speciesPopulations`, `features`, `modifiers`, and
-a computed `economy: PlanetEconomySummary`.
+`PlanetState` persists species populations and a `populationMigration` ledger. Its
+`PlanetEconomySummary` exposes three independent views:
 
-- **Creation/normalization:** `createPlanetStateFromSeed` (via `createPlanetStateFromConfig` in
-  [`src/data/StarMap.ts`](../../src/data/StarMap.ts)) builds/normalizes a planet — applying starter
-  infrastructure, anchoring the auto-placed capital, and computing the economy. This runs at galaxy
-  bootstrap, on save-load normalization, and on colonization, which is why every habited planet has a
-  consistent shape (see [`../must-read/04-backward-compatibility.md`](../must-read/04-backward-compatibility.md)).
-- **Recalculation:** `recalculatePlanetStateEconomy` re-normalizes and recomputes after any change
-  (the server's `commitPlanetState` uses it).
+- `populationGrowth`: nonnegative natural births per game week.
+- `populationDecline`: projected famine deaths per game month.
+- `migration`: current attractiveness/intake capacity plus actual inbound and outbound movement from
+  the last completed month.
 
-## Species populations
+The demographic coordinator is [`server/game/population.ts`](../../server/game/population.ts).
+Catch-up is chronological. Weekly growth runs first at a coincident boundary, followed by famine,
+economy recalculation, and migration. Old saves initialize the monthly index and an empty ledger at
+their current month so load never creates retrospective deaths or migration.
 
-A planet's people are split by species (`speciesPopulations`). Each species has habitability, growth,
-upkeep, and happiness/crime modifiers and a **work eligibility** that limits which job classes it can
-fill — see [species-and-rights.md](species-and-rights.md). Job assignment respects these per species.
+## Natural growth
 
-## Derived social metrics
+The neutral base is `0.00025` (0.025%) per week:
 
-Computed inside `calculatePlanetEconomy`:
+`base × population pressure × quality of life × populationGrowth modifiers × species growth`
 
-- **Housing** — supplied by city districts/residential sub-districts/housing buildings; demand scales
-  with population and per-species housing-use multipliers. Shortfall depresses happiness and growth.
-- **Amenities** — supplied by entertainer/ruler/clerk jobs; demand is `getAmenityNeed(population)`
-  (per-unit `AMENITY_NEED_PER_UNIT`). Shortfall lowers happiness.
-- **Happiness** — blended from habitability, housing, amenities, employment, stability, and per-job
-  penalties (unemployed/criminal).
-- **Crime** — rises with unhappiness, reduced by enforcer/ruler `crimeReduction`; high crime converts
-  some unemployed into `criminal` jobs.
-- **Stability** — blended from happiness, crime, housing/amenity/employment shortfalls; scales
-  production via a stability multiplier.
+Population pressure is 1.30 through 50% occupancy, 1.00 at 100%, 0.20 at 150%, and 0.05 at 200% and
+above, with linear interpolation between anchors. Quality of life equally weights normalized
+housing satisfaction, amenity satisfaction, stability, and safety (`1 − crime`) and maps the result
+to 0.70–1.30. The final rate is clamped nonnegative, so breeder traits, living standards, leaders,
+technology, and nebula effects modify births only.
 
-## Population growth
+Planet capacity is deliberately hidden from the player. It blends:
 
-`calculatePopulationGrowth` produces a per-quarter rate from a base rate times factors for housing,
-amenities, stability, crime, employment, and **capacity pressure** (population vs.
-`calculatePlanetCapacity`). Growth is applied incrementally; the server advances it on the weekly
-population index (`processPopulationWeeks`), which also handles **migration** between planets/factions
-(rates and gating in [`server/game/constants.ts`](../../server/game/constants.ts), e.g.
-`MIGRATION_*`). Cross-faction migration is gated on first contact ("met") and scales with diplomatic
-intimacy / open borders / migration pacts.
+- 35% maximum productive jobs from the best level-1 use of all district and compatible building
+  slots.
+- 35% maximum housing from the best level-1 housing layout.
+- 30% currently vacant productive jobs.
 
-## How to extend / rules
+Potential layouts ignore technology. `planetCapacity` modifiers apply after blending and the
+technical minimum is 1M.
 
-- Tune metrics via the helper functions in [`src/data/Economy.ts`](../../src/data/Economy.ts)
-  (happiness/crime/stability/growth helpers) rather than scattering magic numbers.
-- New `PlanetState` fields need a normalizer default (old saves won't have them).
-- Population is server-authoritative and advanced weekly; don't simulate growth on the client.
-- Migration constants live in [`server/game/constants.ts`](../../server/game/constants.ts) — keep
-  related tiers consistent (met / open-border / pact multipliers).
+## Migration
+
+Migration runs monthly and conserves total population. Attractiveness is scored 0–100 from 25%
+happiness, 20% stability, 15% safety, 15% amenity satisfaction, and 25% vacant jobs; the jobs
+component reaches its maximum at vacancies equal to 20% of population.
+
+Monthly intake is `5M / 10M / 20M / 40M / 80M` for capital levels 1–5 plus 2.5M per built city
+district. Cohorts are processed as unemployed, productive lower class (criminals use this tier),
+middle class, then upper class. Unemployed residents need any compatible vacancy. Employed cohorts
+need a matching-class vacancy and an attractiveness improvement of +10/+20/+30 respectively.
+Allocation is deterministic and proportional across eligible sources, limited by intake and
+vacancies.
+
+Destinations require at least 20 species habitability. Habitability and nearby-first hyperlane
+distance affect destination weight, not the displayed attractiveness score. Internal movement
+requires `Internal Only` or `Free Migration`. Foreign movement requires `Free Migration` in both
+empires and an active, unsuspended migration pact; open borders alone are insufficient.
+
+## Founding colonies
+
+Colonization is a persistent fleet order, not an instant remote action. The server accepts it only
+when the system is owned, the world is uninhabited and permitted by its planet type, founding-species
+effective habitability is above zero, the route and command link are valid, and the fleet has a
+surviving colonization ship. The fleet travels into the target planet's orbit and revalidates all
+conditions on arrival. Success consumes exactly one colonization ship. Failure preserves the ship,
+clears the order, and leaves the fleet orbiting; therefore competing orders are safe and the first
+successful arrival wins.
+
+`PlanetTypeConfig.colonizableByDefault` is false for Gaseous, Methane, Barren, Dusty, and Martian
+worlds, and true for Snowy, Arid, Grassland, Jungle, Marshy, Sandy, and Tundra. The shared eligibility
+predicate has an explicit future override hook, but no unlocking technology exists yet. Existing
+colonies on restricted types remain valid.
+
+New colonies begin with 500M founding-species population, a tier-1 Colony Headquarters, and zero
+built districts. No rule forces a two-city minimum in planet state or mirrored star metadata.
+Homeworld starter infrastructure remains seeded, and existing saves retain districts already built.
+Planet abandonment and capture behavior are unchanged.
+
+For ten exact game years, newly founded colonies receive the visible **Frontier Settlement**
+modifier: +20 migration attractiveness (final score still clamps to 0–100), +20M monthly migration
+intake, +10 stability, +25% district/building construction speed, and +25% natural growth. It gives
+no resource, housing, or habitability bonus. Existing saves receive no retroactive modifier.
+
+Planet Operations enumerates planets by owned **system**, including its uninhabited worlds. Each
+entry carries the system owner, founding-species id/name/effective habitability, and a typed
+eligibility result so the UI can distinguish `Colonizable`, `Restricted world`, and `Unsuitable`
+(for example, `Human — 65%`).
+
+## Famine
+
+A planet is in famine while empire food-shortage progress is at least 34 and its local monthly food
+net is negative. It recovers when either condition ends.
+
+`deficitRatio = (food upkeep − food production) / food upkeep`
+
+`crisisFactor = (shortage progress − 34) / 66`
+
+At full deficit and crisis, monthly deaths are 0.20% for non-farmer lower class, 0.05% for middle
+class, and 0.002% for farmers. Upper class is immune while any lower or middle residents exist at
+the start of the tick; afterward its rate is 0.02%. Deaths are allocated across affected species and
+never reduce a habited planet below the universal 1M floor.
 
 ## Key files
 
-- Model + metrics: [`src/data/Economy.ts`](../../src/data/Economy.ts).
-- Growth/migration tick: [`server/game/population.ts`](../../server/game/population.ts).
-- Constants: [`server/game/constants.ts`](../../server/game/constants.ts).
-- Planet seed/normalization: [`src/data/StarMap.ts`](../../src/data/StarMap.ts).
-- Tests: [`server/tests/economy.test.ts`](../../server/tests/economy.test.ts).
+- Shared formulas/types: [`src/data/Population.ts`](../../src/data/Population.ts).
+- Economy inputs/state: [`src/data/Economy.ts`](../../src/data/Economy.ts).
+- Weekly births: [`server/game/population-growth.ts`](../../server/game/population-growth.ts).
+- Monthly famine: [`server/game/population-famine.ts`](../../server/game/population-famine.ts).
+- Monthly migration: [`server/game/population-migration.ts`](../../server/game/population-migration.ts).
+- Colonization eligibility: [`src/data/Colonization.ts`](../../src/data/Colonization.ts).
+- Server founding: [`server/game/colonization.ts`](../../server/game/colonization.ts).
+- UI: [`src/ui/CelestialObjectPanel.ts`](../../src/ui/CelestialObjectPanel.ts).
+- Tests: [`server/tests/population.test.ts`](../../server/tests/population.test.ts).

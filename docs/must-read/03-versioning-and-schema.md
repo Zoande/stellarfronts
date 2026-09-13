@@ -1,126 +1,87 @@
 # Versioning & Schema
 
-StellarFronts can run **multiple code versions at once** (a new game on new code while an old game
-stays on its original code), and saved games must survive code changes. Two version numbers make
-that safe. Get these wrong and you can corrupt saves or wedge an update — so this is required reading
-before you touch persisted state or the wire protocol.
+StellarFronts can run multiple game-server versions simultaneously while Cloudflare serves one
+current client. Saved games must survive code changes, so persisted schema compatibility and wire
+protocol compatibility are separate, explicit contracts.
 
-## The two version numbers
+## Current contracts
 
-Both live in [`server/versionManifest.ts`](../../server/versionManifest.ts):
+The checked-in [`server/version-manifest.json`](../../server/version-manifest.json) is the canonical
+artifact metadata:
 
-```ts
-export const CURRENT_SCHEMA_VERSION = 21;   // shape of the persisted GameState on disk
-export const CURRENT_PROTOCOL_VERSION = 2;   // shape of the client/server wire messages
-```
+- `schemaVersion: 30` describes the persisted `GameState`.
+- `protocolVersion: 11` describes WebSocket messages.
+- `runtimeApiVersion: 1` describes the stable control-plane/runtime integration.
+- `migratesFromSchema: [30]` makes the persistent-Army overhaul a deliberate new-game boundary.
 
-- **`protocolVersion`** describes the **wire format** — the `GameSnapshot` / `GameUpdate` / `detail`
-  messages in [`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts). The client refuses to run
-  against a server whose protocol it doesn't list in `SUPPORTED_SERVER_PROTOCOL_VERSIONS`
-  ([`src/game/GameServerClient.ts`](../../src/game/GameServerClient.ts), currently `[2]`).
-- **`schemaVersion`** describes the **persisted `GameState`** on disk. It gates whether a build is
-  allowed to load (and thus migrate) a given save.
+[`server/versionManifest.ts`](../../server/versionManifest.ts) exposes the same values to runtime
+code. A drift test fails if the TypeScript constants and static manifest disagree.
 
-The `VERSION_MANIFEST` object combines them with `migratesFromSchema` — the list of prior schema
-versions this build can load:
+The orchestrator reads the static manifest directly from each registered worktree. It never executes
+untrusted or historical server code merely to discover compatibility. `--print-version` remains a
+diagnostic command, not the orchestrator's source of truth.
 
-```ts
-migratesFromSchema: rangeInclusive(1, CURRENT_SCHEMA_VERSION)  // [1, 2, …, 21]
-```
+## Immutable version artifacts
 
-This build accepts every schema up to its own. A future build that genuinely drops support for an old
-shape would narrow this range.
+Registering a version creates a git worktree pinned to the selected commit and installs dependencies
+from that worktree's lockfile. The lockfile hash is stamped and reported in `/dev`. A version process
+uses that exact worktree's `tsx` loader and dependencies instead of the root installation.
 
-## How a build advertises itself: `--print-version`
+Historical game code is loaded with the runtime module guard. Imports of the old auth-store module
+are redirected to the current runtime-safe catalog implementation, with catalog initialization,
+DDL, and account seeding disabled. This prevents an old backend from running old control-plane
+migrations against the shared auth database.
 
-The orchestrator probes each registered worktree by running its game server with `--print-version`,
-which prints `VERSION_MANIFEST` and exits ([`server/index.ts`](../../server/index.ts), the
-`process.argv.includes("--print-version")` branch). That is how the orchestrator learns a version's
-`protocolVersion`, `schemaVersion`, and `migratesFromSchema` without booting a full game
-([`probeManifest`](../../server/orchestrator.ts)).
+## Loading and migrations
 
-## How saves are stamped
+[`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts) distinguishes a missing save
+from an invalid save:
 
-On every save, [`server/game/persistence.ts`](../../server/game/persistence.ts) writes the state plus
-the **writing build's identity**:
+- `ENOENT` creates a new game.
+- malformed JSON, an invalid envelope, or an unsupported schema aborts startup and preserves the
+  original file.
 
-```ts
-const stamped = { ...nextState, codeVersion: SF_VERSION_ID, protocolVersion: VERSION_MANIFEST.protocolVersion };
-// …and records (gameId, nextState.schemaVersion, protocolVersion) into the auth store catalog.
-```
+The current manifest accepts schema 30 only. Schema 29's anonymous planetary troop counts cannot be
+migrated into persistent, species-aware Army identities without inventing player state, so games must
+be recreated for this version. Current normalizers still fill safe additive defaults and enforce the
+schema-30 domain shape. Future compatible schema bumps must add an explicit migration step;
+normalization alone is not a substitute for a declared migration.
 
-So each `game-state.json` knows which code last wrote it, and the catalog tracks each game's schema.
+Saves are stamped with the writing code version and protocol. Atomic persistence, exclusive owner
+locks, and verified backups are described in
+[`state-persistence-and-normalization.md`](../server/state-persistence-and-normalization.md).
 
-## How loading is gated (and why migration is "free")
+## Wire compatibility
 
-On load, [`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts) reads
-`parsed.schemaVersion` and refuses the save if this build can't migrate it:
+The current client accepts server protocols 5 through 11 through
+[`src/game/ProtocolAdapter.ts`](../../src/game/ProtocolAdapter.ts). Every initial snapshot is
+validated and adapted to the current canonical client model before entering the UI. Updates are
+validated against the negotiated protocol and reduced with explicit missing-versus-null semantics.
+Protocol 8+ correlates normal command results by request ID; older protocols retain their legacy
+fire-and-forget behavior. Protocol 11 adds persistent Army Units, ground battles, Army queue orders,
+and their incremental update fields.
 
-```ts
-if (Number.isFinite(onDiskSchema) && !canMigrateFromSchema(VERSION_MANIFEST, onDiskSchema)) {
-  throw new Error(`… schema ${onDiskSchema} is not loadable by version …`);
-}
-```
+Compatibility is never bypassed for the development version. The same static manifest and migration
+checks apply to `dev` and immutable versions.
 
-If accepted, **normalization is the migration**: the loader backfills missing collections, drops
-removed fields (e.g. legacy `battles`), and re-runs the shared normalizers
-(`createPlanetStateFromConfig`, `normalizeFleet`, `normalizeStarbase`, government/species/market
-normalizers, …). There are **no hand-written migration functions** — every normalizer must coerce a
-loose/old object into the current shape with sensible defaults. This is why adding a field is usually
-safe across versions: old saves simply don't have it, and the normalizer fills it in.
+## Updates and rollback
 
-## The orchestrator update gate
+Before reset, update, rollback, or deletion, the orchestrator creates or verifies a version-aware
+backup. An update is accepted only when the target manifest can migrate the recorded save schema and
+the runtime API is supported.
 
-When you move a game to another version, the orchestrator checks the *target* version's accepted
-range against the *game's* recorded schema ([`server/orchestrator.ts`](../../server/orchestrator.ts)):
+Rollback is state-and-code coordinated: `/dev` selects an exact verified backup, the orchestrator
+checks that the target version can load it, restores it atomically, assigns the source backend, and
+starts that backend. A partial state-only rollback is not considered successful.
 
-```ts
-// dev accepts everything; a tagged version gates on its migratesFromSchema.
-return target.migratesFromSchema.includes(game.schemaVersion);
-```
+## Change checklist
 
-Use `npm run control compat --to <versionId>` for a dry run before updating. State is backed up
-before resets/updates so rollback is possible.
-
-## When to bump what
-
-| You changed… | Bump |
+| Change | Required work |
 | --- | --- |
-| A `GameSnapshot` / `GameUpdate` / `detail` field in a way old clients can't parse | `CURRENT_PROTOCOL_VERSION` **and** widen `SUPPORTED_SERVER_PROTOCOL_VERSIONS` on the client |
-| The persisted `GameState` shape in a way that needs a migration marker | `CURRENT_SCHEMA_VERSION` (and keep the `GameState` literal in lockstep — see below) |
-| Added a purely additive field a normalizer backfills | Usually **nothing** — normalization handles it. Bump schema only if you want an explicit marker. |
+| Persisted shape requiring a marker | Bump schema, add an explicit migration, update the static and TypeScript manifests, and add migration tests. |
+| Wire shape older clients cannot interpret | Bump protocol, add or update a client adapter, update both manifests, and add fixture tests. |
+| Runtime/control-plane integration | Bump `runtimeApiVersion` and update the stable runtime boundary. |
+| Purely additive normalized field | Add a safe normalizer default; bump schema only when an explicit persisted marker is useful. |
 
-Bumping a version number is **not** a substitute for actually handling old data. The normalizer/
-backfill is what makes the change safe; the number just records that a change happened and lets the
-orchestrator reason about compatibility.
-
-## ⚠️ Known inconsistency: schema literal vs. manifest
-
-There are, confusingly, **two** places that name the schema number:
-
-1. `VERSION_MANIFEST.schemaVersion` (= `CURRENT_SCHEMA_VERSION`) in
-   [`server/versionManifest.ts`](../../server/versionManifest.ts) — currently **21**. This is what
-   `--print-version` advertises and what the orchestrator stores per version.
-2. `GameState.schemaVersion`, a TypeScript **literal type `20`** in
-   [`server/game/types.ts`](../../server/game/types.ts), hardcoded `schemaVersion: 20` in
-   `createInitialState`, and **forced to `20` on load** (`parsed.schemaVersion = 20` in
-   [`server/game/state-bootstrap.ts`](../../server/game/state-bootstrap.ts)).
-
-Because the recorded/on-disk schema is pinned at `20` and `migratesFromSchema` spans `1..21`, the
-update gate always passes and **nothing breaks today**. But the manifest comment says to "Bump these
-in lockstep with `GameState.schemaVersion`," and right now they are **out of lockstep** (manifest 21,
-GameState literal 20). This drift was introduced when the manifest was bumped for the Planetary
-Capital change while the `GameState` literal was left at 20.
-
-**If you intend the schema bump to be real**, reconcile them together: update the literal in
-`types.ts`, the value in `createInitialState`, and the forced assignment in `state-bootstrap.ts` to
-match `CURRENT_SCHEMA_VERSION`. **If the capital change didn't actually need a schema bump** (it is
-additive and handled by normalization), the cleaner fix is to revert `CURRENT_SCHEMA_VERSION` back to
-`20`. Either way, the two should agree.
-
-## See also
-
-- The discipline that keeps a *new client* working against an *older server*:
-  [`04-backward-compatibility.md`](04-backward-compatibility.md).
-- The full save/load/normalize flow: [`server/state-persistence-and-normalization.md`](../server/state-persistence-and-normalization.md).
-- The version lifecycle and the control CLI: [`server/orchestrator-and-lifecycle.md`](../server/orchestrator-and-lifecycle.md).
+Run `npm run server:test`, `npm run server:typecheck`, and `npm run build` before registering a
+version.

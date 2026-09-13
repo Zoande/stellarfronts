@@ -10,8 +10,9 @@ From [`server/game/types.ts`](../../server/game/types.ts):
 
 | Field | Type / source | What it is |
 | --- | --- | --- |
-| `schemaVersion` | literal `20` | On-disk schema marker (see note below). |
+| `schemaVersion` | literal `30` | Current persisted schema; this version intentionally requires a new game. |
 | `stars` | `StarData[]` ([`StarMap.ts`](../../src/data/StarMap.ts)) | Every star and its planet configs. |
+| `nebulae` | `NebulaRegion[]` ([`Nebula.ts`](../../src/data/Nebula.ts)) | Generated nebula regions and their affected systems. |
 | `planetStates` | `PlanetState[]` ([`Economy.ts`](../../src/data/Economy.ts)) | Per-planet economy: districts, buildings, population, computed `economy` summary. |
 | `factionEconomies` | `FactionEconomyState[]` ([`Economy.ts`](../../src/data/Economy.ts)) | Per-faction stockpiles and monthly deltas. |
 | `factionTechnologies` | `FactionTechState[]` ([`Technology.ts`](../../src/data/Technology.ts)) | Per-faction research progress, active tech, completed techs. |
@@ -30,28 +31,35 @@ From [`server/game/types.ts`](../../server/game/types.ts):
 | `starOwnership` | `number[]` | Owner faction id per star index (`-1` = unowned). |
 | `starbases` | `ServerStarbase[]` ([`GameProtocol.ts`](../../src/game/GameProtocol.ts)) | All starbases with level, buildings, combat stats, queues. |
 | `shipDesigns` | `ShipDesign[]` ([`ShipDesigns.ts`](../../src/data/ShipDesigns.ts)) | Saved per-faction ship designs. |
+| `armies` | `ArmyUnit[]` ([`Armies.ts`](../../src/data/Armies.ts)) | Persistent species-aware mobile armies and Fortress garrisons, including HP, manpower, and location. |
+| `groundBattles` | `GroundBattleState[]` ([`Armies.ts`](../../src/data/Armies.ts)) | Active planetary invasions, participants, daily-combat cursor, and withdrawal timing. |
 | `ships` | `GameShip[]` | All ships (hp/shield/armor/hull, design ref). |
 | `fleets` | `GameFleet[]` | Fleets (ship membership, position, phase, orders). |
 | `recentCombatContacts` | `ServerCombatContact[]` | Rolling combat-event log. |
-| `discoveredByFaction` | `Record<string, number[]>` | Stars each faction has ever discovered. |
-| `metByFaction` | `Record<string, number[]>` | Symmetric first-contact record (monotonic). |
-| `lastKnownOwnershipByFaction` | `Record<string, number[]>` | Each faction's last-seen ownership snapshot (fog of war). |
+| `intelligenceByFaction` | `IntelligenceByFaction` ([`Intelligence.ts`](../../src/data/Intelligence.ts)) | Persisted field-level observations and known lanes per faction. |
+| `startingIntelligenceSeeded` | `boolean` | Whether initial faction intelligence has been generated. |
 | `clock` | `GameClock & {...}` ([`GameProtocol.ts`](../../src/game/GameProtocol.ts)) | Year, speed, paused, plus last-processed indices. |
 
-> **Schema note.** `GameState.schemaVersion` is a literal `20`, distinct from
-> `VERSION_MANIFEST.schemaVersion`. See the known inconsistency in
+> **Schema note.** The type accepts schema 30 only. Schema 29 is not migrated because persistent
+> Army identity cannot be reconstructed from anonymous troop counts. See
 > [`../must-read/03-versioning-and-schema.md`](../must-read/03-versioning-and-schema.md).
 
 ## Frequently referenced nested types
 
 - **`PlanetState`** ([`Economy.ts`](../../src/data/Economy.ts)) — `builtDistricts`, `buildings`
-  (per-district slot arrays), `urbanSubDistricts`, `constructionQueue`, `speciesPopulations`, and a
+  (per-district slot arrays), `urbanSubDistricts`, `constructionQueue`, `speciesPopulations`,
+  `jobLocks: PlanetJobLock[]`, timed/permanent `modifiers`, and a
   computed `economy: PlanetEconomySummary` (production/upkeep/net, `jobCapacity`, `popGroups`,
   housing/amenities/happiness/crime/stability/growth).
 - **`ServerFleet` / `GameFleet`** ([`GameProtocol.ts`](../../src/game/GameProtocol.ts),
   [`types.ts`](../../server/game/types.ts)) — ship ids, system position, `phase`
-  (idle/departing/jumping/arriving), order, combat stance/retreat policy. `GameFleet` adds
-  `phaseElapsedMs` for server-side phase timing.
+  (idle/departing/jumping/arriving), order (including persistent `colonize`), combat stance/retreat
+  policy, movement plan, and optional
+  Dark Matter boost telemetry. `GameFleet` requires `phaseElapsedMs`,
+  `darkMatterBoostActive`, and `darkMatterBoostPaidUntilYear` for server-side timing and billing.
+- **`ArmyUnit` / `GroundBattleState`** ([`Armies.ts`](../../src/data/Armies.ts)) — persistent Army
+  identity, species/type, HP/manpower, mobile transport snapshots, Fortress support, battle sides,
+  deterministic daily processing, and withdrawal deadlines.
 - **`ServerStarbase`** ([`GameProtocol.ts`](../../src/game/GameProtocol.ts)) — level, `status`
   (online/building), shield/armor/hull, weapon cooldowns, construction queues.
 - **`FactionEconomyState`** ([`Economy.ts`](../../src/data/Economy.ts)) — `stockpiles`,

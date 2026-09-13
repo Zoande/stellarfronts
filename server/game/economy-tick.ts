@@ -11,15 +11,17 @@ import {
   RESOURCE_KINDS,
   createEmptyResourceCounts,
   addResourceCounts,
+  getActivePlanetDefenseBuildings,
+  normalizePlanetDefenseState,
+  countPlanetShipyards,
+  recalculatePlanetStateEconomy,
   progressPlanetConstructionQueue,
+  removeExpiredPlanetModifiers,
 } from "../../src/data/Economy";
 import type { PlanetState } from "../../src/data/Economy";
 import {
-  MARKET_FEE_RATE,
-  MARKET_TEMPORARY_DECAY_PER_HOUR,
-  MARKET_PERSISTENT_DECAY_PER_HOUR,
   MARKET_PRICE_SNAPSHOT_INTERVAL_HOURS,
-  recomputeMarketResourcePrice,
+  pruneMarketTradeBuckets,
 } from "../../src/data/Market";
 import type { MarketAutoTradeOrder } from "../../src/data/Market";
 import {
@@ -42,7 +44,7 @@ import {
   STARBASE_HULL_REPAIR_FRACTION_PER_DAY,
   STARBASE_HULL_REPAIR_ALLOY_COST_PER_POINT,
 } from "./constants";
-import { roundTinyPressure, scaleResourceCounts } from "./pure-helpers";
+import { scaleResourceCounts } from "./pure-helpers";
 import {
   getFactionEconomy,
   getFleetShieldMultiplier,
@@ -54,18 +56,17 @@ import {
 } from "./state-queries";
 import {
   calculateFactionMonthlyDelta,
-  calculateFactionResourceFlow,
-  calculatePlayerMarketQuote,
-  getMarketResourceState,
+  calculateTradeQuote,
   getMarketPlayerStats,
   recordMarketTransaction,
-  applyMarketTradePressure,
-  appendMarketPriceSnapshot,
+  recordMarketTradeVolume,
+  appendMarketPriceSnapshots,
 } from "./economy-market";
 import { getFactionResearchPerHour, applyTechnologyResearchForFaction } from "./research";
 import { findShipDesignById, getShipDesignForShip } from "./ship-designs";
 import { createShip, createFleet, applyShipDesignToShip, syncStarbaseCombatHealth } from "./fleet-factory";
-import { applyFleetOrbitTarget, createStarbaseOrbitTarget } from "./fleet-combat";
+import { applyFleetOrbitTarget, createStarbaseOrbitTarget, startOrbitOrder } from "./fleet-combat";
+import { spawnCompletedArmy } from "./ground-combat";
 import type { GameFleet, GameShip, RuntimeContext } from "./types";
 
 function getPlanetDetailSignature(planetState: PlanetState): string {
@@ -82,18 +83,127 @@ function queueChangedPlanetDetailRefreshes(ctx: RuntimeContext, previousSignatur
   return changed;
 }
 
+export function recruitPlanetCrew(ctx: RuntimeContext, factionId: number, elapsedMonths: number): number {
+  if (elapsedMonths <= 0) return 0;
+  let recruitedTotal = 0;
+  ctx.state.planetStates = ctx.state.planetStates.map((planetState) => {
+    if (!planetState.isHabited || planetState.ownerId !== factionId) return planetState;
+    if (!planetState.buildings || !planetState.urbanSubDistricts || !planetState.economy?.popGroups) {
+      return planetState;
+    }
+    let next = {
+      ...planetState,
+      defense: normalizePlanetDefenseState(planetState.defense),
+    };
+    for (let month = 0; month < elapsedMonths; month += 1) {
+      const barracks = getActivePlanetDefenseBuildings(next)
+        .filter((building) => building.kind === "barracks").length;
+      if (barracks <= 0) break;
+      let remainingRecruitment = Math.min(
+        barracks * 10_000,
+        next.economy.popGroups
+          .filter((group) => group.job === "trainee")
+          .reduce((total, group) => total + group.population, 0),
+      );
+      if (remainingRecruitment <= 0) break;
+      const traineeGroups = next.economy.popGroups
+        .filter((group) => group.job === "trainee" && group.population > 0)
+        .sort((left, right) => right.population - left.population || left.speciesId.localeCompare(right.speciesId));
+      const removedBySpecies = new Map<string, number>();
+      const priorRemainders = new Map(
+        next.defense.traineeRemainders.map((entry) => [entry.speciesId, entry.population]),
+      );
+      const nextRemainders = new Map(priorRemainders);
+
+      // Fractional allocations are permanently stuck in the trainee job and
+      // continue training before a new whole-million block begins.
+      const continuingRemainders = traineeGroups
+        .map((group) => ({
+          speciesId: group.speciesId,
+          population: Math.min(group.population, priorRemainders.get(group.speciesId) ?? 0),
+        }))
+        .filter((entry) => entry.population > 0)
+        .sort((left, right) => right.population - left.population || left.speciesId.localeCompare(right.speciesId));
+      for (const entry of continuingRemainders) {
+        if (remainingRecruitment <= 0) break;
+        const removed = Math.min(entry.population, remainingRecruitment);
+        removedBySpecies.set(entry.speciesId, (removedBySpecies.get(entry.speciesId) ?? 0) + removed);
+        const remainder = entry.population - removed;
+        if (remainder > 0) nextRemainders.set(entry.speciesId, remainder);
+        else nextRemainders.delete(entry.speciesId);
+        remainingRecruitment -= removed;
+        recruitedTotal += removed;
+      }
+
+      for (const group of traineeGroups) {
+        if (remainingRecruitment <= 0) break;
+        const priorRemainder = priorRemainders.get(group.speciesId) ?? 0;
+        const wholeMillionAllocation = Math.floor(
+          Math.max(0, group.population - priorRemainder) / 1_000_000,
+        ) * 1_000_000;
+        const alreadyRemoved = removedBySpecies.get(group.speciesId) ?? 0;
+        const removed = Math.min(wholeMillionAllocation, remainingRecruitment);
+        if (removed <= 0) continue;
+        removedBySpecies.set(group.speciesId, alreadyRemoved + removed);
+        const remainder = (wholeMillionAllocation - removed) % 1_000_000;
+        if (remainder > 0) nextRemainders.set(group.speciesId, remainder);
+        remainingRecruitment -= removed;
+        recruitedTotal += removed;
+      }
+      const speciesPopulations = next.speciesPopulations
+        .map((entry) => ({
+          ...entry,
+          population: Math.max(0, entry.population - (removedBySpecies.get(entry.speciesId) ?? 0)),
+        }))
+        .filter((entry) => entry.population > 0);
+      const traineeRemainders = Array.from(nextRemainders.entries())
+        .map(([speciesId, population]) => ({ speciesId, population: Math.max(0, population % 1_000_000) }))
+        .filter((entry) => entry.population > 0)
+        .sort((left, right) => left.speciesId.localeCompare(right.speciesId));
+      next = recalculatePlanetStateEconomy({
+        ...next,
+        population: speciesPopulations.reduce((total, entry) => total + entry.population, 0),
+        speciesPopulations,
+        defense: { ...next.defense, traineeRemainders },
+        jobLocks: [
+          ...next.jobLocks.filter((lock) => lock.job !== "trainee"),
+          ...(traineeRemainders.length > 0
+            ? [{ job: "trainee" as const, allocations: traineeRemainders.map((entry) => ({ ...entry })) }]
+            : []),
+        ],
+      }, getPlanetDistrictLimitsFromState(ctx.state, next), getPlanetTechnologyModifiers(ctx.state, next), getPlanetSpeciesContext(ctx.state, next));
+    }
+    return next;
+  });
+  return recruitedTotal;
+}
+
 export function processEconomyHours(ctx: RuntimeContext, targetHour: number): { economyChanged: boolean; technologiesChanged: boolean } {
   const previousPlanetSignatures = new Map(
     ctx.state.planetStates.map((planetState) => [planetState.id, getPlanetDetailSignature(planetState)]),
   );
+  let expiredModifiers = false;
+  ctx.state.planetStates = ctx.state.planetStates.map((planetState) => {
+    const result = removeExpiredPlanetModifiers(planetState, ctx.state.clock.year);
+    expiredModifiers = expiredModifiers || result.changed;
+    return result.state;
+  });
   ctx.recalculatePlanetEconomies();
   ctx.refreshFactionEconomyDeltas();
-  let economyChanged = false;
+  let economyChanged = expiredModifiers;
   let technologiesChanged = false;
   for (const economy of ctx.state.factionEconomies) {
     const processedHour = economy.lastProcessedHour ?? targetHour;
     const elapsedHours = Math.max(0, targetHour - processedHour);
     if (elapsedHours <= 0) continue;
+    const targetMonth = gameYearToMonthIndex(elapsedHoursToGameYear(targetHour));
+    const elapsedMonths = Math.max(0, targetMonth - (economy.lastProcessedMonth ?? targetMonth));
+    const recruitedCrew = recruitPlanetCrew(ctx, economy.factionId, elapsedMonths);
+    if (recruitedCrew > 0) {
+      economy.crewStockpile += recruitedCrew;
+      ctx.recalculatePlanetEconomies();
+      ctx.refreshFactionEconomyDeltas();
+    }
     const researchPerHour = getFactionResearchPerHour(ctx, economy.factionId);
     technologiesChanged = applyTechnologyResearchForFaction(ctx, economy.factionId, elapsedHours, researchPerHour) || technologiesChanged;
     const resourceGain = scaleResourceCounts(
@@ -112,7 +222,7 @@ export function processEconomyHours(ctx: RuntimeContext, targetHour: number): { 
     }
     economy.stockpiles.research = 0;
     economy.lastProcessedHour = targetHour;
-    economy.lastProcessedMonth = gameYearToMonthIndex(elapsedHoursToGameYear(targetHour));
+    economy.lastProcessedMonth = targetMonth;
     economyChanged = true;
   }
   if (technologiesChanged) {
@@ -136,25 +246,12 @@ export function processMarketTicks(ctx: RuntimeContext, targetHour: number): { m
   let economyChanged = false;
 
   if (elapsedHours > 0) {
-    const temporaryDecay = Math.pow(MARKET_TEMPORARY_DECAY_PER_HOUR, elapsedHours);
-    const persistentDecay = Math.pow(MARKET_PERSISTENT_DECAY_PER_HOUR, elapsedHours);
-    ctx.state.market.resources = ctx.state.market.resources.map((resource) => {
-      const temporaryPressure = roundTinyPressure(resource.temporaryPressure * temporaryDecay);
-      const persistentPressure = roundTinyPressure(resource.persistentPressure * persistentDecay);
-      const next = recomputeMarketResourcePrice({
-        ...resource,
-        temporaryPressure,
-        persistentPressure,
-      }, ctx.state.clock.year);
-      const resourceChanged = (
-        next.temporaryPressure !== resource.temporaryPressure
-        || next.persistentPressure !== resource.persistentPressure
-        || Math.abs(next.currentPrice - resource.currentPrice) > 0.000001
-      );
-      if (!resourceChanged) return resource;
+    const currentMonthIndex = gameYearToMonthIndex(ctx.state.clock.year);
+    const retainedBuckets = pruneMarketTradeBuckets(ctx.state.market.tradeBuckets, currentMonthIndex);
+    if (retainedBuckets.length !== ctx.state.market.tradeBuckets.length) {
+      ctx.state.market.tradeBuckets = retainedBuckets;
       marketChanged = true;
-      return next;
-    });
+    }
     for (const order of ctx.state.market.autoTrades) {
       const executed = executeMarketAutoTrade(ctx, order, elapsedHours);
       marketChanged = executed || marketChanged;
@@ -167,9 +264,7 @@ export function processMarketTicks(ctx: RuntimeContext, targetHour: number): { m
     ? ctx.state.market.lastSnapshotHour
     : targetHour;
   if (targetHour - snapshotHour >= MARKET_PRICE_SNAPSHOT_INTERVAL_HOURS) {
-    for (const resource of ctx.state.market.resources) {
-      appendMarketPriceSnapshot(ctx, resource, ctx.state.clock.year);
-    }
+    appendMarketPriceSnapshots(ctx, ctx.state.clock.year);
     ctx.state.market.lastSnapshotHour = targetHour;
     marketChanged = true;
   }
@@ -180,59 +275,82 @@ export function processMarketTicks(ctx: RuntimeContext, targetHour: number): { m
 
 export function executeMarketAutoTrade(ctx: RuntimeContext, order: MarketAutoTradeOrder, elapsedHours: number): boolean {
   if (!order.enabled || order.amountPerHour <= 0 || elapsedHours <= 0) return false;
-  const resource = getMarketResourceState(ctx, order.resourceId);
-  if (!resource?.marketEnabled) return false;
   const economy = getFactionEconomy(ctx.state, order.playerId);
   if (!economy) return false;
 
   const requestedAmount = order.amountPerHour * elapsedHours;
   if (!Number.isFinite(requestedAmount) || requestedAmount <= 0) return false;
 
-  const flows = calculateFactionResourceFlow(ctx.state, order.playerId);
-  const quote = calculatePlayerMarketQuote(resource, order.playerId, flows, ctx.state);
   const stats = getMarketPlayerStats(ctx, order.playerId);
   let amount = requestedAmount;
 
   if (order.type === "auto_buy") {
-    const unitCost = quote.finalQuotePrice * (1 + MARKET_FEE_RATE);
-    amount = Math.min(amount, unitCost > 0 ? economy.stockpiles.energy / unitCost : 0);
+    amount = findAffordableMarketBuyAmount(ctx, order, requestedAmount, economy.stockpiles.energy);
     if (amount <= 0.000001) {
       recordTradeAlert(ctx, order, elapsedHours, 0);
       return false;
     }
-    const grossEnergy = amount * quote.finalQuotePrice;
-    const feePaid = grossEnergy * MARKET_FEE_RATE;
-    const buyCost = grossEnergy + feePaid;
+    const quote = calculateTradeQuote(ctx.state, order.playerId, order.resourceId, "buy", amount).trade;
+    const grossEnergy = amount * quote.averageUnitPrice;
+    const feePaid = quote.feePaid;
+    const buyCost = quote.totalEnergy;
     economy.stockpiles = {
       ...economy.stockpiles,
       energy: economy.stockpiles.energy - buyCost,
       [order.resourceId]: economy.stockpiles[order.resourceId] + amount,
     };
     stats.totalImportsEnergy += grossEnergy;
-    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_buy", amount, quote.finalQuotePrice, feePaid, -buyCost);
-    applyMarketTradePressure(ctx, resource, "auto_buy", amount);
+    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_buy", amount, quote.averageUnitPrice, feePaid, -buyCost);
+    recordMarketTradeVolume(ctx, order.playerId, order.resourceId, "auto_buy", amount);
   } else {
     amount = Math.min(amount, economy.stockpiles[order.resourceId]);
     if (amount <= 0.000001) {
       recordTradeAlert(ctx, order, elapsedHours, 0);
       return false;
     }
-    const grossEnergy = amount * quote.finalQuotePrice;
-    const feePaid = grossEnergy * MARKET_FEE_RATE;
-    const sellPayout = grossEnergy - feePaid;
+    const quote = calculateTradeQuote(ctx.state, order.playerId, order.resourceId, "sell", amount).trade;
+    const grossEnergy = amount * quote.averageUnitPrice;
+    const feePaid = quote.feePaid;
+    const sellPayout = quote.totalEnergy;
     economy.stockpiles = {
       ...economy.stockpiles,
       [order.resourceId]: economy.stockpiles[order.resourceId] - amount,
       energy: economy.stockpiles.energy + sellPayout,
     };
     stats.totalExportsEnergy += grossEnergy;
-    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_sell", amount, quote.finalQuotePrice, feePaid, sellPayout);
-    applyMarketTradePressure(ctx, resource, "auto_sell", amount);
+    recordMarketTransaction(ctx, order.playerId, order.resourceId, "auto_sell", amount, quote.averageUnitPrice, feePaid, sellPayout);
+    recordMarketTradeVolume(ctx, order.playerId, order.resourceId, "auto_sell", amount);
   }
 
   order.updatedAt = ctx.state.clock.year;
   recordTradeAlert(ctx, order, elapsedHours, amount);
   return true;
+}
+
+function findAffordableMarketBuyAmount(
+  ctx: RuntimeContext,
+  order: MarketAutoTradeOrder,
+  requestedAmount: number,
+  availableEnergy: number,
+): number {
+  if (availableEnergy <= 0 || requestedAmount <= 0) return 0;
+  const requestedQuote = calculateTradeQuote(
+    ctx.state,
+    order.playerId,
+    order.resourceId,
+    "buy",
+    requestedAmount,
+  ).trade;
+  if (requestedQuote.totalEnergy <= availableEnergy) return requestedAmount;
+  let low = 0;
+  let high = requestedAmount;
+  for (let iteration = 0; iteration < 48; iteration += 1) {
+    const mid = (low + high) / 2;
+    const quote = calculateTradeQuote(ctx.state, order.playerId, order.resourceId, "buy", mid).trade;
+    if (quote.totalEnergy <= availableEnergy) low = mid;
+    else high = mid;
+  }
+  return low;
 }
 
 function recordTradeAlert(ctx: RuntimeContext, order: MarketAutoTradeOrder, elapsedHours: number, executedAmount: number): void {
@@ -749,7 +867,13 @@ function completeQueuedShipUpgrade(ctx: RuntimeContext, item: StarbaseShipQueueI
     true,
   );
   if (!targetDesign) return false;
+  const previousCrew = ship.crew;
   applyShipDesignToShip(ship, targetDesign);
+  const availableCrew = previousCrew + Math.max(0, item.reservedCrew ?? 0);
+  ship.crew = Math.min(ship.crewCapacity, availableCrew);
+  const surplus = Math.max(0, availableCrew - ship.crewCapacity);
+  const economy = getFactionEconomy(ctx.state, ship.ownerId);
+  if (economy && surplus > 0) economy.crewStockpile += surplus;
   ship.disabled = false;
   ctx.syncFleetMembership();
   return true;
@@ -772,6 +896,9 @@ export function processStarbaseShipQueues(ctx: RuntimeContext, elapsedDays: numb
     for (const completed of result.completed) {
       if (completed.kind === "upgrade") {
         fleetsChanged = completeQueuedShipUpgrade(ctx, completed) || fleetsChanged;
+      } else if (completed.kind === "armyBuild") {
+        spawnCompletedArmy(ctx, starbase.ownerId, starbase.starId, completed, undefined, getSystemStarbaseOrbitPosition(starbase.systemPosition));
+        fleetsChanged = true;
       } else {
         spawnCompletedShip(ctx, starbase, completed);
         fleetsChanged = true;
@@ -788,4 +915,107 @@ export function processStarbaseShipQueues(ctx: RuntimeContext, elapsedDays: numb
   ctx.refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
   return { starbasesChanged, fleetsChanged };
+}
+
+function spawnCompletedPlanetShip(
+  ctx: RuntimeContext,
+  planet: PlanetState,
+  item: Pick<StarbaseShipQueueItem, "shipKind" | "designId">,
+): void {
+  if (item.shipKind === "defensePlatform") {
+    let fleet = ctx.state.fleets.find((candidate) => (
+      candidate.stationaryPlanetId === planet.id
+      && candidate.ownerId === planet.ownerId
+      && candidate.combatStatus !== "destroyed"
+    ));
+    if (!fleet) {
+      fleet = createFleet(
+        ctx,
+        planet.ownerId!,
+        planet.starId,
+        [],
+        ctx.createRuntimeId("planet-defense-fleet", [planet.ownerId!, planet.id]),
+      );
+      fleet.stationaryPlanetId = planet.id;
+      fleet.speed = 0;
+      fleet.phaseStartedAtYear = ctx.state.clock.year;
+      startOrbitOrder(ctx, fleet, planet.id);
+      ctx.state.fleets.push(fleet);
+    }
+    const ship = createShip(
+      ctx,
+      planet.ownerId!,
+      fleet.id,
+      item.shipKind,
+      ctx.createRuntimeId("ship", [planet.ownerId!, item.shipKind]),
+      item.designId,
+    );
+    fleet.shipIds.push(ship.id);
+    ctx.state.ships.push(ship);
+    ctx.syncFleetMembership();
+    return;
+  }
+
+  const fleetId = ctx.createRuntimeId("fleet", [planet.ownerId!, planet.starId]);
+  const ship = createShip(
+    ctx,
+    planet.ownerId!,
+    fleetId,
+    item.shipKind,
+    ctx.createRuntimeId("ship", [planet.ownerId!, item.shipKind]),
+    item.designId,
+  );
+  const fleet = createFleet(ctx, planet.ownerId!, planet.starId, [ship.id], fleetId);
+  if (["scienceShip", "constructionShip", "colonizationShip", "armyShip"].includes(item.shipKind)) {
+    fleet.combatSettings.engagementRule = "avoid";
+  }
+  fleet.phaseStartedAtYear = ctx.state.clock.year;
+  fleet.speed = ship.speed;
+  startOrbitOrder(ctx, fleet, planet.id);
+  ctx.state.ships.push(ship);
+  ctx.state.fleets.push(fleet);
+}
+
+export function processPlanetShipQueues(
+  ctx: RuntimeContext,
+  elapsedDays: number,
+): { planetsChanged: boolean; fleetsChanged: boolean } {
+  if (elapsedDays <= 0) return { planetsChanged: false, fleetsChanged: false };
+  let planetsChanged = false;
+  let fleetsChanged = false;
+  ctx.state.planetStates = ctx.state.planetStates.map((planet) => {
+    if (!planet.isHabited || planet.ownerId === null || planet.defense.shipQueue.length === 0) return planet;
+    const shipyards = countPlanetShipyards(planet);
+    if (shipyards <= 0) return planet;
+    const economy = getFactionEconomy(ctx.state, planet.ownerId);
+    const queueHolder = { buildingSlots: [], shipQueue: planet.defense.shipQueue };
+    const result = progressStarbaseShipQueue(queueHolder, elapsedDays, economy?.stockpiles, shipyards);
+    if (!result.changed) return planet;
+    if (economy) {
+      economy.stockpiles = addResourceCounts(economy.stockpiles, scaleResourceCounts(result.resourcesConsumed, -1));
+    }
+    for (const completed of result.completed) {
+      if (completed.kind === "armyBuild") {
+        spawnCompletedArmy(ctx, planet.ownerId, planet.starId, completed, planet.id);
+      } else {
+        spawnCompletedPlanetShip(ctx, planet, completed);
+      }
+      fleetsChanged = true;
+    }
+    planetsChanged = true;
+    ctx.queuePlanetDetailRefresh(planet.id);
+    return {
+      ...planet,
+      defense: { ...planet.defense, shipQueue: result.starbase.shipQueue },
+    };
+  });
+  if (fleetsChanged) {
+    ctx.syncFleetMembership();
+    ctx.refreshDiscovery();
+  }
+  if (planetsChanged || fleetsChanged) {
+    ctx.refreshFactionEconomyDeltas();
+    ctx.hasDirtyState = true;
+  }
+  return { planetsChanged, fleetsChanged };
 }

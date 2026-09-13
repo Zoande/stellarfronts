@@ -29,8 +29,16 @@ import type {
 } from './types';
 import type { FlagDesign } from '@/flags/flagTypes';
 import type { SpeciesSetup } from '@/data/Species';
+import type { DevGameRuntimeRow } from './types';
 
 const AUTH_SERVER_URL = import.meta.env.VITE_AUTH_SERVER_URL ?? 'http://localhost:8788';
+
+export class ApiRequestError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
 
 async function requestJson<T>(path: string, body?: unknown, method = 'POST'): Promise<T> {
   const response = await fetch(`${AUTH_SERVER_URL}${path}`, {
@@ -42,7 +50,10 @@ async function requestJson<T>(path: string, body?: unknown, method = 'POST'): Pr
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error((payload as { error?: string }).error ?? 'Authentication request failed');
+    throw new ApiRequestError(
+      (payload as { error?: string }).error ?? 'Authentication request failed',
+      response.status,
+    );
   }
 
   return payload as T;
@@ -65,7 +76,8 @@ export async function getCurrentSession(): Promise<AuthAccount | null> {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    return null;
+    if (response.status === 401) return null;
+    throw new ApiRequestError('Account service unavailable', response.status);
   }
 
   return (payload as AuthMeResponse).account;
@@ -122,6 +134,18 @@ export interface OrchestratorVersion {
   schemaVersion: number;
   migratesFromSchema: number[];
   createdAt: number;
+  runtimeApiVersion?: number;
+  artifactReady?: boolean;
+  dependencyHash?: string | null;
+  process?: {
+    running: boolean;
+    pid: number | null;
+    startedAt: number | null;
+    crashes: number;
+    quarantined: boolean;
+    nextRetryAt: number | null;
+    lastError: string | null;
+  };
 }
 
 export interface OrchestratorGame {
@@ -132,10 +156,40 @@ export interface OrchestratorGame {
   schemaVersion: number | null;
   protocolVersion: number | null;
   createdAt: number;
+  runtime?: DevGameRuntimeRow | null;
+  backupCount?: number;
+  latestBackup?: GameBackupManifest | null;
+  owner?: { pid: number; versionId?: string } | null;
 }
 
 export interface RemoteRef { ref: string; sha: string; type: 'tag' | 'branch'; }
 export interface CompatRow { id: string; name: string; versionId: string; schemaVersion: number | null; canUpdate: boolean; }
+export interface GameBackupManifest {
+  id: string;
+  gameId: string;
+  gameName: string;
+  createdAt: number;
+  reason: string;
+  sourceVersionId: string;
+  schemaVersion: number | null;
+  protocolVersion: number | null;
+  stateSha256: string;
+  stateBytes: number;
+}
+
+export interface OrchestratorHealth {
+  ok: boolean;
+  generatedAt: number;
+  gateway: {
+    activeConnections: number;
+    connectingConnections: number;
+    rejectedConnections: number;
+    upstreamRetries: number;
+    queuedBytes: number;
+  };
+  versions: OrchestratorVersion[];
+  games: OrchestratorGame[];
+}
 
 export async function listOrchestratorVersions(): Promise<OrchestratorVersion[]> {
   const result = await requestJson<{ versions: OrchestratorVersion[] }>('/api/dev/orchestrator/versions', undefined, 'GET');
@@ -171,6 +225,23 @@ export async function runGameLifecycle(gameId: string, action: string, body?: Re
 export async function getCompatReport(toVersion: string): Promise<CompatRow[]> {
   const result = await requestJson<{ games: CompatRow[] }>(`/api/dev/orchestrator/compat?to=${encodeURIComponent(toVersion)}`, undefined, 'GET');
   return result.games;
+}
+
+export async function getOrchestratorHealth(): Promise<OrchestratorHealth> {
+  return requestJson<OrchestratorHealth>('/api/dev/orchestrator/health', undefined, 'GET');
+}
+
+export async function listGameBackups(gameId: string): Promise<GameBackupManifest[]> {
+  const result = await requestJson<{ backups: GameBackupManifest[] }>(
+    `/api/dev/orchestrator/games/${encodeURIComponent(gameId)}/backups`,
+    undefined,
+    'GET',
+  );
+  return result.backups;
+}
+
+export async function deleteOrchestratorGame(gameId: string): Promise<void> {
+  await requestJson(`/api/dev/orchestrator/games/${encodeURIComponent(gameId)}`, undefined, 'DELETE');
 }
 
 export async function getNewsPosts(): Promise<NewsPostListItem[]> {

@@ -84,6 +84,9 @@ export type IntelBundleId =
 
 export type SensorSuiteId =
   | "planetaryCapitalSensors"
+  | "planetarySensorArray1"
+  | "planetarySensorArray2"
+  | "planetarySensorArray3"
   | "listeningStationSensors"
   | "starbaseSensors"
   | "militaryShipSensors"
@@ -135,6 +138,48 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
     label: "Planetary Capital Sensors",
     maxRange: 1,
     bands: { 0: FULL_BAND, 1: FULL_BAND },
+  },
+  planetarySensorArray1: {
+    id: "planetarySensorArray1",
+    label: "Planetary Sensor Array I",
+    maxRange: 2,
+    bands: {
+      0: FULL_BAND,
+      1: FULL_BAND,
+      2: {
+        bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "fleetContact", "fleetClassification"],
+        commandLink: true,
+      },
+    },
+  },
+  planetarySensorArray2: {
+    id: "planetarySensorArray2",
+    label: "Planetary Sensor Array II",
+    maxRange: 3,
+    bands: {
+      0: FULL_BAND,
+      1: FULL_BAND,
+      2: {
+        bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "planetDefense", "starbaseIdentity", "starbaseDefense", "fleetContact", "fleetClassification"],
+        commandLink: true,
+      },
+      3: { bundles: ["stellar", "topology", "fleetContact", "fleetClassification"], commandLink: true },
+    },
+  },
+  planetarySensorArray3: {
+    id: "planetarySensorArray3",
+    label: "Planetary Sensor Array III",
+    maxRange: 4,
+    bands: {
+      0: FULL_BAND,
+      1: FULL_BAND,
+      2: FULL_BAND,
+      3: {
+        bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "planetDefense", "starbaseIdentity", "starbaseDefense", "fleetContact", "fleetClassification"],
+        commandLink: true,
+      },
+      4: { bundles: ["stellar", "topology", "fleetContact", "fleetClassification"], commandLink: true },
+    },
   },
   listeningStationSensors: {
     id: "listeningStationSensors",

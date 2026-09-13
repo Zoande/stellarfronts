@@ -45,6 +45,7 @@ export interface AchievementDef {
   title: string;
   description: string;
   xpReward: number;
+  darkMatterReward: number;
   check: (stats: ProgressionStats) => boolean;
 }
 
@@ -57,7 +58,29 @@ export interface QuestDef {
   type: 'weekly' | 'triday';
   target: number;
   xpReward: number;
+  darkMatterReward: number;
   action: QuestAction;
+}
+
+// Dark Matter is deliberately much scarcer than XP. Keeping the conversion in
+// one place gives every quest and achievement a reward while leaving a single
+// balance knob until the resource has gameplay uses.
+function withAchievementDarkMatterRewards(
+  definitions: Array<Omit<AchievementDef, 'darkMatterReward'>>,
+): AchievementDef[] {
+  return definitions.map((definition) => ({
+    ...definition,
+    darkMatterReward: Math.max(1, Math.round(definition.xpReward / 50)),
+  }));
+}
+
+function withQuestDarkMatterRewards(
+  definitions: Array<Omit<QuestDef, 'darkMatterReward'>>,
+): QuestDef[] {
+  return definitions.map((definition) => ({
+    ...definition,
+    darkMatterReward: Math.max(1, Math.round(definition.xpReward / 50)),
+  }));
 }
 
 // ─── 20 Levels ───────────────────────────────────────────────────────────────
@@ -87,7 +110,7 @@ export const LEVELS: LevelDef[] = [
 
 // ─── 20 Achievements ─────────────────────────────────────────────────────────
 
-export const ACHIEVEMENTS: AchievementDef[] = [
+export const ACHIEVEMENTS: AchievementDef[] = withAchievementDarkMatterRewards([
   {
     id: 'first-contact',
     title: 'First Contact',
@@ -257,12 +280,12 @@ export const ACHIEVEMENTS: AchievementDef[] = [
     // Always requires all others — auto-adjusts as the list grows.
     check: (s) => s.achievementCount >= ACHIEVEMENTS.length - 1,
   },
-];
+]);
 
 // ─── 20 Quests (10 weekly pool + 10 triday pool) ─────────────────────────────
 // Active set is 5 from each pool, rotating each window.
 
-export const WEEKLY_QUESTS: QuestDef[] = [
+export const WEEKLY_QUESTS: QuestDef[] = withQuestDarkMatterRewards([
   { id: 'wq-tactical-debrief',    title: 'Tactical Debrief',    description: 'Post 3 news comments.',          type: 'weekly', action: 'comment',   target:  3, xpReward:  75 },
   { id: 'wq-fleet-intelligence',  title: 'Fleet Intelligence',  description: 'Cast 10 votes on comments.',     type: 'weekly', action: 'vote',      target: 10, xpReward:  75 },
   { id: 'wq-commanders-voice',    title: "Commander's Voice",   description: 'Post 5 news comments.',          type: 'weekly', action: 'comment',   target:  5, xpReward: 100 },
@@ -273,9 +296,9 @@ export const WEEKLY_QUESTS: QuestDef[] = [
   { id: 'wq-operations-log',      title: 'Operations Log',      description: 'Post 12 comments.',              type: 'weekly', action: 'comment',   target: 12, xpReward: 175 },
   { id: 'wq-intelligence-sweep',  title: 'Intelligence Sweep',  description: 'Cast 30 votes.',                 type: 'weekly', action: 'vote',      target: 30, xpReward: 150 },
   { id: 'wq-press-corps',         title: 'Press Corps',         description: 'Post 15 comments this week.',   type: 'weekly', action: 'comment',   target: 15, xpReward: 200 },
-];
+]);
 
-export const TRIDAY_QUESTS: QuestDef[] = [
+export const TRIDAY_QUESTS: QuestDef[] = withQuestDarkMatterRewards([
   { id: 'tq-field-report',      title: 'Field Report',      description: 'Post 1 news comment.',        type: 'triday', action: 'comment',  target:  1, xpReward: 25 },
   { id: 'tq-quick-analysis',    title: 'Quick Analysis',    description: 'Cast 3 votes.',               type: 'triday', action: 'vote',     target:  3, xpReward: 25 },
   { id: 'tq-positive-intel',    title: 'Positive Intel',    description: 'Cast 2 upvotes.',             type: 'triday', action: 'upvote',   target:  2, xpReward: 20 },
@@ -286,7 +309,7 @@ export const TRIDAY_QUESTS: QuestDef[] = [
   { id: 'tq-tactical-vote',     title: 'Tactical Vote',     description: 'Cast 8 votes.',               type: 'triday', action: 'vote',     target:  8, xpReward: 45 },
   { id: 'tq-support-ops',       title: 'Support Operations',description: 'Cast 4 upvotes.',             type: 'triday', action: 'upvote',   target:  4, xpReward: 35 },
   { id: 'tq-counter-intel',     title: 'Counter-Intel',     description: 'Cast 4 downvotes.',           type: 'triday', action: 'downvote', target:  4, xpReward: 35 },
-];
+]);
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 

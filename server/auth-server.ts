@@ -1,9 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
-  authStore,
+  AuthStore,
   clearDevSessionCookie,
   clearSessionCookie,
   isAuthError,
@@ -12,11 +14,13 @@ import {
   serializeDevSessionCookie,
   serializeSessionCookie,
 } from './auth-store';
-import { getGameStateDirectory } from './game-state-path';
-import { TRIDAY_QUESTS, WEEKLY_QUESTS, getLevelForXp as getProgressionLevel } from './game/progression';
+import type { AuthStorePort } from './auth-store';
 import type { AuthAccount, Credentials, LoginCredentials, NewsContentBlock, NewsPost } from '../src/auth/types';
 
 const PORT = Number(process.env.AUTH_SERVER_PORT ?? 8788);
+const HOST = process.env.AUTH_SERVER_HOST ?? '127.0.0.1';
+const CONTROL_TOKEN = process.env.CONTROL_TOKEN ?? '';
+const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES ?? 8 * 1024 * 1024);
 const NEWS_MEDIA_DIR = path.join(process.cwd(), 'server', 'state', 'news-media');
 const NEWS_MEDIA_ROUTE = '/news-media/';
 const NEWS_MEDIA_MAX_BYTES = 5 * 1024 * 1024;
@@ -26,6 +30,21 @@ const NEWS_MEDIA_TYPES: Record<string, { extension: string; contentType: string 
   'image/webp': { extension: 'webp', contentType: 'image/webp' },
   'image/gif': { extension: 'gif', contentType: 'image/gif' },
 };
+const requestStore = new AsyncLocalStorage<AuthStorePort>();
+const authStore = new Proxy({} as AuthStorePort, {
+  get(_target, property) {
+    const store = requestStore.getStore();
+    if (!store) throw new Error('Auth request store is unavailable.');
+    const value = Reflect.get(store, property, store) as unknown;
+    return typeof value === 'function' ? value.bind(store) : value;
+  },
+});
+
+class HttpRequestError extends Error {
+  constructor(message: string, readonly statusCode: number) {
+    super(message);
+  }
+}
 
 // Parse comma-separated allowed origins from environment
 // Default: localhost dev environments
@@ -43,16 +62,55 @@ function parseAllowedOrigins(): Set<string> {
 }
 
 const allowedOrigins = parseAllowedOrigins();
+const authAttempts = new Map<string, number[]>();
+const AUTH_RATE_WINDOW_MS = 60_000;
+const AUTH_RATE_MAX_ATTEMPTS = 10;
 
 function isOriginAllowed(origin: string | undefined): boolean {
   if (!origin) return false;
   return allowedOrigins.has(origin);
 }
 
+function requestIp(request: IncomingMessage): string {
+  const cloudflareIp = request.headers['cf-connecting-ip'];
+  if (typeof cloudflareIp === 'string' && cloudflareIp) return cloudflareIp;
+  const forwarded = request.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded) return forwarded.split(',')[0].trim();
+  return request.socket.remoteAddress ?? 'unknown';
+}
+
+function consumeAuthAttempt(request: IncomingMessage, scope: string): boolean {
+  const now = Date.now();
+  const key = `${scope}:${requestIp(request)}`;
+  const recent = (authAttempts.get(key) ?? []).filter((timestamp) => now - timestamp < AUTH_RATE_WINDOW_MS);
+  if (recent.length >= AUTH_RATE_MAX_ATTEMPTS) {
+    authAttempts.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  authAttempts.set(key, recent);
+  if (authAttempts.size > 10_000) {
+    for (const [entryKey, entries] of authAttempts) {
+      if (entries.every((timestamp) => now - timestamp >= AUTH_RATE_WINDOW_MS)) authAttempts.delete(entryKey);
+    }
+  }
+  return true;
+}
+
 function readJsonBody<T>(request: IncomingMessage): Promise<T> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    request.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+    let bytes = 0;
+    request.on('data', (chunk) => {
+      const buffer = Buffer.from(chunk);
+      bytes += buffer.byteLength;
+      if (bytes > MAX_JSON_BODY_BYTES) {
+        reject(new HttpRequestError('Request body is too large', 413));
+        request.destroy();
+        return;
+      }
+      chunks.push(buffer);
+    });
     request.on('end', () => {
       if (chunks.length === 0) {
         resolve({} as T);
@@ -195,8 +253,23 @@ function isDevRequestAuthorized(request: IncomingMessage): boolean {
 }
 
 function isControlTokenAuthorized(request: IncomingMessage): boolean {
-  const expected = process.env.CONTROL_TOKEN ?? 'dev-control-token';
-  return request.headers['x-control-token'] === expected;
+  return request.headers['x-control-token'] === CONTROL_TOKEN;
+}
+
+async function callOrchestrator(
+  subPath: string,
+  method: string,
+  body?: unknown,
+): Promise<{ status: number; text: string }> {
+  const controlPort = Number(process.env.CONTROL_PORT ?? 8790);
+  const upstream = await fetch(`http://127.0.0.1:${controlPort}${subPath}`, {
+    method,
+    headers: { 'content-type': 'application/json', 'x-control-token': CONTROL_TOKEN! },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    // Registering a pinned backend may run npm ci on a Raspberry Pi.
+    signal: AbortSignal.timeout(10 * 60_000),
+  });
+  return { status: upstream.status, text: await upstream.text() };
 }
 
 function getAuthenticatedAccount(request: IncomingMessage): AuthAccount | null {
@@ -619,6 +692,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (request.method === 'POST' && url.pathname === '/api/login') {
+    if (!consumeAuthAttempt(request, 'login')) {
+      writeJson(response, 429, { error: 'Too many login attempts. Try again shortly.' });
+      return;
+    }
     const credentials = await readJsonBody<LoginCredentials>(request);
     const rememberMe = credentials.rememberMe !== false;
     const result = authStore.login(credentials);
@@ -628,6 +705,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (request.method === 'POST' && url.pathname === '/api/signup') {
+    if (!consumeAuthAttempt(request, 'signup')) {
+      writeJson(response, 429, { error: 'Too many signup attempts. Try again shortly.' });
+      return;
+    }
     const credentials = await readJsonBody<Credentials>(request);
     const result = authStore.signup(credentials);
     response.setHeader('Set-Cookie', serializeSessionCookie(result.token));
@@ -646,6 +727,10 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   if (request.method === 'POST' && url.pathname === '/api/dev/login') {
+    if (!consumeAuthAttempt(request, 'dev-login')) {
+      writeJson(response, 429, { error: 'Too many developer login attempts. Try again shortly.' });
+      return;
+    }
     const body = await readJsonBody<{ password?: unknown }>(request);
     const password = typeof body.password === 'string' ? body.password : '';
     if (!authStore.validateDevPassword(password)) {
@@ -687,20 +772,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       writeJson(response, 401, { error: 'Developer session required' });
       return;
     }
-    const controlPort = Number(process.env.CONTROL_PORT ?? 8790);
-    const controlToken = process.env.CONTROL_TOKEN ?? 'dev-control-token';
     const subPath = `${orchestratorMatch[1] ?? '/'}${url.search}`;
     const method = request.method ?? 'GET';
     const body = method === 'POST' ? await readJsonBody(request) : undefined;
     try {
-      const upstream = await fetch(`http://127.0.0.1:${controlPort}${subPath}`, {
-        method,
-        headers: { 'content-type': 'application/json', 'x-control-token': controlToken },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      const text = await upstream.text();
+      const upstream = await callOrchestrator(subPath, method, body);
       response.writeHead(upstream.status, { 'content-type': 'application/json' });
-      response.end(text);
+      response.end(upstream.text);
     } catch {
       writeJson(response, 502, { error: 'Orchestrator unreachable. Is it running?' });
     }
@@ -714,8 +792,16 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     }
 
     const body = await readJsonBody<{ name?: unknown }>(request);
-    const name = typeof body.name === 'string' ? body.name : '';
-    writeJson(response, 201, { game: authStore.createGame(name) });
+    try {
+      const upstream = await callOrchestrator('/games', 'POST', {
+        name: typeof body.name === 'string' ? body.name : '',
+        versionId: 'dev',
+      });
+      response.writeHead(upstream.status, { 'content-type': 'application/json' });
+      response.end(upstream.text);
+    } catch {
+      writeJson(response, 502, { error: 'Orchestrator unreachable. Is it running?' });
+    }
     return;
   }
 
@@ -726,13 +812,13 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
       return;
     }
 
-    const deleted = authStore.deleteGame(deleteDevGameMatch[1]);
-    if (!deleted) {
-      writeJson(response, 404, { error: 'Game not found' });
-      return;
+    try {
+      const upstream = await callOrchestrator(`/games/${deleteDevGameMatch[1]}`, 'DELETE');
+      response.writeHead(upstream.status, { 'content-type': 'application/json' });
+      response.end(upstream.text);
+    } catch {
+      writeJson(response, 502, { error: 'Orchestrator unreachable. Is it running?' });
     }
-    await rm(getGameStateDirectory(deleted.id), { recursive: true, force: true });
-    writeJson(response, 200, { ok: true, game: deleted });
     return;
   }
 
@@ -761,15 +847,12 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
     const body = await readJsonBody<{ windowKey?: unknown }>(request);
     const windowKey = typeof body.windowKey === 'string' ? body.windowKey : '';
     const questId = decodeURIComponent(claimQuestMatch[1]);
-    const claimed = authStore.claimQuestReward(account.id, questId, windowKey);
-    if (!claimed) {
+    const reward = authStore.claimQuestReward(account.id, questId, windowKey);
+    if (!reward) {
       writeJson(response, 400, { error: 'Quest not completed or already claimed' });
       return;
     }
-    const xpReward = [...WEEKLY_QUESTS, ...TRIDAY_QUESTS].find((q) => q.id === questId)?.xpReward ?? 0;
-    const newTotalXp = authStore.addPlayerXp(account.id, xpReward);
-    authStore.checkAndUnlockAchievements(account.id);
-    writeJson(response, 200, { xpGained: xpReward, newTotalXp, newLevel: getProgressionLevel(newTotalXp) });
+    writeJson(response, 200, reward);
     return;
   }
 
@@ -836,18 +919,48 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   writeJson(response, 404, { error: 'Not found' });
 }
 
-const server = createServer((request, response) => {
-  void handleRequest(request, response).catch((error: unknown) => {
-    if (isAuthError(error)) {
-      writeJson(response, error.statusCode, { error: error.message });
-      return;
-    }
+export function createAuthRequestHandler(store: AuthStorePort) {
+  return (request: IncomingMessage, response: ServerResponse): void => {
+    requestStore.run(store, () => {
+      void handleRequest(request, response).catch((error: unknown) => {
+        if (error instanceof HttpRequestError) {
+          if (!response.headersSent) writeJson(response, error.statusCode, { error: error.message });
+          return;
+        }
+        if (isAuthError(error)) {
+          writeJson(response, error.statusCode, { error: error.message });
+          return;
+        }
 
-    console.error('[AuthServer] Unhandled error', error);
-    writeJson(response, 500, { error: 'Internal server error' });
+        console.error('[AuthServer] Unhandled error', error);
+        writeJson(response, 500, { error: 'Internal server error' });
+      });
+    });
+  };
+}
+
+export function startAuthServer(store: AuthStorePort = new AuthStore()) {
+  if (!CONTROL_TOKEN) {
+    store.close();
+    throw new Error('CONTROL_TOKEN is required. Set the same long random value for auth and orchestrator.');
+  }
+  const server = createServer(createAuthRequestHandler(store));
+  server.once('error', () => store.close());
+  server.listen(PORT, HOST, () => {
+    console.log(`[AuthServer] Listening on http://${HOST}:${PORT}`);
   });
-});
 
-server.listen(PORT, () => {
-  console.log(`[AuthServer] Listening on http://localhost:${PORT}`);
-});
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => {
+      server.close(() => {
+        store.close();
+        process.exit(0);
+      });
+    });
+  }
+  return server;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  startAuthServer();
+}

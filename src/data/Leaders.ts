@@ -5,7 +5,7 @@ import type { SpeciesArchetypeId, SpeciesState } from "./Species";
 export type LeaderClass = "civilian" | "military";
 export type LeaderGender = "female" | "male";
 export type LeaderStatus = "pool" | "recruited" | "dead";
-export type LeaderAssignmentKind = "planet" | "fleet" | "government";
+export type LeaderAssignmentKind = "planet" | "planetMilitary" | "groundBattle" | "fleet" | "government";
 
 export interface LeaderAssignment {
   kind: LeaderAssignmentKind;
@@ -32,6 +32,9 @@ export type LeaderTraitId =
   | "logisticsCommander"
   | "warHero"
   | "voidStrategist"
+  | "assaultSpecialist"
+  | "fortificationExpert"
+  | "fieldLogistician"
   // Legendary traits — only granted to rare offered leaders (not in the normal pool).
   | "legendaryStatesman"
   | "legendaryAdmiral";
@@ -57,6 +60,7 @@ export interface LeaderTraitDefinition {
   description: string;
   planetEffects?: LeaderPlanetEffect[];
   fleetEffects?: LeaderFleetEffects;
+  groundEffects?: LeaderGroundEffects;
   governmentEffects?: GovernmentLeaderTraitEffect[];
 }
 
@@ -186,6 +190,7 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
     classes: ["military"],
     description: "Commanded fleets gain +10% attack but lose 3% evasion.",
     fleetEffects: { attackMultiplier: 0.1, evasionBonus: -0.03 },
+    groundEffects: { attackMultiplier: 0.1, defenseMultiplier: -0.03 },
   },
   cautious: {
     id: "cautious",
@@ -193,6 +198,7 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
     classes: ["military"],
     description: "Commanded fleets gain +10% shield endurance but lose 5% speed.",
     fleetEffects: { shieldMultiplier: 0.1, speedMultiplier: -0.05 },
+    groundEffects: { defenseMultiplier: 0.1, attackMultiplier: -0.05 },
   },
   logistician: {
     id: "logistician",
@@ -200,6 +206,7 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
     classes: ["military"],
     description: "Commanded ships use 10% less monthly upkeep.",
     fleetEffects: { upkeepMultiplier: -0.1 },
+    groundEffects: { upkeepMultiplier: -0.1, recoveryMultiplier: 0.1 },
   },
   reckless: {
     id: "reckless",
@@ -207,6 +214,7 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
     classes: ["military"],
     description: "Commanded fleets gain +15% attack and +5% speed but lose 10% shield endurance.",
     fleetEffects: { attackMultiplier: 0.15, speedMultiplier: 0.05, shieldMultiplier: -0.1 },
+    groundEffects: { attackMultiplier: 0.15, defenseMultiplier: -0.1 },
   },
   inspiring: {
     id: "inspiring",
@@ -214,6 +222,7 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
     classes: ["military"],
     description: "Commanded fleets gain +5% attack, +5% speed, and +2% evasion.",
     fleetEffects: { attackMultiplier: 0.05, speedMultiplier: 0.05, evasionBonus: 0.02 },
+    groundEffects: { attackMultiplier: 0.05, defenseMultiplier: 0.05 },
   },
   defenseCoordinator: {
     id: "defenseCoordinator",
@@ -249,6 +258,7 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
     classes: ["military"],
     description: "Commanded fleets gain +12% attack and +4% evasion.",
     fleetEffects: { attackMultiplier: 0.12, evasionBonus: 0.04 },
+    groundEffects: { attackMultiplier: 0.12, defenseMultiplier: 0.04 },
   },
   voidStrategist: {
     id: "voidStrategist",
@@ -256,6 +266,27 @@ export const LEADER_TRAIT_DEFINITIONS: Record<LeaderTraitId, LeaderTraitDefiniti
     classes: ["military"],
     description: "Commanded fleets gain +6% attack, +6% speed, and +6% shield endurance.",
     fleetEffects: { attackMultiplier: 0.06, speedMultiplier: 0.06, shieldMultiplier: 0.06 },
+  },
+  assaultSpecialist: {
+    id: "assaultSpecialist",
+    name: "Assault Specialist",
+    classes: ["military"],
+    description: "Commanded armies gain +15% ground attack.",
+    groundEffects: { attackMultiplier: 0.15 },
+  },
+  fortificationExpert: {
+    id: "fortificationExpert",
+    name: "Fortification Expert",
+    classes: ["military"],
+    description: "Commanded defending armies gain +20% ground defense.",
+    groundEffects: { defenseMultiplier: 0.2, defenderOnly: true },
+  },
+  fieldLogistician: {
+    id: "fieldLogistician",
+    name: "Field Logistician",
+    classes: ["military"],
+    description: "Commanded armies use 10% less upkeep and recover 25% faster outside battle.",
+    groundEffects: { upkeepMultiplier: -0.1, recoveryMultiplier: 0.25 },
   },
   legendaryStatesman: {
     id: "legendaryStatesman",
@@ -300,6 +331,9 @@ const MILITARY_TRAITS: LeaderTraitId[] = [
   "logisticsCommander",
   "warHero",
   "voidStrategist",
+  "assaultSpecialist",
+  "fortificationExpert",
+  "fieldLogistician",
 ];
 
 // Legendary traits are reserved for rare offered leaders; they never enter the
@@ -448,6 +482,14 @@ function pick<T>(items: T[], rng: () => number): T {
   return items[Math.floor(rng() * items.length)] ?? items[0];
 }
 
+export interface LeaderGroundEffects {
+  attackMultiplier?: number;
+  defenseMultiplier?: number;
+  upkeepMultiplier?: number;
+  recoveryMultiplier?: number;
+  defenderOnly?: boolean;
+}
+
 const PORTRAIT_ARCHETYPE_SLUG: Record<SpeciesArchetypeId, string> = {
   humanoid: "human",
   avian: "avian",
@@ -533,7 +575,7 @@ export function formatLeaderClass(leaderClass: LeaderClass): string {
 }
 
 export function getLeaderAssignmentClass(kind: LeaderAssignmentKind): LeaderClass {
-  return kind === "fleet" ? "military" : "civilian";
+  return kind === "fleet" || kind === "planetMilitary" || kind === "groundBattle" ? "military" : "civilian";
 }
 
 export function getLeaderClassTraits(leaderClass: LeaderClass): LeaderTraitId[] {
@@ -683,7 +725,13 @@ export function normalizeLeaderState(raw: Partial<LeaderState> | undefined, fall
     .filter((trait) => LEADER_TRAIT_DEFINITIONS[trait].classes.includes(leaderClass));
   const xp = Math.max(0, Number(raw?.xp ?? fallback.xp) || 0);
   const assignment = raw?.assignment
-    && (raw.assignment.kind === "planet" || raw.assignment.kind === "fleet" || raw.assignment.kind === "government")
+    && (
+      raw.assignment.kind === "planet"
+      || raw.assignment.kind === "planetMilitary"
+      || raw.assignment.kind === "groundBattle"
+      || raw.assignment.kind === "fleet"
+      || raw.assignment.kind === "government"
+    )
     && typeof raw.assignment.targetId === "string"
       ? { kind: raw.assignment.kind, targetId: raw.assignment.targetId }
       : null;

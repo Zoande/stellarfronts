@@ -1,6 +1,7 @@
 import {
   BUILDING_LABELS,
   JOB_LABELS,
+  PLANET_DEFENSE_BUILDING_DEFINITIONS,
   RESOURCE_LABELS,
 } from "../data/Economy";
 import {
@@ -15,6 +16,8 @@ import {
   TECHNOLOGY_BY_ID,
   TECHNOLOGY_DEFINITIONS,
 } from "../data/Technology";
+import { PLANET_FEATURE_DEFINITIONS } from "../data/PlanetFeatures";
+import { ARMY_TYPE_DEFINITIONS } from "../data/Armies";
 import type {
   FactionTechnologyView,
   TechnologyDefinition,
@@ -621,8 +624,16 @@ export class TechnologyPanel {
         return `Unlock building upgrade: ${BUILDING_LABELS[effect.building] ?? effect.building} level ${effect.level}`;
       case "unlock_starbase_building":
         return `Unlock starbase building: ${STARBASE_BUILDING_DEFINITIONS[effect.building]?.label ?? effect.building}`;
+      case "unlock_planet_defense_building":
+        return `Unlock planetary facility: ${PLANET_DEFENSE_BUILDING_DEFINITIONS[effect.building]?.label ?? effect.building}`;
+      case "unlock_planet_defense_building_level":
+        return `Unlock planetary facility upgrade: ${PLANET_DEFENSE_BUILDING_DEFINITIONS[effect.building]?.label ?? effect.building} level ${effect.level}`;
+      case "unlock_planet_feature_removal":
+        return `Unlock planetary remediation: ${PLANET_FEATURE_DEFINITIONS[effect.feature]?.label ?? effect.feature}`;
       case "unlock_ship_hull":
         return `Unlock hull: ${SHIP_HULL_DEFINITIONS[effect.shipKind]?.label ?? effect.shipKind}`;
+      case "unlock_army_type":
+        return `Unlock army: ${ARMY_TYPE_DEFINITIONS[effect.armyTypeId]?.name ?? effect.armyTypeId}`;
       case "unlock_ship_module": {
         const module = getShipModuleDefinition(effect.moduleId);
         return `Unlock ship module: ${module?.label ?? effect.moduleId}`;

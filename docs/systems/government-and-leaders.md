@@ -28,6 +28,10 @@ requiring a leader of the right class and applying level-scaled effects.
 Command: `setGovernmentLaw` ([`src/game/GameProtocol.ts`](../../src/game/GameProtocol.ts)); applied
 server-side.
 
+Migration Policy controls which per-species migration rights are legal; it does not multiply
+migration rates. Foreign movement additionally requires Free Migration rights on both sides and an
+active migration pact.
+
 ## Leaders
 
 `LeaderState` ([`src/data/Leaders.ts`](../../src/data/Leaders.ts)) has a `LeaderClass`

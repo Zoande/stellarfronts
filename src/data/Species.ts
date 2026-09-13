@@ -21,7 +21,7 @@ export type SpeciesTraitId =
 
 export type LivingStandardId = "luxurious" | "comfortable" | "basic" | "subsistence" | "oppressed";
 export type CitizenshipStatusId = "fullCitizenship" | "residence" | "limitedRights" | "nonCitizen";
-export type MigrationRightsId = "free" | "controlled" | "prohibited";
+export type MigrationRightsId = "notAllowed" | "internalOnly" | "free";
 export type WorkEligibilityId = "allJobs" | "noAuthority" | "laborOnly";
 export type SpeciesRightsCategory = "livingStandard" | "citizenship" | "migration" | "workEligibility";
 
@@ -95,6 +95,7 @@ export interface LegalSpeciesRightsOptions {
 export interface SpeciesLawSelections {
   civilRights?: string;
   speciesPolicy?: string;
+  migrationPolicy?: string;
 }
 
 export interface SpeciesEconomyEffects {
@@ -162,9 +163,9 @@ export const CITIZENSHIP_OPTIONS: Array<SpeciesRightsOption<CitizenshipStatusId>
 ];
 
 export const MIGRATION_OPTIONS: Array<SpeciesRightsOption<MigrationRightsId>> = [
-  { id: "free", name: "Free Migration", summary: "Best happiness and growth.", description: "Species can freely seek opportunity inside the empire." },
-  { id: "controlled", name: "Controlled Migration", summary: "Managed movement.", description: "Migration is permitted through state-controlled channels." },
-  { id: "prohibited", name: "Migration Prohibited", summary: "Lower happiness and growth.", description: "Species cannot legally relocate without special authorization." },
+  { id: "notAllowed", name: "Not Allowed", summary: "No legal migration; −4 happiness.", description: "This species cannot legally relocate between planets." },
+  { id: "internalOnly", name: "Internal Only", summary: "Internal migration; −2 happiness.", description: "This species may move between planets inside the empire." },
+  { id: "free", name: "Free Migration", summary: "Internal and pact migration.", description: "This species may migrate internally and through active migration pacts." },
 ];
 
 export const WORK_ELIGIBILITY_OPTIONS: Array<SpeciesRightsOption<WorkEligibilityId>> = [
@@ -176,7 +177,7 @@ export const WORK_ELIGIBILITY_OPTIONS: Array<SpeciesRightsOption<WorkEligibility
 export const DEFAULT_SPECIES_RIGHTS: SpeciesRights = {
   livingStandard: "basic",
   citizenship: "fullCitizenship",
-  migration: "controlled",
+  migration: "internalOnly",
   workEligibility: "allJobs",
 };
 
@@ -285,10 +286,17 @@ function normalizeRightsOption<T extends string>(value: unknown, options: Array<
 }
 
 export function normalizeSpeciesRights(raw: Partial<SpeciesRights> | undefined): SpeciesRights {
+  const migrationAliases: Record<string, MigrationRightsId> = {
+    prohibited: "notAllowed",
+    controlled: "internalOnly",
+    free: "free",
+    notAllowed: "notAllowed",
+    internalOnly: "internalOnly",
+  };
   return {
     livingStandard: normalizeRightsOption(raw?.livingStandard, LIVING_STANDARD_OPTIONS, DEFAULT_SPECIES_RIGHTS.livingStandard),
     citizenship: normalizeRightsOption(raw?.citizenship, CITIZENSHIP_OPTIONS, DEFAULT_SPECIES_RIGHTS.citizenship),
-    migration: normalizeRightsOption(raw?.migration, MIGRATION_OPTIONS, DEFAULT_SPECIES_RIGHTS.migration),
+    migration: migrationAliases[String(raw?.migration ?? "")] ?? DEFAULT_SPECIES_RIGHTS.migration,
     workEligibility: normalizeRightsOption(raw?.workEligibility, WORK_ELIGIBILITY_OPTIONS, DEFAULT_SPECIES_RIGHTS.workEligibility),
   };
 }
@@ -304,13 +312,13 @@ function allowedIdsForSpeciesPolicy(category: SpeciesRightsCategory, optionId: s
   if (speciesPolicy === "pluralistProtections") {
     if (category === "livingStandard") return ["luxurious", "comfortable", "basic"].includes(optionId);
     if (category === "citizenship") return ["fullCitizenship", "residence"].includes(optionId);
-    if (category === "migration") return ["free", "controlled"].includes(optionId);
+    if (category === "migration") return true;
     if (category === "workEligibility") return ["allJobs", "noAuthority"].includes(optionId);
   }
   if (speciesPolicy === "stratifiedSpeciesCodes") return true;
   if (category === "livingStandard") return ["comfortable", "basic", "subsistence"].includes(optionId);
   if (category === "citizenship") return ["fullCitizenship", "residence", "limitedRights"].includes(optionId);
-  if (category === "migration") return ["free", "controlled", "prohibited"].includes(optionId);
+  if (category === "migration") return true;
   if (category === "workEligibility") return ["allJobs", "noAuthority"].includes(optionId);
   return true;
 }
@@ -328,6 +336,17 @@ function allowedByCivilRights(category: SpeciesRightsCategory, optionId: string,
 }
 
 function optionReason(category: SpeciesRightsCategory, optionId: string, selections: SpeciesLawSelections): string | undefined {
+  if (category === "migration") {
+    const migrationPolicy = selections.migrationPolicy ?? "managedMigration";
+    const allowed = migrationPolicy === "freeMovement"
+      ? ["internalOnly", "free"].includes(optionId)
+      : migrationPolicy === "migrationControls"
+        ? ["notAllowed", "internalOnly"].includes(optionId)
+        : migrationPolicy === "closedMovement"
+          ? optionId === "notAllowed"
+          : ["notAllowed", "internalOnly", "free"].includes(optionId);
+    return allowed ? undefined : "Blocked by Migration Policy law.";
+  }
   if (!allowedIdsForSpeciesPolicy(category, optionId, selections.speciesPolicy)) return "Blocked by Species Policy law.";
   if (!allowedByCivilRights(category, optionId, selections.civilRights)) return "Blocked by Civil Rights law.";
   return undefined;
@@ -429,13 +448,8 @@ export function getSpeciesEconomyEffects(species: SpeciesState | undefined, righ
     effects.crimeAdd += 5;
   }
 
-  if (rights.migration === "free") {
-    effects.happinessAdd += 2;
-    effects.growthMultiplier *= 1.03;
-  } else if (rights.migration === "prohibited") {
-    effects.happinessAdd -= 4;
-    effects.growthMultiplier *= 0.96;
-  }
+  if (rights.migration === "internalOnly") effects.happinessAdd -= 2;
+  if (rights.migration === "notAllowed") effects.happinessAdd -= 4;
 
   if (rights.workEligibility === "noAuthority") effects.happinessAdd -= 2;
   if (rights.workEligibility === "laborOnly") {
