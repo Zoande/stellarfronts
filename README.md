@@ -153,6 +153,9 @@ wire state.
 ## Repository map
 
 ```text
+package.json     Project metadata, dependencies, and npm commands
+*.config.*       Tool configuration (Vite, TypeScript, Wrangler)
+scripts/         Local utilities, asset generators, and bundle checks
 src/
   auth/          Auth client and shared account/profile types
   components/    React shells and shared page components
@@ -170,9 +173,12 @@ server/
   index.ts       Game server/runtime and command handlers
   orchestrator.ts Multi-version host and gateway
 docs/            Engineering and gameplay-system documentation
-resources/       Source art and model resources
+resources/       Source and original art, models, and texture packs
 public/          Browser-served static assets
 ```
+
+Original, unprocessed assets belong under `resources/original-assets/` (split into `models/` and
+`textures/`). Runtime assets served by the client belong under `public/`.
 
 ## Documentation
 
