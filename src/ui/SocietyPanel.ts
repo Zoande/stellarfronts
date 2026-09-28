@@ -2,6 +2,7 @@ import type { ClientCommand, SocietyDetailPayload } from "../game/GameProtocol";
 import { SPECIES_ARCHETYPE_BY_ID, SPECIES_TRAIT_BY_ID } from "../data/Species";
 import type { SpeciesRights, SpeciesRightsCategory, SpeciesState } from "../data/Species";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
+import { SPECIES_TRAIT_ICONS } from "./speciesTraitIcons";
 
 export interface SocietyPanelData extends SocietyDetailPayload {
   factionName?: string;
@@ -238,9 +239,12 @@ export class SocietyPanel {
               ${traits.length
                 ? traits.map((trait) => `
                   <div class="societyTrait ${trait.polarity}">
-                    <strong>${this.escapeHtml(trait.name)}</strong>
+                    <img src="${this.escapeAttribute(SPECIES_TRAIT_ICONS[trait.id])}" alt="" loading="lazy" decoding="async">
+                    <div class="societyTraitCopy">
+                      <strong>${this.escapeHtml(trait.name)}</strong>
+                      <small>${this.escapeHtml(trait.description)}</small>
+                    </div>
                     <span>${trait.pointCost > 0 ? `-${trait.pointCost}` : `+${Math.abs(trait.pointCost)}`}</span>
-                    <small>${this.escapeHtml(trait.description)}</small>
                   </div>
                 `).join("")
                 : '<div class="societyEmpty compact">No locked traits.</div>'}
@@ -673,11 +677,23 @@ export class SocietyPanel {
       }
       .societyTrait {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: 42px minmax(0, 1fr) auto;
+        align-items: center;
         gap: 4px 10px;
         border: 1px solid rgba(120, 255, 226, 0.18);
         background: rgba(5, 20, 27, 0.68);
         padding: 9px;
+      }
+      .societyTrait img {
+        width: 42px;
+        height: 42px;
+        border-radius: 3px;
+        object-fit: cover;
+      }
+      .societyTraitCopy {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
       }
       .societyTrait strong {
         color: #f0fffb;
@@ -1707,14 +1723,26 @@ export class SocietyPanel {
       }
       .societyTrait {
         min-width: 0;
-        min-height: 54px;
+        min-height: 60px;
         display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-columns: 40px minmax(0, 1fr) auto;
+        align-items: center;
         gap: 4px 8px;
         border: 1px solid rgba(76, 223, 197, 0.22);
         border-radius: 0;
         background: rgba(0, 14, 18, 0.45);
         padding: 8px;
+      }
+      .societyTrait img {
+        width: 40px;
+        height: 40px;
+        border-radius: 2px;
+        object-fit: cover;
+      }
+      .societyTraitCopy {
+        display: grid;
+        gap: 4px;
+        min-width: 0;
       }
       .societyTrait strong {
         overflow: hidden;

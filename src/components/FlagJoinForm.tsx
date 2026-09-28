@@ -17,6 +17,7 @@ import {
   validateSpeciesTraits,
 } from '@/data/Species';
 import type { SpeciesArchetypeId, SpeciesSetup, SpeciesTraitId } from '@/data/Species';
+import { SPECIES_TRAIT_ICONS } from '@/ui/speciesTraitIcons';
 import '../styles/FlagJoin.css';
 
 interface FlagJoinFormProps {
@@ -265,8 +266,13 @@ export function FlagJoinForm({
                     onClick={() => toggleTrait(trait.id)}
                   >
                     <span className="flag-join__trait-cost">{trait.pointCost > 0 ? `-${trait.pointCost}` : `+${Math.abs(trait.pointCost)}`}</span>
-                    <strong>{trait.name}</strong>
-                    <small>{trait.description}</small>
+                    <span className="flag-join__trait-content">
+                      <img src={SPECIES_TRAIT_ICONS[trait.id]} alt="" loading="lazy" decoding="async" />
+                      <span className="flag-join__trait-copy">
+                        <strong>{trait.name}</strong>
+                        <small>{trait.description}</small>
+                      </span>
+                    </span>
                   </button>
                 );
               })}
