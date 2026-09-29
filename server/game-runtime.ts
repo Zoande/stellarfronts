@@ -1,3 +1,7 @@
+import { random, nextRuntimeId, createDeterministicState } from "./game/determinism";
+import { accept, reject, ADAPTER_COMMANDS } from "./game/actions";
+import type { GameAction, GameActor, ActionSession, CommandReply } from "./game/actions";
+import type { CommandOutcome, MutationEffects } from "./game/mutation-coordinator";
 import { rm } from "node:fs/promises";
 import { WebSocket } from "ws";
 import { buildFactions, buildHomeSystemOwnership, computeVisibleStarIds } from "../src/data/Factions";
@@ -189,16 +193,11 @@ import { normalizeResourceCounts, normalizeStarbase, syncFleetMembership, syncSy
 import { decodeClientCommand } from "./game/client-command-codec";
 import {
   applyMutationEffects,
-  runAuthoritativeCommand,
-  SPECIALIZED_OR_READ_ONLY_COMMANDS,
 } from "./game/mutation-coordinator";
 import { executeAdminCommand } from "./game/admin-commands";
 import { createInitialState, loadState } from "./game/state-bootstrap";
 import {
-  accept,
-  beginCommandResult,
-  consumeCommandResultStatus,
-  reject,
+  reject as rejectSocket,
   sendEvent,
 } from "./game/socket-io";
 import {
@@ -223,14 +222,26 @@ import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clea
 import { runSimulationPipeline } from "./game/simulation-pipeline";
 import { beginPlanetInvasion, embarkPlanetArmies, getArmyRecruitmentCap, isArmyFleet, processArmyAndCrewReplenishment, processGroundBattles, reinforceOwnedPlanet, requestGroundWithdrawal } from "./game/ground-combat";
 
-export async function createGameRuntime(
+export interface GameCore {
+  context: RuntimeContext;
+  runtime: GameRuntime;
+  createAiActor: (factionId: number, controllerId?: string) => GameActor;
+  createHumanActor: (accountId: number, factionId: number) => GameActor;
+  createObserverActor: () => GameActor;
+  executeGameCommand: (actor: GameActor, action: unknown) => CommandOutcome;
+}
+export function createGameCore(
   game: StoredGame,
   authStore: GameRuntimeAuthPort,
-): Promise<GameRuntime> {
+  options: { now?: () => number; simulationSeed?: number; initialState?: GameState; initialWorld?: { starCount: number; factionCount: number }; deferInitialState?: boolean } = {},
+): GameCore {
+let commandEffects: MutationEffects | null = null;
+let accountNotifications: Map<number, number> | null = null;
+const issuedActors = new WeakSet<object>();
 const ctx: RuntimeContext = {
   game,
   statePath: getGameStatePath(game.id),
-  state: undefined as unknown as GameState,
+  state: options.initialState ?? { determinism: createDeterministicState(options.simulationSeed) } as GameState,
   clients: new Set<ClientSession>(),
   pendingPlanetDetailRefreshes: new Set<string>(),
   hasDirtyState: false,
@@ -242,7 +253,9 @@ const ctx: RuntimeContext = {
   eventInstanceSeq: 0,
   services: {
     authStore,
-    now: () => Date.now(),
+    now: options.now ?? (() => Date.now()),
+    simulationSeed: options.simulationSeed,
+    initialWorld: options.initialWorld,
   },
   setFleetPhase, // hoisted function declaration â€” safe to reference here
   recalculatePlanetEconomies, // hoisted
@@ -277,28 +290,29 @@ function syncClockSpeedFields(): void {
 
 
 function createRuntimeId(prefix: string, parts: Array<string | number | undefined> = []): string {
-  ctx.runtimeIdCounter += 1;
-  const cleanParts = parts.filter((part) => part !== undefined && part !== "");
-  return `${prefix}-${cleanParts.join("-")}-${Date.now().toString(36)}-${ctx.runtimeIdCounter.toString(36)}`;
+  return nextRuntimeId(ctx, prefix, parts);
 }
 
 function recalculatePlanetEconomies(nextState = ctx.state): void {
+  if (commandEffects && nextState === ctx.state) { commandEffects.recalculatePlanets = true; return; }
   applyRecalculatePlanetEconomies(nextState);
 }
 
 function refreshFactionEconomyDeltas(nextState = ctx.state): void {
+  if (commandEffects && nextState === ctx.state) { commandEffects.refreshFactionEconomy = true; return; }
   applyFactionEconomyDeltas(nextState);
 }
 
-function requireUnlocked(socket: WebSocket, factionId: number, requiredTechIds: TechId[]): boolean {
+function requireUnlocked(reply: CommandReply, factionId: number, requiredTechIds: TechId[]): boolean {
   if (requiredTechIds.length === 0) return true;
   const techState = getFactionTechnology(ctx.state, factionId);
   if (isUnlockedByAnyRequiredTech(techState, requiredTechIds)) return true;
-  reject(socket, `Requires ${getFirstRequiredTechName(requiredTechIds)}.`);
+  reject(reply, `Requires ${getFirstRequiredTechName(requiredTechIds)}.`);
   return false;
 }
 
 function queuePlanetDetailRefresh(planetId: string): void {
+  if (commandEffects) { (commandEffects.planetDetailIds ??= []).push(planetId); return; }
   ctx.pendingPlanetDetailRefreshes.add(planetId);
 }
 
@@ -321,6 +335,7 @@ function setFleetPhase(fleet: GameFleet, phase: ShipTransitPhase): void {
 }
 
 function refreshDiscovery(nextState = ctx.state): void {
+  if (commandEffects && nextState === ctx.state) { commandEffects.refreshDiscovery = true; return; }
   applyRefreshDiscovery(nextState);
 }
 
@@ -331,6 +346,7 @@ function broadcastSnapshots(): void {
 }
 
 function broadcastUpdates(changed: ServerUpdateField[]): void {
+  if (commandEffects) { (commandEffects.changed ??= []).push(...changed); return; }
   const deduped = Array.from(new Set(changed));
   if (deduped.length === 0) return;
   for (const client of ctx.clients) {
@@ -340,6 +356,7 @@ function broadcastUpdates(changed: ServerUpdateField[]): void {
 }
 
 function broadcastAccountDarkMatter(accountId: number, darkMatter: number): void {
+  if (accountNotifications) { accountNotifications.set(accountId, darkMatter); return; }
   for (const client of ctx.clients) {
     if (client.account.id === accountId) {
       sendEvent(client.socket, { type: "accountResources", darkMatter });
@@ -399,7 +416,7 @@ function resolveFleetForCommand(fleetId?: string, shipId?: string): GameFleet | 
 }
 
 function handleMove(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   fleetId: string | undefined,
   shipId: string | undefined,
@@ -408,77 +425,77 @@ function handleMove(
   orbitTarget?: FleetOrbitTarget | null,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const fleet = resolveFleetForCommand(fleetId, shipId);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(reply, "Fleet cannot accept orders right now.");
   try {
     prepareFleetForReplacementOrder(ctx, fleet);
     startMoveOrder(ctx, fleet, targetStarId, targetSystemPosition, orbitTarget);
     ctx.hasDirtyState = true;
     refreshDiscovery();
-    accept(socket, "Move order accepted.");
+    accept(reply, "Move order accepted.");
     broadcastUpdates(["clock", "fleets", "visibility"]);
   } catch (error) {
-    reject(socket, error instanceof Error ? error.message : "Move order rejected.");
+    reject(reply, error instanceof Error ? error.message : "Move order rejected.");
   }
 }
 
-function handleBuild(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string | undefined, shipId: string | undefined, targetStarId: number): void {
+function handleBuild(reply: CommandReply, perspective: GalaxyPerspective, fleetId: string | undefined, shipId: string | undefined, targetStarId: number): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const fleet = resolveFleetForCommand(fleetId, shipId);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
-  if (!Number.isInteger(targetStarId) || targetStarId < 0 || targetStarId >= ctx.state.stars.length) return reject(socket, "Invalid target system.");
-  if (!fleetHasConstructionShip(ctx, fleet)) return reject(socket, "Requires a construction ship.");
-  if (ctx.state.starbases.some((starbase) => starbase.starId === targetStarId)) return reject(socket, "System already has a starbase.");
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(reply, "Fleet cannot accept orders right now.");
+  if (!Number.isInteger(targetStarId) || targetStarId < 0 || targetStarId >= ctx.state.stars.length) return reject(reply, "Invalid target system.");
+  if (!fleetHasConstructionShip(ctx, fleet)) return reject(reply, "Requires a construction ship.");
+  if (ctx.state.starbases.some((starbase) => starbase.starId === targetStarId)) return reject(reply, "System already has a starbase.");
   try {
     prepareFleetForReplacementOrder(ctx, fleet);
-    if (!spendResources(socket, factionId, OUTPOST_CONSTRUCTION_COST)) return;
+    if (!spendResources(reply, factionId, OUTPOST_CONSTRUCTION_COST)) return;
     startBuildOrder(ctx, fleet, targetStarId);
     fleet.pendingStarbaseBuildCost = { ...OUTPOST_CONSTRUCTION_COST };
     ctx.hasDirtyState = true;
     refreshDiscovery();
-    accept(socket, "Build order accepted.");
+    accept(reply, "Build order accepted.");
     broadcastUpdates(["clock", "fleets", "factionEconomies", "visibility"]);
   } catch (error) {
     refundResources(factionId, OUTPOST_CONSTRUCTION_COST);
     fleet.pendingStarbaseBuildCost = null;
-    reject(socket, error instanceof Error ? error.message : "Build order rejected.");
+    reject(reply, error instanceof Error ? error.message : "Build order rejected.");
   }
 }
 
-function handleOrbitPlanet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
+function handleOrbitPlanet(reply: CommandReply, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const fleet = resolveFleetForCommand(fleetId, undefined);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(reply, "Fleet cannot accept orders right now.");
   try {
     prepareFleetForReplacementOrder(ctx, fleet);
     startOrbitOrder(ctx, fleet, planetId);
     ctx.hasDirtyState = true;
     refreshDiscovery();
-    accept(socket, "Orbit order accepted.");
+    accept(reply, "Orbit order accepted.");
     broadcastUpdates(["clock", "fleets", "visibility"]);
   } catch (error) {
-    reject(socket, error instanceof Error ? error.message : "Orbit order rejected.");
+    reject(reply, error instanceof Error ? error.message : "Orbit order rejected.");
   }
 }
 
-function handleColonizePlanet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
+function handleColonizePlanet(reply: CommandReply, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const fleet = resolveFleetForCommand(fleetId, undefined);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(reply, "Fleet cannot accept orders right now.");
   const eligibility = getFactionPlanetColonizationEligibility(ctx, factionId, planetId, fleet);
-  if (!eligibility) return reject(socket, "Planet not found.");
+  if (!eligibility) return reject(reply, "Planet not found.");
   if (!eligibility.eligible) {
     const messages = {
       alreadyHabited: "Planet is already colonized.",
@@ -490,12 +507,12 @@ function handleColonizePlanet(socket: WebSocket, perspective: GalaxyPerspective,
       fleetUnavailable: "Fleet cannot colonize in its current state.",
       colonizable: "Planet cannot be colonized.",
     } as const;
-    return reject(socket, messages[eligibility.reason]);
+    return reject(reply, messages[eligibility.reason]);
   }
   const targetState = getPlanetState(ctx, planetId);
-  if (!targetState) return reject(socket, "Planet not found.");
+  if (!targetState) return reject(reply, "Planet not found.");
   if (targetState.starId !== fleet.currentStarId && !findRoute(ctx, fleet, targetState.starId)) {
-    return reject(socket, "No discovered safe route to planet.");
+    return reject(reply, "No discovered safe route to planet.");
   }
   if (
     targetState.starId !== fleet.currentStarId
@@ -504,7 +521,7 @@ function handleColonizePlanet(socket: WebSocket, perspective: GalaxyPerspective,
       return ship?.subsystemState?.engineDisabled && !ship.subsystemState.emergencyMobility;
     })
   ) {
-    return reject(socket, "Fleet contains an engine-crippled ship that requires construction assistance.");
+    return reject(reply, "Fleet contains an engine-crippled ship that requires construction assistance.");
   }
   const inhabitedBefore = ctx.state.planetStates.filter((planet) => planet.isHabited).length;
   try {
@@ -513,44 +530,44 @@ function handleColonizePlanet(socket: WebSocket, perspective: GalaxyPerspective,
     const foundedImmediately = ctx.state.planetStates.filter((planet) => planet.isHabited).length > inhabitedBefore;
     ctx.hasDirtyState = true;
     refreshDiscovery();
-    accept(socket, foundedImmediately ? "Colony founded." : "Colonization order accepted.");
+    accept(reply, foundedImmediately ? "Colony founded." : "Colonization order accepted.");
     broadcastUpdates(foundedImmediately
       ? ["clock", "fleets", "ships", "planetStates", "habitedPlanetSystems", "factionEconomies", "visibility"]
       : ["clock", "fleets", "visibility"]);
   } catch (error) {
-    reject(socket, error instanceof Error ? error.message : "Colonization order rejected.");
+    reject(reply, error instanceof Error ? error.message : "Colonization order rejected.");
   }
 }
 
 function handleMergeFleets(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   targetFleetId: string,
   sourceFleetIds: string[],
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const targetFleet = ctx.state.fleets.find((fleet) => fleet.id === targetFleetId);
-  if (!targetFleet) return reject(socket, "Target fleet not found.");
-  if (targetFleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!hasFleetCommandLink(targetFleet)) return reject(socket, "Fleet command link unavailable.");
+  if (!targetFleet) return reject(reply, "Target fleet not found.");
+  if (targetFleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!hasFleetCommandLink(targetFleet)) return reject(reply, "Fleet command link unavailable.");
   const targetIsArmy = isArmyFleet(ctx.state, targetFleet);
 
   const uniqueSourceIds = Array.from(new Set(sourceFleetIds)).filter((id) => id !== targetFleetId);
-  if (uniqueSourceIds.length === 0) return reject(socket, "No fleets selected to merge.");
+  if (uniqueSourceIds.length === 0) return reject(reply, "No fleets selected to merge.");
 
   const sourceFleets = uniqueSourceIds
     .map((id) => ctx.state.fleets.find((fleet) => fleet.id === id))
     .filter((fleet): fleet is GameFleet => !!fleet);
 
-  if (sourceFleets.length !== uniqueSourceIds.length) return reject(socket, "A source fleet was not found.");
+  if (sourceFleets.length !== uniqueSourceIds.length) return reject(reply, "A source fleet was not found.");
   for (const fleet of sourceFleets) {
-    if (fleet.ownerId !== factionId) return reject(socket, "You do not own all selected fleets.");
-    if (!hasFleetCommandLink(fleet)) return reject(socket, "A selected fleet has no command link.");
-    if (!isMergeSourceEligible(fleet)) return reject(socket, "A selected fleet cannot currently merge.");
-    if (isArmyFleet(ctx.state, fleet) !== targetIsArmy) return reject(socket, "Naval and Army Fleets cannot merge.");
+    if (fleet.ownerId !== factionId) return reject(reply, "You do not own all selected fleets.");
+    if (!hasFleetCommandLink(fleet)) return reject(reply, "A selected fleet has no command link.");
+    if (!isMergeSourceEligible(fleet)) return reject(reply, "A selected fleet cannot currently merge.");
+    if (isArmyFleet(ctx.state, fleet) !== targetIsArmy) return reject(reply, "Naval and Army Fleets cannot merge.");
     if (fleet.currentStarId !== targetFleet.currentStarId && !findRoute(ctx, fleet, targetFleet.currentStarId)) {
-      return reject(socket, "No discovered safe route to the target fleet.");
+      return reject(reply, "No discovered safe route to the target fleet.");
     }
   }
 
@@ -567,109 +584,109 @@ function handleMergeFleets(
   }
 
   ctx.hasDirtyState = true;
-  accept(socket, movingCount > 0 ? `Merge rendezvous ordered for ${movingCount} fleet(s).` : `Merged ${mergedCount} fleet(s).`);
+  accept(reply, movingCount > 0 ? `Merge rendezvous ordered for ${movingCount} fleet(s).` : `Merged ${mergedCount} fleet(s).`);
   broadcastUpdates(["clock", "ships", "fleets", "armies", "leaders", "visibility"]);
 }
 
-function handleStopFleet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): void {
+function handleStopFleet(reply: CommandReply, perspective: GalaxyPerspective, fleetId: string): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
-  if (fleet.phase === "missingInAction") return reject(socket, "Fleet is missing in action.");
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(reply, "Fleet command link unavailable.");
+  if (fleet.phase === "missingInAction") return reject(reply, "Fleet is missing in action.");
 
   clearFleetMovementNow(ctx, fleet);
   ctx.hasDirtyState = true;
   refreshDiscovery();
-  accept(socket, "Fleet stopped.");
+  accept(reply, "Fleet stopped.");
   broadcastUpdates(["clock", "fleets", "factionEconomies", "visibility"]);
 }
 
 function handleSetFleetDarkMatterBoost(
-  session: ClientSession,
+  session: ActionSession,
   fleetId: string,
   enabled: boolean,
 ): void {
   const factionId = validateCommandPerspective(session.perspective);
-  if (factionId === null) return reject(session.socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(session.reply, "Observer mode is read-only.");
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
-  if (!fleet) return reject(session.socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(session.socket, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(session.socket, "Fleet command link unavailable.");
-  if (typeof enabled !== "boolean") return reject(session.socket, "Invalid Dark Matter boost setting.");
+  if (!fleet) return reject(session.reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(session.reply, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(session.reply, "Fleet command link unavailable.");
+  if (typeof enabled !== "boolean") return reject(session.reply, "Invalid Dark Matter boost setting.");
 
   if (!enabled) {
-    if (!fleet.darkMatterBoostActive) return reject(session.socket, "Dark Matter boost is not active.");
+    if (!fleet.darkMatterBoostActive) return reject(session.reply, "Dark Matter boost is not active.");
     rescaleFleetMovementPlan(ctx, fleet, DARK_MATTER_FLEET_SPEED_MULTIPLIER);
     fleet.darkMatterBoostActive = false;
     fleet.darkMatterBoostPaidUntilYear = null;
     ctx.hasDirtyState = true;
-    accept(session.socket, "Dark Matter fleet boost disabled.");
+    accept(session.reply, "Dark Matter fleet boost disabled.");
     broadcastUpdates(["clock", "fleets"]);
     return;
   }
 
-  if (fleet.darkMatterBoostActive) return reject(session.socket, "Dark Matter boost is already active.");
+  if (fleet.darkMatterBoostActive) return reject(session.reply, "Dark Matter boost is already active.");
   if (!fleet.movementPlan || ctx.state.clock.year >= fleet.movementPlan.endsAtYear) {
-    return reject(session.socket, "The fleet must be moving to activate a Dark Matter boost.");
+    return reject(session.reply, "The fleet must be moving to activate a Dark Matter boost.");
   }
 
   const balance = authStore.spendPlayerDarkMatter(
-    session.account.id,
+    (session.actor as Extract<GameActor, { kind: "human" }>).accountId,
     DARK_MATTER_FLEET_COST_PER_MOVING_DAY,
   );
-  if (balance === null) return reject(session.socket, "Not enough Dark Matter.");
+  if (balance === null) return reject(session.reply, "Not enough Dark Matter.");
 
   fleet.darkMatterBoostActive = true;
   fleet.darkMatterBoostPaidUntilYear = ctx.state.clock.year + gameDaysToYears(1);
   rescaleFleetMovementPlan(ctx, fleet, 1 / DARK_MATTER_FLEET_SPEED_MULTIPLIER);
   ctx.hasDirtyState = true;
-  broadcastAccountDarkMatter(session.account.id, balance);
-  accept(session.socket, "Dark Matter boost active: fleet movement is 10x faster.");
+  broadcastAccountDarkMatter((session.actor as Extract<GameActor, { kind: "human" }>).accountId, balance);
+  accept(session.reply, "Dark Matter boost active: fleet movement is 10x faster.");
   broadcastUpdates(["clock", "fleets"]);
 }
 
-function handleRetreatFleet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): void {
+function handleRetreatFleet(reply: CommandReply, perspective: GalaxyPerspective, fleetId: string): void {
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   const destination = fleet ? resolveFleetRetreatDestination(ctx, fleet) : null;
-  handleRetreatFleetTo(socket, perspective, fleetId, destination?.targetStarId ?? -1, destination?.targetSystemPosition ?? undefined);
+  handleRetreatFleetTo(reply, perspective, fleetId, destination?.targetStarId ?? -1, destination?.targetSystemPosition ?? undefined);
 }
 
-function validateRetreatTarget(socket: WebSocket, perspective: GalaxyPerspective, fleet: GameFleet, targetStarId: number, requireRoute: boolean): boolean {
+function validateRetreatTarget(reply: CommandReply, perspective: GalaxyPerspective, fleet: GameFleet, targetStarId: number, requireRoute: boolean): boolean {
   if (!Number.isInteger(targetStarId) || targetStarId < 0 || targetStarId >= ctx.state.stars.length) {
-    reject(socket, "Invalid retreat target.");
+    reject(reply, "Invalid retreat target.");
     return false;
   }
   if (perspective.mode !== "observer") {
     const known = getKnownStarIds(ctx.state, perspective.factionId);
     if (!known.has(targetStarId)) {
-      reject(socket, "Retreat target is not known.");
+      reject(reply, "Retreat target is not known.");
       return false;
     }
   }
   if (requireRoute && targetStarId !== fleet.currentStarId && !findRoute(ctx, fleet, targetStarId)) {
-    reject(socket, "No reachable route to retreat target.");
+    reject(reply, "No reachable route to retreat target.");
     return false;
   }
   return true;
 }
 
 function handleRetreatFleetTo(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   fleetId: string,
   targetStarId: number,
   targetSystemPosition?: ReturnType<typeof systemCenterPosition>,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
-  if (!validateRetreatTarget(socket, perspective, fleet, targetStarId, true)) return;
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(reply, "Fleet command link unavailable.");
+  if (!validateRetreatTarget(reply, perspective, fleet, targetStarId, true)) return;
 
   fleet.retreatState = {
     mode: "system",
@@ -686,11 +703,11 @@ function handleRetreatFleetTo(
       targetSystemPosition: targetSystemPosition ?? null,
     },
   };
-  fleet.currentTacticalOrder = { type: "retreat", issuedAtYear: ctx.state.clock.year };
+  fleet.currentTacticalOrder = normalizeFleetTacticalOrder({ type: "retreat", issuedAtYear: ctx.state.clock.year });
   fleet.combatStatus = "retreating";
   startFleetRetreat(ctx, fleet);
   ctx.hasDirtyState = true;
-  accept(socket, "Fleet ordered to retreat to target system.");
+  accept(reply, "Fleet ordered to retreat to target system.");
   broadcastUpdates(["fleets"]);
 }
 
@@ -710,18 +727,18 @@ function estimateEmergencyMiaDays(fleet: GameFleet, targetStarId: number): numbe
 }
 
 function handleEmergencyRetreatFleetTo(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   fleetId: string,
   targetStarId: number,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
-  if (!validateRetreatTarget(socket, perspective, fleet, targetStarId, false)) return;
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(reply, "Fleet command link unavailable.");
+  if (!validateRetreatTarget(reply, perspective, fleet, targetStarId, false)) return;
 
   const lostShipIds = new Set<string>();
   const activeShips = ctx.state.ships.filter((ship) => ship.fleetId === fleetId && ship.hull > 0);
@@ -734,7 +751,7 @@ function handleEmergencyRetreatFleetTo(
     ship.hull = Math.max(0, ship.hull - hullDamage);
     ship.hp = ship.hull;
     ship.crew = Math.max(0, ship.crew - ship.crewCapacity * hullDamage / Math.max(1, ship.maxHull) * 0.5);
-    if (Math.random() < EMERGENCY_RETREAT_SHIP_LOSS_CHANCE || ship.hull <= 0) {
+    if (random(ctx, "combat") < EMERGENCY_RETREAT_SHIP_LOSS_CHANCE || ship.hull <= 0) {
       ship.crew = 0;
       lostShipIds.add(ship.id);
     }
@@ -765,110 +782,110 @@ function handleEmergencyRetreatFleetTo(
   setFleetPhase(fleet, "missingInAction");
 
   ctx.hasDirtyState = true;
-  accept(socket, "Emergency retreat initiated.");
+  accept(reply, "Emergency retreat initiated.");
   broadcastUpdates(["ships", "fleets", "armies"]);
 }
 
 function handleAttackTarget(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   fleetId: string,
   targetId: string,
   targetKind: "fleet" | "starbase",
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(socket, "Fleet command link unavailable.");
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!hasFleetCommandLink(fleet)) return reject(reply, "Fleet command link unavailable.");
   const targetOwnerId = targetKind === "fleet"
     ? ctx.state.fleets.find((candidate) => candidate.id === targetId)?.ownerId
     : ctx.state.starbases.find((candidate) => candidate.id === targetId)?.ownerId;
   const targetStarId = targetKind === "fleet"
     ? ctx.state.fleets.find((candidate) => candidate.id === targetId)?.currentStarId
     : ctx.state.starbases.find((candidate) => candidate.id === targetId)?.starId;
-  if (targetOwnerId === undefined || targetStarId === undefined) return reject(socket, "Target not found.");
-  if (targetStarId !== fleet.currentStarId) return reject(socket, "Target is not in the same system.");
-  if (!isHostileOwner(ctx, fleet.ownerId, targetOwnerId)) return reject(socket, "Target is not hostile.");
+  if (targetOwnerId === undefined || targetStarId === undefined) return reject(reply, "Target not found.");
+  if (targetStarId !== fleet.currentStarId) return reject(reply, "Target is not in the same system.");
+  if (!isHostileOwner(ctx, fleet.ownerId, targetOwnerId)) return reject(reply, "Target is not hostile.");
   prepareFleetForReplacementOrder(ctx, fleet);
-  fleet.currentTacticalOrder = {
+  fleet.currentTacticalOrder = normalizeFleetTacticalOrder({
     type: "attack",
     targetId,
     targetKind,
     issuedAtYear: ctx.state.clock.year,
-  };
+  });
   fleet.currentTargetId = targetId;
   fleet.currentTargetKind = targetKind;
   if (fleet.combatStance === "passive" || fleet.combatStance === "evade") {
     fleet.combatStance = "aggressive";
   }
   ctx.hasDirtyState = true;
-  accept(socket, "Attack order accepted.");
+  accept(reply, "Attack order accepted.");
   broadcastUpdates(["fleets"]);
 }
 
 function handleAttackSystem(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   fleetId: string,
   targetStarId: number,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (fleet.ownerId !== factionId) return reject(socket, "You do not own that fleet.");
-  if (!canFleetAcceptReplacementOrder(fleet)) return reject(socket, "Fleet cannot accept orders right now.");
-  if (!Number.isInteger(targetStarId) || targetStarId < 0 || targetStarId >= ctx.state.stars.length) return reject(socket, "Invalid target system.");
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
+  if (!canFleetAcceptReplacementOrder(fleet)) return reject(reply, "Fleet cannot accept orders right now.");
+  if (!Number.isInteger(targetStarId) || targetStarId < 0 || targetStarId >= ctx.state.stars.length) return reject(reply, "Invalid target system.");
   try {
     prepareFleetForReplacementOrder(ctx, fleet);
     startAttackSystemOrder(ctx, fleet, targetStarId);
     ctx.hasDirtyState = true;
     refreshDiscovery();
-    accept(socket, "Attack order accepted.");
+    accept(reply, "Attack order accepted.");
     broadcastUpdates(["clock", "fleets", "visibility"]);
   } catch (error) {
-    reject(socket, error instanceof Error ? error.message : "Attack order rejected.");
+    reject(reply, error instanceof Error ? error.message : "Attack order rejected.");
   }
 }
 
-function getOwnedFleetForCombatCommand(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): GameFleet | null {
+function getOwnedFleetForCombatCommand(reply: CommandReply, perspective: GalaxyPerspective, fleetId: string): GameFleet | null {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) {
-    reject(socket, "Observer mode is read-only.");
+    reject(reply, "Observer mode is read-only.");
     return null;
   }
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId) ?? null;
   if (!fleet) {
-    reject(socket, "Fleet not found.");
+    reject(reply, "Fleet not found.");
     return null;
   }
   if (fleet.ownerId !== factionId) {
-    reject(socket, "You do not own that fleet.");
+    reject(reply, "You do not own that fleet.");
     return null;
   }
   if (!hasFleetCommandLink(fleet)) {
-    reject(socket, "Fleet command link unavailable.");
+    reject(reply, "Fleet command link unavailable.");
     return null;
   }
   return fleet;
 }
 
-function commitFleetDoctrineChange(socket: WebSocket, message: string): void {
+function commitFleetDoctrineChange(reply: CommandReply, message: string): void {
   ctx.hasDirtyState = true;
-  accept(socket, message);
+  accept(reply, message);
   broadcastUpdates(["fleets"]);
 }
 
 function handleSetFleetCombatSettings(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   fleetId: string,
   combatSettings: Partial<FleetCombatSettings>,
   combatStance?: CombatStance,
 ): void {
-  const fleet = getOwnedFleetForCombatCommand(socket, perspective, fleetId);
+  const fleet = getOwnedFleetForCombatCommand(reply, perspective, fleetId);
   if (!fleet) return;
   if (combatStance !== undefined) {
     fleet.combatStance = normalizeCombatStance(combatStance);
@@ -877,24 +894,24 @@ function handleSetFleetCombatSettings(
     ...fleet.combatSettings,
     ...combatSettings,
   });
-  commitFleetDoctrineChange(socket, "Fleet doctrine updated.");
+  commitFleetDoctrineChange(reply, "Fleet doctrine updated.");
 }
 
 function handleIssueFleetTacticalOrder(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   command: Extract<ClientCommand, { type: "issueFleetTacticalOrder" }>,
 ): void {
-  const fleet = getOwnedFleetForCombatCommand(socket, perspective, command.fleetId);
+  const fleet = getOwnedFleetForCombatCommand(reply, perspective, command.fleetId);
   if (!fleet) return;
   const order = normalizeFleetTacticalOrder({
     ...command.order,
     issuedAtYear: ctx.state.clock.year,
   });
-  if (!order) return reject(socket, "Invalid fleet tactical order.");
-  if (order.type === "move" && !order.targetPosition) return reject(socket, "Move orders require a system position.");
-  if (order.type === "attack" && (!order.targetId || !order.targetKind)) return reject(socket, "Attack orders require a target.");
-  if (order.type === "guard" && !order.targetPosition && !order.guardPosition) return reject(socket, "Guard orders require a position.");
+  if (!order) return reject(reply, "Invalid fleet tactical order.");
+  if (order.type === "move" && !order.targetPosition) return reject(reply, "Move orders require a system position.");
+  if (order.type === "attack" && (!order.targetId || !order.targetKind)) return reject(reply, "Attack orders require a target.");
+  if (order.type === "guard" && !order.targetPosition && !order.guardPosition) return reject(reply, "Guard orders require a position.");
   if (order.type !== "retreat") {
     prepareFleetForReplacementOrder(ctx, fleet);
   }
@@ -905,26 +922,26 @@ function handleIssueFleetTacticalOrder(
     retreatFleetByDoctrine(ctx, fleet);
   }
   ctx.hasDirtyState = true;
-  accept(socket, "Fleet tactical order accepted.");
+  accept(reply, "Fleet tactical order accepted.");
   broadcastUpdates(["fleets"]);
 }
 
 function handleRepairFleet(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   command: Extract<ClientCommand, { type: "repairFleet" }>,
 ): void {
-  const repairFleet = getOwnedFleetForCombatCommand(socket, perspective, command.constructionFleetId);
+  const repairFleet = getOwnedFleetForCombatCommand(reply, perspective, command.constructionFleetId);
   if (!repairFleet) return;
-  if (!fleetHasConstructionShip(ctx, repairFleet)) return reject(socket, "Selected fleet has no construction ship.");
+  if (!fleetHasConstructionShip(ctx, repairFleet)) return reject(reply, "Selected fleet has no construction ship.");
   const targetFleet = ctx.state.fleets.find((fleet) => fleet.id === command.targetFleetId);
-  if (!targetFleet) return reject(socket, "Repair target fleet not found.");
-  if (targetFleet.currentStarId !== repairFleet.currentStarId) return reject(socket, "Construction ship and target must be in the same system.");
+  if (!targetFleet) return reject(reply, "Repair target fleet not found.");
+  if (targetFleet.currentStarId !== repairFleet.currentStarId) return reject(reply, "Construction ship and target must be in the same system.");
   const alliedAccess = targetFleet.ownerId === repairFleet.ownerId || (
     getBorderPolicy(ctx.state.diplomacy, targetFleet.ownerId, repairFleet.ownerId) === "open"
     && getActiveTreatiesBetween(ctx.state.diplomacy, targetFleet.ownerId, repairFleet.ownerId).length > 0
   );
-  if (!alliedAccess) return reject(socket, "Target fleet has not granted allied repair access.");
+  if (!alliedAccess) return reject(reply, "Target fleet has not granted allied repair access.");
   repairFleet.repairOrder = {
     targetFleetId: targetFleet.id,
     targetShipId: null,
@@ -934,19 +951,19 @@ function handleRepairFleet(
   };
   prepareFleetForReplacementOrder(ctx, repairFleet);
   ctx.hasDirtyState = true;
-  accept(socket, "Construction fleet repair operation started.");
+  accept(reply, "Construction fleet repair operation started.");
   broadcastUpdates(["fleets", "ships"]);
 }
 
 function sendPlanetDetails(socket: WebSocket, perspective: GalaxyPerspective, planetId: string): void {
   const planetState = getPlanetState(ctx, planetId);
   if (!planetState || !canAccessPlanet(ctx, perspective, planetState)) {
-    reject(socket, "Planet is not available.");
+    rejectSocket(socket, "Planet is not available.");
     return;
   }
   const planet = getPlanetConfig(ctx, planetState);
   if (!planet) {
-    reject(socket, "Planet details are unavailable.");
+    rejectSocket(socket, "Planet details are unavailable.");
     return;
   }
 
@@ -1076,28 +1093,28 @@ function getPlanetDistrictLimits(planetState: PlanetState) {
   return getPlanetDistrictLimitsFromState(ctx.state, planetState) ?? null;
 }
 
-function validatePlanetCommand(socket: WebSocket, perspective: GalaxyPerspective, planetId: string): PlanetState | null {
+function validatePlanetCommand(reply: CommandReply, perspective: GalaxyPerspective, planetId: string): PlanetState | null {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) {
-    reject(socket, "Observer mode is read-only.");
+    reject(reply, "Observer mode is read-only.");
     return null;
   }
 
   const planetState = getPlanetState(ctx, planetId);
   if (!planetState) {
-    reject(socket, "Planet not found.");
+    reject(reply, "Planet not found.");
     return null;
   }
   if (!planetState.isHabited) {
-    reject(socket, "Only habited planets can be managed.");
+    reject(reply, "Only habited planets can be managed.");
     return null;
   }
   if (planetState.ownerId !== factionId) {
-    reject(socket, "You do not own that planet.");
+    reject(reply, "You do not own that planet.");
     return null;
   }
   if (!hasCommandLink(ctx.state, factionId, planetState.starId)) {
-    reject(socket, "Planet command link unavailable.");
+    reject(reply, "Planet command link unavailable.");
     return null;
   }
   return planetState;
@@ -1107,14 +1124,14 @@ function getFactionEconomy(factionId: number): FactionEconomyState | null {
   return ctx.state.factionEconomies.find((economy) => economy.factionId === factionId) ?? null;
 }
 
-function spendMinerals(socket: WebSocket, factionId: number, amount: number): boolean {
-  return spendResources(socket, factionId, { minerals: amount });
+function spendMinerals(reply: CommandReply, factionId: number, amount: number): boolean {
+  return spendResources(reply, factionId, { minerals: amount });
 }
 
-function spendResources(socket: WebSocket, factionId: number, cost: Partial<ResourceCounts>): boolean {
+function spendResources(reply: CommandReply, factionId: number, cost: Partial<ResourceCounts>): boolean {
   const economy = getFactionEconomy(factionId);
   if (!economy) {
-    reject(socket, "Faction economy unavailable.");
+    reject(reply, "Faction economy unavailable.");
     return false;
   }
   const normalizedCost = normalizeResourceCounts(cost);
@@ -1122,7 +1139,7 @@ function spendResources(socket: WebSocket, factionId: number, cost: Partial<Reso
     const amount = normalizedCost[resource];
     if (amount <= 0) continue;
     if (economy.stockpiles[resource] < amount) {
-      reject(socket, `Need ${amount} ${resource}.`);
+      reject(reply, `Need ${amount} ${resource}.`);
       return false;
     }
   }
@@ -1142,15 +1159,15 @@ function refundResources(factionId: number, refund: Partial<ResourceCounts>): vo
   ctx.hasDirtyState = true;
 }
 
-function hasAvailableCrew(socket: WebSocket, factionId: number, amount: number): boolean {
+function hasAvailableCrew(reply: CommandReply, factionId: number, amount: number): boolean {
   const economy = getFactionEconomy(factionId);
   if (!economy) {
-    reject(socket, "Faction economy unavailable.");
+    reject(reply, "Faction economy unavailable.");
     return false;
   }
   const required = Math.max(0, Math.floor(amount));
   if (economy.crewStockpile < required) {
-    reject(socket, `Need ${required} Crew.`);
+    reject(reply, `Need ${required} Crew.`);
     return false;
   }
   return true;
@@ -1171,7 +1188,7 @@ function refundCrew(factionId: number, amount: number): void {
 }
 
 function handleMarketTrade(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   resourceId: ResourceKind,
   tradeType: "buy" | "sell",
@@ -1179,40 +1196,39 @@ function handleMarketTrade(
 ): void {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) {
-    reject(socket, "Observer mode is read-only.");
+    reject(reply, "Observer mode is read-only.");
     return;
   }
 
   if (!isMarketResourceKind(resourceId)) {
-    reject(socket, "Resource is not available on the market.");
+    reject(reply, "Resource is not available on the market.");
     return;
   }
 
   const amount = Math.floor(Number(rawAmount));
   if (!Number.isFinite(amount) || amount <= 0) {
-    reject(socket, "Enter a positive trade amount.");
+    reject(reply, "Enter a positive trade amount.");
     return;
   }
   if (amount > 1_000_000) {
-    reject(socket, "Trade amount is too large.");
+    reject(reply, "Trade amount is too large.");
     return;
   }
 
   const economy = getFactionEconomy(factionId);
   if (!economy) {
-    reject(socket, "Faction economy unavailable.");
+    reject(reply, "Faction economy unavailable.");
     return;
   }
 
   const quote = calculateTradeQuote(ctx.state, factionId, resourceId, tradeType, amount).trade;
   const grossEnergy = amount * quote.averageUnitPrice;
   const feePaid = quote.feePaid;
-  const stats = getMarketPlayerStats(ctx, factionId);
 
   if (tradeType === "buy") {
     const buyCost = quote.totalEnergy;
     if (economy.stockpiles.energy < buyCost) {
-      reject(socket, `Need ${formatEnergyAmount(buyCost)} Energy.`);
+      reject(reply, `Need ${formatEnergyAmount(buyCost)} Energy.`);
       return;
     }
     economy.stockpiles = {
@@ -1220,13 +1236,13 @@ function handleMarketTrade(
       energy: economy.stockpiles.energy - buyCost,
       [resourceId]: economy.stockpiles[resourceId] + amount,
     };
-    stats.totalImportsEnergy += grossEnergy;
+    getMarketPlayerStats(ctx, factionId).totalImportsEnergy += grossEnergy;
     recordMarketTransaction(ctx, factionId, resourceId, "buy", amount, quote.averageUnitPrice, feePaid, -buyCost);
     recordMarketTradeVolume(ctx, factionId, resourceId, "buy", amount);
-    accept(socket, `Bought ${amount} ${resourceId} for ${formatEnergyAmount(buyCost)} Energy.`);
+    accept(reply, `Bought ${amount} ${resourceId} for ${formatEnergyAmount(buyCost)} Energy.`);
   } else {
     if (economy.stockpiles[resourceId] < amount) {
-      reject(socket, `Need ${amount} ${resourceId}.`);
+      reject(reply, `Need ${amount} ${resourceId}.`);
       return;
     }
     const sellPayout = quote.totalEnergy;
@@ -1235,10 +1251,10 @@ function handleMarketTrade(
       [resourceId]: economy.stockpiles[resourceId] - amount,
       energy: economy.stockpiles.energy + sellPayout,
     };
-    stats.totalExportsEnergy += grossEnergy;
+    getMarketPlayerStats(ctx, factionId).totalExportsEnergy += grossEnergy;
     recordMarketTransaction(ctx, factionId, resourceId, "sell", amount, quote.averageUnitPrice, feePaid, sellPayout);
     recordMarketTradeVolume(ctx, factionId, resourceId, "sell", amount);
-    accept(socket, `Sold ${amount} ${resourceId} for ${formatEnergyAmount(sellPayout)} Energy.`);
+    accept(reply, `Sold ${amount} ${resourceId} for ${formatEnergyAmount(sellPayout)} Energy.`);
   }
 
   ctx.hasDirtyState = true;
@@ -1247,7 +1263,7 @@ function handleMarketTrade(
 }
 
 function handleAddMarketAutoTrade(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   resourceId: ResourceKind,
   tradeType: "auto_buy" | "auto_sell",
@@ -1255,20 +1271,20 @@ function handleAddMarketAutoTrade(
 ): void {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) {
-    reject(socket, "Observer mode is read-only.");
+    reject(reply, "Observer mode is read-only.");
     return;
   }
   if (!isMarketResourceKind(resourceId)) {
-    reject(socket, "Resource is not available on the market.");
+    reject(reply, "Resource is not available on the market.");
     return;
   }
   const amountPerHour = Number(rawAmountPerHour);
   if (!Number.isFinite(amountPerHour) || amountPerHour <= 0) {
-    reject(socket, "Enter a positive per-minute amount.");
+    reject(reply, "Enter a positive per-minute amount.");
     return;
   }
   if (amountPerHour > 1_000_000) {
-    reject(socket, "Automatic trade amount is too large.");
+    reject(reply, "Automatic trade amount is too large.");
     return;
   }
 
@@ -1296,25 +1312,25 @@ function handleAddMarketAutoTrade(
 
   refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
-  accept(socket, `${tradeType === "auto_buy" ? "Auto-buy" : "Auto-sell"} set to ${formatEnergyAmount(gameHourToRealMinute(amountPerHour))} ${resourceId}/min.`);
+  accept(reply, `${tradeType === "auto_buy" ? "Auto-buy" : "Auto-sell"} set to ${formatEnergyAmount(gameHourToRealMinute(amountPerHour))} ${resourceId}/min.`);
   broadcastUpdates(["factionEconomies", "market"]);
 }
 
-function handleRemoveMarketAutoTrade(socket: WebSocket, perspective: GalaxyPerspective, orderId: string): void {
+function handleRemoveMarketAutoTrade(reply: CommandReply, perspective: GalaxyPerspective, orderId: string): void {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) {
-    reject(socket, "Observer mode is read-only.");
+    reject(reply, "Observer mode is read-only.");
     return;
   }
   const index = ctx.state.market.autoTrades.findIndex((order) => order.id === orderId && order.playerId === factionId);
   if (index < 0) {
-    reject(socket, "Automatic trade not found.");
+    reject(reply, "Automatic trade not found.");
     return;
   }
   const [removed] = ctx.state.market.autoTrades.splice(index, 1);
   refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
-  accept(socket, `${removed?.type === "auto_buy" ? "Auto-buy" : "Auto-sell"} removed.`);
+  accept(reply, `${removed?.type === "auto_buy" ? "Auto-buy" : "Auto-sell"} removed.`);
   broadcastUpdates(["factionEconomies", "market"]);
 }
 
@@ -1326,14 +1342,14 @@ function formatEnergyAmount(value: number): string {
 }
 
 function commitPlanetState(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   message: string,
   nextPlanetState: PlanetState,
 ): void {
   const index = ctx.state.planetStates.findIndex((planetState) => planetState.id === nextPlanetState.id);
   if (index < 0) {
-    reject(socket, "Planet not found.");
+    reject(reply, "Planet not found.");
     return;
   }
   ctx.state.planetStates[index] = recalculatePlanetStateEconomy(
@@ -1345,84 +1361,83 @@ function commitPlanetState(
   applyPlanetStatesToStars(ctx.state.stars, ctx.state.planetStates);
   refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
-  accept(socket, message);
-  sendPlanetDetails(socket, perspective, nextPlanetState.id);
+  accept(reply, message);
   queuePlanetDetailRefresh(nextPlanetState.id);
   broadcastUpdates(["clock", "planetStates", "factionEconomies", "habitedPlanetSystems"]);
 }
 
-function validateStarbaseCommand(socket: WebSocket, perspective: GalaxyPerspective, starbaseId: string): ServerStarbase | null {
+function validateStarbaseCommand(reply: CommandReply, perspective: GalaxyPerspective, starbaseId: string): ServerStarbase | null {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) {
-    reject(socket, "Observer mode is read-only.");
+    reject(reply, "Observer mode is read-only.");
     return null;
   }
 
   const starbase = ctx.state.starbases.find((candidate) => candidate.id === starbaseId);
   if (!starbase) {
-    reject(socket, "Starbase not found.");
+    reject(reply, "Starbase not found.");
     return null;
   }
   if (starbase.ownerId !== factionId) {
-    reject(socket, "You do not own that starbase.");
+    reject(reply, "You do not own that starbase.");
     return null;
   }
   if (!hasCommandLink(ctx.state, factionId, starbase.starId)) {
-    reject(socket, "Starbase command link unavailable.");
+    reject(reply, "Starbase command link unavailable.");
     return null;
   }
   if (!canAccessStar(ctx, perspective, starbase.starId)) {
-    reject(socket, "Starbase is not available.");
+    reject(reply, "Starbase is not available.");
     return null;
   }
   return starbase;
 }
 
-function commitStarbase(socket: WebSocket, message: string, nextStarbase: ServerStarbase): void {
+function commitStarbase(reply: CommandReply, message: string, nextStarbase: ServerStarbase): void {
   const index = ctx.state.starbases.findIndex((starbase) => starbase.id === nextStarbase.id);
   if (index < 0) {
-    reject(socket, "Starbase not found.");
+    reject(reply, "Starbase not found.");
     return;
   }
   const normalized = normalizeStarbase(nextStarbase);
   ctx.state.starbases[index] = normalized;
   refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
-  accept(socket, message);
+  accept(reply, message);
   broadcastUpdates(["clock", "starbases", "factionEconomies"]);
 }
 
-function handleUpgradeStarbase(socket: WebSocket, perspective: GalaxyPerspective, starbaseId: string): void {
-  const starbase = validateStarbaseCommand(socket, perspective, starbaseId);
+function handleUpgradeStarbase(reply: CommandReply, perspective: GalaxyPerspective, starbaseId: string): void {
+  const starbase = validateStarbaseCommand(reply, perspective, starbaseId);
   if (!starbase) return;
-  if (starbase.status !== "online") return reject(socket, "Starbase is not online.");
-  if (!STARBASE_LEVEL_DEFINITIONS[starbase.level]?.upgrade) return reject(socket, "Starbase is already at maximum level.");
+  if (starbase.status !== "online") return reject(reply, "Starbase is not online.");
+  if (!STARBASE_LEVEL_DEFINITIONS[starbase.level]?.upgrade) return reject(reply, "Starbase is already at maximum level.");
   if (starbase.constructionQueue.some((item) => item.kind === "upgrade")) {
-    return reject(socket, "Starbase upgrade is already queued.");
+    return reject(reply, "Starbase upgrade is already queued.");
   }
-  const item = createStarbaseUpgradeQueueItem(starbase.level);
-  if (!item) return reject(socket, "Starbase cannot upgrade.");
-  if (!spendResources(socket, starbase.ownerId, item.cost)) return;
-  commitStarbase(socket, "Starbase upgrade queued.", {
+  const item = createStarbaseUpgradeQueueItem(starbase.level, createRuntimeId("construction"));
+  if (!item) return reject(reply, "Starbase cannot upgrade.");
+  if (!spendResources(reply, starbase.ownerId, item.cost)) return;
+  commitStarbase(reply, "Starbase upgrade queued.", {
     ...starbase,
     constructionQueue: [...starbase.constructionQueue, item],
   });
 }
 
 function handleBuildStarbaseBuilding(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   starbaseId: string,
   slotIndex: number,
   buildingKind: StarbaseBuildingKind,
 ): void {
-  const starbase = validateStarbaseCommand(socket, perspective, starbaseId);
+  const starbase = validateStarbaseCommand(reply, perspective, starbaseId);
   if (!starbase) return;
-  if (!isStarbaseBuildingKind(buildingKind)) return reject(socket, "Invalid starbase building.");
-  if (!requireUnlocked(socket, starbase.ownerId, getRequiredTechIdsForStarbaseBuilding(buildingKind))) return;
+  if (!isStarbaseBuildingKind(buildingKind)) return reject(reply, "Invalid starbase building.");
+  if (!requireUnlocked(reply, starbase.ownerId, getRequiredTechIdsForStarbaseBuilding(buildingKind))) return;
   if (getNebulaGatedBuildingKinds().has(buildingKind)
     && !nebulaEnablesBuildingAtStar(ctx.state.nebulae, starbase.starId, buildingKind)) {
-    return reject(socket, "This building can only be built inside the right nebula.");
+    return reject(reply, "This building can only be built inside the right nebula.");
   }
   if (
     (buildingKind === "listeningStation" || buildingKind === "logisticsDepot")
@@ -1431,49 +1446,49 @@ function handleBuildStarbaseBuilding(
       || starbase.constructionQueue.some((item) => item.kind === "building" && item.buildingKind === buildingKind)
     )
   ) {
-    return reject(socket, `${buildingKind === "listeningStation" ? "Listening Station" : "Logistics Depot"} is unique per starbase.`);
+    return reject(reply, `${buildingKind === "listeningStation" ? "Listening Station" : "Logistics Depot"} is unique per starbase.`);
   }
   const unlockedSlots = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.buildingSlots ?? 0;
   if (!isValidSlotIndex(slotIndex, starbase.buildingSlots.length) || slotIndex >= unlockedSlots) {
-    return reject(socket, "Invalid starbase building slot.");
+    return reject(reply, "Invalid starbase building slot.");
   }
-  if (starbase.buildingSlots[slotIndex]) return reject(socket, "Starbase building slot is occupied.");
+  if (starbase.buildingSlots[slotIndex]) return reject(reply, "Starbase building slot is occupied.");
   if (hasQueuedStarbaseBuildingTarget(starbase.constructionQueue, slotIndex)) {
-    return reject(socket, "Starbase building slot is already queued.");
+    return reject(reply, "Starbase building slot is already queued.");
   }
-  const item = createStarbaseBuildingQueueItem(buildingKind, slotIndex);
-  if (!spendResources(socket, starbase.ownerId, item.cost)) return;
-  commitStarbase(socket, "Starbase building queued.", {
+  const item = createStarbaseBuildingQueueItem(buildingKind, slotIndex, createRuntimeId("construction"));
+  if (!spendResources(reply, starbase.ownerId, item.cost)) return;
+  commitStarbase(reply, "Starbase building queued.", {
     ...starbase,
     constructionQueue: [...starbase.constructionQueue, item],
   });
 }
 
 function handleBuildStarbaseShip(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   starbaseId: string,
   shipKind: StarbaseShipKind,
   designId?: string,
 ): void {
-  const starbase = validateStarbaseCommand(socket, perspective, starbaseId);
+  const starbase = validateStarbaseCommand(reply, perspective, starbaseId);
   if (!starbase) return;
-  if (!isStarbaseShipKind(shipKind)) return reject(socket, "Invalid ship design.");
-  if (shipKind === "armyShip") return reject(socket, "Army transports are commissioned through Army recruitment.");
+  if (!isStarbaseShipKind(shipKind)) return reject(reply, "Invalid ship design.");
+  if (shipKind === "armyShip") return reject(reply, "Army transports are commissioned through Army recruitment.");
   const shipyardCount = countStarbaseShipyards(starbase.buildingSlots);
-  if (shipyardCount <= 0) return reject(socket, "Starbase has no completed shipyards.");
+  if (shipyardCount <= 0) return reject(reply, "Starbase has no completed shipyards.");
   if (shipKind === "defensePlatform") {
     const capacity = STARBASE_LEVEL_DEFINITIONS[starbase.level]?.defensePlatformCapacity ?? 0;
     const built = ctx.state.fleets
       .filter((fleet) => fleet.stationaryStarbaseId === starbase.id && fleet.ownerId === starbase.ownerId)
       .reduce((total, fleet) => total + fleet.shipIds.length, 0);
     const queued = starbase.shipQueue.filter((item) => item.kind === "build" && item.shipKind === "defensePlatform").length;
-    if (built + queued >= capacity) return reject(socket, "Defense platform capacity reached.");
+    if (built + queued >= capacity) return reject(reply, "Defense platform capacity reached.");
   }
   const design = findShipDesign(ctx.state.shipDesigns, starbase.ownerId, shipKind, designId, false);
-  if (!design) return reject(socket, "Ship design is unavailable.");
+  if (!design) return reject(reply, "Ship design is unavailable.");
   if (!isShipDesignUnlockedForFaction(ctx, starbase.ownerId, design)) {
-    return reject(socket, `Requires ${getShipDesignMissingTechnologyName(ctx, starbase.ownerId, design) ?? "required technology"}.`);
+    return reject(reply, `Requires ${getShipDesignMissingTechnologyName(ctx, starbase.ownerId, design) ?? "required technology"}.`);
   }
   const stats = calculateShipDesignStats(design);
   const constructionCostMultiplier = getStarbaseShipConstructionCostMultiplier(starbase.buildingSlots);
@@ -1486,28 +1501,28 @@ function handleBuildStarbaseShip(
     remainingDays: stats.buildDays,
     alloyUpkeepPerDay: stats.alloyUpkeepPerDay,
     crewDemand: stats.crewDemand,
-  });
-  if (!hasAvailableCrew(socket, starbase.ownerId, item.reservedCrew)) return;
-  if (!spendResources(socket, starbase.ownerId, item.upfrontCost)) return;
+  }, createRuntimeId("construction"));
+  if (!hasAvailableCrew(reply, starbase.ownerId, item.reservedCrew)) return;
+  if (!spendResources(reply, starbase.ownerId, item.upfrontCost)) return;
   reserveCrew(starbase.ownerId, item.reservedCrew);
-  commitStarbase(socket, "Ship queued.", {
+  commitStarbase(reply, "Ship queued.", {
     ...starbase,
     shipQueue: [...starbase.shipQueue, item],
   });
 }
 
 function handleBuildPlanetShip(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   shipKind: StarbaseShipKind,
   designId?: string,
 ): void {
-  const planet = validatePlanetCommand(socket, perspective, planetId);
+  const planet = validatePlanetCommand(reply, perspective, planetId);
   if (!planet || planet.ownerId === null) return;
-  if (!isStarbaseShipKind(shipKind)) return reject(socket, "Invalid ship design.");
-  if (shipKind === "armyShip") return reject(socket, "Army transports are commissioned through Army recruitment.");
-  if (countPlanetShipyards(planet) <= 0) return reject(socket, "Planet has no completed orbital shipyards.");
+  if (!isStarbaseShipKind(shipKind)) return reject(reply, "Invalid ship design.");
+  if (shipKind === "armyShip") return reject(reply, "Army transports are commissioned through Army recruitment.");
+  if (countPlanetShipyards(planet) <= 0) return reject(reply, "Planet has no completed orbital shipyards.");
 
   if (shipKind === "defensePlatform") {
     const capacity = getPlanetDefensePlatformCapacity(planet);
@@ -1523,13 +1538,13 @@ function handleBuildPlanetShip(
     const queued = planet.defense.shipQueue.filter((item) => (
       item.kind === "build" && item.shipKind === "defensePlatform"
     )).length;
-    if (built + queued >= capacity) return reject(socket, "Planetary defense platform capacity reached.");
+    if (built + queued >= capacity) return reject(reply, "Planetary defense platform capacity reached.");
   }
 
   const design = findShipDesign(ctx.state.shipDesigns, planet.ownerId, shipKind, designId, false);
-  if (!design) return reject(socket, "Ship design is unavailable.");
+  if (!design) return reject(reply, "Ship design is unavailable.");
   if (!isShipDesignUnlockedForFaction(ctx, planet.ownerId, design)) {
-    return reject(socket, `Requires ${getShipDesignMissingTechnologyName(ctx, planet.ownerId, design) ?? "required technology"}.`);
+    return reject(reply, `Requires ${getShipDesignMissingTechnologyName(ctx, planet.ownerId, design) ?? "required technology"}.`);
   }
   const stats = calculateShipDesignStats(design);
   const item = createStarbaseShipQueueItem(shipKind, {
@@ -1541,11 +1556,11 @@ function handleBuildPlanetShip(
     remainingDays: stats.buildDays,
     alloyUpkeepPerDay: stats.alloyUpkeepPerDay,
     crewDemand: stats.crewDemand,
-  });
-  if (!hasAvailableCrew(socket, planet.ownerId, item.reservedCrew)) return;
-  if (!spendResources(socket, planet.ownerId, item.upfrontCost)) return;
+  }, createRuntimeId("construction"));
+  if (!hasAvailableCrew(reply, planet.ownerId, item.reservedCrew)) return;
+  if (!spendResources(reply, planet.ownerId, item.upfrontCost)) return;
   reserveCrew(planet.ownerId, item.reservedCrew);
-  commitPlanetState(socket, perspective, `${design.name} queued.`, {
+  commitPlanetState(reply, perspective, `${design.name} queued.`, {
     ...planet,
     defense: {
       ...planet.defense,
@@ -1563,78 +1578,78 @@ function isPlanetDefenseSection(value: unknown): value is PlanetDefenseSection {
 }
 
 function handleBuildPlanetDefenseBuilding(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   section: PlanetDefenseSection,
   slotIndex: number,
   buildingKind: PlanetDefenseBuildingKind,
 ): void {
-  const planet = validatePlanetCommand(socket, perspective, planetId);
+  const planet = validatePlanetCommand(reply, perspective, planetId);
   if (!planet) return;
-  if (!isPlanetDefenseSection(section)) return reject(socket, "Invalid defense section.");
-  if (!PLANET_DEFENSE_BUILDING_KINDS.includes(buildingKind)) return reject(socket, "Invalid defense building.");
+  if (!isPlanetDefenseSection(section)) return reject(reply, "Invalid defense section.");
+  if (!PLANET_DEFENSE_BUILDING_KINDS.includes(buildingKind)) return reject(reply, "Invalid defense building.");
   const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[buildingKind];
-  if (!definition.sections.includes(section)) return reject(socket, "Building is incompatible with this defense section.");
+  if (!definition.sections.includes(section)) return reject(reply, "Building is incompatible with this defense section.");
   const unlocked = section === "defense" ? getUnlockedPlanetDefenseSlots(planet) : getUnlockedPlanetShipyardSlots(planet);
   const slots = getPlanetDefenseSlots(planet, section);
-  if (!isValidSlotIndex(slotIndex, slots.length) || slotIndex >= unlocked) return reject(socket, "Defense slot is locked.");
-  if (slots[slotIndex]) return reject(socket, "Defense slot is occupied.");
-  if (hasQueuedDefenseBuildingTarget(planet, section, slotIndex)) return reject(socket, "Defense slot is already queued.");
-  if (definition.unique && [...planet.defense.defenseSlots, ...planet.defense.shipyardSlots].some((building) => building?.kind === buildingKind)) return reject(socket, `${definition.label} is unique per planet.`);
-  if (!requireUnlocked(socket, planet.ownerId!, getRequiredTechIdsForPlanetDefenseBuilding(buildingKind))) return;
-  const item = createDefenseBuildingConstructionQueueItem(buildingKind, section, slotIndex);
-  if (!spendResources(socket, planet.ownerId!, item.cost)) return;
-  commitPlanetState(socket, perspective, `${definition.label} queued.`, { ...planet, constructionQueue: [...planet.constructionQueue, item] });
+  if (!isValidSlotIndex(slotIndex, slots.length) || slotIndex >= unlocked) return reject(reply, "Defense slot is locked.");
+  if (slots[slotIndex]) return reject(reply, "Defense slot is occupied.");
+  if (hasQueuedDefenseBuildingTarget(planet, section, slotIndex)) return reject(reply, "Defense slot is already queued.");
+  if (definition.unique && [...planet.defense.defenseSlots, ...planet.defense.shipyardSlots].some((building) => building?.kind === buildingKind)) return reject(reply, `${definition.label} is unique per planet.`);
+  if (!requireUnlocked(reply, planet.ownerId!, getRequiredTechIdsForPlanetDefenseBuilding(buildingKind))) return;
+  const item = createDefenseBuildingConstructionQueueItem(buildingKind, section, slotIndex, undefined, createRuntimeId("construction"));
+  if (!spendResources(reply, planet.ownerId!, item.cost)) return;
+  commitPlanetState(reply, perspective, `${definition.label} queued.`, { ...planet, constructionQueue: [...planet.constructionQueue, item] });
 }
 
-function handleUpgradePlanetDefenseBuilding(socket: WebSocket, perspective: GalaxyPerspective, planetId: string, section: PlanetDefenseSection, slotIndex: number): void {
-  const planet = validatePlanetCommand(socket, perspective, planetId);
+function handleUpgradePlanetDefenseBuilding(reply: CommandReply, perspective: GalaxyPerspective, planetId: string, section: PlanetDefenseSection, slotIndex: number): void {
+  const planet = validatePlanetCommand(reply, perspective, planetId);
   if (!planet) return;
-  if (!isPlanetDefenseSection(section)) return reject(socket, "Invalid defense section.");
+  if (!isPlanetDefenseSection(section)) return reject(reply, "Invalid defense section.");
   const slots = getPlanetDefenseSlots(planet, section);
-  if (!isValidSlotIndex(slotIndex, slots.length)) return reject(socket, "Invalid defense slot.");
+  if (!isValidSlotIndex(slotIndex, slots.length)) return reject(reply, "Invalid defense slot.");
   const building = slots[slotIndex];
-  if (!building) return reject(socket, "Defense slot is empty.");
-  if (hasQueuedDefenseBuildingTarget(planet, section, slotIndex)) return reject(socket, "Defense slot is already queued.");
+  if (!building) return reject(reply, "Defense slot is empty.");
+  if (hasQueuedDefenseBuildingTarget(planet, section, slotIndex)) return reject(reply, "Defense slot is already queued.");
   const definition = PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind];
   const targetLevel = building.level + 1;
-  if (targetLevel > definition.maxLevel) return reject(socket, `${definition.label} is already at maximum level.`);
-  if (!requireUnlocked(socket, planet.ownerId!, getRequiredTechIdsForPlanetDefenseBuildingLevel(building.kind, targetLevel))) return;
-  const item = createDefenseBuildingConstructionQueueItem(building.kind, section, slotIndex, targetLevel);
-  if (!spendResources(socket, planet.ownerId!, item.cost)) return;
-  commitPlanetState(socket, perspective, `${definition.label} upgrade queued.`, { ...planet, constructionQueue: [...planet.constructionQueue, item] });
+  if (targetLevel > definition.maxLevel) return reject(reply, `${definition.label} is already at maximum level.`);
+  if (!requireUnlocked(reply, planet.ownerId!, getRequiredTechIdsForPlanetDefenseBuildingLevel(building.kind, targetLevel))) return;
+  const item = createDefenseBuildingConstructionQueueItem(building.kind, section, slotIndex, targetLevel, createRuntimeId("construction"));
+  if (!spendResources(reply, planet.ownerId!, item.cost)) return;
+  commitPlanetState(reply, perspective, `${definition.label} upgrade queued.`, { ...planet, constructionQueue: [...planet.constructionQueue, item] });
 }
 
-function handleSetPlanetDefenseBuildingEnabled(socket: WebSocket, perspective: GalaxyPerspective, planetId: string, section: PlanetDefenseSection, slotIndex: number, enabled: boolean): void {
-  const planet = validatePlanetCommand(socket, perspective, planetId);
+function handleSetPlanetDefenseBuildingEnabled(reply: CommandReply, perspective: GalaxyPerspective, planetId: string, section: PlanetDefenseSection, slotIndex: number, enabled: boolean): void {
+  const planet = validatePlanetCommand(reply, perspective, planetId);
   if (!planet) return;
-  if (!isPlanetDefenseSection(section)) return reject(socket, "Invalid defense section.");
+  if (!isPlanetDefenseSection(section)) return reject(reply, "Invalid defense section.");
   const slots = getPlanetDefenseSlots(planet, section);
-  if (!isValidSlotIndex(slotIndex, slots.length) || !slots[slotIndex]) return reject(socket, "Defense building not found.");
+  if (!isValidSlotIndex(slotIndex, slots.length) || !slots[slotIndex]) return reject(reply, "Defense building not found.");
   const nextSlots = slots.map((building, index) => index === slotIndex && building ? { ...building, enabled } : building);
-  commitPlanetState(socket, perspective, `Defense building ${enabled ? "enabled" : "disabled"}.`, {
+  commitPlanetState(reply, perspective, `Defense building ${enabled ? "enabled" : "disabled"}.`, {
     ...planet,
     defense: { ...planet.defense, [section === "defense" ? "defenseSlots" : "shipyardSlots"]: nextSlots },
   });
 }
 
-function handleDemolishPlanetDefenseBuilding(socket: WebSocket, perspective: GalaxyPerspective, planetId: string, section: PlanetDefenseSection, slotIndex: number): void {
-  const planet = validatePlanetCommand(socket, perspective, planetId);
+function handleDemolishPlanetDefenseBuilding(reply: CommandReply, perspective: GalaxyPerspective, planetId: string, section: PlanetDefenseSection, slotIndex: number): void {
+  const planet = validatePlanetCommand(reply, perspective, planetId);
   if (!planet) return;
-  if (!isPlanetDefenseSection(section)) return reject(socket, "Invalid defense section.");
+  if (!isPlanetDefenseSection(section)) return reject(reply, "Invalid defense section.");
   const slots = getPlanetDefenseSlots(planet, section);
-  if (!isValidSlotIndex(slotIndex, slots.length) || !slots[slotIndex]) return reject(socket, "Defense building not found.");
-  if (hasQueuedDefenseBuildingTarget(planet, section, slotIndex)) return reject(socket, "Cancel the queued upgrade before demolition.");
+  if (!isValidSlotIndex(slotIndex, slots.length) || !slots[slotIndex]) return reject(reply, "Defense building not found.");
+  if (hasQueuedDefenseBuildingTarget(planet, section, slotIndex)) return reject(reply, "Cancel the queued upgrade before demolition.");
   const nextSlots = slots.map((building, index) => index === slotIndex ? null : building);
-  commitPlanetState(socket, perspective, "Defense building demolished.", {
+  commitPlanetState(reply, perspective, "Defense building demolished.", {
     ...planet,
     defense: { ...planet.defense, [section === "defense" ? "defenseSlots" : "shipyardSlots"]: nextSlots },
   });
 }
 
 function handleQueueArmyRecruitment(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   yardKind: "planet" | "starbase",
   yardId: string,
@@ -1642,29 +1657,29 @@ function handleQueueArmyRecruitment(
   speciesId: string,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
-  if (yardKind !== "planet" && yardKind !== "starbase") return reject(socket, "Invalid Army recruitment yard.");
-  if (!isArmyTypeId(armyTypeId) || !MOBILE_ARMY_TYPE_IDS.includes(armyTypeId)) return reject(socket, "Invalid mobile army type.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
+  if (yardKind !== "planet" && yardKind !== "starbase") return reject(reply, "Invalid Army recruitment yard.");
+  if (!isArmyTypeId(armyTypeId) || !MOBILE_ARMY_TYPE_IDS.includes(armyTypeId)) return reject(reply, "Invalid mobile army type.");
   const definition = ARMY_TYPE_DEFINITIONS[armyTypeId];
   const speciesPopulation = ctx.state.planetStates
     .filter((planet) => planet.isHabited && planet.ownerId === factionId)
     .flatMap((planet) => planet.speciesPopulations)
     .filter((entry) => entry.speciesId === speciesId)
     .reduce((total, entry) => total + entry.population, 0);
-  if (speciesPopulation <= 0 || !ctx.state.species.some((species) => species.id === speciesId)) return reject(socket, "That species has no resident population in your empire.");
+  if (speciesPopulation <= 0 || !ctx.state.species.some((species) => species.id === speciesId)) return reject(reply, "That species has no resident population in your empire.");
   if (definition.requiredTechnologyId && !isTechnologyCompleted(getFactionTechnology(ctx.state, factionId), definition.requiredTechnologyId as TechId)) {
-    return reject(socket, `Requires ${TECHNOLOGY_BY_ID[definition.requiredTechnologyId as TechId]?.name ?? "the required technology"}.`);
+    return reject(reply, `Requires ${TECHNOLOGY_BY_ID[definition.requiredTechnologyId as TechId]?.name ?? "the required technology"}.`);
   }
   const cap = getArmyRecruitmentCap(ctx.state, factionId, speciesId);
-  if (cap.used >= cap.cap) return reject(socket, `Army cap reached for this species (${cap.used}/${cap.cap}).`);
-  const starbase = yardKind === "starbase" ? validateStarbaseCommand(socket, perspective, yardId) : null;
-  const planet = yardKind === "planet" ? validatePlanetCommand(socket, perspective, yardId) : null;
+  if (cap.used >= cap.cap) return reject(reply, `Army cap reached for this species (${cap.used}/${cap.cap}).`);
+  const starbase = yardKind === "starbase" ? validateStarbaseCommand(reply, perspective, yardId) : null;
+  const planet = yardKind === "planet" ? validatePlanetCommand(reply, perspective, yardId) : null;
   if (yardKind === "starbase" && (!starbase || countStarbaseShipyards(starbase.buildingSlots) <= 0)) {
-    if (starbase) reject(socket, "Starbase has no completed shipyards.");
+    if (starbase) reject(reply, "Starbase has no completed shipyards.");
     return;
   }
   if (yardKind === "planet" && (!planet || planet.ownerId === null || countPlanetShipyards(planet) <= 0)) {
-    if (planet) reject(socket, "Planet has no completed orbital shipyards.");
+    if (planet) reject(reply, "Planet has no completed orbital shipyards.");
     return;
   }
   const totalDays = ARMY_TRANSPORT_BUILD_DAYS + definition.trainingDays;
@@ -1678,132 +1693,132 @@ function handleQueueArmyRecruitment(
     remainingDays: totalDays,
     crewDemand: ARMY_TOTAL_CREW_DEMAND,
     reservedCrew: ARMY_TOTAL_CREW_DEMAND,
-  });
-  if (!hasAvailableCrew(socket, factionId, item.reservedCrew)) return;
-  if (!spendResources(socket, factionId, item.upfrontCost)) return;
+  }, createRuntimeId("construction"));
+  if (!hasAvailableCrew(reply, factionId, item.reservedCrew)) return;
+  if (!spendResources(reply, factionId, item.upfrontCost)) return;
   reserveCrew(factionId, item.reservedCrew);
   if (yardKind === "starbase") {
-    commitStarbase(socket, `${definition.name} recruitment queued.`, { ...starbase!, shipQueue: [...starbase!.shipQueue, item] });
+    commitStarbase(reply, `${definition.name} recruitment queued.`, { ...starbase!, shipQueue: [...starbase!.shipQueue, item] });
     return;
   }
-  commitPlanetState(socket, perspective, `${definition.name} recruitment queued.`, {
+  commitPlanetState(reply, perspective, `${definition.name} recruitment queued.`, {
     ...planet!,
     defense: { ...planet!.defense, shipQueue: [...planet!.defense.shipQueue, item] },
   });
 }
 
-function validateOwnedArmyFleet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string): GameFleet | null {
+function validateOwnedArmyFleet(reply: CommandReply, perspective: GalaxyPerspective, fleetId: string): GameFleet | null {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) {
-    reject(socket, "Observer mode is read-only.");
+    reject(reply, "Observer mode is read-only.");
     return null;
   }
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet || fleet.ownerId !== factionId) {
-    reject(socket, "Army Fleet not found.");
+    reject(reply, "Army Fleet not found.");
     return null;
   }
   if (!isArmyFleet(ctx.state, fleet)) {
-    reject(socket, "The selected fleet is not a pure Army Fleet.");
+    reject(reply, "The selected fleet is not a pure Army Fleet.");
     return null;
   }
   if (fleet.combatStatus !== "idle" || fleet.hyperlanePosition) {
-    reject(socket, "Army Fleet is not available for landing.");
+    reject(reply, "Army Fleet is not available for landing.");
     return null;
   }
   return fleet;
 }
 
-function handleLandArmyFleet(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
-  const fleet = validateOwnedArmyFleet(socket, perspective, fleetId);
+function handleLandArmyFleet(reply: CommandReply, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
+  const fleet = validateOwnedArmyFleet(reply, perspective, fleetId);
   if (!fleet) return;
   const planet = ctx.state.planetStates.find((candidate) => candidate.id === planetId);
-  if (!planet || !planet.isHabited || planet.ownerId !== fleet.ownerId) return reject(socket, "Armies may land only on an owned inhabited planet.");
-  if (fleet.phase !== "orbitingPlanet" || fleet.orbitTarget?.kind !== "planet" || fleet.orbitTarget.planetId !== planet.id) return reject(socket, "Army Fleet must be orbiting the planet.");
+  if (!planet || !planet.isHabited || planet.ownerId !== fleet.ownerId) return reject(reply, "Armies may land only on an owned inhabited planet.");
+  if (fleet.phase !== "orbitingPlanet" || fleet.orbitTarget?.kind !== "planet" || fleet.orbitTarget.planetId !== planet.id) return reject(reply, "Army Fleet must be orbiting the planet.");
   try {
     reinforceOwnedPlanet(ctx, fleet, planet);
   } catch (error) {
-    return reject(socket, error instanceof Error ? error.message : "Army landing failed.");
+    return reject(reply, error instanceof Error ? error.message : "Army landing failed.");
   }
   ctx.hasDirtyState = true;
   ctx.queuePlanetDetailRefresh(planet.id);
-  accept(socket, "Armies landed.");
+  accept(reply, "Armies landed.");
   broadcastUpdates(["armies", "fleets", "ships", "leaders", "groundBattles", "planetStates", "factionEconomies"]);
 }
 
-function handleEmbarkPlanetArmies(socket: WebSocket, perspective: GalaxyPerspective, planetId: string, armyIds: string[], embarkCommander: boolean): void {
-  const planet = validatePlanetCommand(socket, perspective, planetId);
+function handleEmbarkPlanetArmies(reply: CommandReply, perspective: GalaxyPerspective, planetId: string, armyIds: string[], embarkCommander: boolean): void {
+  const planet = validatePlanetCommand(reply, perspective, planetId);
   if (!planet || planet.ownerId === null) return;
-  if (!Array.isArray(armyIds) || armyIds.some((id) => typeof id !== "string")) return reject(socket, "Invalid Army selection.");
+  if (!Array.isArray(armyIds) || armyIds.some((id) => typeof id !== "string")) return reject(reply, "Invalid Army selection.");
   try {
     embarkPlanetArmies(ctx, planet, armyIds, planet.ownerId, embarkCommander);
   } catch (error) {
-    return reject(socket, error instanceof Error ? error.message : "Army embarkation failed.");
+    return reject(reply, error instanceof Error ? error.message : "Army embarkation failed.");
   }
   ctx.hasDirtyState = true;
   ctx.queuePlanetDetailRefresh(planet.id);
-  accept(socket, "Selected armies embarked.");
+  accept(reply, "Selected armies embarked.");
   broadcastUpdates(["armies", "fleets", "ships", "leaders", "planetStates", "factionEconomies"]);
 }
 
-function handleBeginPlanetInvasion(socket: WebSocket, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
-  const fleet = validateOwnedArmyFleet(socket, perspective, fleetId);
+function handleBeginPlanetInvasion(reply: CommandReply, perspective: GalaxyPerspective, fleetId: string, planetId: string): void {
+  const fleet = validateOwnedArmyFleet(reply, perspective, fleetId);
   if (!fleet) return;
   const planet = ctx.state.planetStates.find((candidate) => candidate.id === planetId);
-  if (!planet) return reject(socket, "Planet not found.");
+  if (!planet) return reject(reply, "Planet not found.");
   try {
     beginPlanetInvasion(ctx, fleet, planet);
   } catch (error) {
-    return reject(socket, error instanceof Error ? error.message : "Invasion failed.");
+    return reject(reply, error instanceof Error ? error.message : "Invasion failed.");
   }
   ctx.hasDirtyState = true;
   ctx.queuePlanetDetailRefresh(planet.id);
-  accept(socket, "Planetary invasion begun.");
+  accept(reply, "Planetary invasion begun.");
   broadcastUpdates(["armies", "groundBattles", "fleets", "ships", "leaders", "planetStates", "factionEconomies"]);
 }
 
-function handleWithdrawGroundBattle(socket: WebSocket, perspective: GalaxyPerspective, battleId: string): void {
+function handleWithdrawGroundBattle(reply: CommandReply, perspective: GalaxyPerspective, battleId: string): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const battle = ctx.state.groundBattles.find((candidate) => candidate.id === battleId);
-  if (!battle || battle.attackerFactionId !== factionId) return reject(socket, "Ground battle not found.");
+  if (!battle || battle.attackerFactionId !== factionId) return reject(reply, "Ground battle not found.");
   requestGroundWithdrawal(ctx.state, battle);
   ctx.hasDirtyState = true;
   ctx.queuePlanetDetailRefresh(battle.planetId);
-  accept(socket, "Withdrawal ordered; extraction completes in 30 days.");
+  accept(reply, "Withdrawal ordered; extraction completes in 30 days.");
   broadcastUpdates(["groundBattles", "armies"]);
 }
 
 function handleCancelShipConstruction(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   yardKind: "planet" | "starbase",
   yardId: string,
   queueItemId: string,
 ): void {
   if (yardKind === "starbase") {
-    const starbase = validateStarbaseCommand(socket, perspective, yardId);
+    const starbase = validateStarbaseCommand(reply, perspective, yardId);
     if (!starbase) return;
     const item = starbase.shipQueue.find((candidate) => candidate.id === queueItemId);
-    if (!item) return reject(socket, "Ship construction not found.");
+    if (!item) return reject(reply, "Ship construction not found.");
     refundCrew(starbase.ownerId, item.reservedCrew);
     if (item.kind === "upgrade" && item.shipId) {
       const ship = ctx.state.ships.find((candidate) => candidate.id === item.shipId);
       if (ship) ship.targetDesignId = null;
     }
-    commitStarbase(socket, "Ship construction cancelled.", {
+    commitStarbase(reply, "Ship construction cancelled.", {
       ...starbase,
       shipQueue: starbase.shipQueue.filter((candidate) => candidate.id !== queueItemId),
     });
     return;
   }
 
-  const planet = validatePlanetCommand(socket, perspective, yardId);
+  const planet = validatePlanetCommand(reply, perspective, yardId);
   if (!planet || planet.ownerId === null) return;
   const item = planet.defense.shipQueue.find((candidate) => candidate.id === queueItemId);
-  if (!item) return reject(socket, "Ship construction not found.");
+  if (!item) return reject(reply, "Ship construction not found.");
   refundCrew(planet.ownerId, item.reservedCrew);
-  commitPlanetState(socket, perspective, "Ship construction cancelled.", {
+  commitPlanetState(reply, perspective, "Ship construction cancelled.", {
     ...planet,
     defense: {
       ...planet.defense,
@@ -1813,45 +1828,45 @@ function handleCancelShipConstruction(
 }
 
 function handleUpgradeShip(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   command: Extract<ClientCommand, { type: "upgradeShip" }>,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const ship = ctx.state.ships.find((candidate) => candidate.id === command.shipId);
-  if (!ship) return reject(socket, "Ship not found.");
-  if (ship.ownerId !== factionId) return reject(socket, "You do not own that ship.");
+  if (!ship) return reject(reply, "Ship not found.");
+  if (ship.ownerId !== factionId) return reject(reply, "You do not own that ship.");
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === ship.fleetId);
-  if (!fleet) return reject(socket, "Fleet not found.");
-  if (!isFleetAvailableForOrders(fleet)) return reject(socket, "Fleet is already busy.");
+  if (!fleet) return reject(reply, "Fleet not found.");
+  if (!isFleetAvailableForOrders(fleet)) return reject(reply, "Fleet is already busy.");
 
-  const starbase = validateStarbaseCommand(socket, perspective, command.starbaseId);
+  const starbase = validateStarbaseCommand(reply, perspective, command.starbaseId);
   if (!starbase) return;
-  if (starbase.starId !== fleet.currentStarId) return reject(socket, "Move the fleet to a shipyard system before upgrading.");
-  if (countStarbaseShipyards(starbase.buildingSlots) <= 0) return reject(socket, "Starbase has no completed shipyards.");
+  if (starbase.starId !== fleet.currentStarId) return reject(reply, "Move the fleet to a shipyard system before upgrading.");
+  if (countStarbaseShipyards(starbase.buildingSlots) <= 0) return reject(reply, "Starbase has no completed shipyards.");
   const alreadyQueued = ctx.state.starbases.some((candidate) => (
     candidate.shipQueue.some((item) => item.kind === "upgrade" && item.shipId === ship.id)
   ));
-  if (alreadyQueued) return reject(socket, "Ship upgrade is already queued.");
+  if (alreadyQueued) return reject(reply, "Ship upgrade is already queued.");
 
   const currentDesign = findShipDesign(ctx.state.shipDesigns, ship.ownerId, ship.shipKind, ship.designId, true);
-  if (!currentDesign) return reject(socket, "Current ship design is unavailable.");
+  if (!currentDesign) return reject(reply, "Current ship design is unavailable.");
   const explicitTarget = command.targetDesignId
     ? findShipDesignById(ctx.state.shipDesigns, ship.ownerId, ship.shipKind, command.targetDesignId, false)
     : null;
-  if (command.targetDesignId && !explicitTarget) return reject(socket, "Target ship design is unavailable.");
+  if (command.targetDesignId && !explicitTarget) return reject(reply, "Target ship design is unavailable.");
   const assignedTarget = ship.targetDesignId
     ? findShipDesignById(ctx.state.shipDesigns, ship.ownerId, ship.shipKind, ship.targetDesignId, false)
     : null;
   const targetDesign = explicitTarget ?? assignedTarget ?? getNewestActiveShipDesign(ctx.state.shipDesigns, ship.ownerId, ship.shipKind);
-  if (!targetDesign) return reject(socket, "No active target design is available.");
+  if (!targetDesign) return reject(reply, "No active target design is available.");
   if (!isShipDesignUnlockedForFaction(ctx, factionId, targetDesign)) {
-    return reject(socket, `Requires ${getShipDesignMissingTechnologyName(ctx, factionId, targetDesign) ?? "required technology"}.`);
+    return reject(reply, `Requires ${getShipDesignMissingTechnologyName(ctx, factionId, targetDesign) ?? "required technology"}.`);
   }
   const isPlatformReactivation = ship.shipKind === "defensePlatform" && ship.disabled === true;
   if (targetDesign.id === currentDesign.id && !isPlatformReactivation) {
-    return reject(socket, "Ship is already using the newest available design.");
+    return reject(reply, "Ship is already using the newest available design.");
   }
 
   const upgrade = isPlatformReactivation
@@ -1880,9 +1895,9 @@ function handleUpgradeShip(
     alloyUpkeepPerDay: upgrade.alloyUpkeepPerDay,
     crewDemand: reservedCrewGrowth,
     reservedCrew: reservedCrewGrowth,
-  });
-  if (!hasAvailableCrew(socket, factionId, item.reservedCrew)) return;
-  if (!spendResources(socket, factionId, item.upfrontCost)) return;
+  }, createRuntimeId("construction"));
+  if (!hasAvailableCrew(reply, factionId, item.reservedCrew)) return;
+  if (!spendResources(reply, factionId, item.upfrontCost)) return;
   reserveCrew(factionId, item.reservedCrew);
 
   ship.targetDesignId = targetDesign.id;
@@ -1897,23 +1912,23 @@ function handleUpgradeShip(
   syncFleetMembership(ctx, ctx.state);
   refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
-  accept(socket, isPlatformReactivation ? "Defense-platform reactivation queued." : "Ship upgrade queued.");
+  accept(reply, isPlatformReactivation ? "Defense-platform reactivation queued." : "Ship upgrade queued.");
   broadcastUpdates(["clock", "starbases", "ships", "fleets", "factionEconomies"]);
 }
 
 function handleSaveShipDesign(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   command: Extract<ClientCommand, { type: "saveShipDesign" }>,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
-  if (!isKnownShipKind(command.shipKind)) return reject(socket, "Invalid ship hull.");
-  if (command.shipKind === "armyShip") return reject(socket, "Army Ships are fixed transports commissioned through Army recruitment.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
+  if (!isKnownShipKind(command.shipKind)) return reject(reply, "Invalid ship hull.");
+  if (command.shipKind === "armyShip") return reject(reply, "Army Ships are fixed transports commissioned through Army recruitment.");
   const current = command.designId
     ? ctx.state.shipDesigns.find((design) => design.id === command.designId && design.ownerId === factionId)
     : null;
-  if (command.designId && !current) return reject(socket, "Ship design not found.");
+  if (command.designId && !current) return reject(reply, "Ship design not found.");
 
   const raw: Partial<ShipDesign> = {
     id: current?.id ?? createRuntimeId("design", [factionId, command.shipKind]),
@@ -1932,7 +1947,7 @@ function handleSaveShipDesign(
   };
   const nextDesign = normalizeShipDesign(raw, factionId, ctx.state.clock.year);
   const missingTechnology = getShipDesignMissingTechnologyName(ctx, factionId, nextDesign);
-  if (missingTechnology) return reject(socket, `Requires ${missingTechnology}.`);
+  if (missingTechnology) return reject(reply, `Requires ${missingTechnology}.`);
   const hull = SHIP_HULL_DEFINITIONS[nextDesign.shipKind] ?? SHIP_HULL_DEFINITIONS.corvette;
   const layout = getShipDesignLayout(nextDesign);
   if (
@@ -1942,7 +1957,7 @@ function handleSaveShipDesign(
     || nextDesign.defenseModuleIds.length !== layout.defenseSlots.length
     || nextDesign.utilityModuleIds.length !== layout.utilitySlots.length
   ) {
-    return reject(socket, "Ship design slots are invalid.");
+    return reject(reply, "Ship design slots are invalid.");
   }
   if (current) {
     ctx.state.shipDesigns = ctx.state.shipDesigns.map((design) => (design.id === current.id ? nextDesign : design));
@@ -1951,26 +1966,26 @@ function handleSaveShipDesign(
   }
   const shipsChanged = syncShipsForDesign(ctx, ctx.state, nextDesign);
   ctx.hasDirtyState = true;
-  accept(socket, "Ship design saved.");
+  accept(reply, "Ship design saved.");
   broadcastUpdates(shipsChanged ? ["shipDesigns", "ships", "fleets"] : ["shipDesigns"]);
 }
 
 function handleDecommissionShipDesign(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   designId: string,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const design = ctx.state.shipDesigns.find((candidate) => candidate.id === designId && candidate.ownerId === factionId);
-  if (!design) return reject(socket, "Ship design not found.");
-  if (design.status === "decommissioned") return reject(socket, "Ship design is already decommissioned.");
+  if (!design) return reject(reply, "Ship design not found.");
+  if (design.status === "decommissioned") return reject(reply, "Ship design is already decommissioned.");
   const activeCount = ctx.state.shipDesigns.filter((candidate) => (
     candidate.ownerId === factionId
     && candidate.shipKind === design.shipKind
     && candidate.status === "active"
   )).length;
-  if (activeCount <= 1) return reject(socket, "At least one active design is required.");
+  if (activeCount <= 1) return reject(reply, "At least one active design is required.");
   design.status = "decommissioned";
   design.updatedAtYear = ctx.state.clock.year;
   const targetDesign = getNewestActiveShipDesign(ctx.state.shipDesigns, factionId, design.shipKind);
@@ -2003,7 +2018,7 @@ function handleDecommissionShipDesign(
           totalDays: upgrade.totalDays,
           remainingDays: Math.min(item.remainingDays, upgrade.totalDays),
           alloyUpkeepPerDay: upgrade.alloyUpkeepPerDay,
-        }) : null;
+        }, item.id) : null;
         queueChanged = true;
         return {
           ...item,
@@ -2022,7 +2037,7 @@ function handleDecommissionShipDesign(
     });
   }
   ctx.hasDirtyState = true;
-  accept(socket, "Ship design decommissioned.");
+  accept(reply, "Ship design decommissioned.");
   const changed: ServerUpdateField[] = ["shipDesigns"];
   if (shipsChanged) changed.push("ships");
   if (starbasesChanged) changed.push("starbases");
@@ -2030,58 +2045,58 @@ function handleDecommissionShipDesign(
 }
 
 function handleBuildDistrict(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   districtKind: DistrictKind,
 ): void {
-  if (!isDistrictKind(districtKind)) return reject(socket, "Invalid district type.");
-  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (!isDistrictKind(districtKind)) return reject(reply, "Invalid district type.");
+  const planetState = validatePlanetCommand(reply, perspective, planetId);
   if (!planetState) return;
   const limits = getPlanetDistrictLimits(planetState);
-  if (!limits) return reject(socket, "Planet limits unavailable.");
+  if (!limits) return reject(reply, "Planet limits unavailable.");
   if (planetState.builtDistricts[districtKind] >= limits[districtKind]) {
-    return reject(socket, "District limit reached.");
+    return reject(reply, "District limit reached.");
   }
   if (planetState.builtDistricts[districtKind] + getQueuedDistrictCount(planetState, districtKind) >= limits[districtKind]) {
-    return reject(socket, "District is already queued to its limit.");
+    return reject(reply, "District is already queued to its limit.");
   }
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
-  const item = createDistrictConstructionQueueItem(districtKind);
-  if (!spendResources(socket, factionId, item.cost)) return;
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
+  const item = createDistrictConstructionQueueItem(districtKind, createRuntimeId("construction"));
+  if (!spendResources(reply, factionId, item.cost)) return;
 
-  commitPlanetState(socket, perspective, "District queued.", {
+  commitPlanetState(reply, perspective, "District queued.", {
     ...planetState,
     constructionQueue: [...planetState.constructionQueue, item],
   });
 }
 
 function handleQueuePlanetFeatureRemoval(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   featureKind: PlanetFeatureKind,
 ): void {
-  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  const planetState = validatePlanetCommand(reply, perspective, planetId);
   if (!planetState) return;
   const definition = PLANET_FEATURE_DEFINITIONS[featureKind];
-  if (!definition || !planetState.features.includes(featureKind)) return reject(socket, "Planet feature not found.");
-  if (!definition.removal) return reject(socket, `${definition.label} cannot be removed.`);
-  if (hasQueuedFeatureRemoval(planetState, featureKind)) return reject(socket, `${definition.label} removal is already queued.`);
+  if (!definition || !planetState.features.includes(featureKind)) return reject(reply, "Planet feature not found.");
+  if (!definition.removal) return reject(reply, `${definition.label} cannot be removed.`);
+  if (hasQueuedFeatureRemoval(planetState, featureKind)) return reject(reply, `${definition.label} removal is already queued.`);
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
-  if (!requireUnlocked(socket, factionId, getRequiredTechIdsForPlanetFeatureRemoval(featureKind))) return;
-  const item = createFeatureRemovalConstructionQueueItem(featureKind);
-  if (!spendResources(socket, factionId, item.cost)) return;
-  commitPlanetState(socket, perspective, `${definition.label} removal queued.`, {
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
+  if (!requireUnlocked(reply, factionId, getRequiredTechIdsForPlanetFeatureRemoval(featureKind))) return;
+  const item = createFeatureRemovalConstructionQueueItem(featureKind, createRuntimeId("construction"));
+  if (!spendResources(reply, factionId, item.cost)) return;
+  commitPlanetState(reply, perspective, `${definition.label} removal queued.`, {
     ...planetState,
     constructionQueue: [...planetState.constructionQueue, item],
   });
 }
 
 function handleBuildPlanetBuilding(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   area: BuildingSlotArea,
@@ -2089,66 +2104,66 @@ function handleBuildPlanetBuilding(
   buildingKind: BuildingKind,
   subDistrictIndex?: number,
 ): void {
-  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  const planetState = validatePlanetCommand(reply, perspective, planetId);
   if (!planetState) return;
-  if (!BUILDING_KINDS.includes(buildingKind)) return reject(socket, "Invalid building.");
-  if (BUILDING_DEFINITIONS[buildingKind].autoPlaced) return reject(socket, "This building cannot be constructed manually.");
+  if (!BUILDING_KINDS.includes(buildingKind)) return reject(reply, "Invalid building.");
+  if (BUILDING_DEFINITIONS[buildingKind].autoPlaced) return reject(reply, "This building cannot be constructed manually.");
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
-  if (!requireUnlocked(socket, factionId, getRequiredTechIdsForBuilding(buildingKind))) return;
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
+  if (!requireUnlocked(reply, factionId, getRequiredTechIdsForBuilding(buildingKind))) return;
 
   if (area === "urbanSubDistrict") {
     if (
       subDistrictIndex === undefined
       || !isValidSlotIndex(subDistrictIndex, planetState.urbanSubDistricts.length)
     ) {
-      return reject(socket, "Invalid sub-district.");
+      return reject(reply, "Invalid sub-district.");
     }
     const subDistrict = planetState.urbanSubDistricts[subDistrictIndex];
-    if (!isValidSlotIndex(slotIndex, subDistrict.buildings.length)) return reject(socket, "Invalid building slot.");
-    if (subDistrict.buildings[slotIndex]) return reject(socket, "Building slot is occupied.");
+    if (!isValidSlotIndex(slotIndex, subDistrict.buildings.length)) return reject(reply, "Invalid building slot.");
+    if (subDistrict.buildings[slotIndex]) return reject(reply, "Building slot is occupied.");
     if (hasQueuedBuildingTarget(planetState, area, slotIndex, subDistrictIndex)) {
-      return reject(socket, "Building slot is already queued.");
+      return reject(reply, "Building slot is already queued.");
     }
     if (!isBuildingCompatible(buildingKind, area, subDistrict.kind)) {
-      return reject(socket, "Building is incompatible with this sub-district.");
+      return reject(reply, "Building is incompatible with this sub-district.");
     }
-    const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex, subDistrictIndex);
-    if (!spendResources(socket, factionId, item.cost)) return;
-    commitPlanetState(socket, perspective, "Building queued.", {
+    const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex, subDistrictIndex, createRuntimeId("construction"));
+    if (!spendResources(reply, factionId, item.cost)) return;
+    commitPlanetState(reply, perspective, "Building queued.", {
       ...planetState,
       constructionQueue: [...planetState.constructionQueue, item],
     });
     return;
   }
 
-  if (!isDistrictKind(area)) return reject(socket, "Invalid building area.");
+  if (!isDistrictKind(area)) return reject(reply, "Invalid building area.");
   const slots = planetState.buildings[area];
-  if (!isValidSlotIndex(slotIndex, slots.length)) return reject(socket, "Invalid building slot.");
-  if (slots[slotIndex]) return reject(socket, "Building slot is occupied.");
-  if (hasQueuedBuildingTarget(planetState, area, slotIndex)) return reject(socket, "Building slot is already queued.");
-  if (!isBuildingCompatible(buildingKind, area)) return reject(socket, "Building is incompatible with this district.");
-  const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex);
-  if (!spendResources(socket, factionId, item.cost)) return;
+  if (!isValidSlotIndex(slotIndex, slots.length)) return reject(reply, "Invalid building slot.");
+  if (slots[slotIndex]) return reject(reply, "Building slot is occupied.");
+  if (hasQueuedBuildingTarget(planetState, area, slotIndex)) return reject(reply, "Building slot is already queued.");
+  if (!isBuildingCompatible(buildingKind, area)) return reject(reply, "Building is incompatible with this district.");
+  const item = createBuildingConstructionQueueItem(buildingKind, area, slotIndex, undefined, createRuntimeId("construction"));
+  if (!spendResources(reply, factionId, item.cost)) return;
 
-  commitPlanetState(socket, perspective, "Building queued.", {
+  commitPlanetState(reply, perspective, "Building queued.", {
     ...planetState,
     constructionQueue: [...planetState.constructionQueue, item],
   });
 }
 
 function handleUpgradePlanetBuilding(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   area: BuildingSlotArea,
   slotIndex: number,
   subDistrictIndex?: number,
 ): void {
-  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  const planetState = validatePlanetCommand(reply, perspective, planetId);
   if (!planetState) return;
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
 
   let buildingSlot: PlanetBuildingSlot | undefined;
   let subDistrictKind: UrbanSubDistrictKind | undefined;
@@ -2157,44 +2172,38 @@ function handleUpgradePlanetBuilding(
       subDistrictIndex === undefined
       || !isValidSlotIndex(subDistrictIndex, planetState.urbanSubDistricts.length)
     ) {
-      return reject(socket, "Invalid sub-district.");
+      return reject(reply, "Invalid sub-district.");
     }
     const subDistrict = planetState.urbanSubDistricts[subDistrictIndex];
-    if (!isValidSlotIndex(slotIndex, subDistrict.buildings.length)) return reject(socket, "Invalid building slot.");
+    if (!isValidSlotIndex(slotIndex, subDistrict.buildings.length)) return reject(reply, "Invalid building slot.");
     buildingSlot = subDistrict.buildings[slotIndex];
     subDistrictKind = subDistrict.kind;
   } else {
-    if (!isDistrictKind(area)) return reject(socket, "Invalid building area.");
+    if (!isDistrictKind(area)) return reject(reply, "Invalid building area.");
     const slots = planetState.buildings[area];
-    if (!isValidSlotIndex(slotIndex, slots.length)) return reject(socket, "Invalid building slot.");
+    if (!isValidSlotIndex(slotIndex, slots.length)) return reject(reply, "Invalid building slot.");
     buildingSlot = slots[slotIndex];
   }
 
   const buildingKind = getPlanetBuildingKind(buildingSlot);
-  if (!buildingKind) return reject(socket, "Building slot is empty.");
+  if (!buildingKind) return reject(reply, "Building slot is empty.");
   if (!isBuildingCompatible(buildingKind, area, subDistrictKind)) {
-    return reject(socket, "Building is incompatible with this district.");
+    return reject(reply, "Building is incompatible with this district.");
   }
   const currentLevel = getPlanetBuildingLevel(buildingSlot);
   const targetLevel = getBuildingUpgradeTargetLevel(buildingSlot);
-  if (!targetLevel) return reject(socket, "Building is already at maximum level.");
-  if (!requireUnlocked(socket, factionId, getRequiredTechIdsForBuildingLevel(buildingKind, targetLevel))) return;
+  if (!targetLevel) return reject(reply, "Building is already at maximum level.");
+  if (!requireUnlocked(reply, factionId, getRequiredTechIdsForBuildingLevel(buildingKind, targetLevel))) return;
   if (!meetsCapitalUpgradePopulation(buildingKind, targetLevel, planetState.population)) {
-    return reject(socket, `Requires a population of at least ${getCapitalUpgradePopulationThreshold(targetLevel).toLocaleString()}.`);
+    return reject(reply, `Requires a population of at least ${getCapitalUpgradePopulationThreshold(targetLevel).toLocaleString()}.`);
   }
   if (hasQueuedBuildingTarget(planetState, area, slotIndex, subDistrictIndex)) {
-    return reject(socket, "Building slot is already queued.");
+    return reject(reply, "Building slot is already queued.");
   }
 
-  const item = createBuildingUpgradeConstructionQueueItem(
-    buildingKind,
-    currentLevel,
-    area,
-    slotIndex,
-    subDistrictIndex,
-  );
-  if (!spendResources(socket, factionId, item.cost)) return;
-  commitPlanetState(socket, perspective, "Building upgrade queued.", {
+  const item = createBuildingUpgradeConstructionQueueItem(buildingKind, currentLevel, area, slotIndex, subDistrictIndex, createRuntimeId("construction"));
+  if (!spendResources(reply, factionId, item.cost)) return;
+  commitPlanetState(reply, perspective, "Building upgrade queued.", {
     ...planetState,
     constructionQueue: [...planetState.constructionQueue, item],
   });
@@ -2242,33 +2251,33 @@ function withPlanetBuildingAt(
 }
 
 function handleDowngradePlanetBuilding(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   area: BuildingSlotArea,
   slotIndex: number,
   subDistrictIndex?: number,
 ): void {
-  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  const planetState = validatePlanetCommand(reply, perspective, planetId);
   if (!planetState) return;
   const building = getPlanetBuildingAt(planetState, area, slotIndex, subDistrictIndex);
   const buildingKind = getPlanetBuildingKind(building);
-  if (!buildingKind) return reject(socket, "Building slot is empty or invalid.");
+  if (!buildingKind) return reject(reply, "Building slot is empty or invalid.");
   if (buildingKind === "planetaryCapital") {
-    return reject(socket, "The planetary capital cannot be downgraded or demolished.");
+    return reject(reply, "The planetary capital cannot be downgraded or demolished.");
   }
   if (hasQueuedBuildingTarget(planetState, area, slotIndex, subDistrictIndex)) {
-    return reject(socket, "Cancel this building's queued construction first.");
+    return reject(reply, "Cancel this building's queued construction first.");
   }
   const level = getPlanetBuildingLevel(building);
   if (level <= 1 && BUILDING_DEFINITIONS[buildingKind].autoPlaced) {
-    return reject(socket, "This building cannot be demolished.");
+    return reject(reply, "This building cannot be demolished.");
   }
   const replacement = level > 1
     ? createPlanetBuildingState(buildingKind, level - 1, isPlanetBuildingEnabled(building))
     : null;
   commitPlanetState(
-    socket,
+    reply,
     perspective,
     level > 1 ? "Building downgraded." : "Building demolished.",
     withPlanetBuildingAt(planetState, area, slotIndex, replacement, subDistrictIndex),
@@ -2276,7 +2285,7 @@ function handleDowngradePlanetBuilding(
 }
 
 function handleSetPlanetBuildingEnabled(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   area: BuildingSlotArea,
@@ -2284,18 +2293,18 @@ function handleSetPlanetBuildingEnabled(
   enabled: boolean,
   subDistrictIndex?: number,
 ): void {
-  if (typeof enabled !== "boolean") return reject(socket, "Invalid building status.");
-  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  if (typeof enabled !== "boolean") return reject(reply, "Invalid building status.");
+  const planetState = validatePlanetCommand(reply, perspective, planetId);
   if (!planetState) return;
   const building = getPlanetBuildingAt(planetState, area, slotIndex, subDistrictIndex);
   const buildingKind = getPlanetBuildingKind(building);
-  if (!buildingKind) return reject(socket, "Building slot is empty or invalid.");
+  if (!buildingKind) return reject(reply, "Building slot is empty or invalid.");
   if (!enabled && buildingKind === "planetaryCapital") {
-    return reject(socket, "The mandatory planetary capital cannot be disabled.");
+    return reject(reply, "The mandatory planetary capital cannot be disabled.");
   }
   const replacement = createPlanetBuildingState(buildingKind, getPlanetBuildingLevel(building), enabled);
   commitPlanetState(
-    socket,
+    reply,
     perspective,
     enabled ? "Building enabled." : "Building disabled.",
     withPlanetBuildingAt(planetState, area, slotIndex, replacement, subDistrictIndex),
@@ -2303,19 +2312,19 @@ function handleSetPlanetBuildingEnabled(
 }
 
 function handleSetPlanetJobLock(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   job: Exclude<JobKind, "criminal" | "unemployed">,
   locked: boolean,
 ): void {
   if (typeof locked !== "boolean" || !JOB_FILL_ORDER.includes(job)) {
-    return reject(socket, "Invalid job lock.");
+    return reject(reply, "Invalid job lock.");
   }
-  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  const planetState = validatePlanetCommand(reply, perspective, planetId);
   if (!planetState) return;
   if (!locked) {
-    commitPlanetState(socket, perspective, "Job unlocked.", {
+    commitPlanetState(reply, perspective, "Job unlocked.", {
       ...planetState,
       jobLocks: (planetState.jobLocks ?? []).filter((candidate) => candidate.job !== job),
     });
@@ -2326,14 +2335,14 @@ function handleSetPlanetJobLock(
     if (group.job !== job || group.population <= 0) continue;
     bySpecies.set(group.speciesId, (bySpecies.get(group.speciesId) ?? 0) + group.population);
   }
-  if (bySpecies.size === 0) return reject(socket, "Only a staffed productive job can be locked.");
+  if (bySpecies.size === 0) return reject(reply, "Only a staffed productive job can be locked.");
   const lock = {
     job,
     allocations: Array.from(bySpecies.entries())
       .sort(([left], [right]) => left.localeCompare(right))
       .map(([speciesId, population]) => ({ speciesId, population })),
   };
-  commitPlanetState(socket, perspective, "Job locked.", {
+  commitPlanetState(reply, perspective, "Job locked.", {
     ...planetState,
     jobLocks: [
       ...(planetState.jobLocks ?? []).filter((candidate) => candidate.job !== job),
@@ -2343,37 +2352,37 @@ function handleSetPlanetJobLock(
 }
 
 function handleCancelPlanetConstruction(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   queueItemId: string,
 ): void {
-  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  const planetState = validatePlanetCommand(reply, perspective, planetId);
   if (!planetState) return;
   const item = planetState.constructionQueue.find((candidate) => candidate.id === queueItemId);
-  if (!item) return reject(socket, "Construction item not found.");
+  if (!item) return reject(reply, "Construction item not found.");
   const factionId = perspective.mode === "faction" ? perspective.factionId : null;
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const remainingRatio = item.totalDays > 0 ? Math.max(0, Math.min(1, item.remainingDays / item.totalDays)) : 0;
   const refund = createEmptyResourceCounts();
   for (const resource of RESOURCE_KINDS) refund[resource] = Math.floor(item.cost[resource] * remainingRatio);
   refundResources(factionId, refund);
 
-  commitPlanetState(socket, perspective, "Construction cancelled.", {
+  commitPlanetState(reply, perspective, "Construction cancelled.", {
     ...planetState,
     constructionQueue: planetState.constructionQueue.filter((candidate) => candidate.id !== queueItemId),
   });
 }
 
 function handleSkipPlanetConstruction(
-  session: ClientSession,
+  session: ActionSession,
   planetId: string,
   queueItemId: string,
 ): void {
-  const planetState = validatePlanetCommand(session.socket, session.perspective, planetId);
+  const planetState = validatePlanetCommand(session.reply, session.perspective, planetId);
   if (!planetState) return;
   const item = planetState.constructionQueue.find((candidate) => candidate.id === queueItemId);
-  if (!item) return reject(session.socket, "Construction item not found.");
+  if (!item) return reject(session.reply, "Construction item not found.");
 
   const completed = completePlanetConstructionQueueItem(
     planetState,
@@ -2382,15 +2391,15 @@ function handleSkipPlanetConstruction(
     getPlanetTechnologyModifiers(ctx.state, planetState),
     getPlanetSpeciesContext(ctx.state, planetState),
   );
-  if (!completed) return reject(session.socket, "This construction item can no longer be completed.");
+  if (!completed) return reject(session.reply, "This construction item can no longer be completed.");
 
   const cost = getConstructionDarkMatterCost(item.remainingDays);
-  const balance = authStore.spendPlayerDarkMatter(session.account.id, cost);
-  if (balance === null) return reject(session.socket, `Need ${cost} Dark Matter.`);
+  const balance = authStore.spendPlayerDarkMatter((session.actor as Extract<GameActor, { kind: "human" }>).accountId, cost);
+  if (balance === null) return reject(session.reply, `Need ${cost} Dark Matter.`);
 
-  broadcastAccountDarkMatter(session.account.id, balance);
+  broadcastAccountDarkMatter((session.actor as Extract<GameActor, { kind: "human" }>).accountId, balance);
   commitPlanetState(
-    session.socket,
+    session.reply,
     session.perspective,
     `${item.label} completed instantly for ${cost} Dark Matter.`,
     completed.state,
@@ -2398,17 +2407,17 @@ function handleSkipPlanetConstruction(
 }
 
 function handleSetUrbanSubDistrict(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   planetId: string,
   subDistrictIndex: number,
   subDistrictKind: UrbanSubDistrictKind,
 ): void {
-  const planetState = validatePlanetCommand(socket, perspective, planetId);
+  const planetState = validatePlanetCommand(reply, perspective, planetId);
   if (!planetState) return;
-  if (!URBAN_SUB_DISTRICT_KINDS.includes(subDistrictKind)) return reject(socket, "Invalid sub-district type.");
+  if (!URBAN_SUB_DISTRICT_KINDS.includes(subDistrictKind)) return reject(reply, "Invalid sub-district type.");
   if (!isValidSlotIndex(subDistrictIndex, planetState.urbanSubDistricts.length)) {
-    return reject(socket, "Invalid sub-district.");
+    return reject(reply, "Invalid sub-district.");
   }
 
   const urbanSubDistricts = planetState.urbanSubDistricts.map((subDistrict, index) => {
@@ -2427,7 +2436,7 @@ function handleSetUrbanSubDistrict(
     subDistrictIndex,
     subDistrictKind,
   );
-  commitPlanetState(socket, perspective, "Sub-district changed.", { ...planetState, urbanSubDistricts, constructionQueue });
+  commitPlanetState(reply, perspective, "Sub-district changed.", { ...planetState, urbanSubDistricts, constructionQueue });
 }
 
 
@@ -2933,26 +2942,26 @@ async function handleAdminCommand(
 }
 
 function handleSetActiveTechnology(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   techId: TechId,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const tech = TECHNOLOGY_BY_ID[techId];
-  if (!tech) return reject(socket, "Technology not found.");
+  if (!tech) return reject(reply, "Technology not found.");
   const techState = getFactionTechnology(ctx.state, factionId);
-  if (!techState) return reject(socket, "Faction technology ctx.state unavailable.");
-  if (isTechnologyCompleted(techState, techId)) return reject(socket, `${tech.name} is already completed.`);
+  if (!techState) return reject(reply, "Faction technology ctx.state unavailable.");
+  if (isTechnologyCompleted(techState, techId)) return reject(reply, `${tech.name} is already completed.`);
   if (!isTechnologyAvailable(tech, techState)) {
     const missing = getMissingPrerequisites(tech, techState)
       .map((id) => TECHNOLOGY_BY_ID[id]?.name ?? id)
       .join(", ");
-    return reject(socket, missing ? `Requires ${missing}.` : "Technology is not available.");
+    return reject(reply, missing ? `Requires ${missing}.` : "Technology is not available.");
   }
   techState.activeTechId = techId;
   ctx.hasDirtyState = true;
-  accept(socket, `Research focus set to ${tech.name}.`);
+  accept(reply, `Research focus set to ${tech.name}.`);
   broadcastUpdates(["technologies"]);
 }
 
@@ -2963,16 +2972,16 @@ function isGovernmentLawOptionUnlocked(factionId: number, option: GovernmentLawO
 }
 
 function handleResolveEvent(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   eventId: string,
   choiceId: string,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const event = ctx.state.events.find((candidate) => candidate.id === eventId && candidate.factionId === factionId);
-  if (!event) return reject(socket, "Event is no longer available.");
-  if (!event.choices.some((choice) => choice.id === choiceId)) return reject(socket, "Unknown event choice.");
+  if (!event) return reject(reply, "Event is no longer available.");
+  if (!event.choices.some((choice) => choice.id === choiceId)) return reject(reply, "Unknown event choice.");
   resolveActiveEvent(ctx, event, choiceId);
   recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
@@ -2981,23 +2990,23 @@ function handleResolveEvent(
   // those can touch so the change reaches ctx.clients live â€” otherwise the resolved
   // event's notification lingers until a full reload (the leader-offer bug).
   broadcastUpdates(["events", "leaders", "situations", "fleets", "factionEconomies", "planetStates"]);
-  accept(socket, "Decision recorded.");
+  accept(reply, "Decision recorded.");
 }
 
 function handleSetGovernmentLaw(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   lawId: GovernmentLawId,
   optionId: string,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const law = GOVERNMENT_LAW_BY_ID[lawId];
   const option = law ? getGovernmentLawOption(lawId, optionId) : undefined;
-  if (!law || !option) return reject(socket, "Government law option not found.");
+  if (!law || !option) return reject(reply, "Government law option not found.");
   if (!isGovernmentLawOptionUnlocked(factionId, option)) {
     const required = option.requiresTechId ? TECHNOLOGY_BY_ID[option.requiresTechId]?.name ?? option.requiresTechId : "required technology";
-    return reject(socket, `Requires ${required}.`);
+    return reject(reply, `Requires ${required}.`);
   }
   let government = ctx.state.governments.find((candidate) => candidate.factionId === factionId);
   if (!government) {
@@ -3005,7 +3014,7 @@ function handleSetGovernmentLaw(
     ctx.state.governments.push(government);
   }
   if (government.selectedLawOptionIds[lawId] === option.id) {
-    return accept(socket, `${law.name} already uses ${option.name}.`);
+    return accept(reply, `${law.name} already uses ${option.name}.`);
   }
   const previousRights = JSON.stringify(getFactionSpeciesRightsState(ctx.state, factionId));
   government.selectedLawOptionIds[lawId] = option.id;
@@ -3014,24 +3023,24 @@ function handleSetGovernmentLaw(
   recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
-  accept(socket, `${law.name} set to ${option.name}.`);
+  accept(reply, `${law.name} set to ${option.name}.`);
   const changed: ServerUpdateField[] = ["governments", "species", "planetStates", "factionEconomies", "fleets", "technologies"];
   if (rightsChanged) changed.push("visibility");
   broadcastUpdates(changed);
 }
 
 function handleSetSpeciesRights(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   speciesId: string,
   rightsInput: Partial<SpeciesRights>,
 ): void {
   const factionId = validateCommandPerspective(perspective);
-  if (factionId === null) return reject(socket, "Observer mode is read-only.");
+  if (factionId === null) return reject(reply, "Observer mode is read-only.");
   const species = ctx.state.species.find((candidate) => candidate.id === speciesId);
-  if (!species) return reject(socket, "Species not found.");
+  if (!species) return reject(reply, "Species not found.");
   if (!getEmpireSpeciesIds(ctx.state, factionId).includes(species.id)) {
-    return reject(socket, "That species does not live in your empire.");
+    return reject(reply, "That species does not live in your empire.");
   }
 
   let rightsState = ctx.state.speciesRights.find((candidate) => candidate.factionId === factionId);
@@ -3043,7 +3052,7 @@ function handleSetSpeciesRights(
   const requested = normalizeSpeciesRights({ ...current, ...rightsInput });
   const normalized = normalizeSpeciesRightsForLaws(requested, getSpeciesLawSelections(ctx.state, factionId));
   if (JSON.stringify(current) === JSON.stringify(normalized)) {
-    return accept(socket, `${species.name} rights already match current law.`);
+    return accept(reply, `${species.name} rights already match current law.`);
   }
   rightsState.rightsBySpeciesId = {
     ...rightsState.rightsBySpeciesId,
@@ -3053,29 +3062,29 @@ function handleSetSpeciesRights(
   recalculatePlanetEconomies();
   refreshFactionEconomyDeltas();
   ctx.hasDirtyState = true;
-  accept(socket, `${species.name} rights updated.`);
+  accept(reply, `${species.name} rights updated.`);
   broadcastUpdates(["species", "planetStates", "factionEconomies"]);
 }
 
-function validateLeaderCommand(socket: WebSocket, perspective: GalaxyPerspective, leaderId: string): {
+function validateLeaderCommand(reply: CommandReply, perspective: GalaxyPerspective, leaderId: string): {
   leader: LeaderState;
   factionId: number;
 } | null {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) {
-    reject(socket, "Observer mode is read-only.");
+    reject(reply, "Observer mode is read-only.");
     return null;
   }
   const leader = ctx.state.leaders.find((candidate) => candidate.id === leaderId);
   if (!leader || leader.factionId !== factionId || leader.status === "dead") {
-    reject(socket, "Leader not found.");
+    reject(reply, "Leader not found.");
     return null;
   }
   return { leader, factionId };
 }
 
 function validateLeaderAssignment(
-  socket: WebSocket,
+  reply: CommandReply,
   factionId: number,
   leaderClass: LeaderClass,
   assignment: LeaderAssignment | null,
@@ -3084,31 +3093,31 @@ function validateLeaderAssignment(
   if (assignment.kind === "government") {
     const position = getGovernmentPositionDefinition(assignment.targetId as GovernmentPositionId);
     if (!position) {
-      reject(socket, "Government position not found.");
+      reject(reply, "Government position not found.");
       return false;
     }
     if (position.requiredClass !== leaderClass) {
-      reject(socket, `${formatLeaderClass(leaderClass)} cannot take that government position.`);
+      reject(reply, `${formatLeaderClass(leaderClass)} cannot take that government position.`);
       return false;
     }
     return true;
   }
   if (assignment.kind !== "planet" && assignment.kind !== "fleet" && assignment.kind !== "planetMilitary" && assignment.kind !== "groundBattle") {
-    reject(socket, "Leader assignment target is invalid.");
+    reject(reply, "Leader assignment target is invalid.");
     return false;
   }
   if (getLeaderAssignmentClass(assignment.kind) !== leaderClass) {
-    reject(socket, `${formatLeaderClass(leaderClass)} cannot take that assignment.`);
+    reject(reply, `${formatLeaderClass(leaderClass)} cannot take that assignment.`);
     return false;
   }
   if (assignment.kind === "planet" || assignment.kind === "planetMilitary") {
     const planetState = ctx.state.planetStates.find((candidate) => candidate.id === assignment.targetId);
     if (!planetState || !planetState.isHabited) {
-      reject(socket, "Planet not found.");
+      reject(reply, "Planet not found.");
       return false;
     }
     if (planetState.ownerId !== factionId) {
-      reject(socket, "You do not own that planet.");
+      reject(reply, "You do not own that planet.");
       return false;
     }
     return true;
@@ -3116,18 +3125,18 @@ function validateLeaderAssignment(
   if (assignment.kind === "groundBattle") {
     const battle = ctx.state.groundBattles.find((candidate) => candidate.id === assignment.targetId);
     if (!battle || battle.attackerFactionId !== factionId) {
-      reject(socket, "Ground battle command not found.");
+      reject(reply, "Ground battle command not found.");
       return false;
     }
     return true;
   }
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === assignment.targetId);
   if (!fleet) {
-    reject(socket, "Fleet not found.");
+    reject(reply, "Fleet not found.");
     return false;
   }
   if (fleet.ownerId !== factionId) {
-    reject(socket, "You do not own that fleet.");
+    reject(reply, "You do not own that fleet.");
     return false;
   }
   return true;
@@ -3138,32 +3147,32 @@ function commitLeaderChange(changed: ServerUpdateField[]): void {
   broadcastUpdates(Array.from(new Set(["leaders", ...changed])));
 }
 
-function handleRecruitLeader(socket: WebSocket, perspective: GalaxyPerspective, leaderId: string): void {
-  const validated = validateLeaderCommand(socket, perspective, leaderId);
+function handleRecruitLeader(reply: CommandReply, perspective: GalaxyPerspective, leaderId: string): void {
+  const validated = validateLeaderCommand(reply, perspective, leaderId);
   if (!validated) return;
   const { leader } = validated;
   if (leader.status === "recruited") {
-    accept(socket, `${leader.name} is already recruited.`);
+    accept(reply, `${leader.name} is already recruited.`);
     return;
   }
   leader.status = "recruited";
   leader.recruitedAtYear = ctx.state.clock.year;
   leader.assignment = null;
   leader.createdAtYear = Math.min(leader.createdAtYear, ctx.state.clock.year);
-  accept(socket, `${leader.name} recruited.`);
+  accept(reply, `${leader.name} recruited.`);
   commitLeaderChange([]);
 }
 
 function handleAssignLeader(
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   leaderId: string,
   assignment: LeaderAssignment | null,
 ): void {
-  const validated = validateLeaderCommand(socket, perspective, leaderId);
+  const validated = validateLeaderCommand(reply, perspective, leaderId);
   if (!validated) return;
   const { leader, factionId } = validated;
-  if (!validateLeaderAssignment(socket, factionId, leader.class, assignment)) return;
+  if (!validateLeaderAssignment(reply, factionId, leader.class, assignment)) return;
   const previousAssignment = leader.assignment;
   if (assignment) {
     for (const candidate of ctx.state.leaders) {
@@ -3197,16 +3206,16 @@ function handleAssignLeader(
     refreshFactionEconomyDeltas();
     changed.push("governments", "planetStates", "factionEconomies", "fleets", "technologies");
   }
-  accept(socket, assignment ? `${leader.name} assigned.` : `${leader.name} unassigned.`);
+  accept(reply, assignment ? `${leader.name} assigned.` : `${leader.name} unassigned.`);
   commitLeaderChange(changed);
 }
 
-function handleDismissLeader(socket: WebSocket, perspective: GalaxyPerspective, leaderId: string): void {
-  const validated = validateLeaderCommand(socket, perspective, leaderId);
+function handleDismissLeader(reply: CommandReply, perspective: GalaxyPerspective, leaderId: string): void {
+  const validated = validateLeaderCommand(reply, perspective, leaderId);
   if (!validated) return;
   const { leader } = validated;
   if (leader.status !== "recruited") {
-    reject(socket, "Only recruited leaders can be dismissed.");
+    reject(reply, "Only recruited leaders can be dismissed.");
     return;
   }
   const oldAssignment = leader.assignment;
@@ -3228,78 +3237,67 @@ function handleDismissLeader(socket: WebSocket, perspective: GalaxyPerspective, 
     refreshFactionEconomyDeltas();
     changed.push("governments", "planetStates", "factionEconomies", "fleets", "technologies");
   }
-  accept(socket, `${leader.name} dismissed.`);
+  accept(reply, `${leader.name} dismissed.`);
   commitLeaderChange(changed);
 }
 
 
-function dispatchCommand(session: ClientSession, command: ClientCommand): void {
-  if (command.type === "join") {
-    if (!session.sentInitialSnapshot) {
-      sendEvent(session.socket, createSnapshot(ctx, session.perspective));
-      session.sentInitialSnapshot = true;
-    }
-    return;
-  }
-  if (command.type === "adminCommand") {
-    void handleAdminCommand(session, command);
-    return;
-  }
+function dispatchCommand(session: ActionSession, command: GameAction): void {
   if (command.type === "setActiveTechnology") {
-    handleSetActiveTechnology(session.socket, session.perspective, command.techId);
+    handleSetActiveTechnology(session.reply, session.perspective, command.techId);
     return;
   }
   if (command.type === "setGovernmentLaw") {
-    handleSetGovernmentLaw(session.socket, session.perspective, command.lawId, command.optionId);
+    handleSetGovernmentLaw(session.reply, session.perspective, command.lawId, command.optionId);
     return;
   }
   if (command.type === "resolveEvent") {
-    handleResolveEvent(session.socket, session.perspective, command.eventId, command.choiceId);
+    handleResolveEvent(session.reply, session.perspective, command.eventId, command.choiceId);
     return;
   }
   if (command.type === "setSpeciesRights") {
-    handleSetSpeciesRights(session.socket, session.perspective, command.speciesId, command.rights);
+    handleSetSpeciesRights(session.reply, session.perspective, command.speciesId, command.rights);
     return;
   }
   if (command.type === "recruitLeader") {
-    handleRecruitLeader(session.socket, session.perspective, command.leaderId);
+    handleRecruitLeader(session.reply, session.perspective, command.leaderId);
     return;
   }
   if (command.type === "assignLeader") {
-    handleAssignLeader(session.socket, session.perspective, command.leaderId, command.assignment);
+    handleAssignLeader(session.reply, session.perspective, command.leaderId, command.assignment);
     return;
   }
   if (command.type === "dismissLeader") {
-    handleDismissLeader(session.socket, session.perspective, command.leaderId);
+    handleDismissLeader(session.reply, session.perspective, command.leaderId);
     return;
   }
   if (command.type === "marketTrade") {
-    handleMarketTrade(session.socket, session.perspective, command.resourceId, command.tradeType, command.amount);
+    handleMarketTrade(session.reply, session.perspective, command.resourceId, command.tradeType, command.amount);
     return;
   }
   if (command.type === "addMarketAutoTrade") {
-    handleAddMarketAutoTrade(session.socket, session.perspective, command.resourceId, command.tradeType, command.amountPerHour);
+    handleAddMarketAutoTrade(session.reply, session.perspective, command.resourceId, command.tradeType, command.amountPerHour);
     return;
   }
   if (command.type === "removeMarketAutoTrade") {
-    handleRemoveMarketAutoTrade(session.socket, session.perspective, command.orderId);
+    handleRemoveMarketAutoTrade(session.reply, session.perspective, command.orderId);
     return;
   }
   if (command.type === "sendDiplomacyMessage") {
-    handleSendDiplomacyMessage(ctx, session.socket, session.perspective, command.targetFactionId, command.body);
+    handleSendDiplomacyMessage(ctx, session.reply, session.perspective, command.targetFactionId, command.body);
     return;
   }
   if (command.type === "setBorderPolicy") {
-    handleSetBorderPolicy(ctx, session.socket, session.perspective, command.targetFactionId, command.policy);
+    handleSetBorderPolicy(ctx, session.reply, session.perspective, command.targetFactionId, command.policy);
     return;
   }
   if (command.type === "declareWar") {
-    handleDeclareWar(ctx, session.socket, session.perspective, command.targetFactionId);
+    handleDeclareWar(ctx, session.reply, session.perspective, command.targetFactionId);
     return;
   }
   if (command.type === "proposeTreaty") {
     handleProposeTreaty(ctx, 
-      session.socket,
+      session.reply,
       session.perspective,
       command.targetFactionId,
       command.articleIds,
@@ -3309,24 +3307,24 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "respondDiplomacyProposal") {
-    handleRespondDiplomacyProposal(ctx, session.socket, session.perspective, command.proposalId, command.response);
+    handleRespondDiplomacyProposal(ctx, session.reply, session.perspective, command.proposalId, command.response);
     return;
   }
   if (command.type === "cancelTreaty") {
-    handleCancelTreaty(ctx, session.socket, session.perspective, command.treatyId);
+    handleCancelTreaty(ctx, session.reply, session.perspective, command.treatyId);
     return;
   }
   if (command.type === "cancelDiplomacyProposal") {
-    handleCancelDiplomacyProposal(ctx, session.socket, session.perspective, command.proposalId);
+    handleCancelDiplomacyProposal(ctx, session.reply, session.perspective, command.proposalId);
     return;
   }
   if (command.type === "proposePeace") {
-    handleProposePeace(ctx, session.socket, session.perspective, command.targetFactionId, command.terms);
+    handleProposePeace(ctx, session.reply, session.perspective, command.targetFactionId, command.terms);
     return;
   }
   if (command.type === "moveShip" || command.type === "moveFleet") {
     handleMove(
-      session.socket,
+      session.reply,
       session.perspective,
       command.fleetId,
       command.shipId,
@@ -3337,23 +3335,23 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "buildStarbase") {
-    handleBuild(session.socket, session.perspective, command.fleetId, command.shipId, command.targetStarId);
+    handleBuild(session.reply, session.perspective, command.fleetId, command.shipId, command.targetStarId);
     return;
   }
   if (command.type === "orbitPlanet") {
-    handleOrbitPlanet(session.socket, session.perspective, command.fleetId, command.planetId);
+    handleOrbitPlanet(session.reply, session.perspective, command.fleetId, command.planetId);
     return;
   }
   if (command.type === "colonizePlanet") {
-    handleColonizePlanet(session.socket, session.perspective, command.fleetId, command.planetId);
+    handleColonizePlanet(session.reply, session.perspective, command.fleetId, command.planetId);
     return;
   }
   if (command.type === "mergeFleets") {
-    handleMergeFleets(session.socket, session.perspective, command.targetFleetId, command.sourceFleetIds);
+    handleMergeFleets(session.reply, session.perspective, command.targetFleetId, command.sourceFleetIds);
     return;
   }
   if (command.type === "stopFleet") {
-    handleStopFleet(session.socket, session.perspective, command.fleetId);
+    handleStopFleet(session.reply, session.perspective, command.fleetId);
     return;
   }
   if (command.type === "setFleetDarkMatterBoost") {
@@ -3361,17 +3359,17 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "buildDistrict") {
-    handleBuildDistrict(session.socket, session.perspective, command.planetId, command.districtKind);
+    handleBuildDistrict(session.reply, session.perspective, command.planetId, command.districtKind);
     return;
   }
 
   if (command.type === "queuePlanetFeatureRemoval") {
-    handleQueuePlanetFeatureRemoval(session.socket, session.perspective, command.planetId, command.featureKind);
+    handleQueuePlanetFeatureRemoval(session.reply, session.perspective, command.planetId, command.featureKind);
     return;
   }
   if (command.type === "buildPlanetBuilding") {
     handleBuildPlanetBuilding(
-      session.socket,
+      session.reply,
       session.perspective,
       command.planetId,
       command.area,
@@ -3383,7 +3381,7 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "upgradePlanetBuilding") {
     handleUpgradePlanetBuilding(
-      session.socket,
+      session.reply,
       session.perspective,
       command.planetId,
       command.area,
@@ -3394,7 +3392,7 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "downgradePlanetBuilding") {
     handleDowngradePlanetBuilding(
-      session.socket,
+      session.reply,
       session.perspective,
       command.planetId,
       command.area,
@@ -3405,7 +3403,7 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "setPlanetBuildingEnabled") {
     handleSetPlanetBuildingEnabled(
-      session.socket,
+      session.reply,
       session.perspective,
       command.planetId,
       command.area,
@@ -3417,7 +3415,7 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
   }
   if (command.type === "setPlanetJobLock") {
     handleSetPlanetJobLock(
-      session.socket,
+      session.reply,
       session.perspective,
       command.planetId,
       command.job,
@@ -3426,7 +3424,7 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "cancelPlanetConstruction") {
-    handleCancelPlanetConstruction(session.socket, session.perspective, command.planetId, command.queueItemId);
+    handleCancelPlanetConstruction(session.reply, session.perspective, command.planetId, command.queueItemId);
     return;
   }
   if (command.type === "skipPlanetConstruction") {
@@ -3434,12 +3432,12 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "upgradeStarbase") {
-    handleUpgradeStarbase(session.socket, session.perspective, command.starbaseId);
+    handleUpgradeStarbase(session.reply, session.perspective, command.starbaseId);
     return;
   }
   if (command.type === "buildStarbaseBuilding") {
     handleBuildStarbaseBuilding(
-      session.socket,
+      session.reply,
       session.perspective,
       command.starbaseId,
       command.slotIndex,
@@ -3448,12 +3446,12 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "buildStarbaseShip") {
-    handleBuildStarbaseShip(session.socket, session.perspective, command.starbaseId, command.shipKind, command.designId);
+    handleBuildStarbaseShip(session.reply, session.perspective, command.starbaseId, command.shipKind, command.designId);
     return;
   }
   if (command.type === "buildPlanetShip") {
     handleBuildPlanetShip(
-      session.socket,
+      session.reply,
       session.perspective,
       command.planetId,
       command.shipKind,
@@ -3462,44 +3460,44 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "buildPlanetDefenseBuilding") {
-    handleBuildPlanetDefenseBuilding(session.socket, session.perspective, command.planetId, command.section, command.slotIndex, command.buildingKind);
+    handleBuildPlanetDefenseBuilding(session.reply, session.perspective, command.planetId, command.section, command.slotIndex, command.buildingKind);
     return;
   }
   if (command.type === "upgradePlanetDefenseBuilding") {
-    handleUpgradePlanetDefenseBuilding(session.socket, session.perspective, command.planetId, command.section, command.slotIndex);
+    handleUpgradePlanetDefenseBuilding(session.reply, session.perspective, command.planetId, command.section, command.slotIndex);
     return;
   }
   if (command.type === "setPlanetDefenseBuildingEnabled") {
-    handleSetPlanetDefenseBuildingEnabled(session.socket, session.perspective, command.planetId, command.section, command.slotIndex, command.enabled);
+    handleSetPlanetDefenseBuildingEnabled(session.reply, session.perspective, command.planetId, command.section, command.slotIndex, command.enabled);
     return;
   }
   if (command.type === "demolishPlanetDefenseBuilding") {
-    handleDemolishPlanetDefenseBuilding(session.socket, session.perspective, command.planetId, command.section, command.slotIndex);
+    handleDemolishPlanetDefenseBuilding(session.reply, session.perspective, command.planetId, command.section, command.slotIndex);
     return;
   }
   if (command.type === "queueArmyRecruitment") {
-    handleQueueArmyRecruitment(session.socket, session.perspective, command.yardKind, command.yardId, command.armyTypeId, command.speciesId);
+    handleQueueArmyRecruitment(session.reply, session.perspective, command.yardKind, command.yardId, command.armyTypeId, command.speciesId);
     return;
   }
   if (command.type === "landArmyFleet") {
-    handleLandArmyFleet(session.socket, session.perspective, command.fleetId, command.planetId);
+    handleLandArmyFleet(session.reply, session.perspective, command.fleetId, command.planetId);
     return;
   }
   if (command.type === "embarkPlanetArmies") {
-    handleEmbarkPlanetArmies(session.socket, session.perspective, command.planetId, command.armyIds, command.embarkCommander);
+    handleEmbarkPlanetArmies(session.reply, session.perspective, command.planetId, command.armyIds, command.embarkCommander);
     return;
   }
   if (command.type === "beginPlanetInvasion") {
-    handleBeginPlanetInvasion(session.socket, session.perspective, command.fleetId, command.planetId);
+    handleBeginPlanetInvasion(session.reply, session.perspective, command.fleetId, command.planetId);
     return;
   }
   if (command.type === "withdrawGroundBattle") {
-    handleWithdrawGroundBattle(session.socket, session.perspective, command.battleId);
+    handleWithdrawGroundBattle(session.reply, session.perspective, command.battleId);
     return;
   }
   if (command.type === "cancelShipConstruction") {
     handleCancelShipConstruction(
-      session.socket,
+      session.reply,
       session.perspective,
       command.yardKind,
       command.yardId,
@@ -3508,20 +3506,20 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "upgradeShip") {
-    handleUpgradeShip(session.socket, session.perspective, command);
+    handleUpgradeShip(session.reply, session.perspective, command);
     return;
   }
   if (command.type === "saveShipDesign") {
-    handleSaveShipDesign(session.socket, session.perspective, command);
+    handleSaveShipDesign(session.reply, session.perspective, command);
     return;
   }
   if (command.type === "decommissionShipDesign") {
-    handleDecommissionShipDesign(session.socket, session.perspective, command.designId);
+    handleDecommissionShipDesign(session.reply, session.perspective, command.designId);
     return;
   }
   if (command.type === "setUrbanSubDistrict") {
     handleSetUrbanSubDistrict(
-      session.socket,
+      session.reply,
       session.perspective,
       command.planetId,
       command.subDistrictIndex,
@@ -3529,25 +3527,16 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     );
     return;
   }
-  if (command.type === "requestDetails") {
-    handleRequestDetails(session.socket, session.perspective, command.scope, command.id, command.knownRevision);
-    return;
-  }
-  if (command.type === "subscribeDetails") {
-    handleSubscribeDetails(session, command.scope, command.id, command.knownRevision);
-    return;
-  }
-  if (command.type === "unsubscribeDetails") {
-    handleUnsubscribeDetails(session, command.scope, command.id);
-    return;
-  }
+
+
+
   if (command.type === "retreatFleet") {
-    handleRetreatFleet(session.socket, session.perspective, command.fleetId);
+    handleRetreatFleet(session.reply, session.perspective, command.fleetId);
     return;
   }
   if (command.type === "retreatFleetTo") {
     handleRetreatFleetTo(
-      session.socket,
+      session.reply,
       session.perspective,
       command.fleetId,
       command.targetStarId,
@@ -3556,64 +3545,118 @@ function dispatchCommand(session: ClientSession, command: ClientCommand): void {
     return;
   }
   if (command.type === "emergencyRetreatFleetTo") {
-    handleEmergencyRetreatFleetTo(session.socket, session.perspective, command.fleetId, command.targetStarId);
+    handleEmergencyRetreatFleetTo(session.reply, session.perspective, command.fleetId, command.targetStarId);
     return;
   }
   if (command.type === "attackTarget") {
-    handleAttackTarget(session.socket, session.perspective, command.fleetId, command.targetId, command.targetKind);
+    handleAttackTarget(session.reply, session.perspective, command.fleetId, command.targetId, command.targetKind);
     return;
   }
   if (command.type === "attackSystem") {
-    handleAttackSystem(session.socket, session.perspective, command.fleetId, command.targetStarId);
+    handleAttackSystem(session.reply, session.perspective, command.fleetId, command.targetStarId);
     return;
   }
   if (command.type === "setFleetCombatSettings") {
-    handleSetFleetCombatSettings(session.socket, session.perspective, command.fleetId, command.combatSettings, command.combatStance);
+    handleSetFleetCombatSettings(session.reply, session.perspective, command.fleetId, command.combatSettings, command.combatStance);
     return;
   }
   if (command.type === "issueFleetTacticalOrder") {
-    handleIssueFleetTacticalOrder(session.socket, session.perspective, command);
+    handleIssueFleetTacticalOrder(session.reply, session.perspective, command);
     return;
   }
   if (command.type === "repairFleet") {
-    handleRepairFleet(session.socket, session.perspective, command);
+    handleRepairFleet(session.reply, session.perspective, command);
     return;
   }
+
+}
+
+function issueActor<T extends GameActor>(actor: T): T {
+  issuedActors.add(actor);
+  return Object.freeze(actor);
+}
+function executeGameCommand(actor: GameActor, input: unknown): CommandOutcome {
+  if (!issuedActors.has(actor)) return { ok: false, message: "Actor is not authorized for this game." };
+  if (actor.kind === "observer") return { ok: false, message: "Observer mode is read-only." };
+  if (!ctx.state.factions.some((f) => f.id === actor.factionId)) return { ok: false, message: "Your country is not available." };
+  if (actor.kind === "human" && authStore.getAccountIdForGameFaction(game.id, actor.factionId) !== actor.accountId) {
+    return { ok: false, message: "You do not control that country." };
+  }
+  let action: ClientCommand;
+  try { action = decodeClientCommand(input); }
+  catch (error) { return { ok: false, message: error instanceof Error ? error.message : "Invalid command." }; }
+  if (ADAPTER_COMMANDS.has(action.type)) return { ok: false, message: "This command requires a session adapter." };
+  if (actor.kind === "ai" && (action.type === "skipPlanetConstruction" || action.type === "setFleetDarkMatterBoost")) {
+    return { ok: false, message: "AI cannot use account currency." };
+  }
+  const session: ActionSession = { actor, perspective: { mode: "faction", factionId: actor.factionId }, reply: {} };
+  if (commandEffects) throw new Error("Reentrant gameplay command execution.");
+  const previousDeterminism = structuredClone(ctx.state.determinism);
+  const previouslyDirty = ctx.hasDirtyState;
+  // Replacement orders refund reservations and clear the old order before path
+  // planning. Keep their small mutable domain atomic if planning rejects.
+  const replacementOrder = ["moveShip", "moveFleet", "buildStarbase", "orbitPlanet", "attackSystem", "mergeFleets"].includes(action.type);
+  const previousOrders = replacementOrder ? structuredClone({ fleets: ctx.state.fleets, economies: ctx.state.factionEconomies }) : null;
+  // A multi-source merge can immediately reassign ships, armies, and leaders
+  // before a later rendezvous fails; those relations belong to the same order.
+  const previousMerge = action.type === "mergeFleets" ? structuredClone({ ships: ctx.state.ships, armies: ctx.state.armies, leaders: ctx.state.leaders }) : null;
+  const effects: MutationEffects = {};
+  const notifications = new Map<number, number>();
+  commandEffects = effects;
+  accountNotifications = notifications;
+  ctx.commandEffects = effects;
+  try { dispatchCommand(session, action as GameAction); }
+  catch (error) {
+    if (!previousOrders) throw error;
+    reject(session.reply, error instanceof Error ? error.message : "Order rejected.");
+  }
+  finally { commandEffects = null; accountNotifications = null; ctx.commandEffects = undefined; }
+  const outcome = session.reply.outcome ?? { ok: false as const, message: "Command produced no result." };
+  if (outcome.ok) {
+    // Discovery already refreshes intelligence in this runtime.
+    if (effects.refreshDiscovery) delete effects.refreshIntelligence;
+    outcome.effects = { ...effects, dirty: true };
+    applyMutationEffects(ctx, outcome.effects);
+    for (const [id, balance] of notifications) broadcastAccountDarkMatter(id, balance);
+  }
+  if (!outcome.ok) {
+    if (previousOrders) { ctx.state.fleets = previousOrders.fleets; ctx.state.factionEconomies = previousOrders.economies; }
+    if (previousMerge) { ctx.state.ships = previousMerge.ships; ctx.state.armies = previousMerge.armies; ctx.state.leaders = previousMerge.leaders; }
+    ctx.state.determinism = previousDeterminism; ctx.hasDirtyState = previouslyDirty;
+  }
+  return outcome;
+}
+function handleCommand(session: ClientSession, command: ClientCommand): void {
+  if (command.type === "join") {
+    if (!session.sentInitialSnapshot) { sendEvent(session.socket, createSnapshot(ctx, session.perspective)); session.sentInitialSnapshot = true; }
+    return;
+  }
+  if (command.type === "adminCommand") { void handleAdminCommand(session, command); return; }
+  if (command.type === "requestDetails") { handleRequestDetails(session.socket, session.perspective, command.scope, command.id, command.knownRevision); return; }
+  if (command.type === "subscribeDetails") { handleSubscribeDetails(session, command.scope, command.id, command.knownRevision); return; }
+  if (command.type === "unsubscribeDetails") { handleUnsubscribeDetails(session, command.scope, command.id); return; }
+  if (!command.requestId) {
+    sendEvent(session.socket, { type: "commandResult", ok: false, message: "This command requires a valid request ID." }); return;
+  }
   if (command.type === "setSpeedMultiplier") {
-    const multiplier = Math.max(0, Number(command.multiplier) || 0);
+    if (session.perspective.mode === "observer" && !authStore.isAdminAccount(session.account)) {
+      sendEvent(session.socket, { type: "commandResult", ok: false, message: "Observer mode is read-only.", requestId: command.requestId }); return;
+    }
+    const multiplier = command.multiplier;
     ctx.state.clock.tickSpeedSeconds = DEFAULT_TICK_SPEED_SECONDS;
     ctx.state.clock.tickSizeDays = Math.max(0.000001, multiplier / 24);
     ctx.state.clock.paused = multiplier <= 0;
     syncClockSpeedFields();
-    ctx.state.clock.syncedAtMs = Date.now();
-    accept(session.socket, `Speed set to ${ctx.state.clock.speedMultiplier}x.`);
+    ctx.state.clock.syncedAtMs = ctx.services.now();
     applyMutationEffects(ctx, { changed: ["clock"] });
+    sendEvent(session.socket, { type: "commandResult", ok: true, message: `Speed set to ${ctx.state.clock.speedMultiplier}x.`, requestId: command.requestId }); return;
   }
-}
-
-function handleCommand(session: ClientSession, command: ClientCommand): void {
-  const requiresCorrelation = !SPECIALIZED_OR_READ_ONLY_COMMANDS.has(command.type);
-  beginCommandResult(session.socket, command.requestId);
-  if (
-    VERSION_MANIFEST.protocolVersion >= 8
-    && requiresCorrelation
-    && !command.requestId
-  ) {
-    reject(session.socket, "This command requires a valid request ID.");
-    consumeCommandResultStatus(session.socket);
-    return;
-  }
-  runAuthoritativeCommand(ctx, command, () => {
-    dispatchCommand(session, command);
-    const status = consumeCommandResultStatus(session.socket);
-    if (status === "rejected") return { ok: false, message: "Command rejected." };
-    return {
-      ok: true,
-      effects: {
-        dirty: status === "accepted" && requiresCorrelation,
-      },
-    };
-  });
+  const actor = session.perspective.mode === "observer"
+    ? issueActor({ kind: "observer" })
+    : issueActor({ kind: "human", accountId: session.account.id, factionId: session.perspective.factionId });
+  const result = executeGameCommand(actor, command);
+  sendEvent(session.socket, { type: "commandResult", ok: result.ok, message: result.message ?? "Command accepted.", requestId: command.requestId });
+  if (result.ok) for (const id of new Set(result.effects.planetDetailIds ?? [])) sendPlanetDetails(session.socket, session.perspective, id);
 }
 
 function touchMembershipNames(): void {
@@ -3663,16 +3706,6 @@ function touchMembershipNames(): void {
   broadcastUpdates(speciesChanged || speciesPopulationChanged ? ["visibility", "species", "planetStates", "factionEconomies"] : ["visibility"]);
 }
 
-await acquireOwnership(ctx);
-try {
-  ctx.state = await loadState(ctx);
-  touchMembershipNames();
-  advanceState(Date.now());
-  await saveState(ctx);
-} catch (error) {
-  await releaseOwnership(ctx);
-  throw error;
-}
 
 function attachClient(socket: WebSocket, account: AuthAccount, perspective: GalaxyPerspective): void {
   const session: ClientSession = {
@@ -3699,12 +3732,15 @@ function attachClient(socket: WebSocket, account: AuthAccount, perspective: Gala
   session.sentInitialSnapshot = true;
 
   socket.on("message", (data) => {
+    let requestId: string | undefined;
     try {
-      const command = decodeClientCommand(JSON.parse(String(data)) as unknown);
+      const input: unknown = JSON.parse(String(data));
+      if (input && typeof input === "object" && "requestId" in input && typeof input.requestId === "string" && input.requestId.length >= 1 && input.requestId.length <= 128) requestId = input.requestId;
+      const command = decodeClientCommand(input);
       handleCommand(session, command);
       flushPlanetDetailRefreshes();
     } catch (error) {
-      reject(socket, error instanceof Error ? error.message : "Invalid command.");
+      sendEvent(socket, { type: "commandResult", ok: false, message: error instanceof Error ? error.message : "Invalid command.", requestId });
     }
   });
 
@@ -3745,7 +3781,7 @@ function getStats(): DevGameRuntimeRow {
     shipCount: ctx.state.ships.length,
     starbaseCount: ctx.state.starbases.length,
     habitedPlanetCount: ctx.state.planetStates.filter((planetState) => planetState.isHabited).length,
-    lastHeartbeatAt: Date.now(),
+    lastHeartbeatAt: ctx.services.now(),
     versionId: VERSION_MANIFEST.versionId,
     health: "healthy",
     error: null,
@@ -3770,7 +3806,7 @@ async function dispose(message = "Game runtime stopped.", deleteState = false, s
   }
 }
 
-return {
+const runtime: GameRuntime = {
   game: ctx.game,
   attachClient,
   touchMembershipNames,
@@ -3779,4 +3815,27 @@ return {
   dispose,
   getStats,
 };
+if (!options.initialState && !options.deferInitialState) ctx.state = createInitialState(ctx);
+return {
+  context: ctx, runtime, executeGameCommand,
+  createAiActor: (factionId, controllerId = `ai-${factionId}`) => issueActor({ kind: "ai", factionId, controllerId }),
+  createHumanActor: (accountId, factionId) => issueActor({ kind: "human", accountId, factionId }),
+  createObserverActor: () => issueActor({ kind: "observer" }),
+};
+}
+
+export async function createGameRuntime(game: StoredGame, authStore: GameRuntimeAuthPort): Promise<GameRuntime> {
+  const core = createGameCore(game, authStore, { deferInitialState: true });
+  const ctx = core.context;
+  await acquireOwnership(ctx);
+  try {
+    ctx.state = await loadState(ctx);
+    core.runtime.touchMembershipNames();
+    ctx.advanceState(ctx.services.now());
+    await saveState(ctx);
+    return core.runtime;
+  } catch (error) {
+    await releaseOwnership(ctx);
+    throw error;
+  }
 }

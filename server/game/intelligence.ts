@@ -31,11 +31,14 @@ import type { GameState } from "./types";
 import { resolveShipDesign } from "./ship-designs";
 
 interface TruthField {
+  structured?: boolean;
   value: unknown;
   bundle: IntelBundleId;
 }
 
 interface TruthEntity {
+  structuredRoots?: Array<[string, TruthField]>;
+  fieldIndex?: Map<IntelBundleId, string[]>;
   id: string;
   kind: IntelEntityKind;
   starId: number | null;
@@ -106,7 +109,22 @@ function addField(
 }
 
 /** Store collections at their stable root and as individually addressable leaves. */
-function addStructuredFields(
+function addStructuredFields(fields: Record<IntelFieldId, TruthField>, prefix: string, value: unknown, bundle: IntelBundleId): void {
+  if (value !== undefined) fields[prefix] = { value, bundle, structured: true };
+}
+
+/** Expand only bundles actually observed, rather than every unknown planet's economy. */
+function expandEntityFields(entity: TruthEntity, bundles?: ReadonlySet<IntelBundleId>, explicitFields: readonly string[] = []): void {
+  entity.structuredRoots ??= Object.entries(entity.fields).filter(([, field]) => field.structured);
+  for (const [prefix, field] of entity.structuredRoots) {
+    if (!field.structured || (bundles && !bundles.has(field.bundle) && !explicitFields.some((id) => id === prefix || id.startsWith(`${prefix}.`)))) continue;
+    field.structured = false;
+    entity.fieldIndex = undefined;
+    expandStructuredValue(entity.fields, prefix, field.value, field.bundle);
+  }
+}
+
+function expandStructuredValue(
   fields: Record<IntelFieldId, TruthField>,
   prefix: string,
   value: unknown,
@@ -121,13 +139,13 @@ function addStructuredFields(
         : isRecord(entry) && typeof entry.speciesId === "string" && typeof entry.job === "string"
           ? `group:${encodeURIComponent(entry.speciesId)}:${encodeURIComponent(entry.job)}:${encodeURIComponent(String(entry.livingStandard ?? ""))}`
           : String(index);
-      addStructuredFields(fields, `${prefix}.${stableSegment}`, entry, bundle);
+      expandStructuredValue(fields, `${prefix}.${stableSegment}`, entry, bundle);
     });
     return;
   }
   if (!isRecord(value)) return;
   for (const [key, entry] of Object.entries(value)) {
-    addStructuredFields(fields, `${prefix}.${key}`, entry, bundle);
+    expandStructuredValue(fields, `${prefix}.${key}`, entry, bundle);
   }
 }
 
@@ -285,7 +303,8 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
     addStructuredFields(fields, "leaders", state.leaders.filter((entry) => entry.factionId === faction.id), "factionLeadership");
     addStructuredFields(fields, "diplomacy", {
       borders: state.diplomacy.borders.filter((entry) => entry.ownerFactionId === faction.id || entry.targetFactionId === faction.id),
-      wars: state.diplomacy.wars.filter((entry) => entry.attackerFactionId === faction.id || entry.defenderFactionId === faction.id),
+      // This is server bookkeeping, not a report of every country's territory.
+      wars: state.diplomacy.wars.filter((entry) => entry.attackerFactionId === faction.id || entry.defenderFactionId === faction.id).map((war) => ({ ...war, preWarOwnership: [] })),
       treaties: state.diplomacy.treaties.filter((entry) => entry.factionIds.includes(faction.id)),
       proposals: state.diplomacy.proposals.filter((entry) => entry.fromFactionId === faction.id || entry.toFactionId === faction.id),
       chatMessages: state.diplomacy.chatMessages.filter((entry) => entry.fromFactionId === faction.id || entry.toFactionId === faction.id),
@@ -423,13 +442,24 @@ function grantEntityBundles(
   sourceId: string,
   explicitFields: readonly IntelFieldId[] = [],
 ): void {
+  expandEntityFields(entity, bundles, explicitFields);
   const key = intelEntityKey(entity.kind, entity.id);
-  for (const [fieldId, field] of Object.entries(entity.fields)) {
-    if (bundles.has(field.bundle) || explicitFields.includes(fieldId)) grantField(evaluation, key, fieldId, sourceId);
+  if (!entity.fieldIndex) {
+    entity.fieldIndex = new Map();
+    for (const [fieldId, field] of Object.entries(entity.fields)) {
+      const fields = entity.fieldIndex.get(field.bundle) ?? [];
+      fields.push(fieldId); entity.fieldIndex.set(field.bundle, fields);
+    }
+  }
+  for (const bundle of bundles) {
+    for (const fieldId of entity.fieldIndex.get(bundle) ?? []) grantField(evaluation, key, fieldId, sourceId);
+  }
+  for (const fieldId of explicitFields) {
+    if (entity.fields[fieldId]) grantField(evaluation, key, fieldId, sourceId);
   }
 }
 
-function createEvaluation(state: GameState, factionId: number, truth: Map<string, TruthEntity>): FactionEvaluation {
+function createEvaluation(state: GameState, factionId: number, truth: Map<string, TruthEntity>, sensorSources = collectSensorSources(state)): FactionEvaluation {
   const evaluation: FactionEvaluation = {
     factionId,
     truth,
@@ -450,7 +480,7 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
   }
 
   const sourceCoverage: Array<{ source: SensorSource; suiteId: SensorSuiteId; coverage: Map<number, number> }> = [];
-  for (const source of collectSensorSources(state).filter((candidate) => candidate.factionId === factionId)) {
+  for (const source of sensorSources.filter((candidate) => candidate.factionId === factionId)) {
     for (const suiteId of new Set(source.suites)) {
       const coverage = computeCoverage(state, source, suiteId, evaluation);
       sourceCoverage.push({ source, suiteId, coverage });
@@ -542,8 +572,8 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
     const starKey = intelEntityKey("star", star.id);
     if (!evaluation.fieldSources.get(starKey)?.has("type")) continue;
     const sourceId = "system-silhouette-scaffold";
-    for (const entity of truth.values()) {
-      if (entity.kind !== "planet" || entity.starId !== star.id) continue;
+    for (const entity of truthByStar.get(star.id) ?? []) {
+      if (entity.kind !== "planet") continue;
       const key = intelEntityKey(entity.kind, entity.id);
       for (const fieldId of ["existence", "starId", "planetIndex", "orbitRadius", "diameter"]) {
         if (entity.fields[fieldId]) grantField(evaluation, key, fieldId, sourceId);
@@ -565,10 +595,25 @@ function rememberObservation(
   value: unknown,
   observedAtYear: number,
   sourceIds: string[],
+  copies?: WeakMap<object, unknown>,
 ): void {
   const key = intelEntityKey(entity.kind, entity.id);
   const stored = store.entities[key] ??= { kind: entity.kind, fields: {} };
-  stored.fields[fieldId] = { value: cloneIntelValue(value), observedAtYear, sourceIds: [...sourceIds].sort() };
+  let copied: unknown;
+  if (value && typeof value === "object" && copies) {
+    if (copies.has(value)) copied = copies.get(value);
+    else {
+      copied = cloneIntelValue(value);
+      const rememberCopies = (source: object, target: unknown): void => {
+        copies.set(source, target);
+        for (const [key, child] of Object.entries(source)) {
+          if (child && typeof child === "object" && !copies.has(child)) rememberCopies(child, (target as Record<string, unknown>)[key]);
+        }
+      };
+      rememberCopies(value, copied);
+    }
+  } else copied = cloneIntelValue(value);
+  stored.fields[fieldId] = { value: copied, observedAtYear, sourceIds: [...sourceIds].sort() };
 }
 
 function seedStartingIntelligence(state: GameState, truth: Map<string, TruthEntity>): void {
@@ -630,18 +675,43 @@ function seedStartingIntelligence(state: GameState, truth: Map<string, TruthEnti
   state.startingIntelligenceSeeded = true;
 }
 
-export function refreshIntelligence(state: GameState): void {
+export function refreshIntelligence(state: GameState, preserveObservations = false): void {
   const truth = buildTruth(state);
   seedStartingIntelligence(state, truth);
   const cache = new Map<number, FactionEvaluation>();
+  const sensorSources = collectSensorSources(state);
+  const copies = new WeakMap<object, unknown>();
   for (const faction of state.factions) {
-    const evaluation = createEvaluation(state, faction.id, truth);
+    const evaluation = createEvaluation(state, faction.id, truth, sensorSources);
     const store = getStore(state, faction.id);
+    // Upgrade old authority-ledger observations that contained the full private
+    // war ownership map, including its individually addressable array leaves.
+    const ledger = store.entities[intelEntityKey("faction", faction.id)];
+    if (ledger) for (const [fieldId, observation] of Object.entries(ledger.fields)) {
+      if (!fieldId.startsWith("diplomacy")) continue;
+      if (fieldId.endsWith(".preWarOwnership.length")) { observation.value = 0; continue; }
+      if (fieldId.includes(".preWarOwnership.")) { delete ledger.fields[fieldId]; continue; }
+      if (fieldId.endsWith(".preWarOwnership")) { observation.value = []; continue; }
+      const clearWarMaps = (value: unknown): void => {
+        if (!value || typeof value !== "object") return;
+        for (const [key, child] of Object.entries(value)) {
+          if (key === "preWarOwnership") (value as Record<string, unknown>)[key] = [];
+          else if (child && typeof child === "object") clearWarMaps(child);
+        }
+      };
+      clearWarMaps(observation.value);
+    }
+    const lastKnownStars = new Map(Object.entries(store.entities).map(([key, stored]) => {
+      const fleetId = stored.fields.fleetId?.value;
+      const fleet = typeof fleetId === "string" ? store.entities[intelEntityKey("fleet", fleetId)] : undefined;
+      return [key, Number(stored.fields.starId?.value ?? stored.fields.currentStarId?.value ?? fleet?.fields.currentStarId?.value)] as const;
+    }));
     // Remove a discrete ghost only when a live source scans its last-known
     // location with a band capable of detecting that entity's existence.
-    for (const [entityKey, stored] of Object.entries(store.entities)) {
-      if (truth.has(entityKey) || !["fleet", "ship", "starbase"].includes(stored.kind)) continue;
-      const starId = Number(stored.fields.starId?.value ?? stored.fields.currentStarId?.value);
+    for (const [entityKey, stored] of Object.entries(preserveObservations ? {} : store.entities)) {
+      if (!["fleet", "ship", "starbase"].includes(stored.kind)) continue;
+      if (evaluation.fieldSources.get(entityKey)?.get("existence")?.size) continue;
+      const starId = lastKnownStars.get(entityKey)!;
       if (!Number.isInteger(starId)) continue;
       const requiredBundle: IntelBundleId = stored.kind === "starbase" ? "starbaseIdentity" : "fleetContact";
       const confirmedAbsent = evaluation.sourceBands.some((entry) => (
@@ -650,15 +720,15 @@ export function refreshIntelligence(state: GameState): void {
       ));
       if (confirmedAbsent) delete store.entities[entityKey];
     }
-    for (const [entityKey, fieldMap] of evaluation.fieldSources) {
+    for (const [entityKey, fieldMap] of preserveObservations ? [] : evaluation.fieldSources) {
       const entity = truth.get(entityKey);
       if (!entity) continue;
       for (const [fieldId, sources] of fieldMap) {
         const field = entity.fields[fieldId];
-        if (field) rememberObservation(store, entity, fieldId, field.value, state.clock.year, Array.from(sources));
+        if (field) rememberObservation(store, entity, fieldId, field.value, state.clock.year, Array.from(sources), copies);
       }
     }
-    for (const laneKey of evaluation.currentLanes) {
+    for (const laneKey of preserveObservations ? [] : evaluation.currentLanes) {
       const pair = state.hyperlanes.find(([a, b]) => intelLaneKey(a, b) === laneKey);
       if (!pair) continue;
       store.lanes[laneKey] = { value: pair, observedAtYear: state.clock.year, sourceIds: ["sensor-coverage"] };
@@ -722,10 +792,23 @@ export function getAllIntelEntityViews(state: GameState, factionId: number): Int
     const view = getIntelEntityView(state, factionId, kind, id);
     if (view && Object.values(view.fields).some((field) => field.status !== "unknown")) views.push(view);
   }
-  return views;
+  return views.sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));
+}
+
+/** Enumerate disclosed entities from remembered intelligence, never truth-side membership. */
+export function getKnownDiscreteEntityViews(state: GameState, factionId: number, kind: "fleet" | "ship" | "starbase"): IntelEntityView[] {
+  return Object.entries(getStore(state, factionId).entities)
+    .filter(([, entity]) => entity.kind === kind)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([key]) => {
+      const view = getIntelEntityView(state, factionId, kind, key.slice(kind.length + 1));
+      const existence = view?.fields.existence;
+      return view && existence && existence.status !== "unknown" && existence.value === true ? [view] : [];
+    });
 }
 
 function materializeObserverEntity(state: GameState, truth: TruthEntity): IntelEntityView {
+  expandEntityFields(truth);
   const fields = Object.fromEntries(Object.entries(truth.fields).map(([fieldId, field]) => [fieldId, {
     status: "current" as const,
     value: cloneIntelValue(field.value),
@@ -800,6 +883,7 @@ export function grantOneShotIntelReport(
   const truth = buildTruth(state).get(intelEntityKey(kind, id));
   if (!truth) return false;
   const store = getStore(state, factionId);
+  expandEntityFields(truth);
   const selected = fieldIds?.length ? new Set(fieldIds) : null;
   for (const [fieldId, field] of Object.entries(truth.fields)) {
     if (selected && !selected.has(fieldId)) continue;

@@ -73,7 +73,7 @@ import {
 } from "./state-queries";
 import { createFactionTechnologyView, completeTechnology, ensureActiveTechnology } from "./research";
 import { resolveShipDesign, getShipDesignForShip } from "./ship-designs";
-import { createFleet, createShipFromDesign, createDefaultFleetCombatSettings, syncStarbaseCombatHealth } from "./fleet-factory";
+import { createFleet, createShipFromDesign, createDefaultFleetCombatSettings, normalizeFleetTacticalOrder, syncStarbaseCombatHealth } from "./fleet-factory";
 import { clearFleetMovementNow, getDefaultMoveDestination, startMoveOrder, removeDestroyedShips, getStarbaseWeaponMounts } from "./fleet-combat";
 import { normalizeStarbase, syncFleetMembership, syncSystemOwnershipFromStarbases, syncShipsForDesign } from "./state-normalization";
 import { queueFactionEvent, buildLeaderOfferContext, sendFleetMissing } from "./leaders-events";
@@ -291,13 +291,13 @@ function forceAdvanceGameDays(ctx: RuntimeContext, days: number): Set<ServerUpda
   const originalPaused = ctx.state.clock.paused;
   ctx.state.clock.paused = false;
   ctx.syncClockSpeedFields();
-  const now = Date.now();
+  const now = ctx.services.now();
   const realMs = (Math.max(0, days) * Math.max(0.01, ctx.state.clock.tickSpeedSeconds) / Math.max(0.000001, ctx.state.clock.tickSizeDays)) * 1000;
   ctx.state.clock.lastUpdatedAt = now - realMs;
   const changed = ctx.advanceState(now);
   ctx.state.clock.paused = originalPaused;
   ctx.syncClockSpeedFields();
-  ctx.state.clock.syncedAtMs = Date.now();
+  ctx.state.clock.syncedAtMs = ctx.services.now();
   changed.add("clock");
   return changed;
 }
@@ -541,24 +541,24 @@ export async function executeAdminCommand(
     case "tick_size": {
       ctx.state.clock.tickSizeDays = numberArg(parsed.args[0], "tick size days", 0.000001);
       ctx.syncClockSpeedFields();
-      ctx.state.clock.syncedAtMs = Date.now();
+      ctx.state.clock.syncedAtMs = ctx.services.now();
       return changedResult(ctx, `Tick size set to ${ctx.state.clock.tickSizeDays} ctx.game days.`, ["clock"]);
     }
     case "tick_speed": {
       ctx.state.clock.tickSpeedSeconds = numberArg(parsed.args[0], "tick speed seconds", 0.01);
       ctx.syncClockSpeedFields();
-      ctx.state.clock.syncedAtMs = Date.now();
+      ctx.state.clock.syncedAtMs = ctx.services.now();
       return changedResult(ctx, `Tick speed set to ${ctx.state.clock.tickSpeedSeconds} real seconds.`, ["clock"]);
     }
     case "pause":
       ctx.state.clock.paused = true;
       ctx.syncClockSpeedFields();
-      ctx.state.clock.syncedAtMs = Date.now();
+      ctx.state.clock.syncedAtMs = ctx.services.now();
       return changedResult(ctx, "Simulation paused.", ["clock"]);
     case "resume":
       ctx.state.clock.paused = false;
       ctx.syncClockSpeedFields();
-      ctx.state.clock.syncedAtMs = Date.now();
+      ctx.state.clock.syncedAtMs = ctx.services.now();
       return changedResult(ctx, "Simulation resumed.", ["clock"]);
     case "step": {
       const ticks = integerArg(parsed.args[0] ?? "1", "ticks", 1, 10000);
@@ -575,7 +575,7 @@ export async function executeAdminCommand(
     }
     case "set_year": {
       ctx.state.clock.year = numberArg(parsed.args[0], "year", 0);
-      ctx.state.clock.lastUpdatedAt = Date.now();
+      ctx.state.clock.lastUpdatedAt = ctx.services.now();
       ctx.state.clock.syncedAtMs = ctx.state.clock.lastUpdatedAt;
       ctx.state.clock.lastProcessedPopulationWeek = gameYearToWeekIndex(ctx.state.clock.year);
       ctx.state.clock.lastProcessedPopulationMonth = gameYearToMonthIndex(ctx.state.clock.year);
@@ -589,7 +589,7 @@ export async function executeAdminCommand(
       ctx.state.clock.tickSpeedSeconds = preset.tickSpeedSeconds;
       ctx.state.clock.paused = false;
       ctx.syncClockSpeedFields();
-      ctx.state.clock.syncedAtMs = Date.now();
+      ctx.state.clock.syncedAtMs = ctx.services.now();
       return changedResult(ctx, `Speed preset ${parsed.args[0]} applied.`, ["clock"]);
     }
     case "save":
@@ -1162,16 +1162,16 @@ export async function executeAdminCommand(
       const fleet = resolveFleetToken(ctx, parsed.args[0], context);
       const order = parsed.args[1];
       if (order === "hold" || order === "retreat") {
-        fleet.currentTacticalOrder = { type: order, issuedAtYear: ctx.state.clock.year };
+        fleet.currentTacticalOrder = normalizeFleetTacticalOrder({ type: order, issuedAtYear: ctx.state.clock.year });
       } else if (order === "attack") {
         const targetId = parsed.args[2];
         const targetKind = ctx.state.starbases.some((starbase) => starbase.id === targetId) ? "starbase" : "fleet";
-        fleet.currentTacticalOrder = { type: "attack", targetId, targetKind, issuedAtYear: ctx.state.clock.year };
+        fleet.currentTacticalOrder = normalizeFleetTacticalOrder({ type: "attack", targetId, targetKind, issuedAtYear: ctx.state.clock.year });
       } else if (order === "guard" || order === "move") {
         const { position } = parseSystemPosition(parsed.args, 2, fleet.systemPosition);
-        fleet.currentTacticalOrder = order === "guard"
+        fleet.currentTacticalOrder = normalizeFleetTacticalOrder(order === "guard"
           ? { type: "guard", guardPosition: position, issuedAtYear: ctx.state.clock.year }
-          : { type: "move", targetPosition: position, issuedAtYear: ctx.state.clock.year };
+          : { type: "move", targetPosition: position, issuedAtYear: ctx.state.clock.year });
       } else {
         throw new Error("Invalid fleet order.");
       }
@@ -1196,8 +1196,8 @@ export async function executeAdminCommand(
       const right = { x: center.x + distance / 2, y: SYSTEM_FLEET_Y, z: center.z };
       const fleetA = createAdminFleetWithShips(ctx, ownerA, starId, commandOption(parsed, "designA"), countA, left);
       const fleetB = createAdminFleetWithShips(ctx, ownerB, starId, commandOption(parsed, "designB"), countB, right);
-      fleetA.currentTacticalOrder = { type: "attack", targetId: fleetB.id, targetKind: "fleet", issuedAtYear: ctx.state.clock.year };
-      fleetB.currentTacticalOrder = { type: "attack", targetId: fleetA.id, targetKind: "fleet", issuedAtYear: ctx.state.clock.year };
+      fleetA.currentTacticalOrder = normalizeFleetTacticalOrder({ type: "attack", targetId: fleetB.id, targetKind: "fleet", issuedAtYear: ctx.state.clock.year });
+      fleetB.currentTacticalOrder = normalizeFleetTacticalOrder({ type: "attack", targetId: fleetA.id, targetKind: "fleet", issuedAtYear: ctx.state.clock.year });
       ctx.refreshDiscovery();
       return changedResult(ctx, "Duel started.", ["ships", "fleets", "visibility"], adminRowsForFleets([fleetA, fleetB]));
     }
@@ -1233,7 +1233,7 @@ export async function executeAdminCommand(
       const fleet = resolveFleetToken(ctx, parsed.args[0], context);
       const targetId = parsed.args[1];
       const targetKind = ctx.state.starbases.some((starbase) => starbase.id === targetId) ? "starbase" : "fleet";
-      fleet.currentTacticalOrder = { type: "attack", targetId, targetKind, issuedAtYear: ctx.state.clock.year };
+      fleet.currentTacticalOrder = normalizeFleetTacticalOrder({ type: "attack", targetId, targetKind, issuedAtYear: ctx.state.clock.year });
       return changedResult(ctx, "Force attack order set.", ["fleets"]);
     }
     case "stop_combat": {

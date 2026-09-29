@@ -26,8 +26,10 @@ drives them.
 
 ## Add-a-command pattern (recap)
 
-Define the `ClientCommand`, dispatch it in `handleCommand`, validate perspective/ownership, mutate
-state + `hasDirtyState = true`, `accept`/`reject`, and `broadcastUpdates([...])`. Full recipe:
+Define the `ClientCommand`, validate its fields in `game/command-fields.ts`, and dispatch gameplay
+through `executeGameCommand`. Keep handlers transport-free, check ownership and legality there, and
+return an outcome for the mutation coordinator to apply. `handleCommand` remains the WebSocket
+adapter for request IDs, details, and administrative operations. Full recipe:
 [`../must-read/05-contributing-rules.md`](../must-read/05-contributing-rules.md).
 
 ## Add-a-tick-phase pattern
@@ -37,3 +39,7 @@ A new periodic system is a function `processX(ctx, …): { somethingChanged: boo
 point in the order, adding the relevant `ServerUpdateField`s to the `changed` set. Gate "once per
 hour/week/day" work on the corresponding game-time index (see
 [runtime-and-tick.md](runtime-and-tick.md)).
+
+See [AI foundations and simulation laboratory](ai-foundations-and-laboratory.md) for shared actions,
+fair observations, deterministic saves, and scripted experiments.
+The [Stage 1 findings](ai-stage-1-findings.md) summarize the seeded runs and reproduction cases.

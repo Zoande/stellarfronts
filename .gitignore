@@ -9,3 +9,5 @@ server/state/games/
 versions/
 .env
 
+
+.cache/

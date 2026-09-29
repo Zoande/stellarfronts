@@ -1,3 +1,5 @@
+import { normalizeFleetTacticalOrder } from "./fleet-factory";
+import { random } from "./determinism";
 // =============================================================================
 // Fleet routing, movement, and combat engine — extracted from server/index.ts
 // =============================================================================
@@ -873,7 +875,7 @@ export function startAttackSystemOrder(ctx: RuntimeContext, fleet: GameFleet, ta
       : getDefaultMoveDestination(ctx, targetStarId);
 
   startPositionOrder(ctx, fleet, targetStarId, "attack", destination.position, destination.orbitTarget);
-  fleet.currentTacticalOrder = { type: "attack", issuedAtYear: ctx.state.clock.year };
+  fleet.currentTacticalOrder = normalizeFleetTacticalOrder({ type: "attack", issuedAtYear: ctx.state.clock.year });
   if (fleet.combatStance === "passive" || fleet.combatStance === "evade") {
     fleet.combatStance = "aggressive";
   }
@@ -1807,7 +1809,7 @@ export function retreatFleetByDoctrine(ctx: RuntimeContext, fleet: GameFleet): b
     targetSystemPosition: destination.targetSystemPosition ?? null,
     startedAtYear: ctx.state.clock.year,
   };
-  fleet.currentTacticalOrder = { type: "retreat", issuedAtYear: ctx.state.clock.year };
+  fleet.currentTacticalOrder = normalizeFleetTacticalOrder({ type: "retreat", issuedAtYear: ctx.state.clock.year });
   fleet.combatStatus = "retreating";
   startFleetRetreat(ctx, fleet);
   return true;
@@ -2036,9 +2038,9 @@ function chooseScreenedFleetShip(ctx: RuntimeContext, fleet: GameFleet, intended
   const protectedWeight = shipCommandWeight(intended);
   const command = getFleetCommandProfile(ctx, fleet, shipsById);
   const chance = computeFleetScreeningChance(screenStrength, protectedWeight, command.coordinationMultiplier);
-  if (Math.random() >= chance) return intended;
+  if (random(ctx, "combat") >= chance) return intended;
   const total = screens.reduce((sum, ship) => sum + shipCommandWeight(ship) * shipDurabilityRatio(ship) * proximityWeight(ship), 0);
-  let roll = Math.random() * total;
+  let roll = random(ctx, "combat") * total;
   for (const screen of screens) {
     roll -= shipCommandWeight(screen) * shipDurabilityRatio(screen) * proximityWeight(screen);
     if (roll <= 0) return screen;
@@ -2059,8 +2061,8 @@ function chooseStarbaseScreen(ctx: RuntimeContext, starbase: ServerStarbase, shi
   const platformStrength = (ship: GameShip): number => shipDurabilityRatio(ship) * Math.sqrt((ship.maxShield + ship.maxArmor + ship.maxHull) / Math.max(1, baselineDurability));
   const strength = candidates.reduce((sum, candidate) => sum + platformStrength(candidate.ship), 0);
   const chance = computeStarbaseScreeningChance(strength, getStarbaseScreenCap(starbase));
-  if (candidates.length === 0 || Math.random() >= chance) return null;
-  let roll = Math.random() * Math.max(0.001, strength);
+  if (candidates.length === 0 || random(ctx, "combat") >= chance) return null;
+  let roll = random(ctx, "combat") * Math.max(0.001, strength);
   for (const candidate of candidates) {
     roll -= platformStrength(candidate.ship);
     if (roll <= 0) return candidate;
@@ -2096,7 +2098,7 @@ function launchCombatProjectile(
   targetProjectile: ServerCombatProjectile | null = null,
 ): ServerCombatProjectile {
   const shotMount = { ...mount, barrels: 1, accuracy: clamp(mount.accuracy * accuracyMultiplier, 0.02, 0.99) };
-  const roll = rollWeaponShot(shotMount, targetProjectile?.evasion ?? targetEvasion);
+  const roll = rollWeaponShot(shotMount, targetProjectile?.evasion ?? targetEvasion, () => random(ctx, "combat"));
   const distance = targetProjectile ? Math.min(6, effectiveActorDistance(source, target)) : effectiveActorDistance(source, target);
   const travelHours = Math.max(0.01, distance / Math.max(0.01, getWeaponTravelSpeed(mount)));
   const attackClass = getWeaponAttackClass(mount);
@@ -2167,8 +2169,8 @@ function chooseStrayHitShip(ctx: RuntimeContext, projectile: ServerCombatProject
     return sum + shipCommandWeight(candidate.ship) * doctrineFactor;
   }, 0);
   const chance = computeStrayHitProbability(densityWeight);
-  if (candidates.length === 0 || Math.random() >= chance) return null;
-  let roll = Math.random() * densityWeight;
+  if (candidates.length === 0 || random(ctx, "combat") >= chance) return null;
+  let roll = random(ctx, "combat") * densityWeight;
   for (const candidate of candidates) {
     const doctrineFactor = candidate.fleet.combatSettings.doctrine === "artillery" ? 0.7 : candidate.fleet.combatSettings.doctrine === "assault" ? 1.2 : candidate.fleet.combatSettings.doctrine === "escort" ? 1.1 : 1;
     roll -= shipCommandWeight(candidate.ship) * doctrineFactor;
@@ -2192,19 +2194,19 @@ function applyShipCritical(ctx: RuntimeContext, ship: GameShip, hullDamage: numb
   if (hullDamage <= 0 || ship.maxHull <= 0 || ship.hull <= 0) return { critical: false, exploded: false };
   const chances = computeShipCriticalChances(hullDamage, ship.maxHull, ship.hull);
   ship.subsystemState ??= { disabledWeaponKeys: [], engineDisabled: false, emergencyMobility: false };
-  if (Math.random() < chances.explosion) {
+  if (random(ctx, "combat") < chances.explosion) {
     ship.hull = 0;
     ship.hp = 0;
     return { critical: true, exploded: true };
   }
-  if (!ship.subsystemState.engineDisabled && Math.random() < chances.engine) {
+  if (!ship.subsystemState.engineDisabled && random(ctx, "combat") < chances.engine) {
     ship.subsystemState.engineDisabled = true;
     ship.subsystemState.emergencyMobility = false;
     return { critical: true, exploded: false };
   }
-  if (mountCount > ship.subsystemState.disabledWeaponKeys.length && Math.random() < chances.weapon) {
+  if (mountCount > ship.subsystemState.disabledWeaponKeys.length && random(ctx, "combat") < chances.weapon) {
     const available = Array.from({ length: mountCount }, (_, index) => String(index)).filter((key) => !ship.subsystemState!.disabledWeaponKeys.includes(key));
-    const key = available[Math.floor(Math.random() * available.length)];
+    const key = available[Math.floor(random(ctx, "combat") * available.length)];
     if (key !== undefined) ship.subsystemState.disabledWeaponKeys.push(key);
     return { critical: true, exploded: false };
   }
@@ -2439,6 +2441,7 @@ export function processCombatProjectiles(
       starbasesChanged = true;
     }
     recordContinuousCombatContact(ctx, {
+      starId: projectile.starId,
       sourceId: projectile.sourceActorId,
       sourceKind: projectile.sourceActorKind,
       sourceOwnerId: projectile.ownerId,

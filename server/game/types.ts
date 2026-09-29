@@ -39,6 +39,8 @@ export interface GameFleet extends ServerFleet {
 export interface GameShip extends ServerShip {}
 
 export interface GameState {
+  /** Private authoritative state; never included in faction observations. */
+  determinism?: import("./determinism").DeterministicState;
   schemaVersion: 30;
   stars: StarData[];
   nebulae: NebulaRegion[];
@@ -102,6 +104,7 @@ export interface GameRuntime {
 }
 
 export interface RuntimeContext {
+  commandEffects?: import("./mutation-coordinator").MutationEffects;
   game: StoredGame;
   statePath: string;
   state: GameState;
@@ -117,6 +120,8 @@ export interface RuntimeContext {
   services: {
     authStore: GameRuntimeAuthPort;
     now: () => number;
+    simulationSeed?: number;
+    initialWorld?: { starCount: number; factionCount: number };
   };
   // Method fields wired up inside createGameRuntime (hoisted declarations, so safe to reference at ctx init).
   setFleetPhase: (fleet: GameFleet, phase: ShipTransitPhase) => void;

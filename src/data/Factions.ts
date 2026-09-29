@@ -124,11 +124,12 @@ function selectFactionHomeStarIds(
 export function buildFactions(
   stars: StarData[],
   config: Pick<GalaxyMapConfig, "width" | "height" | "seed"> = GALAXY_MAP,
+  factionCount = FACTION_COUNT,
 ): FactionInfo[] {
   const rng = mulberry32(config.seed ^ 0x43a7f12d);
   const homeStarIds = selectFactionHomeStarIds(
     stars,
-    FACTION_COUNT,
+    factionCount,
     config.width,
     config.height,
     rng,

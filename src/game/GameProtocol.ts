@@ -662,6 +662,8 @@ export interface CombatAfterActionReport {
 export interface ServerCombatContact {
   id: string;
   year: number;
+  /** Recorded battle location; absent only in older saves. */
+  starId?: number;
   sourceId: string;
   sourceKind: CombatTargetKind;
   sourceOwnerId: number;

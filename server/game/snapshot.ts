@@ -29,6 +29,7 @@ import { getVisibleSet, getKnownSet } from "./visibility";
 import {
   getGalaxyIntelligenceView,
   getIntelEntityView,
+  getKnownDiscreteEntityViews,
   getKnownLanePairs,
   getKnownStarIds,
   getKnownSystemOwner,
@@ -108,7 +109,7 @@ function readIntel<T>(view: IntelEntityView, fieldId: string, fallback: T): T {
   return field && field.status !== "unknown" ? field.value : fallback;
 }
 
-function materializeIntelFleet(source: ServerFleet, view: IntelEntityView): ServerFleet {
+function materializeIntelFleet(source: Pick<ServerFleet, "id">, view: IntelEntityView): ServerFleet {
   const telemetry = view.fields.telemetry as IntelValue<ServerFleet> | undefined;
   if (telemetry && telemetry.status !== "unknown") return telemetry.value;
   const shipCountField = view.fields.shipCount as IntelValue<number> | undefined;
@@ -126,7 +127,7 @@ function materializeIntelFleet(source: ServerFleet, view: IntelEntityView): Serv
   };
 }
 
-function materializeIntelShip(source: ServerShip, view: IntelEntityView): ServerShip {
+function materializeIntelShip(source: Pick<ServerShip, "id">, view: IntelEntityView): ServerShip {
   const telemetry = view.fields.telemetry as IntelValue<ServerShip> | undefined;
   if (telemetry && telemetry.status !== "unknown") return telemetry.value;
   return {
@@ -139,7 +140,7 @@ function materializeIntelShip(source: ServerShip, view: IntelEntityView): Server
   };
 }
 
-function materializeIntelStarbaseSummary(source: ServerStarbase, view: IntelEntityView): ServerStarbaseSummary {
+function materializeIntelStarbaseSummary(source: Pick<ServerStarbase, "id">, view: IntelEntityView): ServerStarbaseSummary {
   return {
     id: source.id,
     ownerId: readIntel(view, "ownerId", -1),
@@ -272,25 +273,16 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
     };
   });
   const visibleStarbases = perspective.mode === "faction"
-    ? ctx.state.starbases.flatMap((starbase) => {
-      const view = getIntelEntityView(ctx.state, perspective.factionId, "starbase", starbase.id);
-      return view?.fields.existence ? [materializeIntelStarbaseSummary(starbase, view)] : [];
-    })
+    ? getKnownDiscreteEntityViews(ctx.state, perspective.factionId, "starbase").map((view) => materializeIntelStarbaseSummary({ id: view.id }, view))
     : ctx.state.starbases.map(summarizeStarbase);
   const fleets = perspective.mode === "faction"
-    ? ctx.state.fleets.flatMap((fleet) => {
-      const view = getIntelEntityView(ctx.state, perspective.factionId, "fleet", fleet.id);
-      return view?.fields.existence ? [materializeIntelFleet(fleet, view)] : [];
-    })
+    ? getKnownDiscreteEntityViews(ctx.state, perspective.factionId, "fleet").map((view) => materializeIntelFleet({ id: view.id }, view))
     : ctx.state.fleets;
   const visibleFleetIds = new Set(fleets.map((fleet) => fleet.id));
   const ships = perspective.mode === "faction"
-    ? ctx.state.ships.flatMap((ship) => {
-      const view = getIntelEntityView(ctx.state, perspective.factionId, "ship", ship.id);
-      return view?.fields.existence && visibleFleetIds.has(readIntel(view, "fleetId", ship.fleetId))
-        ? [materializeIntelShip(ship, view)]
-        : [];
-    })
+    ? getKnownDiscreteEntityViews(ctx.state, perspective.factionId, "ship")
+      .filter((view) => visibleFleetIds.has(readIntel(view, "fleetId", "")))
+      .map((view) => materializeIntelShip({ id: view.id }, view))
     : ctx.state.ships;
   const shipDesigns = perspective.mode === "faction"
     ? ctx.state.shipDesigns.filter((design) => design.ownerId === perspective.factionId)
@@ -330,13 +322,9 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
     : [];
   const recentCombatContacts = visibleSet
     ? ctx.state.recentCombatContacts.filter((contact) => {
-      const sourceStarId = contact.sourceKind === "fleet"
-        ? ctx.state.fleets.find((fleet) => fleet.id === contact.sourceId)?.currentStarId
-        : ctx.state.starbases.find((starbase) => starbase.id === contact.sourceId)?.starId;
-      const targetStarId = contact.targetKind === "fleet"
-        ? ctx.state.fleets.find((fleet) => fleet.id === contact.targetId)?.currentStarId
-        : ctx.state.starbases.find((starbase) => starbase.id === contact.targetId)?.starId;
-      return (sourceStarId !== undefined && visibleSet.has(sourceStarId)) || (targetStarId !== undefined && visibleSet.has(targetStarId));
+      return contact.sourceOwnerId === (perspective.mode === "faction" ? perspective.factionId : -1)
+        || contact.targetOwnerId === (perspective.mode === "faction" ? perspective.factionId : -1)
+        || (contact.starId !== undefined && visibleSet.has(contact.starId));
     })
     : ctx.state.recentCombatContacts;
   const redactProjectile = (projectile: ServerCombatProjectile): ServerCombatProjectile => {

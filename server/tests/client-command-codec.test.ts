@@ -27,8 +27,8 @@ test("command decoder allowlist stays aligned with the public command contract",
   assert.deepEqual(CLIENT_COMMAND_TYPES, EXPECTED_COMMAND_TYPES);
   assert.equal(new Set(CLIENT_COMMAND_TYPES).size, CLIENT_COMMAND_TYPES.length);
   for (const type of EXPECTED_COMMAND_TYPES) {
-    const command = { type, marker: type };
-    assert.equal(decodeClientCommand(command), command);
+    if (type === "join") assert.equal(decodeClientCommand({ type }).type, type);
+    else assert.throws(() => decodeClientCommand({ type }), `missing payload for ${type}`);
   }
 });
 

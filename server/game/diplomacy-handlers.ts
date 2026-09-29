@@ -1,14 +1,14 @@
 // =============================================================================
 // Diplomacy command handlers — extracted from server/index.ts
 //
-// The socket-facing diplomacy commands (messages, borders, war/peace, treaties)
+// The reply-facing diplomacy commands (messages, borders, war/peace, treaties)
 // plus their domain logic (treaty creation/replacement, peace-term application).
-// Handlers take (ctx, socket, perspective, …); they emit results via the pure
-// socket helpers and fan out via ctx.broadcastUpdates. The dispatcher in
+// Handlers take (ctx, reply, perspective, …); they emit results via the pure
+// reply helpers and fan out via ctx.broadcastUpdates. The dispatcher in
 // index.ts routes ClientCommands to the exported handlers.
 // =============================================================================
 
-import type { WebSocket } from "ws";
+import type { CommandReply } from "./actions";
 import {
   normalizeDiplomacyState,
   setBorderPolicy,
@@ -30,34 +30,34 @@ import type {
 } from "../../src/data/Diplomacy";
 import type { FactionInfo, GalaxyPerspective } from "../../src/data/Factions";
 import type { ServerUpdateField } from "../../src/game/GameProtocol";
-import { reject, accept } from "./socket-io";
+import { reject, accept } from "./actions";
 import { validateCommandPerspective, getStarbaseInSystem } from "./state-queries";
 import { syncSystemOwnershipFromStarbases } from "./state-normalization";
 import { toOwnershipEntries } from "./snapshot";
 import type { RuntimeContext } from "./types";
 
 // === EXTRACTED BODY BELOW (transformed for ctx-first signatures) ===
-function getDiplomacyCommandFaction(ctx: RuntimeContext, socket: WebSocket, perspective: GalaxyPerspective): number | null {
+function getDiplomacyCommandFaction(ctx: RuntimeContext, reply: CommandReply, perspective: GalaxyPerspective): number | null {
   const factionId = validateCommandPerspective(perspective);
   if (factionId === null) {
-    reject(socket, "Observer mode is read-only.");
+    reject(reply, "Observer mode is read-only.");
     return null;
   }
   if (!ctx.state.factions.some((faction) => faction.id === factionId)) {
-    reject(socket, "Your country is not available.");
+    reject(reply, "Your country is not available.");
     return null;
   }
   return factionId;
 }
 
-function getDiplomacyTarget(ctx: RuntimeContext, socket: WebSocket, actorFactionId: number, targetFactionId: number): FactionInfo | null {
+function getDiplomacyTarget(ctx: RuntimeContext, reply: CommandReply, actorFactionId: number, targetFactionId: number): FactionInfo | null {
   if (!Number.isInteger(targetFactionId) || targetFactionId === actorFactionId) {
-    reject(socket, "Select another country.");
+    reject(reply, "Select another country.");
     return null;
   }
   const target = ctx.state.factions.find((faction) => faction.id === targetFactionId);
   if (!target) {
-    reject(socket, "Country not found.");
+    reject(reply, "Country not found.");
     return null;
   }
   return target;
@@ -71,25 +71,25 @@ function normalizeDiplomacyAfterMutation(ctx: RuntimeContext): void {
   ctx.state.diplomacy = normalized.state;
 }
 
-function commitDiplomacyChange(ctx: RuntimeContext, socket: WebSocket, message: string, changed: ServerUpdateField[] = ["diplomacy"]): void {
+function commitDiplomacyChange(ctx: RuntimeContext, reply: CommandReply, message: string, changed: ServerUpdateField[] = ["diplomacy"]): void {
   normalizeDiplomacyAfterMutation(ctx);
   ctx.hasDirtyState = true;
-  accept(socket, message);
+  accept(reply, message);
   ctx.broadcastUpdates(changed);
 }
 
 export function handleSendDiplomacyMessage(ctx: RuntimeContext, 
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   targetFactionId: number,
   body: string,
 ): void {
-  const factionId = getDiplomacyCommandFaction(ctx, socket, perspective);
+  const factionId = getDiplomacyCommandFaction(ctx, reply, perspective);
   if (factionId === null) return;
-  const target = getDiplomacyTarget(ctx, socket, factionId, Number(targetFactionId));
+  const target = getDiplomacyTarget(ctx, reply, factionId, Number(targetFactionId));
   if (!target) return;
   const normalizedBody = String(body ?? "").trim().slice(0, 500);
-  if (!normalizedBody) return reject(socket, "Message is empty.");
+  if (!normalizedBody) return reject(reply, "Message is empty.");
   ctx.state.diplomacy.chatMessages.push({
     id: ctx.createRuntimeId("diplomacy-message", [factionId, target.id]),
     fromFactionId: factionId,
@@ -97,31 +97,31 @@ export function handleSendDiplomacyMessage(ctx: RuntimeContext,
     body: normalizedBody,
     createdAtYear: ctx.state.clock.year,
   });
-  commitDiplomacyChange(ctx, socket, "Message sent.");
+  commitDiplomacyChange(ctx, reply, "Message sent.");
 }
 
 export function handleSetBorderPolicy(ctx: RuntimeContext, 
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   targetFactionId: number,
   policy: BorderPolicy,
 ): void {
-  const factionId = getDiplomacyCommandFaction(ctx, socket, perspective);
+  const factionId = getDiplomacyCommandFaction(ctx, reply, perspective);
   if (factionId === null) return;
-  const target = getDiplomacyTarget(ctx, socket, factionId, Number(targetFactionId));
+  const target = getDiplomacyTarget(ctx, reply, factionId, Number(targetFactionId));
   if (!target) return;
   const normalizedPolicy: BorderPolicy = policy === "open" ? "open" : "closed";
   setBorderPolicy(ctx.state.diplomacy, factionId, target.id, normalizedPolicy);
-  commitDiplomacyChange(ctx, socket, `Borders ${normalizedPolicy === "open" ? "opened" : "closed"} to ${target.name}.`);
+  commitDiplomacyChange(ctx, reply, `Borders ${normalizedPolicy === "open" ? "opened" : "closed"} to ${target.name}.`);
 }
 
-export function handleDeclareWar(ctx: RuntimeContext, socket: WebSocket, perspective: GalaxyPerspective, targetFactionId: number): void {
-  const factionId = getDiplomacyCommandFaction(ctx, socket, perspective);
+export function handleDeclareWar(ctx: RuntimeContext, reply: CommandReply, perspective: GalaxyPerspective, targetFactionId: number): void {
+  const factionId = getDiplomacyCommandFaction(ctx, reply, perspective);
   if (factionId === null) return;
-  const target = getDiplomacyTarget(ctx, socket, factionId, Number(targetFactionId));
+  const target = getDiplomacyTarget(ctx, reply, factionId, Number(targetFactionId));
   if (!target) return;
   if (areFactionsAtWar(ctx.state.diplomacy, factionId, target.id)) {
-    return reject(socket, `You are already at war with ${target.name}.`);
+    return reject(reply, `You are already at war with ${target.name}.`);
   }
   ctx.state.diplomacy.wars.push({
     id: ctx.createRuntimeId("war", [factionId, target.id]),
@@ -132,7 +132,7 @@ export function handleDeclareWar(ctx: RuntimeContext, socket: WebSocket, perspec
     preWarOwnership: toOwnershipEntries(ctx.state.starOwnership),
   });
   commitDiplomacyChange(ctx, 
-    socket,
+    reply,
     `War declared on ${target.name}.`,
     ["diplomacy", "market", "fleets", "starbases", "combatContacts"],
   );
@@ -186,19 +186,19 @@ function replaceOverlappingTreaties(ctx: RuntimeContext, nextTreaty: DiplomacyTr
 }
 
 export function handleProposeTreaty(ctx: RuntimeContext, 
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   targetFactionId: number,
   articleIds: TreatyArticleId[],
   durationYears?: number,
   replacesTreatyId?: string | null,
 ): void {
-  const factionId = getDiplomacyCommandFaction(ctx, socket, perspective);
+  const factionId = getDiplomacyCommandFaction(ctx, reply, perspective);
   if (factionId === null) return;
-  const target = getDiplomacyTarget(ctx, socket, factionId, Number(targetFactionId));
+  const target = getDiplomacyTarget(ctx, reply, factionId, Number(targetFactionId));
   if (!target) return;
   const normalizedArticleIds = normalizeTreatyArticleIds(articleIds);
-  if (normalizedArticleIds.length === 0) return reject(socket, "Select at least one treaty article.");
+  if (normalizedArticleIds.length === 0) return reject(reply, "Select at least one treaty article.");
   const normalizedDuration = clampTreatyDurationYears(durationYears);
   if (replacesTreatyId) {
     const treaty = ctx.state.diplomacy.treaties.find((candidate) => candidate.id === replacesTreatyId);
@@ -207,7 +207,7 @@ export function handleProposeTreaty(ctx: RuntimeContext,
       || Number.isFinite(treaty.cancelledAtYear ?? Number.NaN)
       || !getActiveTreatiesBetween(ctx.state.diplomacy, factionId, target.id).includes(treaty)
     ) {
-      return reject(socket, "Treaty to renegotiate is not active.");
+      return reject(reply, "Treaty to renegotiate is not active.");
     }
   }
   ctx.state.diplomacy.proposals.push({
@@ -224,7 +224,7 @@ export function handleProposeTreaty(ctx: RuntimeContext,
     responseByFactionId: null,
     replacesTreatyId: replacesTreatyId ?? null,
   });
-  commitDiplomacyChange(ctx, socket, `Treaty proposed to ${target.name}.`);
+  commitDiplomacyChange(ctx, reply, `Treaty proposed to ${target.name}.`);
 }
 
 function cancelOtherPendingPeaceProposals(ctx: RuntimeContext, war: DiplomacyWar, acceptedProposalId: string): void {
@@ -287,21 +287,21 @@ function applyPeaceTerms(ctx: RuntimeContext, war: DiplomacyWar, proposal: Diplo
 }
 
 export function handleRespondDiplomacyProposal(ctx: RuntimeContext, 
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   proposalId: string,
   response: "accept" | "decline",
 ): void {
-  const factionId = getDiplomacyCommandFaction(ctx, socket, perspective);
+  const factionId = getDiplomacyCommandFaction(ctx, reply, perspective);
   if (factionId === null) return;
   const proposal = getPendingDiplomacyProposal(ctx, String(proposalId ?? ""));
-  if (!proposal) return reject(socket, "Proposal is not pending.");
-  if (proposal.toFactionId !== factionId) return reject(socket, "Only the recipient can respond to this proposal.");
+  if (!proposal) return reject(reply, "Proposal is not pending.");
+  if (proposal.toFactionId !== factionId) return reject(reply, "Only the recipient can respond to this proposal.");
   if (response !== "accept") {
     proposal.status = "declined";
     proposal.resolvedAtYear = ctx.state.clock.year;
     proposal.responseByFactionId = factionId;
-    return commitDiplomacyChange(ctx, socket, "Proposal declined.");
+    return commitDiplomacyChange(ctx, reply, "Proposal declined.");
   }
 
   let changed: ServerUpdateField[] = ["diplomacy", "market"];
@@ -318,42 +318,42 @@ export function handleRespondDiplomacyProposal(ctx: RuntimeContext,
     ctx.state.diplomacy.treaties.push(treaty);
   } else {
     const war = getActiveWar(ctx.state.diplomacy, proposal.fromFactionId, proposal.toFactionId);
-    if (!war) return reject(socket, "There is no active war to end.");
+    if (!war) return reject(reply, "There is no active war to end.");
     changed = applyPeaceTerms(ctx, war, proposal, factionId);
   }
 
   proposal.status = "accepted";
   proposal.resolvedAtYear = ctx.state.clock.year;
   proposal.responseByFactionId = factionId;
-  commitDiplomacyChange(ctx, socket, proposal.kind === "peace" ? "Peace accepted." : "Treaty accepted.", changed);
+  commitDiplomacyChange(ctx, reply, proposal.kind === "peace" ? "Peace accepted." : "Treaty accepted.", changed);
 }
 
-export function handleCancelDiplomacyProposal(ctx: RuntimeContext, socket: WebSocket, perspective: GalaxyPerspective, proposalId: string): void {
-  const factionId = getDiplomacyCommandFaction(ctx, socket, perspective);
+export function handleCancelDiplomacyProposal(ctx: RuntimeContext, reply: CommandReply, perspective: GalaxyPerspective, proposalId: string): void {
+  const factionId = getDiplomacyCommandFaction(ctx, reply, perspective);
   if (factionId === null) return;
   const proposal = getPendingDiplomacyProposal(ctx, String(proposalId ?? ""));
-  if (!proposal) return reject(socket, "Proposal is not pending.");
-  if (proposal.fromFactionId !== factionId) return reject(socket, "Only the proposer can cancel this proposal.");
+  if (!proposal) return reject(reply, "Proposal is not pending.");
+  if (proposal.fromFactionId !== factionId) return reject(reply, "Only the proposer can cancel this proposal.");
   proposal.status = "cancelled";
   proposal.resolvedAtYear = ctx.state.clock.year;
   proposal.responseByFactionId = factionId;
-  commitDiplomacyChange(ctx, socket, "Proposal cancelled.");
+  commitDiplomacyChange(ctx, reply, "Proposal cancelled.");
 }
 
-export function handleCancelTreaty(ctx: RuntimeContext, socket: WebSocket, perspective: GalaxyPerspective, treatyId: string): void {
-  const factionId = getDiplomacyCommandFaction(ctx, socket, perspective);
+export function handleCancelTreaty(ctx: RuntimeContext, reply: CommandReply, perspective: GalaxyPerspective, treatyId: string): void {
+  const factionId = getDiplomacyCommandFaction(ctx, reply, perspective);
   if (factionId === null) return;
   const treaty = ctx.state.diplomacy.treaties.find((candidate) => candidate.id === String(treatyId ?? ""));
-  if (!treaty || Number.isFinite(treaty.cancelledAtYear ?? Number.NaN)) return reject(socket, "Active treaty not found.");
+  if (!treaty || Number.isFinite(treaty.cancelledAtYear ?? Number.NaN)) return reject(reply, "Active treaty not found.");
   if (treaty.factionIds[0] !== factionId && treaty.factionIds[1] !== factionId) {
-    return reject(socket, "You are not part of this treaty.");
+    return reject(reply, "You are not part of this treaty.");
   }
   const partnerId = treaty.factionIds[0] === factionId ? treaty.factionIds[1] : treaty.factionIds[0];
   const war = getActiveWar(ctx.state.diplomacy, factionId, partnerId);
   treaty.cancelledAtYear = ctx.state.clock.year;
   treaty.earlyCancelled = ctx.state.clock.year < treaty.minimumEndYear;
   treaty.cancellationReason = war?.defenderFactionId === factionId ? "defenderWarCancel" : treaty.earlyCancelled ? "earlyCancellation" : "cancelled";
-  commitDiplomacyChange(ctx, socket, "Treaty cancelled.", ["diplomacy", "market"]);
+  commitDiplomacyChange(ctx, reply, "Treaty cancelled.", ["diplomacy", "market"]);
 }
 
 function isValidPeaceTransferTerm(ctx: RuntimeContext, transfer: DiplomacySystemTransferTerm, war: DiplomacyWar): boolean {
@@ -364,16 +364,16 @@ function isValidPeaceTransferTerm(ctx: RuntimeContext, transfer: DiplomacySystem
   return !!starbase && starbase.ownerId === transfer.fromFactionId;
 }
 
-function validatePeaceTerms(ctx: RuntimeContext, socket: WebSocket, war: DiplomacyWar, terms: DiplomacyPeaceTerms): DiplomacyPeaceTerms | null {
+function validatePeaceTerms(ctx: RuntimeContext, reply: CommandReply, war: DiplomacyWar, terms: DiplomacyPeaceTerms): DiplomacyPeaceTerms | null {
   const normalized = normalizePeaceTerms(terms);
   const participants = new Set([war.attackerFactionId, war.defenderFactionId]);
   for (const transfer of normalized.transfers) {
     if (!participants.has(transfer.fromFactionId) || !participants.has(transfer.toFactionId)) {
-      reject(socket, "Peace transfer must stay between war participants.");
+      reject(reply, "Peace transfer must stay between war participants.");
       return null;
     }
     if (!ctx.state.starbases.some((starbase) => starbase.id === transfer.starbaseId)) {
-      reject(socket, "Peace transfer starbase not found.");
+      reject(reply, "Peace transfer starbase not found.");
       return null;
     }
   }
@@ -381,18 +381,18 @@ function validatePeaceTerms(ctx: RuntimeContext, socket: WebSocket, war: Diploma
 }
 
 export function handleProposePeace(ctx: RuntimeContext, 
-  socket: WebSocket,
+  reply: CommandReply,
   perspective: GalaxyPerspective,
   targetFactionId: number,
   terms: DiplomacyPeaceTerms,
 ): void {
-  const factionId = getDiplomacyCommandFaction(ctx, socket, perspective);
+  const factionId = getDiplomacyCommandFaction(ctx, reply, perspective);
   if (factionId === null) return;
-  const target = getDiplomacyTarget(ctx, socket, factionId, Number(targetFactionId));
+  const target = getDiplomacyTarget(ctx, reply, factionId, Number(targetFactionId));
   if (!target) return;
   const war = getActiveWar(ctx.state.diplomacy, factionId, target.id);
-  if (!war) return reject(socket, `You are not at war with ${target.name}.`);
-  const normalizedTerms = validatePeaceTerms(ctx, socket, war, terms);
+  if (!war) return reject(reply, `You are not at war with ${target.name}.`);
+  const normalizedTerms = validatePeaceTerms(ctx, reply, war, terms);
   if (!normalizedTerms) return;
   const existing = ctx.state.diplomacy.proposals.some((proposal) => (
     proposal.kind === "peace"
@@ -402,7 +402,7 @@ export function handleProposePeace(ctx: RuntimeContext,
       || (proposal.fromFactionId === target.id && proposal.toFactionId === factionId)
     )
   ));
-  if (existing) return reject(socket, "A peace proposal is already pending.");
+  if (existing) return reject(reply, "A peace proposal is already pending.");
   ctx.state.diplomacy.proposals.push({
     id: ctx.createRuntimeId("peace-proposal", [factionId, target.id]),
     kind: "peace",
@@ -417,5 +417,5 @@ export function handleProposePeace(ctx: RuntimeContext,
     responseByFactionId: null,
     replacesTreatyId: null,
   });
-  commitDiplomacyChange(ctx, socket, `Peace proposed to ${target.name}.`);
+  commitDiplomacyChange(ctx, reply, `Peace proposed to ${target.name}.`);
 }

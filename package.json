@@ -18,7 +18,8 @@
     "dev:bare": "concurrently \"npm run server:dev\" \"npm run auth:dev\" \"npm run dev\"",
     "server:typecheck": "tsc -p tsconfig.server.json --noEmit",
     "build": "tsc && vite build && node scripts/check-client-bundle.mjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "ai:simulate": "node --import tsx server/simulation-cli.ts"
   },
   "dependencies": {
     "@babylonjs/core": "^7.54.3",

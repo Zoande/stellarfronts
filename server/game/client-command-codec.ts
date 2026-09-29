@@ -1,3 +1,4 @@
+import { validateCommandFields } from "./command-fields";
 import type { ClientCommand } from "../../src/game/GameProtocol";
 
 export const CLIENT_COMMAND_TYPES = [
@@ -87,5 +88,6 @@ export function decodeClientCommand(input: unknown): ClientCommand {
   ) {
     throw new Error("Command requestId must be between 1 and 128 characters.");
   }
+  validateCommandFields(input as Record<string, unknown>, type as ClientCommand["type"]);
   return input as ClientCommand;
 }

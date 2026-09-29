@@ -46,7 +46,7 @@ import {
   getMarketTrend,
 } from "./economy-market";
 import { getKnownSet } from "./visibility";
-import { getIntelEntityView, getKnownStarIds, getPerspectiveEntityView, hasCommandLink } from "./intelligence";
+import { getIntelEntityView, getKnownDiscreteEntityViews, getKnownStarIds, getPerspectiveEntityView, hasCommandLink } from "./intelligence";
 import { createVisibleState, createVisibleStars, createRevision } from "./snapshot";
 import {
   getSpeciesLawSelections,
@@ -144,7 +144,7 @@ function createPartialPlanetDetail(
   };
 }
 
-function createPartialStarbase(source: ServerStarbase, view: IntelEntityView): ServerStarbase {
+function createPartialStarbase(source: Pick<ServerStarbase, "id">, view: IntelEntityView): ServerStarbase {
   return {
     id: source.id,
     ownerId: intelValue(view, "ownerId", -1),
@@ -173,7 +173,7 @@ function createPartialStarbase(source: ServerStarbase, view: IntelEntityView): S
   };
 }
 
-function createPartialFleet(source: ServerFleet, view: IntelEntityView): ServerFleet {
+function createPartialFleet(source: Pick<ServerFleet, "id">, view: IntelEntityView): ServerFleet {
   const telemetry = view.fields.telemetry as IntelValue<ServerFleet> | undefined;
   if (telemetry && telemetry.status !== "unknown") return telemetry.value;
   const shipCountIntel = view.fields.shipCount as IntelValue<number> | undefined;
@@ -219,7 +219,7 @@ function createPartialFleet(source: ServerFleet, view: IntelEntityView): ServerF
   };
 }
 
-function createPartialShip(source: ServerShip, view: IntelEntityView): ServerShip {
+function createPartialShip(source: Pick<ServerShip, "id">, view: IntelEntityView): ServerShip {
   const telemetry = view.fields.telemetry as IntelValue<ServerShip> | undefined;
   if (telemetry && telemetry.status !== "unknown") return telemetry.value;
   return {
@@ -235,18 +235,12 @@ function createPartialShip(source: ServerShip, view: IntelEntityView): ServerShi
 
 export function getVisibleFullStarbases(ctx: RuntimeContext, perspective: GalaxyPerspective): ServerStarbase[] {
   if (perspective.mode === "observer") return ctx.state.starbases;
-  return ctx.state.starbases.flatMap((starbase) => {
-    const view = getIntelEntityView(ctx.state, perspective.factionId, "starbase", starbase.id);
-    return view?.fields.existence ? [createPartialStarbase(starbase, view)] : [];
-  });
+  return getKnownDiscreteEntityViews(ctx.state, perspective.factionId, "starbase").map((view) => createPartialStarbase({ id: view.id }, view));
 }
 
 export function getVisibleFullFleets(ctx: RuntimeContext, perspective: GalaxyPerspective): ServerFleet[] {
   if (perspective.mode === "observer") return ctx.state.fleets;
-  return ctx.state.fleets.flatMap((fleet) => {
-    const view = getIntelEntityView(ctx.state, perspective.factionId, "fleet", fleet.id);
-    return view?.fields.existence ? [createPartialFleet(fleet, view)] : [];
-  });
+  return getKnownDiscreteEntityViews(ctx.state, perspective.factionId, "fleet").map((view) => createPartialFleet({ id: view.id }, view));
 }
 
 export function getVisibleFullShips(
@@ -256,11 +250,9 @@ export function getVisibleFullShips(
 ): ServerShip[] {
   const visibleFleetIds = new Set(fleets.map((fleet) => fleet.id));
   if (perspective.mode === "observer") return ctx.state.ships.filter((ship) => visibleFleetIds.has(ship.fleetId));
-  return ctx.state.ships.flatMap((ship) => {
-    if (!visibleFleetIds.has(ship.fleetId)) return [];
-    const view = getIntelEntityView(ctx.state, perspective.factionId, "ship", ship.id);
-    return view?.fields.existence ? [createPartialShip(ship, view)] : [];
-  });
+  return getKnownDiscreteEntityViews(ctx.state, perspective.factionId, "ship")
+    .filter((view) => visibleFleetIds.has(intelValue(view, "fleetId", "")))
+    .map((view) => createPartialShip({ id: view.id }, view));
 }
 
 export function createVisibleDetailState(ctx: RuntimeContext, perspective: GalaxyPerspective) {
@@ -389,7 +381,7 @@ export function createDiplomacyDetailPayload(ctx: RuntimeContext, perspective: G
   const playerFactionId = perspective.mode === "faction" ? perspective.factionId : null;
   const factions: FactionState[] = ctx.state.factions.map((faction) => ({
     ...faction,
-    discoveredStarIds: Array.from(getKnownStarIds(ctx.state, faction.id)),
+    discoveredStarIds: playerFactionId === null || playerFactionId === faction.id ? Array.from(getKnownStarIds(ctx.state, faction.id)) : [],
   }));
   const activeWars = ctx.state.diplomacy.wars.filter((war) => !Number.isFinite(war.endedAtYear ?? Number.NaN));
   const activeTreaties = ctx.state.diplomacy.treaties.filter((treaty) => !Number.isFinite(treaty.cancelledAtYear ?? Number.NaN));
@@ -430,9 +422,13 @@ export function createDiplomacyDetailPayload(ctx: RuntimeContext, perspective: G
         && isTreatyArticleSuspended(ctx.state.diplomacy, MIGRATION_PACT_ARTICLE_ID, playerFactionId, faction.id),
     };
   });
-  const wars = playerFactionId === null
+  const relevantWars = playerFactionId === null
     ? activeWars
     : activeWars.filter((war) => pairRelevant(war.attackerFactionId, war.defenderFactionId));
+  const wars = playerFactionId === null ? relevantWars : relevantWars.map((war) => ({
+    ...war,
+    preWarOwnership: war.preWarOwnership.filter(([, ownerId]) => ownerId === playerFactionId),
+  }));
   const treaties = playerFactionId === null
     ? activeTreaties
     : activeTreaties.filter((treaty) => pairRelevant(treaty.factionIds[0], treaty.factionIds[1]));
@@ -472,14 +468,15 @@ export function createEligiblePeaceTransferSystems(
     ) {
       continue;
     }
-    for (const starbase of ctx.state.starbases) {
+    const knownStarbases = playerFactionId === null ? ctx.state.starbases : getVisibleFullStarbases(ctx, { mode: "faction", factionId: playerFactionId });
+    for (const starbase of knownStarbases) {
       if (starbase.ownerId !== war.attackerFactionId && starbase.ownerId !== war.defenderFactionId) continue;
       const toFactionId = starbase.ownerId === war.attackerFactionId ? war.defenderFactionId : war.attackerFactionId;
       const star = ctx.state.stars[starbase.starId];
       rows.push({
         starbaseId: starbase.id,
         starId: starbase.starId,
-        starName: star?.name ?? `System ${starbase.starId}`,
+        starName: playerFactionId === null ? star?.name ?? `System ${starbase.starId}` : intelValue(getIntelEntityView(ctx.state, playerFactionId, "star", starbase.starId), "name", `System ${starbase.starId}`),
         ownerId: starbase.ownerId,
         ownerName: ctx.state.factions.find((faction) => faction.id === starbase.ownerId)?.name ?? `Faction ${starbase.ownerId}`,
         fromFactionId: starbase.ownerId,
