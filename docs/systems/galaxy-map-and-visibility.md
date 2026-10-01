@@ -40,7 +40,7 @@ stale outside current coverage. There is no separate first-contact or `metByFact
 faction identity is public, while foreign government, economy, technology, leadership, and
 diplomacy facts are governed by intel bundles.
 
-## Sensors, coverage, and command links
+## Sensors and coverage
 
 Sensor suites are data-driven in `SENSOR_SUITE_DEFINITIONS`. Planetary capitals, listening stations,
 online starbases and their sensor buildings, and operational ship modules contribute sources.
@@ -53,10 +53,15 @@ the same `planetaryCapitalSensors` suite; changing tier never silently removes p
 Nebula systems block propagation across their boundary, so a remote source covers the near side but
 not the system inside. A source located inside a nebula covers only its own system.
 
-Command links use the same evaluated source network but are distinct from observation. Planet and
-starbase sources provide authority; mobile ship sources relay only when their coverage overlaps an
-authority network. Server command handlers call `hasCommandLink` before accepting remote fleet or
-planet orders.
+Owned ships, fleets, starbases, and planets always provide current information, regardless of
+sensor coverage or ship transit. Orders require ownership and the normal action-specific checks.
+Sensors determine observations of foreign assets and surrounding systems.
+
+Ships without sensor modules still report their own position and accept orders, but do not reveal
+stars or planets merely by occupying a system. Direct visual contact within the point-blank combat
+distance (6 system units on the XZ plane) reveals nearby planets, starbases, and ships. Planetary
+private data is excluded. These observations become stale when contact ends, unless another source
+still observes them. An owned fleet allows opening its system with unknown objects hidden.
 
 `refreshIntelligence` records newly observed truth into the persistent faction store.
 `getKnownStarIds`, `getCurrentStarIds`, `getKnownLanePairs`, and `getKnownSystemOwner` are derived

@@ -24,8 +24,6 @@ Domain terms used across the codebase and these docs.
 - **Current / stale / unknown intel** — each known entity field has its own observation status.
   Active sensors make it current; remembered observations become stale; never-observed fields remain
   unknown. See [`../systems/galaxy-map-and-visibility.md`](../systems/galaxy-map-and-visibility.md).
-- **Command link** — the authority-and-relay sensor network that permits remote orders. Seeing an
-  entity does not by itself guarantee command access.
 
 ### Economy & planets
 

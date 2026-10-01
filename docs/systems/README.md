@@ -11,7 +11,7 @@ to extend / rules* and *Key files*.
 | [economy.md](economy.md) | Resources, jobs, districts, buildings, the per-planet economy calculation. |
 | [population-and-planets.md](population-and-planets.md) | Population, housing, amenities, happiness, crime, stability, growth, planet lifecycle. |
 | [technology-research.md](technology-research.md) | Tech tree, prerequisites, unlock effects, active/passive research, modifiers. |
-| [galaxy-map-and-visibility.md](galaxy-map-and-visibility.md) | Galaxy generation, hyperlanes, sensor suites, field-level intelligence, command links. |
+| [galaxy-map-and-visibility.md](galaxy-map-and-visibility.md) | Galaxy generation, hyperlanes, sensor suites, field-level intelligence, owned-asset visibility. |
 | [ships-fleets-starbases.md](ships-fleets-starbases.md) | Starbases, ship designs (hulls/sections/modules), fleets, build queues. |
 | [combat.md](combat.md) | Range bands, shield/armor/hull, tactical orders/formation, resolution. |
 | [diplomacy.md](diplomacy.md) | Border policies, wars, treaties, proposals, peace, messaging. |

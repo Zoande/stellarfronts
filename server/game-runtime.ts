@@ -173,7 +173,7 @@ import { computeShortageSeverity, getLeaderDayIndex, getSpeciesRightsForFaction,
 import { findShipDesign, findShipDesignById, getNewestActiveShipDesign } from "./game/ship-designs";
 import { calculateFactionResourceFlow, calculateTradeQuote, refreshFactionEconomyDeltas as applyFactionEconomyDeltas, recalculatePlanetEconomies as applyRecalculatePlanetEconomies, getMarketPlayerStats, recordMarketTransaction, recordMarketTradeVolume } from "./game/economy-market";
 import { refreshDiscovery as applyRefreshDiscovery } from "./game/visibility";
-import { getKnownStarIds, hasCommandLink } from "./game/intelligence";
+import { getKnownStarIds } from "./game/intelligence";
 import { createSnapshot, createUpdate } from "./game/snapshot";
 import { createDetailPayload } from "./game/detail-payloads";
 import { calculateShipUpgradePlan, createDefaultFleetCombatSettings, normalizeFleetTacticalOrder } from "./game/fleet-factory";
@@ -220,7 +220,7 @@ import {
 import { processLeaderDays } from "./game/leader-lifecycle";
 import { isShipDesignUnlockedForFaction, getShipDesignMissingTechnologyName } from "./game/research";
 import { getFactionPlanetColonizationEligibility } from "./game/colonization";
-import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startColonizationOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow, processFleetCommandLinkLoss, rescaleFleetMovementPlan } from "./game/fleet-combat";
+import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startColonizationOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow, rescaleFleetMovementPlan } from "./game/fleet-combat";
 import { runSimulationPipeline } from "./game/simulation-pipeline";
 import { PASSIVE_AFK_MS, createPassiveEpisode, decidePassive, recordPassiveAcceptance } from "./game/passive";
 import { beginPlanetInvasion, embarkPlanetArmies, getArmyRecruitmentCap, isArmyFleet, processArmyAndCrewReplenishment, processGroundBattles, reinforceOwnedPlanet, requestGroundWithdrawal } from "./game/ground-combat";
@@ -381,16 +381,11 @@ function isFleetAvailableForOrders(fleet: GameFleet): boolean {
   return fleet.phase === "idle" || fleet.phase === "orbitingPlanet" || fleet.phase === "orbiting";
 }
 
-function hasFleetCommandLink(fleet: GameFleet): boolean {
-  return !fleet.hyperlanePosition && hasCommandLink(ctx.state, fleet.ownerId, fleet.currentStarId);
-}
-
 function canFleetAcceptReplacementOrder(fleet: GameFleet): boolean {
   return !fleet.stationaryStarbaseId
     && fleet.phase !== "missingInAction"
     && fleet.combatStatus !== "destroyed"
-    && fleet.shipIds.length > 0
-    && hasFleetCommandLink(fleet);
+    && fleet.shipIds.length > 0;
 }
 
 
@@ -510,7 +505,6 @@ function handleColonizePlanet(reply: CommandReply, perspective: GalaxyPerspectiv
       restrictedPlanetType: "This planet type cannot currently be colonized.",
       zeroHabitability: "Founding species habitability is too low to colonize.",
       noColonizationShip: "Requires a colonization ship.",
-      commandLinkUnavailable: "Fleet command link unavailable.",
       fleetUnavailable: "Fleet cannot colonize in its current state.",
       colonizable: "Planet cannot be colonized.",
     } as const;
@@ -557,7 +551,6 @@ function handleMergeFleets(
   const targetFleet = ctx.state.fleets.find((fleet) => fleet.id === targetFleetId);
   if (!targetFleet) return reject(reply, "Target fleet not found.");
   if (targetFleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
-  if (!hasFleetCommandLink(targetFleet)) return reject(reply, "Fleet command link unavailable.");
   const targetIsArmy = isArmyFleet(ctx.state, targetFleet);
 
   const uniqueSourceIds = Array.from(new Set(sourceFleetIds)).filter((id) => id !== targetFleetId);
@@ -570,7 +563,6 @@ function handleMergeFleets(
   if (sourceFleets.length !== uniqueSourceIds.length) return reject(reply, "A source fleet was not found.");
   for (const fleet of sourceFleets) {
     if (fleet.ownerId !== factionId) return reject(reply, "You do not own all selected fleets.");
-    if (!hasFleetCommandLink(fleet)) return reject(reply, "A selected fleet has no command link.");
     if (!isMergeSourceEligible(fleet)) return reject(reply, "A selected fleet cannot currently merge.");
     if (isArmyFleet(ctx.state, fleet) !== targetIsArmy) return reject(reply, "Naval and Army Fleets cannot merge.");
     if (fleet.currentStarId !== targetFleet.currentStarId && !findRoute(ctx, fleet, targetFleet.currentStarId)) {
@@ -601,7 +593,6 @@ function handleStopFleet(reply: CommandReply, perspective: GalaxyPerspective, fl
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(reply, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(reply, "Fleet command link unavailable.");
   if (fleet.phase === "missingInAction") return reject(reply, "Fleet is missing in action.");
 
   clearFleetMovementNow(ctx, fleet);
@@ -621,7 +612,6 @@ function handleSetFleetDarkMatterBoost(
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(session.reply, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(session.reply, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(session.reply, "Fleet command link unavailable.");
   if (typeof enabled !== "boolean") return reject(session.reply, "Invalid Dark Matter boost setting.");
 
   if (!enabled) {
@@ -692,7 +682,6 @@ function handleRetreatFleetTo(
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(reply, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(reply, "Fleet command link unavailable.");
   if (!validateRetreatTarget(reply, perspective, fleet, targetStarId, true)) return;
 
   fleet.retreatState = {
@@ -744,7 +733,6 @@ function handleEmergencyRetreatFleetTo(
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(reply, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(reply, "Fleet command link unavailable.");
   if (!validateRetreatTarget(reply, perspective, fleet, targetStarId, false)) return;
 
   const lostShipIds = new Set<string>();
@@ -805,7 +793,6 @@ function handleAttackTarget(
   const fleet = ctx.state.fleets.find((candidate) => candidate.id === fleetId);
   if (!fleet) return reject(reply, "Fleet not found.");
   if (fleet.ownerId !== factionId) return reject(reply, "You do not own that fleet.");
-  if (!hasFleetCommandLink(fleet)) return reject(reply, "Fleet command link unavailable.");
   const targetOwnerId = targetKind === "fleet"
     ? ctx.state.fleets.find((candidate) => candidate.id === targetId)?.ownerId
     : ctx.state.starbases.find((candidate) => candidate.id === targetId)?.ownerId;
@@ -870,10 +857,6 @@ function getOwnedFleetForCombatCommand(reply: CommandReply, perspective: GalaxyP
   }
   if (fleet.ownerId !== factionId) {
     reject(reply, "You do not own that fleet.");
-    return null;
-  }
-  if (!hasFleetCommandLink(fleet)) {
-    reject(reply, "Fleet command link unavailable.");
     return null;
   }
   return fleet;
@@ -1118,10 +1101,6 @@ function validatePlanetCommand(reply: CommandReply, perspective: GalaxyPerspecti
   }
   if (planetState.ownerId !== factionId) {
     reject(reply, "You do not own that planet.");
-    return null;
-  }
-  if (!hasCommandLink(ctx.state, factionId, planetState.starId)) {
-    reject(reply, "Planet command link unavailable.");
     return null;
   }
   return planetState;
@@ -1387,10 +1366,6 @@ function validateStarbaseCommand(reply: CommandReply, perspective: GalaxyPerspec
   }
   if (starbase.ownerId !== factionId) {
     reject(reply, "You do not own that starbase.");
-    return null;
-  }
-  if (!hasCommandLink(ctx.state, factionId, starbase.starId)) {
-    reject(reply, "Starbase command link unavailable.");
     return null;
   }
   if (!canAccessStar(ctx, perspective, starbase.starId)) {
@@ -2664,10 +2639,6 @@ function advanceState(now: number): Set<ServerUpdateField> {
   changed.add("clock");
 
   refreshDiscovery();
-  if (processFleetCommandLinkLoss(ctx)) {
-    changed.add("fleets");
-    changed.add("visibility");
-  }
 
   const movingBefore = ctx.state.fleets.some((fleet) => fleet.phase !== "idle");
   for (const fleet of ctx.state.fleets) {

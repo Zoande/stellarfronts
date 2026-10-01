@@ -1,5 +1,5 @@
 {
-  "protocolVersion": 11,
+  "protocolVersion": 12,
   "schemaVersion": 30,
   "migratesFromSchema": [30],
   "runtimeApiVersion": 1

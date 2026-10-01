@@ -10,7 +10,6 @@ export type ColonizationBlockReason =
   | "restrictedPlanetType"
   | "zeroHabitability"
   | "noColonizationShip"
-  | "commandLinkUnavailable"
   | "fleetUnavailable";
 
 export interface ColonizationEligibility {
@@ -28,7 +27,6 @@ export interface PlanetColonizationEligibilityInput {
   speciesContext?: PlanetEconomySpeciesContext;
   allowRestrictedPlanetType?: boolean;
   hasColonizationShip?: boolean;
-  hasCommandLink?: boolean;
   fleetAvailable?: boolean;
 }
 
@@ -54,12 +52,6 @@ export function getPlanetColonizationEligibility(
   }
   if (input.fleetAvailable === false) {
     return { eligible: false, reason: "fleetUnavailable", foundingSpeciesHabitability };
-  }
-  if (input.hasCommandLink === false) {
-    return { eligible: false, reason: "commandLinkUnavailable", foundingSpeciesHabitability };
-  }
-  if (input.hasColonizationShip === false) {
-    return { eligible: false, reason: "noColonizationShip", foundingSpeciesHabitability };
   }
   return { eligible: true, reason: "colonizable", foundingSpeciesHabitability };
 }

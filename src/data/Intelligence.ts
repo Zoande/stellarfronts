@@ -39,7 +39,6 @@ export interface GalaxyIntelligenceView {
   lanes: IntelLaneView[];
   sensorDebug?: {
     sourceBands: Array<{ sourceId: string; suiteId: SensorSuiteId; starId: number; distance: number }>;
-    commandLinkedStarIds: number[];
     coveredStarIds: number[];
     currentLanes: string[];
     knownLanes: string[];
@@ -100,7 +99,6 @@ export interface SensorBandDefinition {
   fields?: IntelFieldId[];
   fieldsByKind?: Partial<Record<IntelEntityKind, IntelFieldId[]>>;
   fleetDetection?: "all" | "militaryOnly";
-  commandLink?: boolean;
 }
 
 export interface SensorSuiteDefinition {
@@ -129,7 +127,6 @@ const ALL_SPATIAL_BUNDLES: IntelBundleId[] = [
 
 const FULL_BAND: SensorBandDefinition = {
   bundles: ALL_SPATIAL_BUNDLES,
-  commandLink: true,
 };
 
 export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefinition> = {
@@ -148,7 +145,6 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
       1: FULL_BAND,
       2: {
         bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "fleetContact", "fleetClassification"],
-        commandLink: true,
       },
     },
   },
@@ -161,9 +157,8 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
       1: FULL_BAND,
       2: {
         bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "planetDefense", "starbaseIdentity", "starbaseDefense", "fleetContact", "fleetClassification"],
-        commandLink: true,
       },
-      3: { bundles: ["stellar", "topology", "fleetContact", "fleetClassification"], commandLink: true },
+      3: { bundles: ["stellar", "topology", "fleetContact", "fleetClassification"] },
     },
   },
   planetarySensorArray3: {
@@ -176,9 +171,8 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
       2: FULL_BAND,
       3: {
         bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "planetDefense", "starbaseIdentity", "starbaseDefense", "fleetContact", "fleetClassification"],
-        commandLink: true,
       },
-      4: { bundles: ["stellar", "topology", "fleetContact", "fleetClassification"], commandLink: true },
+      4: { bundles: ["stellar", "topology", "fleetContact", "fleetClassification"] },
     },
   },
   listeningStationSensors: {
@@ -188,11 +182,9 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
     bands: {
       0: {
         bundles: ALL_SPATIAL_BUNDLES.filter((bundle) => bundle !== "planetCivilian"),
-        commandLink: true,
       },
       1: {
         bundles: ALL_SPATIAL_BUNDLES.filter((bundle) => bundle !== "planetCivilian"),
-        commandLink: true,
       },
       2: {
         bundles: [
@@ -204,9 +196,8 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
           "fleetContact",
           "fleetClassification",
         ],
-        commandLink: true,
       },
-      3: { bundles: ["stellar", "topology", "fleetContact"], commandLink: true },
+      3: { bundles: ["stellar", "topology", "fleetContact"] },
     },
   },
   starbaseSensors: {
@@ -216,11 +207,9 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
     bands: {
       0: {
         bundles: ALL_SPATIAL_BUNDLES.filter((bundle) => bundle !== "planetCivilian"),
-        commandLink: true,
       },
       1: {
         bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "fleetContact", "fleetClassification"],
-        commandLink: true,
       },
     },
   },
@@ -232,22 +221,18 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
       0: {
         bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "starbaseOperations", "starbaseDefense", "fleetContact", "fleetClassification", "fleetTelemetry"],
         fleetDetection: "militaryOnly",
-        commandLink: true,
       },
       1: {
         bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "fleetContact", "fleetClassification"],
         fleetDetection: "militaryOnly",
-        commandLink: true,
       },
       2: {
         bundles: ["stellar", "topology", "planetPhysical", "fleetContact", "fleetClassification"],
         fleetDetection: "militaryOnly",
-        commandLink: true,
       },
       3: {
         bundles: ["fleetContact"],
         fleetDetection: "militaryOnly",
-        commandLink: true,
       },
     },
   },
@@ -258,11 +243,10 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
     bands: {
       0: {
         bundles: ALL_SPATIAL_BUNDLES.filter((bundle) => bundle !== "planetCivilian"),
-        commandLink: true,
       },
-      1: { bundles: [], fieldsByKind: { star: ["existence", "type"] }, commandLink: true },
-      2: { bundles: [], fieldsByKind: { star: ["existence", "type"] }, commandLink: true },
-      3: { bundles: [], fieldsByKind: { star: ["existence", "type"] }, commandLink: true },
+      1: { bundles: [], fieldsByKind: { star: ["existence", "type"] } },
+      2: { bundles: [], fieldsByKind: { star: ["existence", "type"] } },
+      3: { bundles: [], fieldsByKind: { star: ["existence", "type"] } },
     },
   },
   civilianShipSensors: {
@@ -272,7 +256,6 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
     bands: {
       0: {
         bundles: ["stellar", "topology", "planetPhysical", "planetIdentity", "starbaseIdentity", "fleetContact", "fleetClassification"],
-        commandLink: true,
       },
       1: {
         bundles: [],
@@ -283,7 +266,6 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
           fleet: ["existence", "currentStarId", "hyperlanePosition"],
           ship: ["existence"],
         },
-        commandLink: true,
       },
     },
   },
@@ -303,11 +285,9 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
           "starbaseIdentity",
           "fleetContact",
         ],
-        commandLink: true,
       },
       2: {
         bundles: ["stellar", "topology", "planetPhysical", "planetIdentity"],
-        commandLink: true,
       },
     },
   },
@@ -328,7 +308,6 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
           "fleetClassification",
           "fleetTelemetry",
         ],
-        commandLink: true,
       },
       1: {
         bundles: [
@@ -339,9 +318,8 @@ export const SENSOR_SUITE_DEFINITIONS: Record<SensorSuiteId, SensorSuiteDefiniti
           "fleetContact",
           "fleetClassification",
         ],
-        commandLink: true,
       },
-      2: { bundles: ["stellar", "topology"], commandLink: true },
+      2: { bundles: ["stellar", "topology"] },
     },
   },
 };

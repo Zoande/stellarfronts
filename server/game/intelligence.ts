@@ -29,6 +29,9 @@ import { STARBASE_BUILDING_DEFINITIONS } from "../../src/data/Starbase";
 import type { GalaxyPerspective } from "../../src/data/Factions";
 import type { GameState } from "./types";
 import { resolveShipDesign } from "./ship-designs";
+import { getFleetSystemPosition, getPlanetSystemPositionAt } from "./system-positions";
+import { RANGE_BAND_SYSTEM_DISTANCE } from "./combat";
+import { getPlanetSystemOrbitRadius, getSystemOrbitLayout } from "../../src/data/SystemCoordinates";
 
 interface TruthField {
   structured?: boolean;
@@ -50,7 +53,6 @@ interface SensorSource {
   factionId: number;
   starId: number;
   suites: SensorSuiteId[];
-  authority: boolean;
 }
 
 interface FactionEvaluation {
@@ -60,7 +62,6 @@ interface FactionEvaluation {
   coveredStars: Set<number>;
   knownLanes: Set<string>;
   currentLanes: Set<string>;
-  commandLinkedStars: Set<number>;
   sourceBands: Array<{ sourceId: string; suiteId: SensorSuiteId; starId: number; distance: number }>;
   nebulaBlocks: Array<{ sourceId: string; fromStarId: number; toStarId: number }>;
 }
@@ -197,6 +198,7 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
       addField(fields, "starId", star.id, "planetPhysical");
       addField(fields, "planetIndex", index, "planetPhysical");
       addField(fields, "orbitRadius", planet.orbitRadius, "planetPhysical");
+      addField(fields, "systemOrbitRadius", getPlanetSystemOrbitRadius(planet, index, getSystemOrbitLayout(star.type)), "planetPhysical");
       addField(fields, "diameter", planet.diameter, "planetPhysical");
       addField(fields, "type", planet.type, "planetPhysical");
       addField(fields, "textureVariation", planet.textureVariation, "planetPhysical");
@@ -333,7 +335,7 @@ function collectSensorSources(state: GameState): SensorSource[] {
       const kind = buildingKind(slot);
       if (!kind || !buildingEnabled(slot)) continue;
       const suites = BUILDING_DEFINITIONS[kind as keyof typeof BUILDING_DEFINITIONS]?.sensorSuiteIds ?? [];
-      if (suites.length > 0) sources.push({ id: `planet:${planet.id}:${kind}`, factionId: planet.ownerId, starId: planet.starId, suites, authority: true });
+      if (suites.length > 0) sources.push({ id: `planet:${planet.id}:${kind}`, factionId: planet.ownerId, starId: planet.starId, suites });
     }
     for (const building of getActivePlanetDefenseBuildings(planet)) {
       const suiteId = PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind].sensorSuiteIds?.[building.level];
@@ -343,7 +345,6 @@ function collectSensorSources(state: GameState): SensorSource[] {
           factionId: planet.ownerId,
           starId: planet.starId,
           suites: [suiteId],
-          authority: true,
         });
       }
     }
@@ -355,7 +356,7 @@ function collectSensorSources(state: GameState): SensorSource[] {
       if (!kind) continue;
       for (const suiteId of STARBASE_BUILDING_DEFINITIONS[kind].sensorSuiteIds ?? []) suites.add(suiteId);
     }
-    if (suites.size > 0) sources.push({ id: `starbase:${starbase.id}`, factionId: starbase.ownerId, starId: starbase.starId, suites: Array.from(suites), authority: true });
+    if (suites.size > 0) sources.push({ id: `starbase:${starbase.id}`, factionId: starbase.ownerId, starId: starbase.starId, suites: Array.from(suites) });
   }
   for (const fleet of state.fleets) {
     if (fleet.combatStatus === "destroyed" || fleet.retreatState?.status === "mia") continue;
@@ -363,7 +364,7 @@ function collectSensorSources(state: GameState): SensorSource[] {
     if (fleet.hyperlanePosition) continue;
     const suites = new Set<SensorSuiteId>();
     for (const shipId of fleet.shipIds) for (const suite of getShipSuites(state, shipId)) suites.add(suite);
-    if (suites.size > 0) sources.push({ id: `fleet:${fleet.id}`, factionId: fleet.ownerId, starId: fleet.currentStarId, suites: Array.from(suites), authority: false });
+    if (suites.size > 0) sources.push({ id: `fleet:${fleet.id}`, factionId: fleet.ownerId, starId: fleet.currentStarId, suites: Array.from(suites) });
   }
   return sources;
 }
@@ -467,7 +468,6 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
     coveredStars: new Set(),
     knownLanes: new Set(),
     currentLanes: new Set(),
-    commandLinkedStars: new Set(),
     sourceBands: [],
     nebulaBlocks: [],
   };
@@ -479,18 +479,15 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
     truthByStar.set(entity.starId, entries);
   }
 
-  const sourceCoverage: Array<{ source: SensorSource; suiteId: SensorSuiteId; coverage: Map<number, number> }> = [];
   for (const source of sensorSources.filter((candidate) => candidate.factionId === factionId)) {
     for (const suiteId of new Set(source.suites)) {
       const coverage = computeCoverage(state, source, suiteId, evaluation);
-      sourceCoverage.push({ source, suiteId, coverage });
       const suite = SENSOR_SUITE_DEFINITIONS[suiteId];
       for (const [starId, distance] of coverage) {
         const band = suite.bands[distance];
         if (!band) continue;
         evaluation.coveredStars.add(starId);
         evaluation.sourceBands.push({ sourceId: source.id, suiteId, starId, distance });
-        if (band.commandLink && source.authority) evaluation.commandLinkedStars.add(starId);
         const bundles = new Set(band.bundles);
         for (const entity of truthByStar.get(starId) ?? []) {
           if (band.fleetDetection === "militaryOnly" && !isMilitarySensorTarget(state, entity)) continue;
@@ -511,33 +508,52 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
     }
   }
 
-  // Mobile suites relay command traffic only after their source itself is
-  // connected to an authority network. Iterate to support future relay chains.
-  let commandExpanded = true;
-  while (commandExpanded) {
-    commandExpanded = false;
-    for (const entry of sourceCoverage) {
-      if (entry.source.authority || !Array.from(entry.coverage.keys()).some((starId) => evaluation.commandLinkedStars.has(starId))) continue;
-      for (const [starId, distance] of entry.coverage) {
-        if (!SENSOR_SUITE_DEFINITIONS[entry.suiteId].bands[distance]?.commandLink) continue;
-        if (!evaluation.commandLinkedStars.has(starId)) {
-          evaluation.commandLinkedStars.add(starId);
-          commandExpanded = true;
-        }
-      }
+  // Owned assets always report current information, including ships in transit
+  // or without working sensors. This reveals no foreign assets or remote systems.
+  for (const entity of truth.values()) {
+    if (!["planet", "starbase", "fleet", "ship"].includes(entity.kind)
+      || entity.fields.ownerId?.value !== factionId) continue;
+    const sourceId = `owner:${entity.kind}:${entity.id}`;
+    grantEntityBundles(evaluation, entity, new Set(Object.values(entity.fields).map((field) => field.bundle)), sourceId);
+    if (entity.starId !== null && (entity.kind === "planet" || entity.kind === "starbase")) {
+      evaluation.coveredStars.add(entity.starId);
+      const star = truth.get(intelEntityKey("star", entity.starId));
+      if (star) grantEntityBundles(evaluation, star, new Set(["stellar"]), sourceId);
+      const system = truth.get(intelEntityKey("system", entity.starId));
+      if (system) grantEntityBundles(evaluation, system, new Set(["stellar", "planetPhysical", "starbaseIdentity"]), sourceId);
     }
   }
 
-  // Operational ship sensors self-report their own ship and fleet in transit without scanning either endpoint.
+  // Direct visual contact needs no sensor module. Only the nearby object is
+  // revealed; sharing a system alone grants no sight or planetary private data.
+  const contactBundles = new Set<IntelBundleId>([
+    "planetPhysical", "planetIdentity", "starbaseIdentity",
+    "fleetContact", "fleetClassification", "fleetTelemetry",
+  ]);
   for (const fleet of state.fleets) {
-    if (fleet.ownerId !== factionId || !fleet.hyperlanePosition) continue;
-    const operational = fleet.shipIds.some((shipId) => getShipSuites(state, shipId).length > 0);
-    if (!operational) continue;
-    for (const entity of truth.values()) {
-      if ((entity.kind === "fleet" && entity.id === fleet.id)
-        || (entity.kind === "ship" && fleet.shipIds.includes(entity.id))) {
-        grantEntityBundles(evaluation, entity, new Set(["fleetContact", "fleetClassification", "fleetTelemetry"]), `self-report:${fleet.id}`);
-      }
+    if (fleet.ownerId !== factionId || fleet.hyperlanePosition || fleet.phase === "missingInAction"
+      || fleet.combatStatus === "destroyed" || !fleet.shipIds.some((id) => state.ships.some((ship) => ship.id === id && ship.hull > 0))) continue;
+    const position = getFleetSystemPosition(state, fleet);
+    const sourceId = `visual-contact:${fleet.id}`;
+    const reveal = (kind: IntelEntityKind, id: string | number, target: { x: number; z: number }) => {
+      if (Math.hypot(position.x - target.x, position.z - target.z) > RANGE_BAND_SYSTEM_DISTANCE.pointBlank) return;
+      const entity = truth.get(intelEntityKey(kind, id));
+      if (entity) grantEntityBundles(evaluation, entity, contactBundles, sourceId);
+    };
+    const star = state.stars[fleet.currentStarId];
+    star?.system.planets.forEach((planet, index) => {
+      const entity = (truthByStar.get(star.id) ?? []).find((entry) => entry.kind === "planet" && entry.fields.planetIndex?.value === index);
+      if (entity) reveal("planet", entity.id, getPlanetSystemPositionAt(star, planet, index, state.clock.year));
+    });
+    for (const target of state.starbases) {
+      if (target.starId === fleet.currentStarId) reveal("starbase", target.id, target.systemPosition);
+    }
+    for (const target of state.fleets) {
+      if (target.currentStarId !== fleet.currentStarId || target.hyperlanePosition
+        || target.phase === "missingInAction" || target.combatStatus === "destroyed") continue;
+      const targetPosition = getFleetSystemPosition(state, target);
+      reveal("fleet", target.id, targetPosition);
+      for (const shipId of target.shipIds) reveal("ship", shipId, targetPosition);
     }
   }
 
@@ -845,17 +861,6 @@ export function getKnownSystemOwner(state: GameState, factionId: number, starId:
   return owner && owner.status !== "unknown" ? Number(owner.value) : -1;
 }
 
-export function hasCommandLink(state: GameState, factionId: number, starId: number): boolean {
-  return ensureEvaluation(state, factionId).commandLinkedStars.has(starId);
-}
-
-export function getOperationalCommandSourceStarIds(state: GameState, factionId: number): Set<number> {
-  const evaluation = ensureEvaluation(state, factionId);
-  return new Set(evaluation.sourceBands
-    .filter((band) => band.distance === 0 && (band.sourceId.startsWith("planet:") || band.sourceId.startsWith("starbase:")))
-    .map((band) => band.starId));
-}
-
 export function isFleetCurrentlyVisible(state: GameState, factionId: number, fleetId: string): boolean {
   const view = getIntelEntityView(state, factionId, "fleet", fleetId);
   return view?.fields.existence?.status === "current";
@@ -865,7 +870,6 @@ export function getSensorDebugView(state: GameState, factionId: number) {
   const evaluation = ensureEvaluation(state, factionId);
   return {
     sourceBands: evaluation.sourceBands,
-    commandLinkedStarIds: Array.from(evaluation.commandLinkedStars),
     coveredStarIds: Array.from(evaluation.coveredStars),
     currentLanes: Array.from(evaluation.currentLanes),
     knownLanes: Array.from(evaluation.knownLanes),

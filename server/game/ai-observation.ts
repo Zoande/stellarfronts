@@ -2,7 +2,6 @@ import type { GameSnapshot, FleetManagerDetailPayload, PlanetManagerDetailPayloa
 import type { RuntimeContext } from "./types";
 import { createSnapshot } from "./snapshot";
 import { createDetailPayload } from "./detail-payloads";
-import { hasCommandLink } from "./intelligence";
 import { getFleetLeaderEffects, getGovernmentFleetEffects } from "./state-queries";
 
 export interface AiObservation {
@@ -13,7 +12,6 @@ export interface AiObservation {
   readonly market: MarketDetailPayload;
   readonly society: SocietyDetailPayload;
   readonly diplomacy: DiplomacyDetailPayload;
-  readonly commandLinks: Readonly<Record<string, boolean>>;
   /** Owner accounting, derived from the country's government and fleet leaders. */
   readonly fleetUpkeepMultipliers: Readonly<Record<string, number>>;
   readonly newShipUpkeepMultiplier: number;
@@ -37,15 +35,13 @@ export function createAiObservation(ctx: RuntimeContext, factionId: number): AiO
     return result.payload as T;
   }
   const fleets = detail<FleetManagerDetailPayload>("fleetManager");
-  const commandLinks: Record<string, boolean> = {};
   const fleetUpkeepMultipliers: Record<string, number> = {};
   const newShipUpkeepMultiplier = getGovernmentFleetEffects(ctx.state, factionId).upkeepMultiplier;
   for (const fleet of fleets.fleets) {
-    if (fleet.ownerId === factionId) commandLinks[fleet.id] = hasCommandLink(ctx.state, factionId, fleet.currentStarId);
     if (fleet.ownerId === factionId) fleetUpkeepMultipliers[fleet.id] = newShipUpkeepMultiplier * getFleetLeaderEffects(ctx.state, fleet.id).upkeepMultiplier;
   }
   return freezeObservation(structuredClone({
-    factionId, snapshot: createSnapshot(ctx, perspective), commandLinks, fleetUpkeepMultipliers, newShipUpkeepMultiplier,
+    factionId, snapshot: createSnapshot(ctx, perspective), fleetUpkeepMultipliers, newShipUpkeepMultiplier,
     planets: detail<PlanetManagerDetailPayload>("planetManager"), fleets,
     market: detail<MarketDetailPayload>("market"), society: detail<SocietyDetailPayload>("society"),
     diplomacy: detail<DiplomacyDetailPayload>("diplomacy"),

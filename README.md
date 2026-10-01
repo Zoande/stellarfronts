@@ -75,7 +75,7 @@ Implemented systems include:
 
 - A deterministic 500-star, 15-faction galaxy with hyperlanes and generated planets/nebulae.
 - Field-level intelligence with sensor suites, current/stale observations, known lanes, nebula
-  blocking, and authority-based command links.
+  blocking, and current information for owned assets.
 - Real-time fleet movement with route segments, system/hyperlane travel, orbiting, merging, retreat,
   tactical formations, repair orders, and selectable doctrines.
 - Modular ship design across hulls, sections, weapons, defenses, and utilities.
@@ -122,9 +122,9 @@ are stored under `server/state/games/<gameId>/game-state.json`.
 
 ## Versioning
 
-The current build advertises protocol version 11 and schema version 30. Schema 30 is a deliberate
+The current build advertises protocol version 12 and schema version 30. Schema 30 is a deliberate
 new-game boundary for persistent Army Units and ground battles; schema-29 saves are not migrated.
-The browser client accepts wire protocols 5 through 11. The orchestrator
+The browser client accepts wire protocols 5 through 12. The orchestrator
 checks compatibility before moving a game and creates checksummed, version-aware backups around
 destructive operations. Corrupt or incompatible saves are quarantined and preserved rather than
 being replaced with a fresh galaxy.

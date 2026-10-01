@@ -12,7 +12,6 @@ import {
   getIntelEntityView,
   getKnownLanePairs,
   grantOneShotIntelReport,
-  hasCommandLink,
   refreshIntelligence,
 } from "../game/intelligence";
 import { createSnapshot, createUpdate } from "../game/snapshot";
@@ -108,9 +107,6 @@ test("capital coverage reveals only lanes wholly inside one covered network", ()
   const state = stateFixture();
   refreshIntelligence(state);
   assert.deepEqual(getKnownLanePairs(state, 0), [[0, 1]]);
-  assert.equal(hasCommandLink(state, 0, 0), true);
-  assert.equal(hasCommandLink(state, 0, 1), true);
-  assert.equal(hasCommandLink(state, 0, 2), false);
 });
 
 test("galaxy intelligence remains sparse and does not enumerate unknown truth fields", () => {

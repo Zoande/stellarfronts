@@ -154,10 +154,11 @@ export function getPlanetVisualDiameter(planet: Pick<PlanetConfig, "diameter">):
 }
 
 export function getPlanetSystemOrbitRadius(
-  planet: Pick<PlanetConfig, "orbitRadius">,
+  planet: Pick<PlanetConfig, "orbitRadius" | "systemOrbitRadius">,
   planetIndex: number,
   layout: SystemOrbitLayout = getSystemOrbitLayout(),
 ): number {
+  if (Number.isFinite(planet.systemOrbitRadius)) return planet.systemOrbitRadius!;
   return layout.orbitBaseOffset + planetIndex * layout.orbitSpacing + planet.orbitRadius * layout.orbitRadiusMultiplier;
 }
 
@@ -183,7 +184,7 @@ export function getPlanetOrbitAngle(
 }
 
 export function getPlanetSystemPosition(
-  planet: Pick<PlanetConfig, "orbitPhaseAtEpoch" | "orbitEpochMs" | "orbitRadius" | "orbitSpeed">,
+  planet: Pick<PlanetConfig, "orbitPhaseAtEpoch" | "orbitEpochMs" | "orbitRadius" | "orbitSpeed" | "systemOrbitRadius">,
   planetIndex: number,
   nowMs: number,
   layout: SystemOrbitLayout = getSystemOrbitLayout(),

@@ -1814,7 +1814,6 @@ export class GalaxyScene implements IGameScene {
 
     const start = this.getCurrentCommandOriginStarId();
     if (start < 0 || start >= this.hyperlaneAdjacency.length) return reachable;
-    if (!this.isStarKnownToPerspective(start)) return reachable;
 
     const queue: number[] = [start];
     let head = 0;
@@ -2637,7 +2636,7 @@ export class GalaxyScene implements IGameScene {
         const from = this.stars[transit.fromStarId];
         const to = this.stars[transit.toStarId];
         if (!from || !to) continue;
-        if (!this.isStarKnownToPerspective(transit.fromStarId)
+        if (fleet.ownerId !== this.playerFactionId && !this.isStarKnownToPerspective(transit.fromStarId)
           && !this.isStarKnownToPerspective(transit.toStarId)) continue;
 
         const dx = to.x - from.x;
@@ -2658,7 +2657,7 @@ export class GalaxyScene implements IGameScene {
       }
 
       const starId = fleet.currentStarId;
-      if (starId < 0 || !this.isStarKnownToPerspective(starId)) continue;
+      if (starId < 0) continue;
       const list = stationaryByStar.get(starId);
       if (list) list.push(fleet);
       else stationaryByStar.set(starId, [fleet]);

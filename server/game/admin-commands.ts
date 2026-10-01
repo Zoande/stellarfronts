@@ -682,7 +682,7 @@ export async function executeAdminCommand(
         rows: [
           ...debug.sourceBands.map((band) => ({ type: "band", source: band.sourceId, suite: band.suiteId, starId: band.starId, distance: band.distance })),
           ...debug.nebulaBlocks.map((block) => ({ type: "nebulaBlock", source: block.sourceId, from: block.fromStarId, to: block.toStarId })),
-          { type: "summary", covered: debug.coveredStarIds.length, commandLinks: debug.commandLinkedStarIds.length, knownLanes: debug.knownLanes.length },
+          { type: "summary", covered: debug.coveredStarIds.length, knownLanes: debug.knownLanes.length },
         ],
       };
     }

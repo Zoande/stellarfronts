@@ -7,7 +7,6 @@ import { createFleet, createShipFromDesign } from "./fleet-factory";
 import { resolveShipDesign } from "./ship-designs";
 import { createGameCore } from "../game-runtime";
 import { createMemoryAuth } from "./headless-game";
-import { hasCommandLink } from "./intelligence";
 import { getPlanetConfig } from "./state-queries";
 import { SHORTAGE_SITUATION_ID, situationInstanceId } from "../../src/data/Situations";
 
@@ -30,9 +29,8 @@ export function prepareScenario(name: ScenarioName, options: HeadlessGameOptions
   if (name === "combat-repair") {
     const friendly = state.fleets.find((f) => f.ownerId === 0 && f.shipIds.some((id) => state.ships.find((s) => s.id === id)?.shipKind === "corvette"))!;
     const hostile = state.fleets.find((f) => f.ownerId === 1 && f.shipIds.some((id) => state.ships.find((s) => s.id === id)?.shipKind === "corvette"))!;
-    // Prefer a linked neutral system. Isolated starting systems use their home
-    // authority, where normal starbase defense also participates in the battle.
-    const neutral = state.starOwnership.findIndex((owner, id) => owner < 0 && hasCommandLink(state, 0, id));
+    // Prefer a neutral system to keep home starbase defenses out of the fixture.
+    const neutral = state.starOwnership.findIndex((owner) => owner < 0);
     const location = neutral >= 0 ? neutral : state.factions[0].homeStarId;
     for (const fleet of [friendly, hostile]) {
       fleet.currentStarId = location;

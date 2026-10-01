@@ -5,17 +5,15 @@ import { random } from "./determinism";
 // =============================================================================
 
 import {
-  getPlanetSystemPosition,
   getSystemHyperlaneEntryPosition,
   getSystemHyperlaneExitPosition,
   getSystemStarOrbitPosition,
   getSystemStarbasePosition,
   getSystemStarbaseOrbitPosition,
   interpolateSystemPosition,
-  DEFAULT_ORBIT_EPOCH_MS,
   SYSTEM_FLEET_Y,
 } from "../../src/data/SystemCoordinates";
-import { getSystemOrbitLayout } from "../../src/data/SystemCoordinates";
+import { getFleetSystemPosition, getPlanetSystemPositionAt } from "./system-positions";
 import type { PlanetConfig, StarData } from "../../src/data/StarMap";
 import { addResourceCounts } from "../../src/data/Economy";
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
@@ -35,7 +33,6 @@ import type { GalaxyPerspective } from "../../src/data/Factions";
 import {
   GAME_DAYS_PER_YEAR,
   GAME_HOURS_PER_YEAR,
-  GAME_START_YEAR,
   REAL_MS_PER_GAME_DAY,
 } from "../../src/game/GameTime";
 import { DARK_MATTER_FLEET_SPEED_MULTIPLIER } from "../../src/game/DarkMatter";
@@ -88,8 +85,6 @@ import { getKnownOwnership } from "./visibility";
 import {
   getKnownLanePairs,
   getKnownStarIds,
-  getOperationalCommandSourceStarIds,
-  hasCommandLink,
   getIntelEntityView,
 } from "./intelligence";
 import {
@@ -329,16 +324,6 @@ function getPlanetConfigById(
   return null;
 }
 
-function getPlanetSystemPositionAt(
-  star: StarData,
-  planet: PlanetConfig,
-  planetIndex: number,
-  year: number,
-): { x: number; y: number; z: number } {
-  const nowMs = DEFAULT_ORBIT_EPOCH_MS + ((year - GAME_START_YEAR) * GAME_DAYS_PER_YEAR * REAL_MS_PER_GAME_DAY);
-  return getPlanetSystemPosition(planet, planetIndex, nowMs, getSystemOrbitLayout(star.type));
-}
-
 // ---------------------------------------------------------------------------
 // Fleet position
 // ---------------------------------------------------------------------------
@@ -348,35 +333,7 @@ export function getFleetAuthoritativeSystemPosition(
   fleet: GameFleet,
   year = ctx.state.clock.year,
 ): { x: number; y: number; z: number } {
-  if (fleet.movementPlan) {
-    const segment = fleet.movementPlan.segments.find((candidate) => (
-      year >= candidate.startYear && year < candidate.endYear
-    ));
-    if (segment) {
-      const progress = Math.max(
-        0,
-        Math.min(1, (year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear)),
-      );
-      return interpolateSystemPosition(segment.from, segment.to, progress);
-    }
-    const finalSegment = fleet.movementPlan.segments[fleet.movementPlan.segments.length - 1];
-    if (finalSegment) return cloneSystemPosition(finalSegment.to);
-  }
-  if (fleet.orbitTargetPlanetId) {
-    const star = ctx.state.stars[fleet.currentStarId];
-    const planetIndex = star?.system.planets.findIndex((planet) => planet.id === fleet.orbitTargetPlanetId) ?? -1;
-    const planet = planetIndex >= 0 ? star.system.planets[planetIndex] : null;
-    if (star && planet) {
-      const planetPosition = getPlanetSystemPositionAt(star, planet, planetIndex, year);
-      const offset = fleet.orbitOffset ?? { x: SYSTEM_PLANET_ORBIT_DISTANCE, y: SYSTEM_FLEET_Y, z: 0 };
-      return {
-        x: planetPosition.x + offset.x,
-        y: offset.y,
-        z: planetPosition.z + offset.z,
-      };
-    }
-  }
-  return cloneSystemPosition(fleet.systemPosition ?? systemCenterPosition());
+  return getFleetSystemPosition(ctx.state, fleet, year);
 }
 
 /**
@@ -795,56 +752,6 @@ export function startMoveOrder(
     ? [fleet.currentStarId, targetStarId]
     : null;
   startPositionOrder(ctx, fleet, targetStarId, "move", destination.position, destination.orbitTarget, routeOverride);
-}
-
-export function processFleetCommandLinkLoss(ctx: RuntimeContext): boolean {
-  let changed = false;
-  for (const fleet of ctx.state.fleets) {
-    if (fleet.combatStatus === "destroyed" || fleet.phase === "missingInAction") continue;
-    if (fleet.hyperlanePosition) continue; // finish the active lane segment
-    if (hasCommandLink(ctx.state, fleet.ownerId, fleet.currentStarId)) continue;
-
-    const targets = getOperationalCommandSourceStarIds(ctx.state, fleet.ownerId);
-    const laneAdjacency = new Map<number, number[]>();
-    for (const [a, b] of getKnownLanePairs(ctx.state, fleet.ownerId)) {
-      laneAdjacency.set(a, [...(laneAdjacency.get(a) ?? []), b]);
-      laneAdjacency.set(b, [...(laneAdjacency.get(b) ?? []), a]);
-    }
-    const queue = [fleet.currentStarId];
-    const previous = new Map<number, number | null>([[fleet.currentStarId, null]]);
-    let destination: number | null = targets.has(fleet.currentStarId) ? fleet.currentStarId : null;
-    for (let head = 0; head < queue.length && destination === null; head += 1) {
-      const current = queue[head];
-      for (const neighbor of laneAdjacency.get(current) ?? []) {
-        if (previous.has(neighbor) || !canEnterSystem(ctx, fleet.ownerId, neighbor)) continue;
-        previous.set(neighbor, current);
-        queue.push(neighbor);
-        if (targets.has(neighbor)) {
-          destination = neighbor;
-          break;
-        }
-      }
-    }
-
-    if (destination === null || destination === fleet.currentStarId) {
-      if (fleet.movementPlan || fleet.targetStarId !== null || fleet.orderType !== null) {
-        clearFleetMovementNow(ctx, fleet);
-        changed = true;
-      }
-      continue;
-    }
-    if (fleet.targetStarId === destination && fleet.movementPlan) continue;
-    const route: number[] = [];
-    for (let cursor: number | null = destination; cursor !== null; cursor = previous.get(cursor) ?? null) route.push(cursor);
-    route.reverse();
-    const target = route[route.length - 1];
-    if (target === undefined) continue;
-    clearFleetMovementNow(ctx, fleet);
-    const moveTarget = getDefaultMoveDestination(ctx, target);
-    startPositionOrder(ctx, fleet, target, "move", moveTarget.position, moveTarget.orbitTarget, route);
-    changed = true;
-  }
-  return changed;
 }
 
 export function startAttackSystemOrder(ctx: RuntimeContext, fleet: GameFleet, targetStarId: number): void {

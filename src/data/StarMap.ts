@@ -858,6 +858,8 @@ export interface PlanetConfig {
   textureVariation: number;
   diameter: number;
   orbitRadius: number;
+  /** Observed scene radius keeps sparse system views independent of hidden stars and planets. */
+  systemOrbitRadius?: number;
   orbitSpeed: number;
   orbitPhaseAtEpoch: number;
   orbitEpochMs: number;

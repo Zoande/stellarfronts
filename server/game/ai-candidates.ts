@@ -88,7 +88,7 @@ export function getAiCandidates(observation: AiObservation): AiCandidates {
     if (economy && economy.stockpiles.energy >= quote.buyPrice) result.economy.push({ type: "marketTrade", resourceId: quote.resourceId, tradeType: "buy", amount: 1 });
     if (quote.ownedAmount >= 1) result.economy.push({ type: "marketTrade", resourceId: quote.resourceId, tradeType: "sell", amount: 1 });
   }
-  const ownedFleets = fleets.fleets.filter((f) => f.ownerId === factionId && observation.commandLinks[f.id] && !f.retreatState && f.phase === "idle");
+  const ownedFleets = fleets.fleets.filter((f) => f.ownerId === factionId && !f.retreatState && f.phase === "idle");
   const shipsById = new Map(fleets.ships.map((s) => [s.id, s]));
   const owners = new Map(snapshot.starOwnership);
   const known = new Set(snapshot.knownStarIds ?? []);

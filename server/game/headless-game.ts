@@ -7,6 +7,7 @@ import type { GameAction } from "./actions";
 import type { CommandOutcome } from "./mutation-coordinator";
 import { createAiObservation } from "./ai-observation";
 import { restoreState } from "./state-bootstrap";
+import { CURRENT_PROTOCOL_VERSION } from "../versionManifest";
 
 
 export interface MemoryAccounts {
@@ -86,7 +87,7 @@ export function createHeadlessGame(options: HeadlessGameOptions = {}) {
   if (!Number.isSafeInteger(nowMs)) throw new Error("Invalid laboratory clock.");
   const game: StoredGame = options.checkpoint?.game ?? {
     id: "laboratory", name: "AI laboratory", seed: options.worldSeed ?? 42, countryCapacity: 15,
-    createdAt: nowMs, versionId: "dev", status: "active", schemaVersion: 30, protocolVersion: 11,
+    createdAt: nowMs, versionId: "dev", status: "active", schemaVersion: 30, protocolVersion: CURRENT_PROTOCOL_VERSION,
   };
   const accounts = structuredClone(options.checkpoint?.accounts ?? options.accounts ?? { owners: {}, balances: {} });
   accounts.activities ??= {};

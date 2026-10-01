@@ -46,7 +46,7 @@ import {
   getMarketTrend,
 } from "./economy-market";
 import { getKnownSet } from "./visibility";
-import { getIntelEntityView, getKnownDiscreteEntityViews, getKnownStarIds, getPerspectiveEntityView, hasCommandLink } from "./intelligence";
+import { getIntelEntityView, getKnownDiscreteEntityViews, getKnownStarIds, getPerspectiveEntityView } from "./intelligence";
 import { createVisibleState, createVisibleStars, createRevision } from "./snapshot";
 import {
   getSpeciesLawSelections,
@@ -62,6 +62,7 @@ import type { RuntimeContext } from "./types";
 import { getFactionPlanetColonizationEligibility } from "./colonization";
 import { getFactionFoundingSpeciesId } from "./state-normalization";
 import { getEffectiveArmyPower } from "./ground-combat";
+import { getPlanetSystemOrbitRadius, getSystemOrbitLayout } from "../../src/data/SystemCoordinates";
 
 function intelValue<T>(view: IntelEntityView | null, fieldId: string, fallback: T): T {
   const field = view?.fields[fieldId] as IntelValue<T> | undefined;
@@ -81,13 +82,15 @@ function createPartialPlanetDetail(
   if (exact) {
     const armies = ctx.state.armies.filter((army) => army.location.kind === "planet" && army.location.planetId === sourceState.id);
     return {
-      planet: sourcePlanet,
+      planet: {
+        ...sourcePlanet,
+        systemOrbitRadius: getPlanetSystemOrbitRadius(sourcePlanet, sourceState.planetIndex, getSystemOrbitLayout(ctx.state.stars[sourceState.starId]?.type)),
+      },
       planetState: sourceState,
       armies,
       groundBattle: battle,
       armyPower: armies.reduce((total, army) => total + getEffectiveArmyPower(ctx.state, sourceState, army, battle?.attackerFactionId === army.ownerId, battle).nominal, 0),
       intelligence: [getPerspectiveEntityView(ctx.state, perspective, "planet", sourceState.id)!],
-      commandLinked: true,
     };
   }
   const view = getIntelEntityView(ctx.state, perspective.factionId, "planet", sourceState.id);
@@ -100,6 +103,7 @@ function createPartialPlanetDetail(
     textureVariation: intelValue(view, "textureVariation", 0),
     diameter: intelValue(view, "diameter", 1),
     orbitRadius: intelValue(view, "orbitRadius", 1),
+    systemOrbitRadius: intelValue<number | undefined>(view, "systemOrbitRadius", undefined),
     orbitSpeed: intelValue(view, "orbitSpeed", 0),
     orbitPhaseAtEpoch: intelValue(view, "orbitPhaseAtEpoch", 0),
     orbitEpochMs: intelValue(view, "orbitEpochMs", 0),
@@ -140,7 +144,6 @@ function createPartialPlanetDetail(
     planet,
     planetState,
     intelligence: [view],
-    commandLinked: hasCommandLink(ctx.state, perspective.factionId, sourceState.starId),
   };
 }
 
@@ -317,13 +320,11 @@ export function createSystemDetailPayload(
       getPerspectiveEntityView(ctx.state, perspective, "system", starId),
       ...partials.flatMap((entry) => entry.intelligence),
     ].filter((entry): entry is IntelEntityView => entry !== null);
-    result.payload.commandLinked = hasCommandLink(ctx.state, perspective.factionId, starId);
   } else {
     result.payload.intelligence = [
       getPerspectiveEntityView(ctx.state, perspective, "star", starId)!,
       getPerspectiveEntityView(ctx.state, perspective, "system", starId)!,
     ];
-    result.payload.commandLinked = true;
   }
   return {
     payload: result.payload,
@@ -588,7 +589,6 @@ export function createDetailPayload(
     const payload = {
       starbase: perspective.mode === "observer" ? starbase : createPartialStarbase(starbase, view),
       intelligence: [view],
-      commandLinked: perspective.mode === "observer" || hasCommandLink(ctx.state, perspective.factionId, starbase.starId),
     };
     return { payload, revision: createRevision(payload), normalizedId: starbaseId };
   }
@@ -610,8 +610,6 @@ export function createDetailPayload(
         return shipView?.fields.existence ? [createPartialShip(ship, shipView)] : [];
       }),
       intelligence: [view, ...shipViews],
-      commandLinked: perspective.mode === "observer"
-        || (!fleet.hyperlanePosition && hasCommandLink(ctx.state, perspective.factionId, fleet.currentStarId)),
     };
     return { payload, revision: createRevision(payload), normalizedId: fleetId };
   }

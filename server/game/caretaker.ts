@@ -164,7 +164,7 @@ export function decideCaretaker(observation: AiObservation, episode: CaretakerEp
   const enemies = fleets.fleets.filter((fleet) => fleet.ownerId >= 0 && fleet.ownerId !== factionId
     && visibleEnemies.has(fleet.id) && owners.get(fleet.currentStarId) === factionId
     && observation.diplomacy.countries.some((country) => country.faction.id === fleet.ownerId && country.atWar));
-  const ownMilitary = fleets.fleets.filter((fleet) => fleet.ownerId === factionId && observation.commandLinks[fleet.id]
+  const ownMilitary = fleets.fleets.filter((fleet) => fleet.ownerId === factionId
     && fleet.shipIds.some((id) => fleets.ships.some((ship) => ship.id === id && !["scienceShip", "constructionShip", "colonizationShip", "armyShip", "defensePlatform"].includes(ship.shipKind)))
     && !fleet.retreatState && !fleet.stationaryPlanetId && !fleet.stationaryStarbaseId);
   for (const enemy of enemies) {
@@ -205,7 +205,7 @@ export function decideCaretaker(observation: AiObservation, episode: CaretakerEp
       }));
     const repairShip = damaged && !enemies.some((enemy) => enemy.currentStarId === damaged.currentStarId)
       && fleets.fleets.find((fleet) => fleet.ownerId === factionId && fleet.id !== damaged.id && !busyFleetIds.has(fleet.id)
-      && fleet.phase === "idle" && observation.commandLinks[fleet.id]
+      && fleet.phase === "idle"
       && fleet.shipIds.some((id) => fleets.ships.some((ship) => ship.id === id && ship.shipKind === "constructionShip"))
       && candidates.movement.some((action) => action.type === "moveFleet" && action.fleetId === fleet.id && action.targetStarId === damaged.currentStarId));
     if (repairShip && damaged) {
@@ -224,7 +224,7 @@ export function decideCaretaker(observation: AiObservation, episode: CaretakerEp
     if (!target || busyFleetIds.has(target.id) || target.phase !== "idle" || target.retreatState || owners.get(target.currentStarId) !== factionId) continue;
     for (const sourceId of replacementFleetIds) {
       if (sourceId === target.id) continue;
-      const source = fleets.fleets.find((fleet) => fleet.id === sourceId && fleet.ownerId === factionId && observation.commandLinks[fleet.id]);
+      const source = fleets.fleets.find((fleet) => fleet.id === sourceId && fleet.ownerId === factionId);
       if (!source || busyFleetIds.has(source.id) || source.phase !== "idle" || source.retreatState) continue;
       if (source.currentStarId === target.currentStarId) {
         decisions.push({ action: { type: "mergeFleets", targetFleetId: target.id, sourceFleetIds: [source.id] } });

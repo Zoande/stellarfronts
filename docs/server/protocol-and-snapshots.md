@@ -11,7 +11,7 @@ reject helpers are in [`server/game/socket-io.ts`](../../server/game/socket-io.t
 Server → client:
 
 - **`snapshot`** (`GameSnapshot`) — the full, perspective-filtered state, sent once on connect
-  (`attachClient` in [`server/game-runtime.ts`](../../server/game-runtime.ts)). Carries `protocolVersion` (11),
+  (`attachClient` in [`server/game-runtime.ts`](../../server/game-runtime.ts)). Carries `protocolVersion` (12),
   sourced from `VERSION_MANIFEST` rather than a snapshot-local literal.
 - **`update`** (`GameUpdate`) — an incremental message with `changed: ServerUpdateField[]` and only
   those fields. Sent every tick that changes something.
@@ -27,8 +27,13 @@ Protocol 8 adds optional `requestId` correlation to normal gameplay commands and
 Protocol 11 adds persistent Army/ground-battle commands and payloads. The current server requires a
 1-128 character ID before executing a normal mutation. Join,
 detail-subscription, and admin flows retain their specialized response mechanisms. The browser
-accepts protocols `[5, 6, 7, 8, 9, 10, 11]`; protocols 5-7 remain fire-and-forget and absent legacy fields are
+accepts protocols `[5, 6, 7, 8, 9, 10, 11, 12]`; protocols 5-7 remain fire-and-forget and absent legacy fields are
 defaulted defensively.
+
+Protocol 12 separates ownership telemetry from sensor observations. Owned assets always report
+current information; direct visual contact reveals nearby objects without exposing planetary
+private data. Partial planet views carry an observed scene orbit radius so hidden stellar types
+and undisclosed planets cannot shift their rendered position. Persisted schema 30 remains compatible.
 
 ## `ServerUpdateField`
 
