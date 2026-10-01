@@ -61,6 +61,7 @@ checkpoint property order is preserved, and replay uses the recorded tick schedu
 npm run ai:simulate -- batch
 npm run ai:simulate -- scenario --scenario shortage-recovery --seeds 19 --days 30
 npm run ai:simulate -- long-economy
+npm run ai:simulate -- long-economy --step-ms 100
 npm run ai:simulate -- batch --scenarios expansion,combat-repair --seeds 19
 npm run ai:simulate -- replay .cache/ai-lab/shortage-recovery-19.jsonl
 ```
@@ -70,6 +71,9 @@ checks practical and retain the production pipeline and gameplay rules. They do 
 production-scale balance. The headless API itself defaults to the full production galaxy; use
 `--stars 500 --countries 15` for production-size CLI experiments. Generation may place fewer stars
 when minimum spacing prevents the requested count; actual dimensions appear in reports.
+Routine runs use 100 ms virtual ticks. `long-economy` defaults to 60,000 ms virtual ticks (2.5 game
+days per tick) to make the year-long sweep fast; pass `--step-ms 100` for exact routine cadence.
+Different tick schedules can change gameplay outcomes, so compare runs only on the same schedule.
 
 Scenarios cover idle economy, shortage recovery, construction/research, expansion/colonization, and
 combat/repair. Scenario setup is explicit: shortage recovery starts without agriculture and with

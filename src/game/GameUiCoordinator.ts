@@ -78,6 +78,18 @@ export async function startGameUi(
   reportProgress(0.08, "Connecting to game server");
   const server = controller.client;
   const connected = await controller.connect();
+  const reportPlayerActivity = (event: Event) => {
+    if (!event.isTrusted || (event instanceof KeyboardEvent && event.repeat)) return;
+    if (connected.snapshot.perspective.mode === "faction" && document.visibilityState === "visible") server.sendPlayerActivity();
+  };
+  window.addEventListener("pointerdown", reportPlayerActivity, { capture: true });
+  window.addEventListener("keydown", reportPlayerActivity, { capture: true });
+  window.addEventListener("touchstart", reportPlayerActivity, { capture: true });
+  cleanup.add(() => {
+    window.removeEventListener("pointerdown", reportPlayerActivity, { capture: true });
+    window.removeEventListener("keydown", reportPlayerActivity, { capture: true });
+    window.removeEventListener("touchstart", reportPlayerActivity, { capture: true });
+  });
   let snapshot = connected.snapshot;
   const initialDarkMatter = connected.darkMatter;
   let darkMatter = typeof initialDarkMatter === "number" && Number.isFinite(initialDarkMatter)

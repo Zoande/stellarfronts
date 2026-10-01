@@ -112,7 +112,7 @@ export async function runScenario(
     record({ type: "tick", tick, elapsedMs, digest: game.digest() });
     // Diagnostics sample hourly; controllers never receive this checkpoint.
     if (tick % Math.max(1, Math.round(1000 / stepMs)) === 0 || game.now() - start.nowMs >= durationMs) {
-      const state = game.exportCheckpoint().state;
+      const state = game.diagnosticState();
       const sampledDays = (game.now() - lastSampleMs) / msPerGameDay;
       lastSampleMs = game.now();
       const currentQueues = constructionQueues(state);

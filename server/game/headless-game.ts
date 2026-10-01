@@ -3,6 +3,8 @@ import { createGameCore } from "../game-runtime";
 import type { GameRuntimeAuthPort, StoredGame } from "../auth-store";
 import type { GameState } from "./types";
 import type { GameActor } from "./actions";
+import type { GameAction } from "./actions";
+import type { CommandOutcome } from "./mutation-coordinator";
 import { createAiObservation } from "./ai-observation";
 import { restoreState } from "./state-bootstrap";
 
@@ -10,6 +12,7 @@ import { restoreState } from "./state-bootstrap";
 export interface MemoryAccounts {
   owners: Record<number, number>;
   balances: Record<number, number>;
+  activities?: Record<number, number>;
 }
 export function createMemoryAuth(accounts: MemoryAccounts = { owners: {}, balances: {} }): GameRuntimeAuthPort {
   return {
@@ -21,7 +24,20 @@ export function createMemoryAuth(accounts: MemoryAccounts = { owners: {}, balanc
       return accounts.balances[accountId] = balance - amount;
     },
     isAdminAccount: () => false,
-    listGameMemberships: () => [],
+    listGameMemberships: (gameId) => Object.entries(accounts.owners).map(([factionId, accountId]) => ({
+      gameId, accountId, factionId: Number(factionId), countryName: `Faction ${factionId}`,
+      flagDesign: null, speciesSetup: null, joinedAt: accounts.activities?.[Number(factionId)] ?? 0,
+      lastActivityAt: accounts.activities?.[Number(factionId)] ?? 0,
+    })),
+    recordGameActivity: (_gameId, accountId, atMs) => {
+      const faction = Object.entries(accounts.owners).find(([, owner]) => owner === accountId);
+      if (!faction || !Number.isSafeInteger(atMs)) return false;
+      const id = Number(faction[0]);
+      accounts.activities ??= {};
+      if ((accounts.activities[id] ?? 0) >= atMs) return false;
+      accounts.activities[id] = atMs;
+      return true;
+    },
     recordGameEnter: () => undefined,
     recordGameStateVersions: () => undefined,
   };
@@ -31,6 +47,7 @@ export interface GameCheckpoint {
   formatVersion: 1;
   game: StoredGame;
   nowMs: number;
+  realNowMs?: number;
   accounts: MemoryAccounts;
   state: GameState;
 }
@@ -39,9 +56,11 @@ export interface HeadlessGameOptions {
   initialWorld?: { starCount: number; factionCount: number };
   simulationSeed?: number;
   epochMs?: number;
+  realEpochMs?: number;
   stepMs?: number;
   checkpoint?: GameCheckpoint;
   accounts?: MemoryAccounts;
+  onCaretakerAction?: (record: { factionId: number; action: GameAction; outcome: CommandOutcome }) => void;
 }
 
 /** Full authoritative serialization digest. JSON checkpoints preserve property order. */
@@ -59,14 +78,17 @@ export function createHeadlessGame(options: HeadlessGameOptions = {}) {
   const stepMs = options.stepMs ?? 100;
   if (!Number.isSafeInteger(stepMs) || stepMs <= 0) throw new Error("Step duration must be positive and finite.");
   let nowMs = options.checkpoint?.nowMs ?? options.epochMs ?? 1_700_000_000_000;
+  let realNowMs = options.checkpoint?.realNowMs ?? options.realEpochMs ?? nowMs;
   if (!Number.isSafeInteger(nowMs)) throw new Error("Invalid laboratory clock.");
   const game: StoredGame = options.checkpoint?.game ?? {
     id: "laboratory", name: "AI laboratory", seed: options.worldSeed ?? 42, countryCapacity: 15,
     createdAt: nowMs, versionId: "dev", status: "active", schemaVersion: 30, protocolVersion: 11,
   };
   const accounts = structuredClone(options.checkpoint?.accounts ?? options.accounts ?? { owners: {}, balances: {} });
+  accounts.activities ??= {};
+  for (const factionId of Object.keys(accounts.owners)) accounts.activities[Number(factionId)] ??= realNowMs;
   const core = createGameCore(game, createMemoryAuth(accounts), {
-    now: () => nowMs, simulationSeed: options.simulationSeed ?? 42, initialWorld: options.initialWorld,
+    now: () => nowMs, realNow: () => realNowMs, simulationSeed: options.simulationSeed ?? 42, initialWorld: options.initialWorld,
     initialState: options.checkpoint ? structuredClone(options.checkpoint.state) : undefined,
   });
   // New worlds are canonicalized too, so restoring a checkpoint is idempotent.
@@ -86,16 +108,26 @@ export function createHeadlessGame(options: HeadlessGameOptions = {}) {
       });
     },
     now: () => nowMs,
+    realNow: () => realNowMs,
+    advanceRealTime: (elapsedMs: number) => {
+      if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0 || !Number.isSafeInteger(realNowMs + elapsedMs)) throw new Error("Invalid real-time advance.");
+      realNowMs += elapsedMs;
+      for (const record of core.processCaretakers()) options.onCaretakerAction?.(record);
+    },
+    recordPlayerActivity: (accountId: number, factionId: number) => core.recordPlayerActivity(accountId, factionId),
     step: (elapsedMs = stepMs) => {
       if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0 || !Number.isSafeInteger(nowMs + elapsedMs)) throw new Error("Elapsed duration must be nonnegative and finite.");
       const target = nowMs + elapsedMs;
       while (nowMs < target) {
         nowMs = Math.min(target, nowMs + stepMs);
         core.context.advanceState(nowMs);
+        for (const record of core.processCaretakers()) options.onCaretakerAction?.(record);
       }
     },
     digest: () => stateDigest(core.context.state),
-    exportCheckpoint: (): GameCheckpoint => structuredClone({ formatVersion: 1, game, nowMs, accounts, state: core.context.state }),
+    /** Laboratory orchestration only. Never hand this full-state view to a decision callback. */
+    diagnosticState: (): Readonly<GameState> => core.context.state,
+    exportCheckpoint: (): GameCheckpoint => structuredClone({ formatVersion: 1, game, nowMs, realNowMs, accounts, state: core.context.state }),
   };
 }
 export type HeadlessGame = ReturnType<typeof createHeadlessGame>;

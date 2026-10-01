@@ -38,9 +38,28 @@ export interface GameFleet extends ServerFleet {
 
 export interface GameShip extends ServerShip {}
 
+export interface CaretakerFleetBaseline {
+  fleetId: string;
+  ships: Array<{ shipId: string; shipKind: import("../../src/data/Starbase").StarbaseShipKind; designId: string | null }>;
+}
+
+export interface CaretakerEpisode {
+  accountId: number;
+  startedAt: number;
+  lastActivityAt: number;
+  nextDecisionYear: number;
+  fleets: CaretakerFleetBaseline[];
+  /** Queue reservations are tied to one baseline fleet, even after a restart. */
+  queuedShips: Record<string, { fleetId: string; shipKind: import("../../src/data/Starbase").StarbaseShipKind; designId: string | null }>;
+  /** Completed replacements are assigned to their original fleet until merged. */
+  reinforcements: Record<string, { fleetId: string; shipKind: import("../../src/data/Starbase").StarbaseShipKind; designId: string | null }>;
+  repairOrders?: Record<string, { targetFleetId: string; issuedAtYear: number }>;
+}
+
 export interface GameState {
   /** Private authoritative state; never included in faction observations. */
   determinism?: import("./determinism").DeterministicState;
+  caretakerEpisodes?: Record<string, CaretakerEpisode>;
   schemaVersion: 30;
   stars: StarData[];
   nebulae: NebulaRegion[];
@@ -91,6 +110,7 @@ export interface ClientSession {
   perspective: GalaxyPerspective;
   detailSubscriptions: Map<string, DetailSubscription>;
   sentInitialSnapshot: boolean;
+  lastActivitySignalAt?: number;
 }
 
 export interface GameRuntime {
@@ -120,6 +140,7 @@ export interface RuntimeContext {
   services: {
     authStore: GameRuntimeAuthPort;
     now: () => number;
+    realNow: () => number;
     simulationSeed?: number;
     initialWorld?: { starCount: number; factionCount: number };
   };

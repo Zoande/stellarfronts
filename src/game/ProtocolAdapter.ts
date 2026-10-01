@@ -134,6 +134,10 @@ export function decodeServerEvent(input: unknown, negotiatedProtocol?: number): 
   if (raw.type === "serverInfo" && typeof raw.message !== "string") {
     throw new ProtocolValidationError("Malformed serverInfo message.");
   }
+  if (raw.type === "serverInfo" && raw.capabilities !== undefined
+    && (!Array.isArray(raw.capabilities) || !raw.capabilities.every((capability) => typeof capability === "string"))) {
+    throw new ProtocolValidationError("Malformed serverInfo capabilities.");
+  }
   return raw as unknown as ServerEvent;
 }
 

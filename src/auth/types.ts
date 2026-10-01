@@ -156,6 +156,7 @@ export interface GameMembership {
   flagDesign: FlagDesign | null;
   speciesSetup: SpeciesSetup | null;
   joinedAt: number;
+  lastActivityAt: number;
 }
 
 export type GameAvailability = 'ready' | 'starting' | 'unavailable' | 'stopped';

@@ -3,7 +3,7 @@ import test from "node:test";
 import { CLIENT_COMMAND_TYPES, decodeClientCommand } from "../game/client-command-codec";
 
 const EXPECTED_COMMAND_TYPES = [
-  "join", "adminCommand", "moveShip", "moveFleet", "buildStarbase", "orbitPlanet",
+  "join", "playerActivity", "adminCommand", "moveShip", "moveFleet", "buildStarbase", "orbitPlanet",
   "colonizePlanet", "mergeFleets", "stopFleet", "setFleetDarkMatterBoost",
   "setSpeedMultiplier", "buildDistrict", "queuePlanetFeatureRemoval", "buildPlanetBuilding", "upgradePlanetBuilding",
   "downgradePlanetBuilding", "setPlanetBuildingEnabled", "setPlanetJobLock",
@@ -27,7 +27,7 @@ test("command decoder allowlist stays aligned with the public command contract",
   assert.deepEqual(CLIENT_COMMAND_TYPES, EXPECTED_COMMAND_TYPES);
   assert.equal(new Set(CLIENT_COMMAND_TYPES).size, CLIENT_COMMAND_TYPES.length);
   for (const type of EXPECTED_COMMAND_TYPES) {
-    if (type === "join") assert.equal(decodeClientCommand({ type }).type, type);
+    if (type === "join" || type === "playerActivity") assert.equal(decodeClientCommand({ type }).type, type);
     else assert.throws(() => decodeClientCommand({ type }), `missing payload for ${type}`);
   }
 });

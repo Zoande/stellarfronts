@@ -73,6 +73,9 @@ test("simple server events validate the fields the client consumes", () => {
   assert.throws(() => decodeServerEvent({ type: "commandResult", ok: "yes", message: 1 }), /Malformed/);
   assert.throws(() => decodeServerEvent({ type: "accountResources", darkMatter: "none" }), /Malformed/);
   assert.throws(() => decodeServerEvent({ type: "serverInfo", message: 7 }), /Malformed/);
+  assert.deepEqual(decodeServerEvent({ type: "serverInfo", message: "Ready", capabilities: ["playerActivity"] }),
+    { type: "serverInfo", message: "Ready", capabilities: ["playerActivity"] });
+  assert.throws(() => decodeServerEvent({ type: "serverInfo", message: "Ready", capabilities: "playerActivity" }), /capabilities/);
   assert.deepEqual(
     decodeServerEvent({ type: "commandResult", ok: false, message: "No", requestId: "cmd-1" }),
     { type: "commandResult", ok: false, message: "No", requestId: "cmd-1" },

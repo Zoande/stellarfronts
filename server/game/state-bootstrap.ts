@@ -264,6 +264,8 @@ export function restoreState(ctx: RuntimeContext, decoded: unknown): GameState {
     parsed.determinism.idCounter = Math.max(parsed.determinism.idCounter, legacyIds);
     if (missingDeterminism) ctx.hasDirtyState = true;
     ctx.state = parsed;
+    parsed.caretakerEpisodes = parsed.caretakerEpisodes && typeof parsed.caretakerEpisodes === "object" && !Array.isArray(parsed.caretakerEpisodes)
+      ? parsed.caretakerEpisodes : {};
     parsed.armies = Array.isArray(parsed.armies)
       ? parsed.armies.map(normalizeArmyUnit).filter((army): army is NonNullable<typeof army> => army !== null)
       : [];

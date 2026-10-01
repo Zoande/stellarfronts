@@ -46,7 +46,7 @@ const ship = { shipKind: oneOf(STARBASE_SHIP_KINDS), designId: optional(text()) 
 
 /** Exhaustive at compile time: adding a protocol command requires its decoder. */
 export const COMMAND_FIELDS: Record<ClientCommand["type"], Fields> = {
-  join: {}, adminCommand: { input: text(4096), context: optional(context) },
+  join: {}, playerActivity: {}, adminCommand: { input: text(4096), context: optional(context) },
   moveFleet: movement, moveShip: movement, buildStarbase: { fleetId: optional(text()), shipId: optional(text()), targetStarId: index },
   orbitPlanet: { ...fleet, ...planet }, colonizePlanet: { ...fleet, ...planet },
   mergeFleets: { targetFleetId: text(), sourceFleetIds: array(text()) }, stopFleet: fleet,

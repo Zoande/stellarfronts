@@ -7,11 +7,30 @@ import { AuthStore } from "../auth-store";
 import { WEEKLY_QUESTS } from "../game/progression";
 import type { AuthAccount } from "../../src/auth/types";
 import type { SpeciesSetup } from "../../src/data/Species";
+import Database from "better-sqlite3";
+import { initializeAuthSchema } from "../auth-schema";
 
 function requireAccount(account: AuthAccount | null): AuthAccount {
   assert.ok(account);
   return account;
 }
+
+test("existing memberships receive a full AFK grace period when activity storage is added", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-auth-upgrade-"));
+  const db = new Database(path.join(directory, "auth.sqlite"));
+  db.exec(`CREATE TABLE game_memberships (
+    game_id TEXT NOT NULL, account_id INTEGER NOT NULL, faction_id INTEGER NOT NULL,
+    country_name TEXT NOT NULL, flag_design TEXT, species_setup TEXT, joined_at INTEGER NOT NULL,
+    PRIMARY KEY(game_id, account_id), UNIQUE(game_id, faction_id)
+  )`);
+  db.prepare(`INSERT INTO game_memberships (game_id, account_id, faction_id, country_name, joined_at) VALUES (?, ?, ?, ?, ?)`).run("legacy", 17, 0, "Legacy", 1);
+  const before = Date.now();
+  initializeAuthSchema(db);
+  const row = db.prepare(`SELECT joined_at, last_activity_at FROM game_memberships WHERE game_id = ?`).get("legacy") as { joined_at: number; last_activity_at: number };
+  assert.equal(row.joined_at, 1);
+  assert.ok(row.last_activity_at >= before && row.last_activity_at <= Date.now());
+  db.close();
+});
 
 test("dark matter is account-scoped and awarded once for progression rewards", () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-auth-"));
@@ -117,6 +136,15 @@ test("multi-game auth store claims generated countries per game", () => {
   assert.equal(alphaSummary.isJoined, true);
   assert.equal(alphaSummary.membership?.countryName, "Solar Assembly");
   assert.deepEqual(alphaSummary.membership?.speciesSetup, speciesSetup);
+  assert.equal(first.lastActivityAt, first.joinedAt);
+  const later = first.lastActivityAt + 60_000;
+  assert.equal(store.recordGameActivity(game.id, colorAccounts[0].id, later), true);
+  assert.equal(store.recordGameActivity(game.id, colorAccounts[0].id, later - 1), false);
+  assert.equal(store.recordGameActivity(game.id, colorAccounts[1].id, later - 1), true);
+  assert.equal(store.recordGameActivity(secondGame.id, colorAccounts[1].id, later + 1), false);
+  store.recordGameEnter(colorAccounts[0], game.id);
+  assert.equal(store.getGameMembership(game.id, colorAccounts[0].id)?.lastActivityAt, later);
+  assert.equal(store.getGameMembership(secondGame.id, colorAccounts[0].id)?.lastActivityAt, secondGameMembership.lastActivityAt);
 });
 
 test("auth store rejects invalid species trait payloads", () => {

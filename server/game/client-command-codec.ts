@@ -3,6 +3,7 @@ import type { ClientCommand } from "../../src/game/GameProtocol";
 
 export const CLIENT_COMMAND_TYPES = [
   "join",
+  "playerActivity",
   "adminCommand",
   "moveShip",
   "moveFleet",

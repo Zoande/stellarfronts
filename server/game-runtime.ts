@@ -191,6 +191,8 @@ import {
 } from "./game/economy-tick";
 import { normalizeResourceCounts, normalizeStarbase, syncFleetMembership, syncSystemOwnershipFromStarbases, fleetHasConstructionShip, getFleetColonizationShip, syncShipsForDesign, normalizeSpeciesRightsForFactions, assignFoundingSpeciesToOwnedPops, getFactionFoundingSpeciesId } from "./game/state-normalization";
 import { decodeClientCommand } from "./game/client-command-codec";
+import { createAiObservation } from "./game/ai-observation";
+import { CARETAKER_AFK_MS, createCaretakerEpisode, decideCaretaker } from "./game/caretaker";
 import {
   applyMutationEffects,
 } from "./game/mutation-coordinator";
@@ -229,11 +231,13 @@ export interface GameCore {
   createHumanActor: (accountId: number, factionId: number) => GameActor;
   createObserverActor: () => GameActor;
   executeGameCommand: (actor: GameActor, action: unknown) => CommandOutcome;
+  processCaretakers: () => Array<{ factionId: number; action: GameAction; outcome: CommandOutcome }>;
+  recordPlayerActivity: (accountId: number, factionId: number) => boolean;
 }
 export function createGameCore(
   game: StoredGame,
   authStore: GameRuntimeAuthPort,
-  options: { now?: () => number; simulationSeed?: number; initialState?: GameState; initialWorld?: { starCount: number; factionCount: number }; deferInitialState?: boolean } = {},
+  options: { now?: () => number; realNow?: () => number; simulationSeed?: number; initialState?: GameState; initialWorld?: { starCount: number; factionCount: number }; deferInitialState?: boolean } = {},
 ): GameCore {
 let commandEffects: MutationEffects | null = null;
 let accountNotifications: Map<number, number> | null = null;
@@ -254,6 +258,7 @@ const ctx: RuntimeContext = {
   services: {
     authStore,
     now: options.now ?? (() => Date.now()),
+    realNow: options.realNow ?? (() => Date.now()),
     simulationSeed: options.simulationSeed,
     initialWorld: options.initialWorld,
   },
@@ -3575,6 +3580,93 @@ function issueActor<T extends GameActor>(actor: T): T {
   issuedActors.add(actor);
   return Object.freeze(actor);
 }
+let lastMembershipPollAt = Number.NEGATIVE_INFINITY;
+let caretakerMemberships: ReturnType<GameRuntimeAuthPort["listGameMemberships"]> = [];
+const recentPlayerActivity = new Map<number, { accountId: number; atMs: number }>();
+
+function recordPlayerActivity(accountId: number, factionId: number): boolean {
+  let ownerId: number | null;
+  try { ownerId = authStore.getAccountIdForGameFaction(game.id, factionId); }
+  catch (error) { console.error(`[GameServer] Failed to verify activity for ${game.id}/${factionId}`, error); return false; }
+  if (ownerId !== accountId) return false;
+  const atMs = ctx.services.realNow();
+  recentPlayerActivity.set(factionId, { accountId, atMs });
+  try { authStore.recordGameActivity(game.id, accountId, atMs); }
+  catch (error) { console.error(`[GameServer] Failed to record activity for ${game.id}/${factionId}`, error); }
+  if (ctx.state.caretakerEpisodes?.[factionId]) {
+    delete ctx.state.caretakerEpisodes[factionId];
+    ctx.hasDirtyState = true;
+  }
+  lastMembershipPollAt = Number.NEGATIVE_INFINITY;
+  return true;
+}
+
+function shipQueueIds(factionId: number): Set<string> {
+  return new Set([
+    ...ctx.state.starbases.filter((base) => base.ownerId === factionId).flatMap((base) => base.shipQueue.map((item) => item.id)),
+    ...ctx.state.planetStates.filter((planet) => planet.ownerId === factionId).flatMap((planet) => planet.defense.shipQueue.map((item) => item.id)),
+  ]);
+}
+
+function processCaretakers(): Array<{ factionId: number; action: GameAction; outcome: CommandOutcome }> {
+  const records: Array<{ factionId: number; action: GameAction; outcome: CommandOutcome }> = [];
+  const realNow = ctx.services.realNow();
+  if (realNow - lastMembershipPollAt >= 5_000) {
+    caretakerMemberships = authStore.listGameMemberships(game.id);
+    for (const membership of caretakerMemberships) {
+      const recent = recentPlayerActivity.get(membership.factionId);
+      if (!recent) continue;
+      if (recent.accountId !== membership.accountId || membership.lastActivityAt >= recent.atMs) {
+        recentPlayerActivity.delete(membership.factionId);
+        continue;
+      }
+      try { authStore.recordGameActivity(game.id, membership.accountId, recent.atMs); }
+      catch (error) { console.error(`[GameServer] Activity retry failed for ${game.id}/${membership.factionId}`, error); }
+      membership.lastActivityAt = recent.atMs;
+    }
+    lastMembershipPollAt = realNow;
+  }
+  const episodes = ctx.state.caretakerEpisodes ??= {};
+  const currentMemberships = new Set(caretakerMemberships.map((membership) => String(membership.factionId)));
+  for (const id of Object.keys(episodes)) if (!currentMemberships.has(id)) { delete episodes[id]; ctx.hasDirtyState = true; }
+  for (const membership of caretakerMemberships) {
+    const { factionId, accountId, lastActivityAt } = membership;
+    const previous = episodes[factionId];
+    if (realNow - lastActivityAt < CARETAKER_AFK_MS || previous && (previous.accountId !== accountId || previous.lastActivityAt !== lastActivityAt)) {
+      if (previous) { delete episodes[factionId]; ctx.hasDirtyState = true; }
+      continue;
+    }
+    if (!ctx.state.factions.some((faction) => faction.id === factionId)) continue;
+    if (previous && ctx.state.clock.year + 1e-9 < previous.nextDecisionYear) continue;
+    const observation = createAiObservation(ctx, factionId);
+    const episode = previous ?? (episodes[factionId] = createCaretakerEpisode(observation, accountId, lastActivityAt, realNow));
+    if (!previous) ctx.hasDirtyState = true;
+    episode.nextDecisionYear = ctx.state.clock.year + 1 / GAME_DAYS_PER_YEAR;
+    ctx.hasDirtyState = true;
+    const actor = issueActor({ kind: "ai" as const, factionId, controllerId: `caretaker-${factionId}` });
+    for (const decision of decideCaretaker(observation, episode)) {
+      const queuedBefore = decision.replacementForFleetId ? shipQueueIds(factionId) : null;
+      const result = executeGameCommand(actor, decision.action);
+      records.push({ factionId, action: decision.action, outcome: result });
+      if (result.ok && decision.action.type === "repairFleet") {
+        (episode.repairOrders ??= {})[decision.action.constructionFleetId] = {
+          targetFleetId: decision.action.targetFleetId, issuedAtYear: ctx.state.clock.year,
+        };
+        ctx.hasDirtyState = true;
+      }
+      if (!result.ok || !queuedBefore || !decision.replacementForFleetId) continue;
+      const queueId = Array.from(shipQueueIds(factionId)).find((id) => !queuedBefore.has(id));
+      if (!queueId || (decision.action.type !== "buildStarbaseShip" && decision.action.type !== "buildPlanetShip")) continue;
+      episode.queuedShips[queueId] = {
+        fleetId: decision.replacementForFleetId,
+        shipKind: decision.action.shipKind,
+        designId: decision.action.designId ?? null,
+      };
+      ctx.hasDirtyState = true;
+    }
+  }
+  return records;
+}
 function executeGameCommand(actor: GameActor, input: unknown): CommandOutcome {
   if (!issuedActors.has(actor)) return { ok: false, message: "Actor is not authorized for this game." };
   if (actor.kind === "observer") return { ok: false, message: "Observer mode is read-only." };
@@ -3618,6 +3710,7 @@ function executeGameCommand(actor: GameActor, input: unknown): CommandOutcome {
     outcome.effects = { ...effects, dirty: true };
     applyMutationEffects(ctx, outcome.effects);
     for (const [id, balance] of notifications) broadcastAccountDarkMatter(id, balance);
+    if (actor.kind === "human") recordPlayerActivity(actor.accountId, actor.factionId);
   }
   if (!outcome.ok) {
     if (previousOrders) { ctx.state.fleets = previousOrders.fleets; ctx.state.factionEconomies = previousOrders.economies; }
@@ -3629,6 +3722,14 @@ function executeGameCommand(actor: GameActor, input: unknown): CommandOutcome {
 function handleCommand(session: ClientSession, command: ClientCommand): void {
   if (command.type === "join") {
     if (!session.sentInitialSnapshot) { sendEvent(session.socket, createSnapshot(ctx, session.perspective)); session.sentInitialSnapshot = true; }
+    return;
+  }
+  if (command.type === "playerActivity") {
+    const realNow = ctx.services.realNow();
+    if (session.perspective.mode === "faction" && realNow - (session.lastActivitySignalAt ?? Number.NEGATIVE_INFINITY) >= 15_000) {
+      session.lastActivitySignalAt = realNow;
+      recordPlayerActivity(session.account.id, session.perspective.factionId);
+    }
     return;
   }
   if (command.type === "adminCommand") { void handleAdminCommand(session, command); return; }
@@ -3722,7 +3823,7 @@ function attachClient(socket: WebSocket, account: AuthAccount, perspective: Gala
   } catch (error) {
     console.error(`[GameServer] Failed to record ctx.game enter for ${ctx.game.id}`, error);
   }
-  sendEvent(socket, { type: "serverInfo", message: `Connected to StellarFronts ctx.game ${ctx.game.name}.` });
+  sendEvent(socket, { type: "serverInfo", message: `Connected to StellarFronts ctx.game ${ctx.game.name}.`, capabilities: ["playerActivity"] });
   sendEvent(socket, {
     type: "accountResources",
     darkMatter: authStore.getPlayerDarkMatter(account.id),
@@ -3751,6 +3852,7 @@ function attachClient(socket: WebSocket, account: AuthAccount, perspective: Gala
 
 function tick(now: number): void {
   const changed = advanceState(now);
+  processCaretakers();
   broadcastUpdates(Array.from(changed));
   flushPlanetDetailRefreshes();
   if (ctx.hasDirtyState && now - ctx.lastSaveAt >= SAVE_INTERVAL_MS) {
@@ -3818,6 +3920,7 @@ const runtime: GameRuntime = {
 if (!options.initialState && !options.deferInitialState) ctx.state = createInitialState(ctx);
 return {
   context: ctx, runtime, executeGameCommand,
+  processCaretakers, recordPlayerActivity,
   createAiActor: (factionId, controllerId = `ai-${factionId}`) => issueActor({ kind: "ai", factionId, controllerId }),
   createHumanActor: (accountId, factionId) => issueActor({ kind: "human", accountId, factionId }),
   createObserverActor: () => issueActor({ kind: "observer" }),

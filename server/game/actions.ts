@@ -2,7 +2,7 @@ import type { ClientCommand } from "../../src/game/GameProtocol";
 import type { GalaxyPerspective } from "../../src/data/Factions";
 import type { CommandOutcome } from "./mutation-coordinator";
 
-export type GameAction = Exclude<ClientCommand, { type: "join" | "adminCommand" | "requestDetails" | "subscribeDetails" | "unsubscribeDetails" | "setSpeedMultiplier" }>;
+export type GameAction = Exclude<ClientCommand, { type: "join" | "playerActivity" | "adminCommand" | "requestDetails" | "subscribeDetails" | "unsubscribeDetails" | "setSpeedMultiplier" }>;
 export type GameActor =
   | Readonly<{ kind: "human"; accountId: number; factionId: number }>
   | Readonly<{ kind: "ai"; controllerId: string; factionId: number }>
@@ -19,5 +19,5 @@ export function reject(reply: CommandReply, message: string): void {
 }
 
 export const ADAPTER_COMMANDS = new Set<ClientCommand["type"]>([
-  "join", "adminCommand", "requestDetails", "subscribeDetails", "unsubscribeDetails", "setSpeedMultiplier",
+  "join", "playerActivity", "adminCommand", "requestDetails", "subscribeDetails", "unsubscribeDetails", "setSpeedMultiplier",
 ]);

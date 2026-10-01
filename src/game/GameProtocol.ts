@@ -1104,6 +1104,10 @@ export interface JoinCommand {
   type: "join";
 }
 
+export interface PlayerActivityCommand {
+  type: "playerActivity";
+}
+
 export interface AdminCommandCommand {
   type: "adminCommand";
   input: string;
@@ -1113,6 +1117,7 @@ export interface AdminCommandCommand {
 
 type ClientCommandPayload =
   | JoinCommand
+  | PlayerActivityCommand
   | AdminCommandCommand
   | MoveCommand
   | BuildCommand
@@ -1276,6 +1281,7 @@ export interface AccountResourcesEvent {
 export interface ServerInfoEvent {
   type: "serverInfo";
   message: string;
+  capabilities?: string[];
 }
 
 export interface SystemDetailsEvent {

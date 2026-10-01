@@ -19,7 +19,16 @@ The first idle-economy JSON reports predate the metric fix that stopped treating
 
 ## 360-day unattended economy
 
-<!-- LONG_ECONOMY_RESULTS -->
+The unattended economy batch used 60,000 ms virtual ticks: 144 production-pipeline updates per 360 game days. It completed in roughly 60-75 seconds per seed on this machine, without real-time waits. This is a coarse trend check; the tick schedule is recorded in each replay. For seed 19, a separate 10-second-tick run ended at food 5,021.3/2,899.5 versus 5,021.5/2,899.9 here (factions 0/1), with the same absence of shortages. That close agreement applies only to this idle economy comparison.
+
+| Seed | Faction 0 food, monthly income | Faction 1 food, monthly income | Food shortage / famine / population loss | Technologies completed |
+| --- | --- | --- | --- | --- |
+| 19 | 5,021.5; +165.6 | 2,899.9; -12.7 | 0 / 0 / 0 in both factions | 0 / 0 |
+| 42 | 4,406.5; +114.6 | 2,834.5; -20.5 | 0 / 0 / 0 in both factions | 0 / 0 |
+| 71 | 3,369.7; +27.8 | 2,837.9; -20.1 | 0 / 0 / 0 in both factions | 0 / 0 |
+
+No unattended country collapsed within a game year in these compact seeds. The second country ran a small food deficit in all three and relied on its starting stockpile. Neither country completed a technology without player decisions during this horizon; that is a pacing observation, not yet a confirmed imbalance. Reproduce with `npm run ai:simulate -- long-economy --seeds 19,42,71` (the mode defaults to this 60,000 ms schedule). Per-seed JSON and replay logs are in `.cache/ai-lab/long-economy-fast/`.
+
 
 ## Findings and reproductions
 
