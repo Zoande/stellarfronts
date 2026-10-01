@@ -56,10 +56,19 @@ export interface CaretakerEpisode {
   repairOrders?: Record<string, { targetFleetId: string; issuedAtYear: number }>;
 }
 
+export interface PassiveEpisode extends CaretakerEpisode {
+  source: "unclaimed" | "afk";
+  nextOutpostYear: number;
+  nextColonyYear: number;
+  nextDevelopmentYear: number;
+  nextShipYear: number;
+}
+
 export interface GameState {
   /** Private authoritative state; never included in faction observations. */
   determinism?: import("./determinism").DeterministicState;
   caretakerEpisodes?: Record<string, CaretakerEpisode>;
+  passiveEpisodes?: Record<string, PassiveEpisode>;
   schemaVersion: 30;
   stars: StarData[];
   nebulae: NebulaRegion[];

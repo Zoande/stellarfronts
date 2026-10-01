@@ -28,7 +28,7 @@ export function createCaretakerEpisode(observation: AiObservation, accountId: nu
 
 /** Called by ordinary ship-queue completion, including after a checkpoint restore. */
 export function registerCaretakerShipCompletion(ctx: RuntimeContext, queueItemId: string, shipId: string): void {
-  for (const episode of Object.values(ctx.state.caretakerEpisodes ?? {})) {
+  for (const episode of [...Object.values(ctx.state.caretakerEpisodes ?? {}), ...Object.values(ctx.state.passiveEpisodes ?? {})]) {
     const assignment = episode.queuedShips[queueItemId];
     if (!assignment) continue;
     delete episode.queuedShips[queueItemId];

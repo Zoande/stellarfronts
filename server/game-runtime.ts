@@ -222,6 +222,7 @@ import { isShipDesignUnlockedForFaction, getShipDesignMissingTechnologyName } fr
 import { getFactionPlanetColonizationEligibility } from "./game/colonization";
 import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clearFleetOrbit, prepareFleetForReplacementOrder, applyFleetOrbitTarget, findRoute, startMoveOrder, startAttackSystemOrder, startBuildOrder, startOrbitOrder, startColonizationOrder, startMergeSourceOrder, isMergeSourceEligible, advanceFleet, processMissingInActionFleets, isHostileOwner, resolveFleetRetreatDestination, startFleetRetreat, retreatFleetByDoctrine, processContinuousFleetCombat, clearFleetMovementNow, processFleetCommandLinkLoss, rescaleFleetMovementPlan } from "./game/fleet-combat";
 import { runSimulationPipeline } from "./game/simulation-pipeline";
+import { PASSIVE_AFK_MS, createPassiveEpisode, decidePassive, recordPassiveAcceptance } from "./game/passive";
 import { beginPlanetInvasion, embarkPlanetArmies, getArmyRecruitmentCap, isArmyFleet, processArmyAndCrewReplenishment, processGroundBattles, reinforceOwnedPlanet, requestGroundWithdrawal } from "./game/ground-combat";
 
 export interface GameCore {
@@ -232,12 +233,13 @@ export interface GameCore {
   createObserverActor: () => GameActor;
   executeGameCommand: (actor: GameActor, action: unknown) => CommandOutcome;
   processCaretakers: () => Array<{ factionId: number; action: GameAction; outcome: CommandOutcome }>;
+  processAiControllers: () => Array<{ factionId: number; mode: "caretaker" | "passive"; action: GameAction; outcome: CommandOutcome }>;
   recordPlayerActivity: (accountId: number, factionId: number) => boolean;
 }
 export function createGameCore(
   game: StoredGame,
   authStore: GameRuntimeAuthPort,
-  options: { now?: () => number; realNow?: () => number; simulationSeed?: number; initialState?: GameState; initialWorld?: { starCount: number; factionCount: number }; deferInitialState?: boolean } = {},
+  options: { now?: () => number; realNow?: () => number; simulationSeed?: number; initialState?: GameState; initialWorld?: { starCount: number; factionCount: number }; deferInitialState?: boolean; enablePassiveAi?: boolean } = {},
 ): GameCore {
 let commandEffects: MutationEffects | null = null;
 let accountNotifications: Map<number, number> | null = null;
@@ -3597,6 +3599,10 @@ function recordPlayerActivity(accountId: number, factionId: number): boolean {
     delete ctx.state.caretakerEpisodes[factionId];
     ctx.hasDirtyState = true;
   }
+  if (ctx.state.passiveEpisodes?.[factionId]) {
+    delete ctx.state.passiveEpisodes[factionId];
+    ctx.hasDirtyState = true;
+  }
   lastMembershipPollAt = Number.NEGATIVE_INFINITY;
   return true;
 }
@@ -3608,8 +3614,8 @@ function shipQueueIds(factionId: number): Set<string> {
   ]);
 }
 
-function processCaretakers(): Array<{ factionId: number; action: GameAction; outcome: CommandOutcome }> {
-  const records: Array<{ factionId: number; action: GameAction; outcome: CommandOutcome }> = [];
+function processAiControllers(): Array<{ factionId: number; mode: "caretaker" | "passive"; action: GameAction; outcome: CommandOutcome }> {
+  const records: Array<{ factionId: number; mode: "caretaker" | "passive"; action: GameAction; outcome: CommandOutcome }> = [];
   const realNow = ctx.services.realNow();
   if (realNow - lastMembershipPollAt >= 5_000) {
     caretakerMemberships = authStore.listGameMemberships(game.id);
@@ -3627,27 +3633,54 @@ function processCaretakers(): Array<{ factionId: number; action: GameAction; out
     lastMembershipPollAt = realNow;
   }
   const episodes = ctx.state.caretakerEpisodes ??= {};
-  const currentMemberships = new Set(caretakerMemberships.map((membership) => String(membership.factionId)));
-  for (const id of Object.keys(episodes)) if (!currentMemberships.has(id)) { delete episodes[id]; ctx.hasDirtyState = true; }
-  for (const membership of caretakerMemberships) {
-    const { factionId, accountId, lastActivityAt } = membership;
-    const previous = episodes[factionId];
-    if (realNow - lastActivityAt < CARETAKER_AFK_MS || previous && (previous.accountId !== accountId || previous.lastActivityAt !== lastActivityAt)) {
-      if (previous) { delete episodes[factionId]; ctx.hasDirtyState = true; }
-      continue;
+  const passiveEpisodes = ctx.state.passiveEpisodes ?? (options.enablePassiveAi ? ctx.state.passiveEpisodes = {} : {});
+  const memberships = new Map(caretakerMemberships.map((membership) => [membership.factionId, membership]));
+  const currentFactions = new Set(ctx.state.factions.map((faction) => String(faction.id)));
+  for (const store of [episodes, passiveEpisodes]) for (const id of Object.keys(store)) {
+    if (!currentFactions.has(id)) { delete store[id]; ctx.hasDirtyState = true; }
+  }
+  for (const faction of ctx.state.factions) {
+    const factionId = faction.id;
+    const membership = memberships.get(factionId);
+    const accountId = membership?.accountId ?? -1;
+    const lastActivityAt = membership?.lastActivityAt ?? 0;
+    const afkMs = realNow - lastActivityAt;
+    const mode = options.enablePassiveAi && (!membership || afkMs >= PASSIVE_AFK_MS) ? "passive"
+      : membership && afkMs >= CARETAKER_AFK_MS ? "caretaker" : null;
+    const handoff = mode === "passive" ? episodes[factionId] : undefined;
+    for (const [store, storeMode] of [[episodes, "caretaker"], [passiveEpisodes, "passive"]] as const) {
+      const entry = store[factionId];
+      if (entry && (mode !== storeMode || entry.accountId !== accountId || entry.lastActivityAt !== lastActivityAt)) {
+        delete store[factionId]; ctx.hasDirtyState = true;
+      }
     }
-    if (!ctx.state.factions.some((faction) => faction.id === factionId)) continue;
+    if (!mode) continue;
+    // A claim can arrive between membership polls. Never give an unclaimed bot
+    // an extra turn after ownership has already changed in account storage.
+    if (!membership && authStore.getAccountIdForGameFaction(game.id, factionId) !== null) {
+      if (passiveEpisodes[factionId]) { delete passiveEpisodes[factionId]; ctx.hasDirtyState = true; }
+      lastMembershipPollAt = Number.NEGATIVE_INFINITY; continue;
+    }
+    const previous = mode === "passive" ? passiveEpisodes[factionId] : episodes[factionId];
     if (previous && ctx.state.clock.year + 1e-9 < previous.nextDecisionYear) continue;
     const observation = createAiObservation(ctx, factionId);
-    const episode = previous ?? (episodes[factionId] = createCaretakerEpisode(observation, accountId, lastActivityAt, realNow));
+    const episode = previous ?? (mode === "passive"
+      ? passiveEpisodes[factionId] = createPassiveEpisode(observation, membership ? accountId : null, lastActivityAt, realNow)
+      : episodes[factionId] = createCaretakerEpisode(observation, accountId, lastActivityAt, realNow));
+    if (!previous && handoff && handoff.accountId === accountId) {
+      episode.queuedShips = handoff.queuedShips; episode.reinforcements = handoff.reinforcements; episode.repairOrders = handoff.repairOrders;
+      for (const fleet of handoff.fleets) if (!episode.fleets.some((entry) => entry.fleetId === fleet.fleetId)) episode.fleets.push(fleet);
+    }
     if (!previous) ctx.hasDirtyState = true;
     episode.nextDecisionYear = ctx.state.clock.year + 1 / GAME_DAYS_PER_YEAR;
     ctx.hasDirtyState = true;
-    const actor = issueActor({ kind: "ai" as const, factionId, controllerId: `caretaker-${factionId}` });
-    for (const decision of decideCaretaker(observation, episode)) {
+    const actor = issueActor({ kind: "ai" as const, factionId, controllerId: `${mode}-${factionId}` });
+    const decisions = mode === "passive" ? decidePassive(observation, passiveEpisodes[factionId]) : decideCaretaker(observation, episode);
+    for (const decision of decisions) {
       const queuedBefore = decision.replacementForFleetId ? shipQueueIds(factionId) : null;
       const result = executeGameCommand(actor, decision.action);
-      records.push({ factionId, action: decision.action, outcome: result });
+      records.push({ factionId, mode, action: decision.action, outcome: result });
+      if (result.ok && mode === "passive") recordPassiveAcceptance(passiveEpisodes[factionId], decision.action, ctx.state.clock.year);
       if (result.ok && decision.action.type === "repairFleet") {
         (episode.repairOrders ??= {})[decision.action.constructionFleetId] = {
           targetFleetId: decision.action.targetFleetId, issuedAtYear: ctx.state.clock.year,
@@ -3761,6 +3794,7 @@ function handleCommand(session: ClientSession, command: ClientCommand): void {
 }
 
 function touchMembershipNames(): void {
+  lastMembershipPollAt = Number.NEGATIVE_INFINITY;
   let changed = false;
   let speciesChanged = false;
   for (const membership of authStore.listGameMemberships(ctx.game.id)) {
@@ -3852,7 +3886,7 @@ function attachClient(socket: WebSocket, account: AuthAccount, perspective: Gala
 
 function tick(now: number): void {
   const changed = advanceState(now);
-  processCaretakers();
+  processAiControllers();
   broadcastUpdates(Array.from(changed));
   flushPlanetDetailRefreshes();
   if (ctx.hasDirtyState && now - ctx.lastSaveAt >= SAVE_INTERVAL_MS) {
@@ -3920,7 +3954,7 @@ const runtime: GameRuntime = {
 if (!options.initialState && !options.deferInitialState) ctx.state = createInitialState(ctx);
 return {
   context: ctx, runtime, executeGameCommand,
-  processCaretakers, recordPlayerActivity,
+  processCaretakers: processAiControllers, processAiControllers, recordPlayerActivity,
   createAiActor: (factionId, controllerId = `ai-${factionId}`) => issueActor({ kind: "ai", factionId, controllerId }),
   createHumanActor: (accountId, factionId) => issueActor({ kind: "human", accountId, factionId }),
   createObserverActor: () => issueActor({ kind: "observer" }),
@@ -3928,7 +3962,7 @@ return {
 }
 
 export async function createGameRuntime(game: StoredGame, authStore: GameRuntimeAuthPort): Promise<GameRuntime> {
-  const core = createGameCore(game, authStore, { deferInitialState: true });
+  const core = createGameCore(game, authStore, { deferInitialState: true, enablePassiveAi: true });
   const ctx = core.context;
   await acquireOwnership(ctx);
   try {

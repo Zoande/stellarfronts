@@ -266,6 +266,8 @@ export function restoreState(ctx: RuntimeContext, decoded: unknown): GameState {
     ctx.state = parsed;
     parsed.caretakerEpisodes = parsed.caretakerEpisodes && typeof parsed.caretakerEpisodes === "object" && !Array.isArray(parsed.caretakerEpisodes)
       ? parsed.caretakerEpisodes : {};
+    if (parsed.passiveEpisodes !== undefined) parsed.passiveEpisodes = parsed.passiveEpisodes && typeof parsed.passiveEpisodes === "object" && !Array.isArray(parsed.passiveEpisodes)
+      ? parsed.passiveEpisodes : {};
     parsed.armies = Array.isArray(parsed.armies)
       ? parsed.armies.map(normalizeArmyUnit).filter((army): army is NonNullable<typeof army> => army !== null)
       : [];

@@ -48,6 +48,7 @@ export interface GameCheckpoint {
   game: StoredGame;
   nowMs: number;
   realNowMs?: number;
+  enablePassiveAi?: boolean;
   accounts: MemoryAccounts;
   state: GameState;
 }
@@ -61,6 +62,9 @@ export interface HeadlessGameOptions {
   checkpoint?: GameCheckpoint;
   accounts?: MemoryAccounts;
   onCaretakerAction?: (record: { factionId: number; action: GameAction; outcome: CommandOutcome }) => void;
+  onAiAction?: (record: { factionId: number; mode: "caretaker" | "passive"; action: GameAction; outcome: CommandOutcome }) => void;
+  /** Scripted laboratory fixtures opt in; production enables passive by default. */
+  enablePassiveAi?: boolean;
 }
 
 /** Full authoritative serialization digest. JSON checkpoints preserve property order. */
@@ -90,6 +94,7 @@ export function createHeadlessGame(options: HeadlessGameOptions = {}) {
   const core = createGameCore(game, createMemoryAuth(accounts), {
     now: () => nowMs, realNow: () => realNowMs, simulationSeed: options.simulationSeed ?? 42, initialWorld: options.initialWorld,
     initialState: options.checkpoint ? structuredClone(options.checkpoint.state) : undefined,
+    enablePassiveAi: options.enablePassiveAi ?? options.checkpoint?.enablePassiveAi ?? false,
   });
   // New worlds are canonicalized too, so restoring a checkpoint is idempotent.
   core.context.state = restoreState(core.context, structuredClone(core.context.state));
@@ -112,7 +117,10 @@ export function createHeadlessGame(options: HeadlessGameOptions = {}) {
     advanceRealTime: (elapsedMs: number) => {
       if (!Number.isSafeInteger(elapsedMs) || elapsedMs < 0 || !Number.isSafeInteger(realNowMs + elapsedMs)) throw new Error("Invalid real-time advance.");
       realNowMs += elapsedMs;
-      for (const record of core.processCaretakers()) options.onCaretakerAction?.(record);
+      for (const record of core.processAiControllers()) {
+        options.onAiAction?.(record);
+        if (record.mode === "caretaker") options.onCaretakerAction?.(record);
+      }
     },
     recordPlayerActivity: (accountId: number, factionId: number) => core.recordPlayerActivity(accountId, factionId),
     step: (elapsedMs = stepMs) => {
@@ -121,13 +129,17 @@ export function createHeadlessGame(options: HeadlessGameOptions = {}) {
       while (nowMs < target) {
         nowMs = Math.min(target, nowMs + stepMs);
         core.context.advanceState(nowMs);
-        for (const record of core.processCaretakers()) options.onCaretakerAction?.(record);
+        for (const record of core.processAiControllers()) {
+          options.onAiAction?.(record);
+          if (record.mode === "caretaker") options.onCaretakerAction?.(record);
+        }
       }
     },
     digest: () => stateDigest(core.context.state),
     /** Laboratory orchestration only. Never hand this full-state view to a decision callback. */
     diagnosticState: (): Readonly<GameState> => core.context.state,
-    exportCheckpoint: (): GameCheckpoint => structuredClone({ formatVersion: 1, game, nowMs, realNowMs, accounts, state: core.context.state }),
+    exportCheckpoint: (): GameCheckpoint => structuredClone({ formatVersion: 1, game, nowMs, realNowMs, accounts,
+      enablePassiveAi: options.enablePassiveAi ?? options.checkpoint?.enablePassiveAi ?? false, state: core.context.state }),
   };
 }
 export type HeadlessGame = ReturnType<typeof createHeadlessGame>;

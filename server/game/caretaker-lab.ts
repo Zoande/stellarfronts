@@ -63,6 +63,7 @@ export function foodRecoverySample(state: ReturnType<ReturnType<typeof createHea
 }
 
 export interface CaretakerSimulationResult {
+  controller: "caretaker" | "passive";
   revision: string;
   scenario: ScenarioName;
   seed: number;
@@ -149,7 +150,7 @@ export async function runCaretakerExperiment(
   stepMs = 24_000,
   record: (entry: ReplayRecord) => void = () => undefined,
   recordAction: (entry: CaretakerActionTrace) => void = () => undefined,
-  settings: { revision?: string; starCount?: number; factionCount?: number;
+  settings: { revision?: string; starCount?: number; factionCount?: number; controller?: "caretaker" | "passive";
     onSample?: (entry: { caretaker: FoodRecoverySample; idle: FoodRecoverySample }) => void } = {},
 ): Promise<CaretakerSimulationResult> {
   if (!Number.isFinite(days) || days <= 0 || !Number.isSafeInteger(stepMs) || stepMs <= 0) throw new Error("Invalid experiment duration.");
@@ -176,14 +177,17 @@ export async function runCaretakerExperiment(
     const core = createGameCore(prepared.game, createMemoryAuth(prepared.accounts), { initialState: prepared.state, now: () => prepared.nowMs });
     core.context.refreshDiscovery();
   }
-  prepared.accounts.owners = { 0: 17 };
+  const controller = settings.controller ?? "caretaker";
+  prepared.enablePassiveAi = controller === "passive";
+  prepared.accounts.owners = controller === "caretaker" ? { 0: 17 } : {};
   prepared.accounts.activities = { 0: prepared.realNowMs ?? prepared.nowMs };
   const idleCheckpoint = structuredClone(prepared);
+  idleCheckpoint.enablePassiveAi = false;
   idleCheckpoint.accounts.owners = {};
   idleCheckpoint.accounts.activities = {};
   const actions: CaretakerActionTrace[] = [];
   let tick = -1;
-  const game = createHeadlessGame({ checkpoint: prepared, stepMs, onCaretakerAction: (action) => {
+  const game = createHeadlessGame({ checkpoint: prepared, stepMs, onAiAction: (action) => {
     const entry = { tick, ...action };
     actions.push(entry);
     recordAction(entry);
@@ -236,7 +240,7 @@ export async function runCaretakerExperiment(
   const replayVerified = replayed.digest() === game.digest();
   if (!replayVerified) findings.push("Checkpoint replay diverged.");
   return {
-    revision: settings.revision ?? "unknown", scenario, seed, stars: start.state.stars.length, countries: start.state.factions.length,
+    controller, revision: settings.revision ?? "unknown", scenario, seed, stars: start.state.stars.length, countries: start.state.factions.length,
     days, ticks: tick + 1, runtimeMs: performance.now() - started,
     actionsAccepted: actions.filter((entry) => entry.outcome.ok).length, actionsRejected: rejected.length,
     actionsByType, caretaker, idleComparison, finalDigest: game.digest(), replayVerified, findings,

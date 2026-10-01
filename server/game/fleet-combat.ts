@@ -1993,6 +1993,8 @@ export function applyFleetSoftSeparation(
       const push = (minimum - distance) * FLEET_SOFT_SEPARATION_FACTOR;
       const ux = dx / distance;
       const uz = dz / distance;
+      const previousLeft = left.systemPosition;
+      const previousRight = right.systemPosition;
       if (!left.stationaryStarbaseId) {
         const amount = right.stationaryStarbaseId ? push : push / 2;
         left.systemPosition = { x: left.systemPosition.x - ux * amount, y: SYSTEM_FLEET_Y, z: left.systemPosition.z - uz * amount };
@@ -2001,7 +2003,10 @@ export function applyFleetSoftSeparation(
         const amount = left.stationaryStarbaseId ? push : push / 2;
         right.systemPosition = { x: right.systemPosition.x + ux * amount, y: SYSTEM_FLEET_Y, z: right.systemPosition.z + uz * amount };
       }
-      changed = true;
+      // Once floating-point positions have settled, a mathematically positive
+      // push can round to no movement. Do not report an idle pair as moving.
+      changed ||= previousLeft.x !== left.systemPosition.x || previousLeft.y !== left.systemPosition.y || previousLeft.z !== left.systemPosition.z
+        || previousRight.x !== right.systemPosition.x || previousRight.y !== right.systemPosition.y || previousRight.z !== right.systemPosition.z;
     }
   }
   return changed;
@@ -2588,6 +2593,7 @@ export function processContinuousFleetCombat(
   ctx: RuntimeContext,
   elapsedGameHours: number,
   elapsedGameDays: number,
+  options: { disableIdleSkip?: boolean; onIdleSkip?: (hours: number) => void } = {},
 ): {
   combatContactsChanged: boolean;
   shipsChanged: boolean;
@@ -2616,6 +2622,18 @@ export function processContinuousFleetCombat(
     const result = processContinuousFleetCombatStep(ctx, stepHours, stepHours / 24);
     for (const key of Object.keys(aggregate) as Array<keyof typeof aggregate>) aggregate[key] ||= result[key];
     remaining -= stepHours;
+    // With no mutations and no scheduled combat work, further substeps can
+    // only repeat the same idle computation. Economy and construction still
+    // run through the ordinary pipeline after this phase.
+    if (!options.disableIdleSkip && !Object.values(result).some(Boolean)
+      && ctx.state.combatProjectiles.length === 0
+      && ctx.state.fleets.every((fleet) => !fleet.currentTargetId && !fleet.battleSnapshot && !fleet.retreatState
+        && !fleet.currentTacticalOrder && fleet.orderType !== "attack")
+      && ctx.state.ships.every((ship) => Object.values(ship.weaponCooldowns ?? {}).every((value) => value <= 0))
+      && ctx.state.starbases.every((base) => Object.values(base.weaponCooldowns ?? {}).every((value) => value <= 0))) {
+      options.onIdleSkip?.(remaining);
+      break;
+    }
   }
   ctx.state.clock.year = endYear;
   return aggregate;

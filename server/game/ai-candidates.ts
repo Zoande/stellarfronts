@@ -1,7 +1,8 @@
 import { BUILDING_DEFINITIONS, BUILDING_KINDS, DISTRICT_COSTS, RESOURCE_KINDS, getEffectivePlanetDistrictLimits, getQueuedDistrictCount, getBuildingCost, isBuildingCompatible, hasQueuedBuildingTarget, getPlanetBuildingKind, getPlanetBuildingLevel, getBuildingUpgradeTargetLevel, getBuildingUpgradeCost, meetsCapitalUpgradePopulation, isPlanetBuildingEnabled } from "../../src/data/Economy";
 import type { BuildingSlotArea, PlanetState, ResourceCounts, DistrictKind } from "../../src/data/Economy";
-import { getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel } from "../../src/data/Technology";
-import { OUTPOST_CONSTRUCTION_COST } from "../../src/data/Starbase";
+import { getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel, getRequiredTechIdsForShipHull, getRequiredTechIdsForShipModule, getRequiredTechIdsForShipSection, getRequiredTechIdsForStarbaseBuilding } from "../../src/data/Technology";
+import { OUTPOST_CONSTRUCTION_COST, countStarbaseShipyards, getStarbaseShipConstructionCostMultiplier, STARBASE_BUILDING_DEFINITIONS } from "../../src/data/Starbase";
+import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
 import type { GameAction } from "./actions";
 import type { AiObservation } from "./ai-observation";
 
@@ -12,17 +13,36 @@ export interface AiCandidates {
   movement: GameAction[];
   expansion: GameAction[];
   colonization: GameAction[];
+  ships: GameAction[];
+  infrastructure: GameAction[];
 }
 
 /** Advisory candidates, computed only from detached observations and public catalogs. */
 export function getAiCandidates(observation: AiObservation): AiCandidates {
   const { factionId, snapshot, fleets, planets } = observation;
-  const result: AiCandidates = { economy: [], research: [], repairs: [], movement: [], expansion: [], colonization: [] };
+  const result: AiCandidates = { economy: [], research: [], repairs: [], movement: [], expansion: [], colonization: [], ships: [], infrastructure: [] };
   const economy = snapshot.factionEconomies.find((e) => e.factionId === factionId);
   const tech = snapshot.technologies.find((t) => t.factionId === factionId);
   const completed = new Set(tech?.completedTechIds ?? []);
   const unlocked = (ids: string[]) => ids.length === 0 || ids.some((id) => completed.has(id));
   const affordable = (cost: Partial<ResourceCounts>) => !!economy && RESOURCE_KINDS.every((r) => economy.stockpiles[r] >= (cost[r] ?? 0));
+  const shipDesigns = fleets.shipDesigns.filter((design) => design.ownerId === factionId && design.status === "active"
+    && design.shipKind !== "armyShip" && design.shipKind !== "defensePlatform" && unlocked(getRequiredTechIdsForShipHull(design.shipKind))
+    && [...design.weaponSectionModuleIds, ...design.defenseSectionModuleIds].every((id) => unlocked(getRequiredTechIdsForShipSection(id)))
+    && [...design.weaponModuleIds, ...design.defenseModuleIds, ...design.utilityModuleIds].every((id) => unlocked(getRequiredTechIdsForShipModule(id))));
+  for (const base of fleets.starbases.filter((base) => base.ownerId === factionId && base.status === "online")) {
+    if (unlocked(getRequiredTechIdsForStarbaseBuilding("shipyard")) && affordable(STARBASE_BUILDING_DEFINITIONS.shipyard.cost)) {
+      const slotIndex = base.buildingSlots.findIndex((slot, index) => !slot && !base.constructionQueue.some((item) => item.kind === "building" && item.slotIndex === index));
+      if (slotIndex >= 0) result.infrastructure.push({ type: "buildStarbaseBuilding", starbaseId: base.id, slotIndex, buildingKind: "shipyard" });
+    }
+    if (countStarbaseShipyards(base.buildingSlots) <= 0) continue;
+    for (const design of shipDesigns) {
+      const stats = calculateShipDesignStats(design);
+      if (economy && economy.crewStockpile >= stats.crewDemand && affordable(Object.fromEntries(RESOURCE_KINDS.map((r) => [r, stats.cost[r] * getStarbaseShipConstructionCostMultiplier(base.buildingSlots) * 0.05])))) {
+        result.ships.push({ type: "buildStarbaseShip", starbaseId: base.id, shipKind: design.shipKind, designId: design.id });
+      }
+    }
+  }
   for (const status of tech?.technologies ?? []) {
     if (status.available && !status.completed && !status.active) result.research.push({ type: "setActiveTechnology", techId: status.id });
   }
@@ -49,6 +69,12 @@ export function getAiCandidates(observation: AiObservation): AiCandidates {
   for (const entry of planets.planets) {
     const planet = entry.planetState;
     if (planet.ownerId !== factionId || !planet.isHabited) continue;
+    if (planet.defense.shipyardSlots.some((slot) => slot?.kind === "orbitalShipyard" && slot.enabled !== false)) {
+      for (const design of shipDesigns) {
+        const stats = calculateShipDesignStats(design);
+        if (economy && economy.crewStockpile >= stats.crewDemand && affordable(Object.fromEntries(RESOURCE_KINDS.map((r) => [r, stats.cost[r] * 0.05])))) result.ships.push({ type: "buildPlanetShip", planetId: planet.id, shipKind: design.shipKind, designId: design.id });
+      }
+    }
     const limits = getEffectivePlanetDistrictLimits(entry.planet.objectDetails.districtLimits, planet.features);
     for (const districtKind of ["agriculture", "generator", "mining", "city"] as DistrictKind[]) {
       if (planet.builtDistricts[districtKind] + getQueuedDistrictCount(planet, districtKind) < limits[districtKind] && affordable(DISTRICT_COSTS[districtKind])) {

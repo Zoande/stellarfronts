@@ -9,8 +9,9 @@ import { createGameCore } from "../game-runtime";
 import { createMemoryAuth } from "./headless-game";
 import { hasCommandLink } from "./intelligence";
 import { getPlanetConfig } from "./state-queries";
+import { SHORTAGE_SITUATION_ID, situationInstanceId } from "../../src/data/Situations";
 
-export const SCENARIO_NAMES = ["idle-economy", "shortage-recovery", "construction-research", "expansion", "combat-repair"] as const;
+export const SCENARIO_NAMES = ["idle-economy", "shortage-recovery", "famine-recovery", "construction-research", "expansion", "combat-repair"] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
 
 /** Only fixture preparation has full truth. Scripted decisions receive faction observations. */
@@ -19,10 +20,12 @@ export function prepareScenario(name: ScenarioName, options: HeadlessGameOptions
   const state = checkpoint.state;
   const core = createGameCore(checkpoint.game, createMemoryAuth(), { initialState: state, now: () => checkpoint.nowMs });
   const planet = state.planetStates.find((p) => p.ownerId === 0 && p.isHabited)!;
-  if (name === "shortage-recovery") {
+  if (name === "shortage-recovery" || name === "famine-recovery") {
     state.factionEconomies.find((e) => e.factionId === 0)!.stockpiles.food = 0;
     planet.builtDistricts.agriculture = 0;
     planet.buildings.agriculture.fill(null);
+    if (name === "famine-recovery") state.situations.push({ id: situationInstanceId(SHORTAGE_SITUATION_ID, 0, "food"), defId: SHORTAGE_SITUATION_ID,
+      factionId: 0, subject: "food", progress: 60, startedAtYear: state.clock.year, lastThreshold: 0 });
   }
   if (name === "combat-repair") {
     const friendly = state.fleets.find((f) => f.ownerId === 0 && f.shipIds.some((id) => state.ships.find((s) => s.id === id)?.shipKind === "corvette"))!;
@@ -70,7 +73,7 @@ export function prepareScenario(name: ScenarioName, options: HeadlessGameOptions
 export function scriptedActions(name: ScenarioName, day: number, observation: AiObservation): GameAction[] {
   const candidates = getAiCandidates(observation);
   if (name === "idle-economy") return [];
-  if (name === "shortage-recovery") {
+  if (name === "shortage-recovery" || name === "famine-recovery") {
     // Food is itself part of the agriculture construction cost. Buy it first,
     // then use the next observation to queue the district through normal rules.
     if (day !== 3 && day !== 4 && day !== 10 && day !== 20) return [];
