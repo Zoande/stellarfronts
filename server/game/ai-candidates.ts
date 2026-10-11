@@ -22,6 +22,13 @@ export function isAiFleetReady(fleet: ServerFleet): boolean {
     && !["build", "colonize", "merge", "retreat"].includes(fleet.orderType ?? "");
 }
 
+/** Actual owned bases have current owner intelligence. Remembered ownership
+ * after losing sensors is useful enemy intel, but cannot authorize purchases. */
+export function isAiOwnedStarbase(observation: AiObservation, base: { id: string; ownerId: number }): boolean {
+  const owner = observation.snapshot.intelligence.entities.find((entity) => entity.kind === "starbase" && entity.id === base.id)?.fields.ownerId;
+  return base.ownerId === observation.factionId && owner?.status === "current" && owner.value === observation.factionId;
+}
+
 export interface AiCandidates {
   economy: GameAction[];
   research: GameAction[];
@@ -46,7 +53,7 @@ export function getAiCandidates(observation: AiObservation): AiCandidates {
     && design.shipKind !== "armyShip" && design.shipKind !== "defensePlatform" && unlocked(getRequiredTechIdsForShipHull(design.shipKind))
     && [...design.weaponSectionModuleIds, ...design.defenseSectionModuleIds].every((id) => unlocked(getRequiredTechIdsForShipSection(id)))
     && [...design.weaponModuleIds, ...design.defenseModuleIds, ...design.utilityModuleIds].every((id) => unlocked(getRequiredTechIdsForShipModule(id))));
-  for (const base of fleets.starbases.filter((base) => base.ownerId === factionId && base.status === "online")) {
+  for (const base of fleets.starbases.filter((base) => isAiOwnedStarbase(observation, base) && base.status === "online")) {
     if (unlocked(getRequiredTechIdsForStarbaseBuilding("shipyard")) && affordable(STARBASE_BUILDING_DEFINITIONS.shipyard.cost)) {
       const slotIndex = base.buildingSlots.findIndex((slot, index) => !slot && !base.constructionQueue.some((item) => item.kind === "building" && item.slotIndex === index));
       if (slotIndex >= 0) result.infrastructure.push({ type: "buildStarbaseBuilding", starbaseId: base.id, slotIndex, buildingKind: "shipyard" });

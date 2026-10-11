@@ -13,6 +13,7 @@ import { createActiveEpisode, decideActive, recordActiveRejection } from "../gam
 import { getAiCandidates, isAiFleetReady } from "../game/ai-candidates";
 import { createArmyUnit, ARMY_TYPE_DEFINITIONS } from "../../src/data/Armies";
 import { peaceAssessment, rememberWarBorders } from "../game/active-diplomacy";
+import type { ServerFleet } from "../../src/game/GameProtocol";
 
 let base: GameCheckpoint;
 function fixture() { base ??= prepareWarCampaign(); return structuredClone(base); }
@@ -20,7 +21,7 @@ function observation() { return structuredClone(createHeadlessGame({ checkpoint:
 function transport(obs: ReturnType<typeof observation>, id: string, count: number, starId: number) {
   const templateFleet = obs.fleets.fleets.find((fleet) => fleet.ownerId === 0)!;
   const templateShip = obs.fleets.ships.find((ship) => ship.ownerId === 0)!;
-  const fleet = { ...structuredClone(templateFleet), id, currentStarId: starId, shipIds: [] as string[], phase: "orbiting" as const,
+  const fleet: ServerFleet = { ...structuredClone(templateFleet), id, currentStarId: starId, shipIds: [] as string[], phase: "orbiting" as const,
     orderType: null, combatStatus: "idle" as const, repairOrder: null, retreatState: null, orbitTarget: null };
   for (let index = 0; index < count; index++) {
     const shipId = `${id}-ship-${index}`;
@@ -178,6 +179,26 @@ test("transports assemble, avoid piecemeal invasions, and can land despite enemy
   assert.ok(blocked().some((action) => action.type === "retreatFleetTo"), "a changed world can be retried after the normal route cooldown");
 });
 
+test("remembered former starbases cannot receive AI purchases or count as pending recruitment", () => {
+  const obs = observation(), ep = createActiveEpisode(obs, null, 0, 0);
+  const bases = obs.fleets.starbases.filter((base) => base.ownerId === 0);
+  assert.ok(getAiCandidates(obs).ships.some((action) => action.type === "buildStarbaseShip"));
+  for (const base of bases) {
+    const owner = obs.snapshot.intelligence.entities.find((entity) => entity.kind === "starbase" && entity.id === base.id)!.fields.ownerId;
+    assert.equal(owner.status, "current");
+    owner.status = "stale";
+    base.shipQueue = [{ kind: "armyBuild", armyTypeId: "lightInfantry" }] as never;
+  }
+  const before = structuredClone(obs);
+  const candidates = getAiCandidates(obs);
+  assert.ok(!candidates.ships.some((action) => action.type === "buildStarbaseShip"));
+  assert.equal(candidates.infrastructure.length, 0);
+  assert.equal(groundAssessment(obs).pending.length, 0);
+  const recruitment = activeArmyRecruitment(obs, ep);
+  assert.ok(recruitment?.type !== "queueArmyRecruitment" || recruitment.yardKind === "planet");
+  assert.deepEqual(obs, before, "stale knowledge remains available without becoming a controllable asset");
+});
+
 test("enabled conquest preparation is bounded by visible opportunities and declarations require assembled troops", () => {
   const obs = observation();
   obs.diplomacy.countries.forEach((country) => { country.atWar = false; country.activeTreatyCount = 0; });
@@ -263,6 +284,10 @@ test("forced-war peace suppression persists only in its isolated checkpoint", ()
   obs.snapshot.clock.year += 4;
   assert.ok(decideActive(obs, structuredClone(ep), false, true).some(({ action }) => action.type === "proposePeace"));
   assert.ok(!decideActive(obs, structuredClone(ep), false, false).some(({ action }) => action.type === "proposePeace"));
+  obs.diplomacy.proposals.push({ id: "forced-peace", fromFactionId: 1, toFactionId: 0, kind: "peace", status: "pending",
+    peaceTerms: { mode: "whitePeace", transfers: [], enforcedArticleIds: [], enforcedDurationYears: 1 } } as never);
+  assert.ok(decideActive(obs, structuredClone(ep), false, false).some(({ action }) => action.type === "respondDiplomacyProposal"
+    && action.proposalId === "forced-peace" && action.response === "decline"));
   const game = createHeadlessGame({ checkpoint: saved });
   assert.equal(game.exportCheckpoint().allowAiPeace, false);
   assert.equal(createHeadlessGame({ initialWorld: { starCount: 8, factionCount: 2 } }).exportCheckpoint().allowAiPeace, true);

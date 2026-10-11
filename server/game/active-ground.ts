@@ -6,7 +6,7 @@ import type { IntelEntityView } from "../../src/data/Intelligence";
 import type { AiObservation } from "./ai-observation";
 import type { ActiveEpisode } from "./types";
 import type { GameAction } from "./actions";
-import { isAiFleetReady, type AiCandidates } from "./ai-candidates";
+import { isAiFleetReady, isAiOwnedStarbase, type AiCandidates } from "./ai-candidates";
 import { affordableWithReserve } from "./passive";
 import { hasTradeLiquidity } from "./active-trade";
 import { localWarOpportunities } from "./active-strategy";
@@ -46,7 +46,7 @@ export function groundAssessment(observation: AiObservation, prepareConquests = 
   }).sort((a, b) => Number(owners.get(b.starId) === factionId) - Number(owners.get(a.starId) === factionId)
     || a.requiredAttack - b.requiredAttack || a.planetId.localeCompare(b.planetId));
   const own = snapshot.armies.filter((army) => army.ownerId === factionId && army.mobility === "mobile");
-  const pending = [...fleets.starbases.filter((base) => base.ownerId === factionId).flatMap((base) => base.shipQueue),
+  const pending = [...fleets.starbases.filter((base) => isAiOwnedStarbase(observation, base)).flatMap((base) => base.shipQueue),
     ...observation.planets.planets.filter(({ planetState }) => planetState.ownerId === factionId).flatMap(({ planetState }) => planetState.defense.shipQueue)]
     .filter((item) => item.kind === "armyBuild");
   const requiredAttack = targets[0]?.requiredAttack ?? (enemies.size ? 128_000 : 0);
@@ -150,7 +150,7 @@ export function activeArmyRecruitment(observation: AiObservation, episode: Activ
   if (!economy || economy.crewStockpile < ARMY_TOTAL_CREW_DEMAND + 50_000) return;
   const planets = observation.planets.planets.filter(({ planetState }) => planetState.ownerId === factionId && planetState.isHabited);
   const yards = [
-    ...fleets.starbases.filter((base) => base.ownerId === factionId && base.status === "online" && base.buildingSlots.includes("shipyard"))
+    ...fleets.starbases.filter((base) => isAiOwnedStarbase(observation, base) && base.status === "online" && base.buildingSlots.includes("shipyard"))
       .map((base) => ({ kind: "starbase" as const, id: base.id, queue: base.shipQueue })),
     ...planets.filter(({ planetState }) => countPlanetShipyards(planetState) > 0)
       .map(({ planetState }) => ({ kind: "planet" as const, id: planetState.id, queue: planetState.defense.shipQueue })),

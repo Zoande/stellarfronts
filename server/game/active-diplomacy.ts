@@ -5,6 +5,7 @@ import { countStarbaseShipyards, type StarbaseShipQueueItem } from "../../src/da
 import { ARMY_TYPE_DEFINITIONS, getArmyCurrentPower, getArmyHabitabilityMultiplier } from "../../src/data/Armies";
 import { groundAssessment } from "./active-ground";
 import { hasVisibleMilitaryThreat } from "./active-strategy";
+import { isAiOwnedStarbase } from "./ai-candidates";
 
 /** Include queue competition, not just the remaining time of an army buried
  * behind other work. Ninety days is one ordinary infantry training phase. */
@@ -31,8 +32,8 @@ function promisingInvasion(observation: AiObservation, rival: number): boolean {
       .reduce((sum, army) => sum + getArmyCurrentPower(army).attack, 0);
     readyByStar.set(fleet.currentStarId, (readyByStar.get(fleet.currentStarId) ?? 0) + power);
   }
-  for (const base of observation.fleets.starbases.filter((base) => base.ownerId === observation.factionId && base.status === "online")) {
-    readyByStar.set(base.starId, (readyByStar.get(base.starId) ?? 0) + soonArmyPower(base.shipQueue, countStarbaseShipyards(base)));
+  for (const base of observation.fleets.starbases.filter((base) => isAiOwnedStarbase(observation, base) && base.status === "online")) {
+    readyByStar.set(base.starId, (readyByStar.get(base.starId) ?? 0) + soonArmyPower(base.shipQueue, countStarbaseShipyards(base.buildingSlots)));
   }
   for (const { planetState: planet } of observation.planets.planets.filter(({ planetState }) => planetState.ownerId === observation.factionId)) {
     readyByStar.set(planet.starId, (readyByStar.get(planet.starId) ?? 0) + soonArmyPower(planet.defense.shipQueue, countPlanetShipyards(planet)));

@@ -6,7 +6,7 @@ import { OUTPOST_CONSTRUCTION_COST, STARBASE_BUILDING_DEFINITIONS } from "../../
 import { TECHNOLOGY_BY_ID } from "../../src/data/Technology";
 import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
 import type { AiObservation } from "./ai-observation";
-import { getAiCandidates } from "./ai-candidates";
+import { getAiCandidates, isAiOwnedStarbase } from "./ai-candidates";
 import type { GameAction } from "./actions";
 import { createCaretakerEpisode, decideCaretaker } from "./caretaker";
 import type { CaretakerDecision } from "./caretaker";
@@ -70,7 +70,7 @@ export function aiResourceReserve(observation: AiObservation, action?: GameActio
   const floors: Partial<ResourceCounts> = { energy: 500, minerals: 550, food: 100, goods: 100, alloys: 200 };
   const pendingCosts = Object.fromEntries(RESOURCE_KINDS.map((resource) => [resource, 0])) as ResourceCounts;
   for (const item of [
-    ...observation.fleets.starbases.filter((base) => base.ownerId === observation.factionId).flatMap((base) => base.shipQueue),
+    ...observation.fleets.starbases.filter((base) => isAiOwnedStarbase(observation, base)).flatMap((base) => base.shipQueue),
     ...observation.planets.planets.filter((entry) => entry.planetState.ownerId === observation.factionId).flatMap((entry) => entry.planetState.defense.shipQueue),
   ]) for (const resource of RESOURCE_KINDS) pendingCosts[resource] += item.remainingDays
     * (item.resourceUpkeepPerDay?.[resource] ?? (resource === "alloys" ? item.alloyUpkeepPerDay : 0));
@@ -175,7 +175,7 @@ function developmentAction(observation: AiObservation, candidates: ReturnType<ty
 function pendingShips(observation: AiObservation, episode: PassiveEpisode) {
   const queue = new Map<string, { shipKind: string; designId: string | null }>();
   for (const item of [
-    ...observation.fleets.starbases.filter((base) => base.ownerId === observation.factionId).flatMap((base) => base.shipQueue),
+    ...observation.fleets.starbases.filter((base) => isAiOwnedStarbase(observation, base)).flatMap((base) => base.shipQueue),
     ...observation.planets.planets.filter((entry) => entry.planetState.ownerId === observation.factionId).flatMap((entry) => entry.planetState.defense.shipQueue),
   ]) if (item.kind === "build") queue.set(item.id, { shipKind: item.shipKind, designId: item.designId ?? null });
   for (const [id, item] of Object.entries(episode.queuedShips)) queue.set(id, item);
@@ -201,7 +201,7 @@ function shipAction(observation: AiObservation, episode: PassiveEpisode, candida
   for (const entry of observation.planets.planets.filter((entry) => entry.planetState.ownerId === observation.factionId && entry.planetState.isHabited)) {
     recurring.energy += entry.planetState.economy.production.energy; recurring.alloys += entry.planetState.economy.production.alloys;
   }
-  for (const base of observation.fleets.starbases.filter((base) => base.ownerId === observation.factionId && base.status === "online")) {
+  for (const base of observation.fleets.starbases.filter((base) => isAiOwnedStarbase(observation, base) && base.status === "online")) {
     recurring.energy += base.economy.production.energy; recurring.alloys += base.economy.production.alloys;
   }
   for (const ship of [...ownShips, ...pending].filter((ship) => MILITARY_KINDS.has(ship.shipKind))) {

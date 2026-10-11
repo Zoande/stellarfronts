@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createHeadlessGame, createMemoryAuth, stateDigest } from "../game/headless-game";
@@ -11,6 +11,29 @@ import { refreshLeaderPool } from "../../src/data/Leaders";
 import { campaignStep } from "../game/campaign-schedule";
 import { prepareScenario } from "../game/simulation-scenarios";
 import { createCampaignTelemetry } from "../game/campaign-telemetry";
+import { runCampaign } from "../game/active-lab";
+
+test("resumed campaign statistics exclude inherited wars, combat reports and losses", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "stellarfronts-segment-"));
+  try {
+    const saved = prepareScenario("combat-repair", { initialWorld: { starCount: 8, factionCount: 2 } });
+    saved.state.fleets = []; saved.state.ships = [];
+    saved.state.combatReports = [{ id: "historical", ownerId: 0, starId: 0, startedAtYear: 2099, endedAtYear: 2099.1,
+      participantFleetIds: [], shipsLost: ["historical-loss"], projectilesIntercepted: 0, strayHits: 0, subsystemCriticals: 0,
+      capturedStarbaseIds: [], retreatedFleetIds: [], repairSpending: {} }];
+    const checkpoint = path.join(directory, "checkpoint.json"), output = path.join(directory, "segment");
+    writeFileSync(checkpoint, JSON.stringify(saved));
+    const result = await runCampaign({ seed: 42, stars: 8, countries: 2, active: 1, days: 0.001, stepMs: 100,
+      adaptive: false, allowWars: false, checkpoint, output });
+    assert.equal(result.initialWars, 1);
+    assert.equal(result.initialCombatReports, 1);
+    assert.equal(result.warsStarted, 0);
+    assert.equal(result.warsEnded, 0);
+    assert.equal(result.combatReports, 0);
+    assert.equal(result.shipsLost, 0);
+    assert.ok(!readFileSync(path.join(output, "events.jsonl"), "utf8").includes('"type":"combat"'));
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("shared sensor sets preserve every observed field and source; expired own leader leaves stay bounded", () => {
   const saved = createHeadlessGame({ worldSeed: 19, initialWorld: { starCount: 8, factionCount: 2 } }).exportCheckpoint();

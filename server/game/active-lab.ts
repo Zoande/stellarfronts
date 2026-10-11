@@ -122,7 +122,11 @@ export async function runCampaign(options: CampaignOptions) {
   const shortages = new Map<number, Record<string, number>>();
   const famineDays = new Map<number, number>();
   const lostShips = new Map<string, number>();
-  const combatReportIds = new Set<string>();
+  const combatReportIds = new Set(start.state.combatReports.map((report) => report.id));
+  const initialCombatReports = combatReportIds.size;
+  const initialWarIds = new Set(start.state.diplomacy.wars.map((war) => war.id));
+  const initialEndedWarIds = new Set(start.state.diplomacy.wars.filter((war) => war.endedAtYear).map((war) => war.id));
+  const initialWars = start.state.diplomacy.wars.filter((war) => !war.endedAtYear).length;
   let ownershipChanges = 0; let maxTickMs = 0; let nextSample = 0; let nextCheckpoint = 360;
   let previousOwners = [...start.state.starOwnership];
   let previousWars = JSON.stringify(start.state.diplomacy.wars);
@@ -137,7 +141,8 @@ export async function runCampaign(options: CampaignOptions) {
     writeFileSync(path.join(options.output, "progress.json"), JSON.stringify({ tick, day, accepted, rejected, elapsedSeconds: (performance.now() - created) / 1000 }));
     writeFileSync(path.join(options.output, "timelapse.html"), campaignViewer({ stars, hyperlanes: start.state.hyperlanes, factions, frames,
       summary: { status: "running", options, actualStars: stars.length, actualCountries: factions.length, simulatedDays: day,
-        runtimeMs: performance.now() - created, accepted, rejected, ownershipChanges, warsStarted: game.diagnosticState().diplomacy.wars.length } }));
+        runtimeMs: performance.now() - created, accepted, rejected, ownershipChanges, initialWars,
+        warsStarted: game.diagnosticState().diplomacy.wars.filter((war) => !initialWarIds.has(war.id)).length } }));
   }
   const sampleDays = options.sampleDays ?? 30;
   if (!Number.isFinite(sampleDays) || sampleDays <= 0) throw new Error("Invalid sample interval.");
@@ -191,15 +196,17 @@ export async function runCampaign(options: CampaignOptions) {
   writeFileSync(path.join(options.output, "final.checkpoint.json"), JSON.stringify(final));
   const summary = { formatVersion: 1, options, revision, actualStars: final.state.stars.length, actualCountries: final.state.factions.length, activeIds,
     ...telemetry.summary(), ticks: tick, simulatedDays: day, runtimeMs: performance.now() - created, maximumTickMs: maxTickMs, accepted, rejected, actionsByType, rejections,
-    ownershipChanges, warsStarted: final.state.diplomacy.wars.length, warsEnded: final.state.diplomacy.wars.filter((war) => war.endedAtYear).length,
-    combatReports: combatReportIds.size, shipsLost: lostShips.size, finalDigest: game.digest(),
+    ownershipChanges, initialWars, initialCombatReports,
+    warsStarted: final.state.diplomacy.wars.filter((war) => !initialWarIds.has(war.id)).length,
+    warsEnded: final.state.diplomacy.wars.filter((war) => war.endedAtYear && !initialEndedWarIds.has(war.id)).length,
+    combatReports: combatReportIds.size - initialCombatReports, shipsLost: lostShips.size, finalDigest: game.digest(),
     factions: frames.at(-1)!.factions.map((faction) => ({ ...faction, ...actionCounts.get(faction.id), stockoutDays: shortages.get(faction.id) ?? {}, famineDays: famineDays.get(faction.id) ?? 0 })) };
   writeFileSync(path.join(options.output, "summary.json"), JSON.stringify(summary, null, 2));
   writeFileSync(path.join(options.output, "timelapse.html"), campaignViewer({ stars, hyperlanes: start.state.hyperlanes, factions, frames, summary }));
   const report = ["# Active AI campaign", "", `Seed ${options.seed}; ${summary.actualStars} systems; ${options.active} active and ${summary.actualCountries - options.active} passive countries; AI wars ${options.allowWars ? "enabled" : "disabled"}.`,
     `${day.toFixed(0)} game days in ${(summary.runtimeMs / 1000).toFixed(1)} seconds; ${tick} ticks; virtual step ${options.stepMs} ms (${(options.stepMs / msPerDay).toFixed(3)} game days). No wall-clock waits.`, "",
     `Schedule: ${options.adaptive === false ? "fixed" : "adaptive, daily peace maximum with transition boundaries and production combat cadence"}. This uses normal production rules. Tick size can affect combat, movement, and economic outcomes; compare balance only against the same schedule. Sampled stockout/famine durations are approximate. ${options.active} active countries are fixed for this laboratory run; remaining countries stay passive regardless of virtual real time.`, "",
-    `Accepted/rejected actions: ${accepted}/${rejected}. Ownership changes: ${ownershipChanges}. Wars started/ended: ${summary.warsStarted}/${summary.warsEnded}. Unique combat reports: ${summary.combatReports}; recorded ship losses: ${summary.shipsLost}.`, "",
+    `Accepted/rejected actions: ${accepted}/${rejected}. Ownership changes: ${ownershipChanges}. Wars already active at start: ${initialWars}; wars started/ended during this segment: ${summary.warsStarted}/${summary.warsEnded}. New combat reports: ${summary.combatReports}; recorded ship losses: ${summary.shipsLost}. Inherited combat reports are excluded from segment events and losses.`, "",
     "| Country | AI | Systems | Colonies | Ships | Techs | Food/month | Famine days | Accepted/rejected |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...summary.factions.map((faction) => `| ${faction.id} | ${faction.mode} | ${faction.systems} | ${faction.colonies} | ${faction.ships} | ${faction.technologies} | ${faction.income.food.toFixed(1)} | ${faction.famineDays.toFixed(1)} | ${faction.accepted ?? 0}/${faction.rejected ?? 0} |`), "", "## Rejected commands", "",
     ...Object.entries(rejections).map(([reason, count]) => `- ${count}: ${reason}`), "", "## Files", "", "Open timelapse.html in a browser for the animated border map and economy history. timeline.jsonl contains monthly snapshots; events.jsonl records ownership, war, and combat events at tick resolution; actions.jsonl contains every attempted command and its outcome. decisions.jsonl records every controller turn including idle turns, visible opportunity assessments, resource runway and stressed trade budgets. development.jsonl tracks queue changes, technologies, ship creation/removal and colonies; removal is not automatically a combat loss. market.jsonl records actual transactions, fees and energy flows. economies.jsonl and planets.jsonl preserve monthly production, consumption, crew, research, jobs, housing and construction. performance.jsonl records every integration interval, reason and measured runtime. Initial, yearly, and final checkpoints preserve the complete isolated game. run.json and source archives identify the implementation. ticks.jsonl contains sampled state digests. These files are diagnostic history, not the scripted-scenario replay format.", ""];
