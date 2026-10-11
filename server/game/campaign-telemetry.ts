@@ -1,13 +1,14 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
 import type { GameState } from "./types";
 import { calculateFactionResourceFlow } from "./economy-market";
 
 /** Observer recorder never passes authoritative state to an AI controller. */
-export function createCampaignTelemetry(output: string, initial: Readonly<GameState>) {
+export function createCampaignTelemetry(output: string, initial: Readonly<GameState>, sink?: (name: string, value: unknown) => void) {
   const file = (name: string) => path.join(output, name + ".jsonl");
-  for (const name of ["economies", "planets", "development", "market", "performance", "decisions"]) writeFileSync(file(name), "");
-  const write = (name: string, value: unknown) => appendFileSync(file(name), JSON.stringify(value) + "\n");
+  if (!sink) for (const name of ["economies", "planets", "development", "market", "performance", "decisions", "ground"]) writeFileSync(file(name), "");
+  const write = sink ?? ((name: string, value: unknown) => appendFileSync(file(name), JSON.stringify(value) + "\n"));
   let ships = new Map(initial.ships.map((ship) => [ship.id, ship.ownerId]));
   let colonies = new Map(initial.planetStates.map((planet) => [planet.id, { owner: planet.ownerId, inhabited: planet.isHabited }]));
   const completed = new Set(initial.factionTechnologies.flatMap((tech) => tech.completedTechIds.map((id) => `${tech.factionId}:${id}`)));
@@ -18,6 +19,7 @@ export function createCampaignTelemetry(output: string, initial: Readonly<GameSt
   let projects = projectSnapshot(initial);
   let battles = new Map(initial.groundBattles.map((battle) => [battle.id, { ...battle }]));
   let armies = new Map(initial.armies.map((army) => [army.id, army.ownerId]));
+  let lastGroundDay = -1;
   const transactions = new WeakSet<object>(initial.market.transactions);
   const milestones: Record<number, Record<string, number>> = {};
   const decisionCounts: Record<number, { total: number; idle: number; sustainableTrade: number; recovery: number }> = {};
@@ -32,6 +34,12 @@ export function createCampaignTelemetry(output: string, initial: Readonly<GameSt
     },
     step: (state: Readonly<GameState>, day: number, elapsedDays: number, runtimeMs: number, reason: string) => {
       write("performance", { day, elapsedDays, runtimeMs, reason });
+      const groundDay = Math.floor(state.clock.year * GAME_DAYS_PER_YEAR + 1e-6);
+      if (groundDay !== lastGroundDay && (state.armies.length || state.groundBattles.length)) {
+        write("ground", { day, year: state.clock.year, armies: state.armies, battles: state.groundBattles,
+          planets: state.planetStates.filter((planet) => planet.isHabited).map((planet) => ({ id: planet.id, ownerId: planet.ownerId, starId: planet.starId })) });
+        lastGroundDay = groundDay;
+      }
       const currentShips = new Map(state.ships.map((ship) => [ship.id, ship.ownerId]));
       for (const ship of state.ships) if (!ships.has(ship.id)) { write("development", { day, type: "ship-created", ship }); milestone(ship.ownerId, "ship:" + ship.shipKind, day); }
       for (const [id, ownerId] of ships) if (!currentShips.has(id)) write("development", { day, type: "ship-removed", id, ownerId });
@@ -53,8 +61,10 @@ export function createCampaignTelemetry(output: string, initial: Readonly<GameSt
       for (const [id, project] of projects) if (!nextProjects.has(id)) write("development", { day, type: "project-left-queue", project });
       projects = nextProjects;
       for (const battle of state.groundBattles) if (!battles.has(battle.id)) write("development", { day, type: "ground-battle-started", battle });
-      for (const [id, battle] of battles) if (!state.groundBattles.some((entry) => entry.id === id)) write("development", { day, type: "ground-battle-ended", battle });
-      battles = new Map(state.groundBattles.map((battle) => [battle.id, { ...battle }]));
+      for (const [id, battle] of battles) if (!state.groundBattles.some((entry) => entry.id === id)) write("development", { day, type: "ground-battle-ended", battle,
+        planetOwnerId: state.planetStates.find((planet) => planet.id === battle.planetId)?.ownerId,
+        survivingArmies: state.armies.filter((army) => [...battle.attackerArmyIds, ...battle.defenderArmyIds].includes(army.id)) });
+      battles = new Map(state.groundBattles.map((battle) => [battle.id, structuredClone(battle)]));
       for (const army of state.armies) if (!armies.has(army.id)) write("development", { day, type: "army-created", army });
       for (const [id, ownerId] of armies) if (!state.armies.some((army) => army.id === id)) write("development", { day, type: "army-removed", id, ownerId });
       armies = new Map(state.armies.map((army) => [army.id, army.ownerId]));

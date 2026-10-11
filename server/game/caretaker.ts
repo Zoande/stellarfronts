@@ -1,11 +1,11 @@
-import { DISTRICT_COSTS, RESOURCE_KINDS } from "../../src/data/Economy";
+import { countPlanetShipyards, DISTRICT_COSTS, RESOURCE_KINDS } from "../../src/data/Economy";
 import { countStarbaseShipyards, OUTPOST_CONSTRUCTION_COST } from "../../src/data/Starbase";
 import { getStarbaseShipConstructionCostMultiplier } from "../../src/data/Starbase";
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
 import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
 import type { GameAction } from "./actions";
 import type { AiObservation } from "./ai-observation";
-import { getAiCandidates, isAiFleetAvailable } from "./ai-candidates";
+import { getAiCandidates, isAiFleetAvailable, isAiFleetReady } from "./ai-candidates";
 import type { CaretakerEpisode, RuntimeContext } from "./types";
 
 export const CARETAKER_AFK_MS = 48 * 60 * 60 * 1000;
@@ -143,7 +143,7 @@ function replacementAction(observation: AiObservation, episode: CaretakerEpisode
         return { action: { type: "buildStarbaseShip", starbaseId: yard.id, shipKind: template.shipKind, designId: template.designId }, fleetId: baseline.fleetId };
       }
       const planet = observation.planets.planets.find((entry) => entry.planetState.ownerId === observation.factionId
-        && entry.planetState.defense.shipyardSlots.some((slot) => slot?.kind === "orbitalShipyard" && slot.enabled !== false));
+        && countPlanetShipyards(entry.planetState) > 0);
       if (planet && RESOURCE_KINDS.every((resource) => economy.stockpiles[resource] >= stats.cost[resource] * 0.05)) {
         return { action: { type: "buildPlanetShip", planetId: planet.planetState.id, shipKind: template.shipKind, designId: template.designId }, fleetId: baseline.fleetId };
       }
@@ -167,9 +167,9 @@ export function decideCaretaker(observation: AiObservation, episode: CaretakerEp
     && fleet.shipIds.some((id) => fleets.ships.some((ship) => ship.id === id && !["scienceShip", "constructionShip", "colonizationShip", "armyShip", "defensePlatform"].includes(ship.shipKind)))
     && !fleet.retreatState && !fleet.stationaryPlanetId && !fleet.stationaryStarbaseId);
   for (const enemy of enemies) {
-    const defender = ownMilitary.find((fleet) => fleet.currentStarId === enemy.currentStarId && isAiFleetAvailable(fleet));
+    const defender = ownMilitary.find((fleet) => fleet.currentStarId === enemy.currentStarId && isAiFleetReady(fleet) && fleet.combatStatus === "idle");
     if (defender) { decisions.push({ action: { type: "attackTarget", fleetId: defender.id, targetId: enemy.id, targetKind: "fleet" } }); break; }
-    const mover = ownMilitary.find((fleet) => isAiFleetAvailable(fleet)
+    const mover = ownMilitary.find((fleet) => isAiFleetReady(fleet) && fleet.combatStatus === "idle"
       && candidates.movement.some((action) => action.type === "moveFleet" && action.fleetId === fleet.id && action.targetStarId === enemy.currentStarId));
     if (mover) { decisions.push({ action: { type: "moveFleet", fleetId: mover.id, targetStarId: enemy.currentStarId } }); break; }
   }

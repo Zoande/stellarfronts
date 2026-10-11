@@ -76,6 +76,7 @@ export interface ActiveEpisode extends PassiveEpisode {
   blockedScoutTargets?: Record<string, number>;
   warBaselineSystems?: Record<string, number[]>;
   nextInvestmentYear?: number;
+  nextArmyYear?: number;
 }
 
 export interface GameState {

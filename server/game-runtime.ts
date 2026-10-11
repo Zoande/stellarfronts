@@ -242,7 +242,7 @@ export interface GameCore {
 export function createGameCore(
   game: StoredGame,
   authStore: GameRuntimeAuthPort,
-  options: { now?: () => number; realNow?: () => number; simulationSeed?: number; initialState?: GameState; initialWorld?: { starCount: number; factionCount: number }; deferInitialState?: boolean; enablePassiveAi?: boolean; enableActiveAi?: boolean; activeFactionIds?: readonly number[]; onAiDecision?: (record: AiDecisionRecord) => void } = {},
+  options: { now?: () => number; realNow?: () => number; simulationSeed?: number; initialState?: GameState; initialWorld?: { starCount: number; factionCount: number }; deferInitialState?: boolean; enablePassiveAi?: boolean; enableActiveAi?: boolean; activeFactionIds?: readonly number[]; allowAiPeace?: boolean; onAiDecision?: (record: AiDecisionRecord) => void; onAiObservation?: (observation: import("./game/ai-observation").AiObservation) => void } = {},
 ): GameCore {
 let commandEffects: MutationEffects | null = null;
 let accountNotifications: Map<number, number> | null = null;
@@ -3646,6 +3646,7 @@ function processAiControllers(): Array<{ factionId: number; mode: "caretaker" | 
     const previous = mode === "active" ? activeEpisodes[factionId] : mode === "passive" ? passiveEpisodes[factionId] : episodes[factionId];
     if (previous && ctx.state.clock.year + 1e-9 < previous.nextDecisionYear) continue;
     const observation = createAiObservation(ctx, factionId);
+    options.onAiObservation?.(observation);
     const episode = previous ?? (mode === "active"
       ? activeEpisodes[factionId] = createActiveEpisode(observation, membership ? accountId : null, lastActivityAt, realNow)
       : mode === "passive"
@@ -3663,7 +3664,7 @@ function processAiControllers(): Array<{ factionId: number; mode: "caretaker" | 
     episode.nextDecisionYear = ctx.state.clock.year + 1 / GAME_DAYS_PER_YEAR;
     ctx.hasDirtyState = true;
     const actor = issueActor({ kind: "ai" as const, factionId, controllerId: `${mode}-${factionId}` });
-    const decisions = mode === "active" ? decideActive(observation, activeEpisodes[factionId], ctx.state.aiSettings?.allowWarDeclarations === true) : mode === "passive" ? decidePassive(observation, passiveEpisodes[factionId]) : decideCaretaker(observation, episode);
+    const decisions = mode === "active" ? decideActive(observation, activeEpisodes[factionId], ctx.state.aiSettings?.allowWarDeclarations === true, options.allowAiPeace !== false) : mode === "passive" ? decidePassive(observation, passiveEpisodes[factionId]) : decideCaretaker(observation, episode);
     if (options.onAiDecision) options.onAiDecision(aiDecisionRecord(observation, mode, decisions.map(({ action }) => action), ctx.state.aiSettings?.allowWarDeclarations === true, episode));
     for (const decision of decisions) {
       const queuedBefore = decision.replacementForFleetId ? shipQueueIds(factionId) : null;

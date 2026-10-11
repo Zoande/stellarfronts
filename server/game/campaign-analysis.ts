@@ -1,11 +1,20 @@
-import { createReadStream, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createGunzip } from "node:zlib";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import type { AiDecisionRecord } from "./ai-diagnostics";
 import type { CampaignSample } from "./active-lab";
 
 async function eachLine(filename: string, visit: (row: any) => void) {
-  for await (const line of createInterface({ input: createReadStream(filename), crlfDelay: Infinity })) if (line.trim()) visit(JSON.parse(line));
+  const compressed = path.join(path.dirname(filename), "logs"), prefix = path.basename(filename, ".jsonl") + "-";
+  const files = existsSync(filename) ? [filename] : existsSync(compressed) ? readdirSync(compressed)
+    .filter((name) => name.startsWith(prefix) && name.endsWith(".jsonl.gz")).sort().map((name) => path.join(compressed, name)) : [];
+  for (const file of files) {
+    const source = createReadStream(file);
+    const input = file.endsWith(".gz") ? source.pipe(createGunzip()) : source;
+    if (input !== source) source.on("error", (error) => input.destroy(error));
+    for await (const line of createInterface({ input, crlfDelay: Infinity })) if (line.trim()) visit(JSON.parse(line));
+  }
 }
 
 /** Stream the largest logs so multi-decade experiments do not require loading

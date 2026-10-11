@@ -441,11 +441,8 @@ function immediateEmbarkAttackers(ctx: RuntimeContext, battle: GroundBattleState
 }
 
 function resolveAttackerVictory(ctx: RuntimeContext, battle: GroundBattleState, planet: PlanetState): void {
-  const oldOwner = planet.ownerId;
   planet.ownerId = battle.attackerFactionId;
-  for (const item of planet.defense.shipQueue) {
-    void item;
-  }
+  // Conquest intentionally preserves production progress and reserved crew.
   for (const leader of ctx.state.leaders) {
     if (leader.assignment?.kind === "planet" && leader.assignment.targetId === planet.id) leader.assignment = null;
     if (leader.assignment?.kind === "planetMilitary" && leader.assignment.targetId === planet.id) leader.assignment = null;
@@ -458,9 +455,6 @@ function resolveAttackerVictory(ctx: RuntimeContext, battle: GroundBattleState, 
     army.hp = 0;
     army.manpower = 0;
     army.depleted = true;
-  }
-  if (oldOwner !== null) {
-    for (const queued of planet.defense.shipQueue) void queued;
   }
   removeBattle(ctx, battle);
 }

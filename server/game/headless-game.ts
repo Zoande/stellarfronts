@@ -53,6 +53,7 @@ export interface GameCheckpoint {
   enablePassiveAi?: boolean;
   enableActiveAi?: boolean;
   activeFactionIds?: readonly number[];
+  allowAiPeace?: boolean;
   accounts: MemoryAccounts;
   state: GameState;
 }
@@ -67,11 +68,14 @@ export interface HeadlessGameOptions {
   accounts?: MemoryAccounts;
   onCaretakerAction?: (record: { factionId: number; action: GameAction; outcome: CommandOutcome }) => void;
   onAiDecision?: (record: AiDecisionRecord) => void;
+  onAiObservation?: (observation: import("./ai-observation").AiObservation) => void;
   onAiAction?: (record: { factionId: number; mode: "caretaker" | "passive" | "active"; action: GameAction; outcome: CommandOutcome }) => void;
   /** Scripted laboratory fixtures opt in; production enables passive by default. */
   enablePassiveAi?: boolean;
   enableActiveAi?: boolean;
   activeFactionIds?: readonly number[];
+  /** Forced-war laboratory only; ordinary games retain peace diplomacy. */
+  allowAiPeace?: boolean;
 }
 
 /** Full authoritative serialization digest. JSON checkpoints preserve property order. */
@@ -104,7 +108,9 @@ export function createHeadlessGame(options: HeadlessGameOptions = {}) {
     enablePassiveAi: options.enablePassiveAi ?? options.checkpoint?.enablePassiveAi ?? false,
     enableActiveAi: options.enableActiveAi ?? options.checkpoint?.enableActiveAi ?? false,
     activeFactionIds: options.activeFactionIds ?? options.checkpoint?.activeFactionIds,
+    allowAiPeace: options.allowAiPeace ?? options.checkpoint?.allowAiPeace ?? true,
     onAiDecision: options.onAiDecision,
+    onAiObservation: options.onAiObservation,
   });
   // New worlds are canonicalized too, so restoring a checkpoint is idempotent.
   core.context.state = restoreState(core.context, structuredClone(core.context.state));
@@ -150,6 +156,7 @@ export function createHeadlessGame(options: HeadlessGameOptions = {}) {
     diagnosticState: (): Readonly<GameState> => core.context.state,
     exportCheckpoint: (): GameCheckpoint => structuredClone({ formatVersion: 1, game, nowMs, realNowMs, accounts,
       enablePassiveAi: options.enablePassiveAi ?? options.checkpoint?.enablePassiveAi ?? false,
+      allowAiPeace: options.allowAiPeace ?? options.checkpoint?.allowAiPeace ?? true,
       enableActiveAi: options.enableActiveAi ?? options.checkpoint?.enableActiveAi ?? false,
       activeFactionIds: options.activeFactionIds ?? options.checkpoint?.activeFactionIds, state: core.context.state }),
   };

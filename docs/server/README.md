@@ -43,3 +43,6 @@ hour/week/day" work on the corresponding game-time index (see
 See [AI foundations and simulation laboratory](ai-foundations-and-laboratory.md) for shared actions,
 fair observations, deterministic saves, and scripted experiments.
 The [Stage 1 findings](ai-stage-1-findings.md) summarize the seeded runs and reproduction cases.
+See [war and army validation](war-validation.md) for the three-country war fixture,
+ground AI policy and recording accuracy limits, and [grand simulation](grand-simulation.md)
+for isolated overnight runs.

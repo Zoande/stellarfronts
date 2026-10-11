@@ -1,4 +1,4 @@
-import { BUILDING_DEFINITIONS, BUILDING_KINDS, DISTRICT_COSTS, RESOURCE_KINDS, getEffectivePlanetDistrictLimits, getQueuedDistrictCount, getBuildingCost, isBuildingCompatible, hasQueuedBuildingTarget, getPlanetBuildingKind, getPlanetBuildingLevel, getBuildingUpgradeTargetLevel, getBuildingUpgradeCost, meetsCapitalUpgradePopulation, isPlanetBuildingEnabled } from "../../src/data/Economy";
+import { countPlanetShipyards, BUILDING_DEFINITIONS, BUILDING_KINDS, DISTRICT_COSTS, RESOURCE_KINDS, getEffectivePlanetDistrictLimits, getQueuedDistrictCount, getBuildingCost, isBuildingCompatible, hasQueuedBuildingTarget, getPlanetBuildingKind, getPlanetBuildingLevel, getBuildingUpgradeTargetLevel, getBuildingUpgradeCost, meetsCapitalUpgradePopulation, isPlanetBuildingEnabled } from "../../src/data/Economy";
 import type { BuildingSlotArea, PlanetState, ResourceCounts, DistrictKind } from "../../src/data/Economy";
 import { getRequiredTechIdsForBuilding, getRequiredTechIdsForBuildingLevel, getRequiredTechIdsForShipHull, getRequiredTechIdsForShipModule, getRequiredTechIdsForShipSection, getRequiredTechIdsForStarbaseBuilding } from "../../src/data/Technology";
 import { OUTPOST_CONSTRUCTION_COST, countStarbaseShipyards, getStarbaseShipConstructionCostMultiplier, STARBASE_BUILDING_DEFINITIONS } from "../../src/data/Starbase";
@@ -8,8 +8,18 @@ import type { AiObservation } from "./ai-observation";
 import type { ServerFleet } from "../../src/game/GameProtocol";
 
 /** Completed travel normally ends in orbit, which can accept ordinary orders. */
-export function isAiFleetAvailable(fleet: Pick<ServerFleet, "phase">): boolean {
-  return fleet.phase === "idle" || fleet.phase === "orbiting" || fleet.phase === "orbitingPlanet";
+export function isAiFleetAvailable(fleet: Pick<ServerFleet, "phase"> & Partial<Pick<ServerFleet, "movementPlan" | "hyperlanePosition" | "targetStarId">>): boolean {
+  return fleet.phase === "idle" || fleet.phase === "orbiting" || fleet.phase === "orbitingPlanet"
+    // Tactical combat movement can leave this phase behind after contact ends;
+    // it has no transit plan or destination and accepts normal player orders.
+    || fleet.phase === "movingSystem" && "movementPlan" in fleet && !fleet.movementPlan && !fleet.hyperlanePosition && fleet.targetStarId == null;
+}
+
+/** Completed orbit/tactical orders may retain their label. Actual transit and
+ * construction/merge/retreat commitments, rather than that label, are busy. */
+export function isAiFleetReady(fleet: ServerFleet): boolean {
+  return isAiFleetAvailable(fleet) && !fleet.movementPlan && !fleet.mergeTargetFleetId && !fleet.retreatState && !fleet.repairOrder
+    && !["build", "colonize", "merge", "retreat"].includes(fleet.orderType ?? "");
 }
 
 export interface AiCandidates {
@@ -75,7 +85,7 @@ export function getAiCandidates(observation: AiObservation): AiCandidates {
   for (const entry of planets.planets) {
     const planet = entry.planetState;
     if (planet.ownerId !== factionId || !planet.isHabited) continue;
-    if (planet.defense.shipyardSlots.some((slot) => slot?.kind === "orbitalShipyard" && slot.enabled !== false)) {
+    if (countPlanetShipyards(planet) > 0) {
       for (const design of shipDesigns) {
         const stats = calculateShipDesignStats(design);
         if (economy && economy.crewStockpile >= stats.crewDemand && affordable(Object.fromEntries(RESOURCE_KINDS.map((r) => [r, stats.cost[r] * 0.05])))) result.ships.push({ type: "buildPlanetShip", planetId: planet.id, shipKind: design.shipKind, designId: design.id });

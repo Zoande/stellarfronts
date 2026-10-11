@@ -1,4 +1,4 @@
-import { DISTRICT_COSTS, RESOURCE_KINDS, PLANET_DEFENSE_BUILDING_DEFINITIONS, getBuildingCost, getBuildingUpgradeCost, getPlanetBuildingKind, getPlanetBuildingLevel, getEffectivePlanetDistrictLimits, getQueuedDistrictCount } from "../../src/data/Economy";
+import { countPlanetShipyards, DISTRICT_COSTS, RESOURCE_KINDS, PLANET_DEFENSE_BUILDING_DEFINITIONS, getBuildingCost, getBuildingUpgradeCost, getPlanetBuildingKind, getPlanetBuildingLevel, getEffectivePlanetDistrictLimits, getQueuedDistrictCount } from "../../src/data/Economy";
 import { ARMY_TYPE_DEFINITIONS } from "../../src/data/Armies";
 import type { ResourceCounts } from "../../src/data/Economy";
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
@@ -274,7 +274,7 @@ export function decidePassive(observation: AiObservation, episode: PassiveEpisod
     const ship = shipAction(observation, episode, candidates, active);
     if (ship) return [...decisions, ship];
     const hasYard = candidates.ships.length > 0 || observation.fleets.starbases.some((base) => base.ownerId === observation.factionId && base.buildingSlots.includes("shipyard"))
-      || observation.planets.planets.some((entry) => entry.planetState.ownerId === observation.factionId && entry.planetState.defense.shipyardSlots.some((slot) => slot?.kind === "orbitalShipyard"));
+      || observation.planets.planets.some((entry) => entry.planetState.ownerId === observation.factionId && countPlanetShipyards(entry.planetState) > 0);
     const queuedYard = observation.fleets.starbases.some((base) => base.ownerId === observation.factionId && base.constructionQueue.some((item) => item.buildingKind === "shipyard"));
     const yard = !hasYard && !queuedYard && candidates.infrastructure.find((action) => affordableWithReserve(observation, action, active));
     if (yard) return [...decisions, { action: yard }];

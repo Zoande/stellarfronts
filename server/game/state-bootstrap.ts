@@ -275,6 +275,9 @@ export function restoreState(ctx: RuntimeContext, decoded: unknown): GameState {
       ? parsed.passiveEpisodes : {};
     if (parsed.activeEpisodes !== undefined) parsed.activeEpisodes = parsed.activeEpisodes && typeof parsed.activeEpisodes === "object" && !Array.isArray(parsed.activeEpisodes)
       ? parsed.activeEpisodes : {};
+    for (const episode of Object.values(parsed.activeEpisodes ?? {})) {
+      if (episode && typeof episode === "object" && !Number.isFinite(episode.nextArmyYear)) episode.nextArmyYear = Number.isFinite(parsed.clock?.year) ? parsed.clock.year : GAME_START_YEAR;
+    }
     if (parsed.aiSettings !== undefined) parsed.aiSettings = { allowWarDeclarations: parsed.aiSettings?.allowWarDeclarations === true };
     parsed.armies = Array.isArray(parsed.armies)
       ? parsed.armies.map(normalizeArmyUnit).filter((army): army is NonNullable<typeof army> => army !== null)

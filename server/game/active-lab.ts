@@ -9,9 +9,11 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { RESOURCE_KINDS } from "../../src/data/Economy";
 import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
+import { getArmyCurrentPower } from "../../src/data/Armies";
 import { createHeadlessGame, type GameCheckpoint, type HeadlessGameOptions } from "./headless-game";
 import type { GameState } from "./types";
 import { campaignViewer } from "./campaign-viewer";
+import { prepareWarCampaign } from "./war-lab";
 
 export interface CampaignOptions {
   seed: number;
@@ -24,9 +26,11 @@ export interface CampaignOptions {
   output: string;
   adaptive?: boolean;
   checkpoint?: string;
+  fixture?: "war";
+  sampleDays?: number;
 }
 
-function sourceArchive(output: string) {
+export function sourceArchive(output: string) {
   try {
     const revision = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "--", "server", "src", "package.json", "package-lock.json"], { encoding: "utf8" }).trim().split(/\r?\n/).sort();
@@ -49,6 +53,10 @@ export function campaignSample(state: Readonly<GameState>, activeIds: readonly n
       return { id: faction.id, mode: activeIds.includes(faction.id) ? "active" : "passive", systems: state.starOwnership.filter((id) => id === faction.id).length,
         colonies: planets.length, population: planets.reduce((sum, planet) => sum + planet.population, 0),
         ships: state.ships.filter((ship) => ship.ownerId === faction.id).length,
+        mobileArmies: state.armies.filter((army) => army.ownerId === faction.id && army.mobility === "mobile").length,
+        armyAttack: state.armies.filter((army) => army.ownerId === faction.id && army.mobility === "mobile")
+          .reduce((sum, army) => sum + getArmyCurrentPower(army).attack, 0),
+        groundBattles: state.groundBattles.filter((battle) => battle.attackerFactionId === faction.id || battle.defenderFactionId === faction.id).length,
         technologies: state.factionTechnologies.find((entry) => entry.factionId === faction.id)?.completedTechIds.length ?? 0,
         stockpiles: { ...economy.stockpiles }, income: { ...economy.monthlyDelta },
         crew: economy.crewStockpile,
@@ -79,7 +87,7 @@ export async function runCampaign(options: CampaignOptions) {
   const revision = sourceArchive(options.output);
   writeFileSync(path.join(options.output, "run.json"), JSON.stringify({ formatVersion: 1, options, revision, status: "running" }, null, 2));
   const created = performance.now();
-  const initial: GameCheckpoint = options.checkpoint ? JSON.parse(readFileSync(options.checkpoint, "utf8")) : createHeadlessGame({ worldSeed: options.seed, simulationSeed: (options.seed ^ 0x5f3759df) >>> 0,
+  const initial: GameCheckpoint = options.checkpoint ? JSON.parse(readFileSync(options.checkpoint, "utf8")) : options.fixture === "war" ? prepareWarCampaign(options.seed) : createHeadlessGame({ worldSeed: options.seed, simulationSeed: (options.seed ^ 0x5f3759df) >>> 0,
     initialWorld: { starCount: options.stars, factionCount: options.countries } }).exportCheckpoint();
   initial.state.aiSettings = { allowWarDeclarations: options.allowWars };
   const activeIds = initial.state.factions.slice(0, options.active).map((faction) => faction.id);
@@ -95,6 +103,7 @@ export async function runCampaign(options: CampaignOptions) {
   const actionCounts = new Map<number, { accepted: number; rejected: number }>();
   const telemetry = createCampaignTelemetry(options.output, initial.state);
   const headlessOptions: HeadlessGameOptions = { checkpoint: initial, stepMs: options.stepMs, enablePassiveAi: true, enableActiveAi: true, activeFactionIds: activeIds,
+    allowAiPeace: options.fixture === "war" ? false : initial.allowAiPeace,
     onAiDecision: (record) => telemetry.decision(day, record),
     onAiAction: (record) => {
       appendFileSync(commandsFile, `${JSON.stringify({ tick, day, ...record })}\n`);
@@ -130,7 +139,9 @@ export async function runCampaign(options: CampaignOptions) {
       summary: { status: "running", options, actualStars: stars.length, actualCountries: factions.length, simulatedDays: day,
         runtimeMs: performance.now() - created, accepted, rejected, ownershipChanges, warsStarted: game.diagnosticState().diplomacy.wars.length } }));
   }
-  sample(); nextSample = 30;
+  const sampleDays = options.sampleDays ?? 30;
+  if (!Number.isFinite(sampleDays) || sampleDays <= 0) throw new Error("Invalid sample interval.");
+  sample(); nextSample = sampleDays;
   try {
     game.advanceRealTime(0);
     while (game.now() - start.nowMs < duration) {
@@ -161,7 +172,7 @@ export async function runCampaign(options: CampaignOptions) {
         for (const id of report.shipsLost) lostShips.set(id, report.ownerId);
       }
       if (day + 1e-6 >= nextSample || game.now() - start.nowMs >= duration) {
-        sample(); nextSample += 30;
+        sample(); nextSample += sampleDays;
         console.log(`Campaign day ${day.toFixed(0)}/${options.days}: ${accepted} actions, ${rejected} rejected; ${((performance.now() - created) / 1000).toFixed(1)}s elapsed.`);
       }
       if (day + 1e-6 >= nextCheckpoint) {

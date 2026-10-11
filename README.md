@@ -43,6 +43,8 @@ See [the local development guide](docs/must-read/06-local-dev-and-environments.m
 
 ## Architecture
 
+For an isolated overnight test with 15 active AIs, the full default map, every production tick and forensic recording, run `npm run grandsimulation`. It defaults to 15 wall hours and an 80 GB soft budget with old-log compaction. It uses no live servers or auth database. See the [grand simulation guide](docs/server/grand-simulation.md) for storage estimates, recovery and result analysis.
+
 StellarFronts normally runs as three long-lived processes:
 
 - `src/`: React pages, BabylonJS scenes, DOM HUD/panels, and gameplay modules shared with the server.

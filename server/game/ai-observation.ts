@@ -47,7 +47,7 @@ function buildAiObservation(ctx: RuntimeContext, factionId: number, fullMetadata
     if (fleet.ownerId === factionId) fleetUpkeepMultipliers[fleet.id] = newShipUpkeepMultiplier * getFleetLeaderEffects(ctx.state, fleet.id).upkeepMultiplier;
   }
   const result: AiObservation = {
-    factionId, snapshot: createSnapshot(ctx, perspective, fullMetadata ? undefined : new Set(["fleet", "ship", "starbase"])), fleetUpkeepMultipliers, newShipUpkeepMultiplier,
+    factionId, snapshot: createSnapshot(ctx, perspective, fullMetadata ? undefined : new Set(["fleet", "ship", "starbase", "planet"])), fleetUpkeepMultipliers, newShipUpkeepMultiplier,
     planets: detail<PlanetManagerDetailPayload>("planetManager"), fleets,
     market: detail<MarketDetailPayload>("market"), society: detail<SocietyDetailPayload>("society"),
     diplomacy: detail<DiplomacyDetailPayload>("diplomacy"),
@@ -56,7 +56,9 @@ function buildAiObservation(ctx: RuntimeContext, factionId: number, fullMetadata
     // The materialized player views contain gameplay values. Keep only the
     // freshness metadata controllers use; omit expensive UI field tooltips.
     for (const entity of result.snapshot.intelligence.entities) {
-      entity.fields = Object.fromEntries(["existence", "ownerId", "currentStarId"].flatMap((key) => entity.fields[key] ? [[key, entity.fields[key]]] : []));
+      const fields = entity.kind === "planet" ? ["existence", "ownerId", "starId", "isHabited", "type", "features", "habitability", "buildings", "urbanSubDistricts"]
+        : ["existence", "ownerId", "currentStarId"];
+      entity.fields = Object.fromEntries(fields.flatMap((key) => entity.fields[key] ? [[key, entity.fields[key]]] : []));
     }
     delete result.snapshot.intelligence.sensorDebug;
   }

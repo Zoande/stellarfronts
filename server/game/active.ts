@@ -3,16 +3,17 @@ import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
 import type { ServerFleet } from "../../src/game/GameProtocol";
 import { getPlanetBuildingKind, getUnlockedPlanetDefenseSlots } from "../../src/data/Economy";
 import { getRequiredTechIdsForPlanetDefenseBuilding } from "../../src/data/Technology";
-import { ARMY_TOTAL_CREW_DEMAND } from "../../src/data/Armies";
+import { activeArmyRecruitment, activeGroundOrders, groundAssessment } from "./active-ground";
+import { ARMY_TOTAL_CREW_DEMAND, getArmyCurrentPower, getArmyHabitabilityMultiplier } from "../../src/data/Armies";
 import type { AiObservation } from "./ai-observation";
-import { getAiCandidates, isAiFleetAvailable } from "./ai-candidates";
+import { getAiCandidates, isAiFleetReady } from "./ai-candidates";
 import type { GameAction } from "./actions";
 import type { CaretakerDecision } from "./caretaker";
 import { affordableWithReserve, createPassiveEpisode, decidePassive, recordPassiveAcceptance } from "./passive";
 import type { ActiveEpisode } from "./types";
 import { localWarOpportunities } from "./active-strategy";
 import { hasTradeLiquidity } from "./active-trade";
-import { activeRecoveryAction, protectDevelopmentWorkforce } from "./active-economy";
+import { activeRecoveryAction, improvesProduction, protectDevelopmentWorkforce } from "./active-economy";
 import { activeAllocationAction, activeInvestmentProject, fundActiveProject, projectPlanningView } from "./active-investment";
 
 export const ACTIVE_AFK_MS = 7 * 24 * 60 * 60 * 1000;
@@ -21,7 +22,8 @@ const MILITARY = new Set(["corvette", "destroyer", "cruiser", "battleship", "def
 
 export function createActiveEpisode(observation: AiObservation, accountId: number | null, lastActivityAt: number, realNow: number): ActiveEpisode {
   return { ...createPassiveEpisode(observation, accountId, lastActivityAt, realNow),
-    nextWarYear: observation.snapshot.clock.year, nextDiplomacyYear: observation.snapshot.clock.year, exploredStarIds: [] };
+    nextWarYear: observation.snapshot.clock.year, nextDiplomacyYear: observation.snapshot.clock.year,
+    nextArmyYear: observation.snapshot.clock.year, exploredStarIds: [] };
 }
 
 /** A deliberately rough estimate from remembered hulls, never hidden rival designs or queues. */
@@ -30,7 +32,7 @@ function strength(observation: AiObservation, fleet: ServerFleet): number {
     .reduce((sum, ship) => sum + Math.max(0, ship.hull) + Math.max(0, ship.armor) + Math.max(0, ship.shield), 0);
 }
 
-export function decideActive(observation: AiObservation, episode: ActiveEpisode, allowWarDeclarations = false): CaretakerDecision[] {
+export function decideActive(observation: AiObservation, episode: ActiveEpisode, allowWarDeclarations = false, allowPeace = true): CaretakerDecision[] {
   const { factionId, snapshot, fleets, diplomacy } = observation;
   const year = snapshot.clock.year;
   const owners = new Map(snapshot.starOwnership);
@@ -50,7 +52,10 @@ export function decideActive(observation: AiObservation, episode: ActiveEpisode,
     || planet.constructionQueue.some((item) => item.buildingKind === kind));
   const hasTraining = ownedPlanets.some(({ planetState: planet }) => planet.defense.defenseSlots.some((slot) => slot?.kind === "barracks" && slot.enabled !== false)
     || planet.constructionQueue.some((item) => item.defenseBuildingKind === "barracks"));
-  const needsCrewTraining = !!economy && economy.crewStockpile < 50_000;
+  const armyGoal = groundAssessment(observation, allowWarDeclarations);
+  const needsArmyCrew = armyGoal.requiredAttack > (armyGoal.mobileAttack + armyGoal.pendingAttack)
+    * getArmyHabitabilityMultiplier(armyGoal.targets[0]?.habitability ?? 40);
+  const needsCrewTraining = !!economy && economy.crewStockpile < (diplomacy.countries.some((country) => country.atWar) || needsArmyCrew ? ARMY_TOTAL_CREW_DEMAND + 50_000 : 50_000);
   // Bootstrap the inputs that new empires lack. Without labs and trained crew,
   // selecting research and constructing a shipyard never leads to progress.
   if (!recovery && solvent && year >= episode.nextDevelopmentYear && !decisions.some(({ action }) => action.type === "marketTrade")) {
@@ -70,7 +75,12 @@ export function decideActive(observation: AiObservation, episode: ActiveEpisode,
       }
     }
     if (prerequisite) {
-      const action = affordableWithReserve(observation, prerequisite, true) ? prerequisite : fundActiveProject(observation, prerequisite);
+      // Fund the productive fix selected by the economy planner before adding
+      // a new training/research input that would prolong an existing deficit.
+      const supply = activeInvestmentProject(observation, episode);
+      if (supply && (["food", "energy", "minerals", "goods"] as const).some((resource) =>
+        economy!.monthlyDelta[resource] < 0 && improvesProduction(observation, supply, resource))) prerequisite = supply;
+      const action = affordableWithReserve(observation, prerequisite, true) ? protectDevelopmentWorkforce(observation, prerequisite) ?? prerequisite : fundActiveProject(observation, prerequisite);
       if (action) decisions = [...decisions.filter(({ action }) => !["buildDistrict", "buildPlanetBuilding", "upgradePlanetBuilding", "buildStarbase", "colonizePlanet", "buildStarbaseBuilding", "buildStarbaseShip", "buildPlanetShip"].includes(action.type)), { action }];
     }
   }
@@ -95,8 +105,8 @@ export function decideActive(observation: AiObservation, episode: ActiveEpisode,
     "fleetId" in action && typeof action.fleetId === "string" ? [action.fleetId]
     : action.type === "mergeFleets" ? [action.targetFleetId, ...action.sourceFleetIds]
     : action.type === "repairFleet" ? [action.constructionFleetId, action.targetFleetId] : []));
-  const idle = fleets.fleets.filter((fleet) => fleet.ownerId === factionId && isAiFleetAvailable(fleet) && !fleet.orderType
-    && !fleet.retreatState && !fleet.stationaryStarbaseId && !fleet.stationaryPlanetId && !fleet.repairOrder && !occupied.has(fleet.id));
+  const idle = fleets.fleets.filter((fleet) => fleet.ownerId === factionId && isAiFleetReady(fleet)
+    && fleet.combatStatus === "idle" && !fleet.retreatState && !fleet.stationaryStarbaseId && !fleet.stationaryPlanetId && !fleet.repairOrder && !occupied.has(fleet.id));
   const military = idle.filter((fleet) => strength(observation, fleet) > 0).sort((a, b) => strength(observation, b) - strength(observation, a) || a.id.localeCompare(b.id));
   const hasNavy = fleets.fleets.some((fleet) => fleet.ownerId === factionId && !fleet.stationaryStarbaseId
     && !fleet.stationaryPlanetId && strength(observation, fleet) > 0);
@@ -108,18 +118,18 @@ export function decideActive(observation: AiObservation, episode: ActiveEpisode,
   const incoming = diplomacy.proposals.find((proposal) => proposal.toFactionId === factionId && proposal.status === "pending");
   if (incoming) {
     const assessment = peaceAssessment(observation, episode, incoming.fromFactionId, solvent, hasNavy);
-    const accept = incoming.kind === "peace" ? !!incoming.peaceTerms
+    const accept = incoming.kind === "peace" ? allowPeace && !!incoming.peaceTerms
       && (incoming.peaceTerms.mode === "statusQuo" ? assessment.acceptStatusQuo : assessment.acceptWhitePeace)
       && !incoming.peaceTerms.transfers.length && !incoming.peaceTerms.enforcedArticleIds.length
       : !wars.some((country) => country.faction.id === incoming.fromFactionId) && !incoming.replacesTreatyId;
     decisions.push({ action: { type: "respondDiplomacyProposal", proposalId: incoming.id, response: accept ? "accept" : "decline" } });
-  } else if (year >= episode.nextDiplomacyYear) {
+  } else if (allowPeace && year >= episode.nextDiplomacyYear) {
     const longWar = diplomacy.wars.find((war) => !war.endedAtYear && (war.attackerFactionId === factionId || war.defenderFactionId === factionId)
       && (year - war.startedAtYear >= 3 || !solvent || !hasNavy));
     if (longWar) {
       const targetFactionId = longWar.attackerFactionId === factionId ? longWar.defenderFactionId : longWar.attackerFactionId;
       const assessment = peaceAssessment(observation, episode, targetFactionId, solvent, hasNavy);
-      if (!diplomacy.proposals.some((proposal) => proposal.status === "pending" && proposal.kind === "peace"
+      if (!assessment.deferForInvasion && !diplomacy.proposals.some((proposal) => proposal.status === "pending" && proposal.kind === "peace"
         && [proposal.fromFactionId, proposal.toFactionId].includes(targetFactionId)
         && [proposal.fromFactionId, proposal.toFactionId].includes(factionId))) decisions.push({ action: { type: "proposePeace", targetFactionId,
         terms: { mode: assessment.proposeStatusQuo ? "statusQuo" : "whitePeace", transfers: [], enforcedArticleIds: [], enforcedDurationYears: 1 } } });
@@ -128,20 +138,27 @@ export function decideActive(observation: AiObservation, episode: ActiveEpisode,
 
   // Assemble co-located fleets before risking an offensive. Existing orders and
   // caretaker defense/repair decisions take priority.
-  const main = military[0];
-  const source = main && military.find((fleet) => fleet.id !== main.id && fleet.currentStarId === main.currentStarId);
-  if (main && source) {
-    decisions.push({ action: { type: "mergeFleets", targetFleetId: main.id, sourceFleetIds: [source.id] } });
-    occupied.add(main.id); occupied.add(source.id);
+  const groups = [...new Set(military.map((fleet) => fleet.currentStarId))].map((starId) => ({ starId,
+    fleets: military.filter((fleet) => fleet.currentStarId === starId),
+    power: military.filter((fleet) => fleet.currentStarId === starId).reduce((sum, fleet) => sum + strength(observation, fleet), 0) }));
+  // Select the strongest local group, rather than an arbitrary equal-strength
+  // scouting hull. Closed borders may strand that scout indefinitely.
+  groups.sort((a, b) => b.power - a.power || Number(owners.get(b.starId) === factionId) - Number(owners.get(a.starId) === factionId) || a.starId - b.starId);
+  const main = groups[0]?.fleets[0];
+  for (const group of groups.filter((group) => group.fleets.length > 1)) {
+    const [target, ...sources] = group.fleets;
+    decisions.push({ action: { type: "mergeFleets", targetFleetId: target.id, sourceFleetIds: sources.map((fleet) => fleet.id) } });
+    for (const fleet of group.fleets) occupied.add(fleet.id);
   }
   // A navy used for early scouting must not strand later reinforcements at its
   // shipyard. Regroup through observed legal routes; emergency defense and
   // repairs above retain priority. A lone early corvette can still explore.
-  if (main && !source && (military.length > 1 || wars.length
+  if (main && !occupied.has(main.id) && (military.length > 1 || wars.length
     || fleets.ships.some((ship) => ship.ownerId === factionId && ship.shipKind === "scienceShip"))) {
-    const rally = owners.get(main.currentStarId) === factionId ? main.currentStarId
+    const rally = owners.get(main.currentStarId) === factionId || wars.some((country) => country.faction.id === owners.get(main.currentStarId)) ? main.currentStarId
       : fleets.starbases.find((base) => base.ownerId === factionId && base.status === "online"
-        && candidates.movement.some((action) => action.type === "moveFleet" && action.fleetId === main.id && action.targetStarId === base.starId))?.starId;
+        && candidates.movement.some((action) => action.type === "moveFleet" && action.fleetId === main.id && action.targetStarId === base.starId))?.starId
+        ?? groups.find((group) => owners.get(group.starId) === factionId)?.starId;
     if (rally !== undefined) for (const fleet of military.filter((fleet) => !occupied.has(fleet.id) && fleet.currentStarId !== rally)) {
       const move = candidates.movement.find((action) => action.type === "moveFleet" && action.fleetId === fleet.id && action.targetStarId === rally);
       if (move) { decisions.push({ action: move }); occupied.add(fleet.id); }
@@ -154,7 +171,8 @@ export function decideActive(observation: AiObservation, episode: ActiveEpisode,
       && wars.some((country) => country.faction.id === enemy.ownerId));
     const enemyPower = enemiesHere.reduce((sum, enemy) => sum + strength(observation, enemy), 0);
     if (enemyPower > strength(observation, fleet) * 1.5) {
-      const home = candidates.movement.find((action) => action.type === "moveFleet" && action.fleetId === fleet.id && owners.get(action.targetStarId) === factionId);
+      const home = candidates.movement.find((action) => action.type === "moveFleet" && action.fleetId === fleet.id && owners.get(action.targetStarId) === factionId
+        && (episode.blockedScoutTargets?.[`retreat:${fleet.id}:${action.targetStarId}`] ?? 0) <= year);
       if (home?.type === "moveFleet") {
         decisions.push({ action: { type: "retreatFleetTo", fleetId: fleet.id, targetStarId: home.targetStarId } });
         occupied.add(fleet.id);
@@ -171,38 +189,33 @@ export function decideActive(observation: AiObservation, episode: ActiveEpisode,
     }
   }
 
-  // Small expeditionary forces follow the navy into systems we already control.
-  // Normal orbit, recruitment cap, crew, and invasion validation still apply.
-  const armyFleets = fleets.fleets.filter((fleet) => fleet.ownerId === factionId && !fleet.retreatState && fleet.combatStatus === "idle"
-    && fleet.shipIds.length > 0 && fleet.shipIds.every((id) => fleets.ships.some((ship) => ship.id === id && ship.shipKind === "armyShip")));
-  for (const transport of armyFleets) {
-    const target = observation.planets.planets.map((entry) => entry.planetState).find((planet) => planet.isHabited && planet.ownerId !== null && owners.get(planet.starId) === factionId
-      && wars.some((country) => country.faction.id === planet.ownerId)
-      && !fleets.fleets.some((enemy) => enemy.currentStarId === planet.starId && currentEntities.has(enemy.id) && wars.some((country) => country.faction.id === enemy.ownerId)));
-    if (!target) continue;
-    if (transport.phase === "orbitingPlanet" && transport.orbitTarget?.kind === "planet" && transport.orbitTarget.planetId === target.id) {
-      decisions.push({ action: { type: "beginPlanetInvasion", fleetId: transport.id, planetId: target.id } });
-    } else if (isAiFleetAvailable(transport) && (transport.currentStarId === target.starId
-      || candidates.movement.some((action) => action.type === "moveFleet" && action.fleetId === transport.id && action.targetStarId === target.starId))) {
-      decisions.push({ action: { type: "orbitPlanet", fleetId: transport.id, planetId: target.id } });
-    }
-  }
-  const pendingArmies = [...fleets.starbases.filter((base) => base.ownerId === factionId).flatMap((base) => base.shipQueue),
-    ...ownedPlanets.flatMap((entry) => entry.planetState.defense.shipQueue)].filter((item) => item.kind === "armyBuild");
-  const ownArmies = snapshot.armies.filter((army) => army.ownerId === factionId && army.mobility === "mobile");
-  const spending = new Set(["marketTrade", "buildDistrict", "buildPlanetBuilding", "upgradePlanetBuilding", "buildPlanetDefenseBuilding", "buildStarbase", "buildStarbaseBuilding", "buildStarbaseShip", "buildPlanetShip"]);
-  if (!recovery && wars.length && solvent && economy && economy.crewStockpile >= ARMY_TOTAL_CREW_DEMAND && ownArmies.length + pendingArmies.length < 2
-    && year >= episode.nextShipYear && !decisions.some(({ action }) => spending.has(action.type))) {
-    const yard = fleets.starbases.find((base) => base.ownerId === factionId && base.status === "online" && base.buildingSlots.includes("shipyard") && base.shipQueue.length < 2);
-    const species = ownedPlanets.flatMap((entry) => entry.planetState.speciesPopulations).find((entry) => entry.population >= 300_000_000);
-    if (yard && species) {
-      const action: GameAction = { type: "queueArmyRecruitment", yardKind: "starbase", yardId: yard.id, armyTypeId: "lightInfantry", speciesId: species.speciesId };
-      if (affordableWithReserve(observation, action, true) && economy.monthlyDelta.energy > 1 && economy.monthlyDelta.goods > 1) decisions.push({ action });
-    }
+  decisions.push(...activeGroundOrders(observation, candidates, occupied, allowWarDeclarations, episode.blockedScoutTargets).map((action) => ({ action })));
+  if (!recovery && solvent) {
+    const recruitment = activeArmyRecruitment(observation, episode, allowWarDeclarations);
+    const spending = new Set(["marketTrade", "buildDistrict", "buildPlanetBuilding", "upgradePlanetBuilding", "buildPlanetDefenseBuilding", "buildStarbase", "buildStarbaseBuilding", "buildStarbaseShip", "buildPlanetShip"]);
+    // Give troops a separate, slower cadence and share shipyards with the navy.
+    // Urgent economy recovery and development still retain their spending turn.
+    const expense = decisions.find(({ action }) => spending.has(action.type));
+    const navalExpense = expense && (expense.action.type === "buildStarbaseShip" || expense.action.type === "buildPlanetShip") && MILITARY.has(expense.action.shipKind);
+    if (recruitment && (!expense || navalExpense)) decisions = [...decisions.filter((decision) => decision !== expense), { action: recruitment }];
   }
 
   if (!recovery && allowWarDeclarations && !wars.length && solvent && main && !occupied.has(main.id) && year >= episode.nextWarYear) {
-    const target = opportunities.find((opportunity) => opportunity.reason === "border-outpost"
+    const ground = groundAssessment(observation, true);
+    const groundReady = (starId: number) => {
+      const planets = ground.targets.filter((target) => target.starId === starId);
+      return planets.length > 0 && fleets.fleets.some((fleet) => fleet.ownerId === factionId && isAiFleetReady(fleet)
+        && fleet.combatStatus === "idle" && !occupied.has(fleet.id) && owners.get(fleet.currentStarId) === factionId
+        && fleet.shipIds.length > 0 && fleet.shipIds.every((id) => fleets.ships.some((ship) => ship.id === id && ship.shipKind === "armyShip"))
+        && snapshot.hyperlanes.some(([a, b]) => {
+          const staging = a === starId ? b : b === starId ? a : -1;
+          return owners.get(staging) === factionId && (fleet.currentStarId === staging
+            || candidates.movement.some((action) => action.type === "moveFleet" && action.fleetId === fleet.id && action.targetStarId === staging));
+        }) && planets.every((planet) => ground.own.filter((army) => army.location.kind === "fleet" && army.location.fleetId === fleet.id)
+          .reduce((sum, army) => sum + getArmyCurrentPower(army).attack, 0) * getArmyHabitabilityMultiplier(planet.habitability) >= planet.requiredAttack));
+    };
+    const target = opportunities.find((opportunity) => (opportunity.reason === "border-outpost"
+        || opportunity.reason === "requires-invasion" && groundReady(opportunity.starId))
       && strength(observation, main) >= opportunity.requiredPower
       && snapshot.hyperlanes.some(([a, b]) => {
         const staging = a === opportunity.starId ? b : b === opportunity.starId ? a : -1;
@@ -242,7 +255,8 @@ export function recordActiveAcceptance(episode: ActiveEpisode, action: GameActio
   if (action.type === "colonizePlanet") episode.nextColonyYear = year + 30 / GAME_DAYS_PER_YEAR;
   if (["buildDistrict", "buildPlanetBuilding", "upgradePlanetBuilding", "buildPlanetDefenseBuilding", "buildStarbaseBuilding"].includes(action.type)) episode.nextDevelopmentYear = year + 7 / GAME_DAYS_PER_YEAR;
   if (["buildDistrict", "buildPlanetBuilding", "upgradePlanetBuilding"].includes(action.type)) episode.nextInvestmentYear = year + 90 / GAME_DAYS_PER_YEAR;
-  if (["buildStarbaseShip", "buildPlanetShip", "queueArmyRecruitment"].includes(action.type)) episode.nextShipYear = year + 7 / GAME_DAYS_PER_YEAR;
+  if (action.type === "queueArmyRecruitment") episode.nextArmyYear = year + 14 / GAME_DAYS_PER_YEAR;
+  if (["buildStarbaseShip", "buildPlanetShip"].includes(action.type)) episode.nextShipYear = year + 7 / GAME_DAYS_PER_YEAR;
   if (action.type === "declareWar" || action.type === "proposePeace" || action.type === "respondDiplomacyProposal") episode.nextWarYear = year + 5;
   if (action.type === "proposePeace" || action.type === "respondDiplomacyProposal") episode.nextDiplomacyYear = year + 0.25;
 }
@@ -252,4 +266,5 @@ export function recordActiveAcceptance(episode: ActiveEpisode, action: GameActio
 export function recordActiveRejection(episode: ActiveEpisode, action: GameAction, year: number, message: string): void {
   if (action.type === "declareWar") delete episode.warBaselineSystems?.[`pending:${action.targetFactionId}`];
   if (action.type === "moveFleet" && message.includes("route")) (episode.blockedScoutTargets ??= {})[`${action.fleetId}:${action.targetStarId}`] = year + 90 / GAME_DAYS_PER_YEAR;
+  if (action.type === "retreatFleetTo" && message.includes("route")) (episode.blockedScoutTargets ??= {})[`retreat:${action.fleetId}:${action.targetStarId}`] = year + 90 / GAME_DAYS_PER_YEAR;
 }

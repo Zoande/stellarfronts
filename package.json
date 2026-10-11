@@ -19,7 +19,8 @@
     "server:typecheck": "tsc -p tsconfig.server.json --noEmit",
     "build": "tsc && vite build && node scripts/check-client-bundle.mjs",
     "preview": "vite preview",
-    "ai:simulate": "node --import tsx server/simulation-cli.ts"
+    "ai:simulate": "node --import tsx server/simulation-cli.ts",
+    "grandsimulation": "node --import tsx server/grand-simulation-cli.ts"
   },
   "dependencies": {
     "@babylonjs/core": "^7.54.3",

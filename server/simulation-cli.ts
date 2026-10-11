@@ -23,7 +23,14 @@ function positive(name: string, fallback: number): number {
   return value;
 }
 
-if (mode === "active") {
+if (mode === "war") {
+  const { runCampaign } = await import("./game/active-lab");
+  const output = path.resolve(option("out", `.cache/ai-lab/war-${Date.now()}`));
+  const result = await runCampaign({ seed: Number(option("seed", "42")), stars: 9, countries: 3, active: 3,
+    days: positive("days", 1800), stepMs: positive("step-ms", 100), adaptive: false, allowWars: true, fixture: "war", sampleDays: 5,
+    checkpoint: argv.includes("--checkpoint") ? option("checkpoint", "") : undefined, output });
+  console.log(`War test complete: ${result.combatReports} naval reports; ${result.ownershipChanges} border changes. Reports: ${output}`);
+} else if (mode === "active") {
   await runCampaignCli(argv);
 } else if (mode === "analyze") {
   if (!argv[0]) throw new Error("Usage: ai:simulate analyze campaign-directory");
