@@ -28,7 +28,7 @@ import type {
 } from "../data/Market";
 
 /** Wire protocols accepted by the current browser client, newest last. */
-export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8, 9, 10, 11];
+export const SUPPORTED_SERVER_PROTOCOL_VERSIONS: number[] = [5, 6, 7, 8, 9, 10, 11, 12];
 import type {
   StarbaseConstructionQueueItem,
   StarbaseEconomy,
@@ -189,7 +189,6 @@ export type GameDetailScope =
 
 export interface SystemDetailPayload {
   intelligence?: IntelEntityView[];
-  commandLinked?: boolean;
   star: ServerStar;
   planetStates: PlanetState[];
   fleets: ServerFleet[];
@@ -215,7 +214,6 @@ export interface SystemHyperlaneExitPoint {
 
 export interface PlanetDetailPayload {
   intelligence?: IntelEntityView[];
-  commandLinked?: boolean;
   starId: number;
   planet: PlanetConfig;
   planetState: PlanetState;
@@ -226,14 +224,12 @@ export interface PlanetDetailPayload {
 
 export interface StarbaseDetailPayload {
   intelligence?: IntelEntityView[];
-  commandLinked?: boolean;
   starbase: ServerStarbase;
   armies?: ArmyUnit[];
 }
 
 export interface FleetDetailPayload {
   intelligence?: IntelEntityView[];
-  commandLinked?: boolean;
   fleet: ServerFleet;
   ships: ServerShip[];
   armies?: ArmyUnit[];
@@ -662,6 +658,8 @@ export interface CombatAfterActionReport {
 export interface ServerCombatContact {
   id: string;
   year: number;
+  /** Recorded battle location; absent only in older saves. */
+  starId?: number;
   sourceId: string;
   sourceKind: CombatTargetKind;
   sourceOwnerId: number;
@@ -1102,6 +1100,10 @@ export interface JoinCommand {
   type: "join";
 }
 
+export interface PlayerActivityCommand {
+  type: "playerActivity";
+}
+
 export interface AdminCommandCommand {
   type: "adminCommand";
   input: string;
@@ -1111,6 +1113,7 @@ export interface AdminCommandCommand {
 
 type ClientCommandPayload =
   | JoinCommand
+  | PlayerActivityCommand
   | AdminCommandCommand
   | MoveCommand
   | BuildCommand
@@ -1274,6 +1277,7 @@ export interface AccountResourcesEvent {
 export interface ServerInfoEvent {
   type: "serverInfo";
   message: string;
+  capabilities?: string[];
 }
 
 export interface SystemDetailsEvent {

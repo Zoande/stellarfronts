@@ -57,7 +57,8 @@ server/                  Node game + auth servers and orchestration
 scripts/control.ts       CLI for the orchestrator control API
 docs/                    This documentation
 versions/                Orchestrator-managed git worktrees (one per registered version)
-public/, resources/      Static assets (ship/starbase GLBs, textures, flags, banners)
+public/                  Browser-served runtime assets (models, textures, flags, banners)
+resources/               Original/source assets and texture packs
 ```
 
 ## A crucial structural fact: `src/` is shared

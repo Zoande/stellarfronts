@@ -37,6 +37,7 @@ type PendingRequest<T> = {
 
 const SPECIALIZED_COMMAND_TYPES = new Set<ClientCommand["type"]>([
   "join",
+  "playerActivity",
   "adminCommand",
   "requestDetails",
   "subscribeDetails",
@@ -109,6 +110,7 @@ export class GameServerClient {
   private commandRequests = new Map<string, PendingRequest<CommandResultEvent>>();
   private intentionallyDisposed = false;
   private negotiatedProtocol: number | undefined;
+  private supportsPlayerActivity = false;
   private requestSequence = 0;
 
   constructor(private readonly gameId?: string, private readonly urlOverride?: string) {}
@@ -124,6 +126,8 @@ export class GameServerClient {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url);
       this.socket = socket;
+      this.supportsPlayerActivity = false;
+      this.lastActivitySentAt = 0;
       this.intentionallyDisposed = false;
       let resolved = false;
       let negotiatedProtocol: number | undefined;
@@ -160,6 +164,11 @@ export class GameServerClient {
             resolved = true;
             resolve(this.latestSnapshot);
           }
+          return;
+        }
+
+        if (parsed.type === "serverInfo") {
+          if (parsed.capabilities) this.supportsPlayerActivity = parsed.capabilities.includes("playerActivity");
           return;
         }
 
@@ -294,6 +303,15 @@ export class GameServerClient {
     this.sendRaw(command);
   }
 
+  private lastActivitySentAt = 0;
+  sendPlayerActivity(): void {
+    if (!this.supportsPlayerActivity || !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    const now = Date.now();
+    if (now - this.lastActivitySentAt < 30_000) return;
+    this.lastActivitySentAt = now;
+    this.sendRaw({ type: "playerActivity" });
+  }
+
   executeCommand(command: ClientCommand): Promise<CommandResultEvent> {
     if (SPECIALIZED_COMMAND_TYPES.has(command.type)) {
       return Promise.reject(new Error("This command uses a specialized response flow."));
@@ -425,6 +443,7 @@ export class GameServerClient {
     this.socket?.close();
     this.socket = null;
     this.negotiatedProtocol = undefined;
+    this.supportsPlayerActivity = false;
   }
 
   private requestDetails<K, T>(

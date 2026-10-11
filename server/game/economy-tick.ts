@@ -30,6 +30,7 @@ import {
   countStarbaseShipyards,
 } from "../../src/data/Starbase";
 import type { StarbaseShipKind, StarbaseShipQueueItem } from "../../src/data/Starbase";
+import { registerCaretakerShipCompletion } from "./caretaker";
 import { NEBULA_DEFINITIONS, buildNebulaByStarId } from "../../src/data/Nebula";
 import { applyPlanetStatesToStars } from "../../src/data/StarMap";
 import { getSystemStarbaseOrbitPosition } from "../../src/data/SystemCoordinates";
@@ -799,7 +800,7 @@ export function processStarbaseRepairs(ctx: RuntimeContext, elapsedDays: number)
   return changed;
 }
 
-function spawnCompletedShip(ctx: RuntimeContext, starbase: ServerStarbase, item: { shipKind: StarbaseShipKind; designId?: string | null }): void {
+function spawnCompletedShip(ctx: RuntimeContext, starbase: ServerStarbase, item: { id: string; shipKind: StarbaseShipKind; designId?: string | null }): void {
   if (item.shipKind === "defensePlatform") {
     let fleet = ctx.state.fleets.find((candidate) => (
       candidate.stationaryStarbaseId === starbase.id
@@ -830,6 +831,7 @@ function spawnCompletedShip(ctx: RuntimeContext, starbase: ServerStarbase, item:
     );
     fleet.shipIds.push(ship.id);
     ctx.state.ships.push(ship);
+    registerCaretakerShipCompletion(ctx, item.id, ship.id);
     ctx.syncFleetMembership();
     return;
   }
@@ -852,6 +854,7 @@ function spawnCompletedShip(ctx: RuntimeContext, starbase: ServerStarbase, item:
   applyFleetOrbitTarget(fleet, createStarbaseOrbitTarget(starbase, fleet.systemPosition));
   ctx.setFleetPhase(fleet, "orbiting");
   ctx.state.ships.push(ship);
+  registerCaretakerShipCompletion(ctx, item.id, ship.id);
   ctx.state.fleets.push(fleet);
 }
 
@@ -920,7 +923,7 @@ export function processStarbaseShipQueues(ctx: RuntimeContext, elapsedDays: numb
 function spawnCompletedPlanetShip(
   ctx: RuntimeContext,
   planet: PlanetState,
-  item: Pick<StarbaseShipQueueItem, "shipKind" | "designId">,
+  item: Pick<StarbaseShipQueueItem, "id" | "shipKind" | "designId">,
 ): void {
   if (item.shipKind === "defensePlatform") {
     let fleet = ctx.state.fleets.find((candidate) => (
@@ -952,6 +955,7 @@ function spawnCompletedPlanetShip(
     );
     fleet.shipIds.push(ship.id);
     ctx.state.ships.push(ship);
+    registerCaretakerShipCompletion(ctx, item.id, ship.id);
     ctx.syncFleetMembership();
     return;
   }
@@ -973,6 +977,7 @@ function spawnCompletedPlanetShip(
   fleet.speed = ship.speed;
   startOrbitOrder(ctx, fleet, planet.id);
   ctx.state.ships.push(ship);
+  registerCaretakerShipCompletion(ctx, item.id, ship.id);
   ctx.state.fleets.push(fleet);
 }
 

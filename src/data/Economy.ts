@@ -404,6 +404,8 @@ export function getAmenityNeed(population: number): number {
   return (Math.max(0, population) / PEOPLE_PER_MONTHLY_UNIT) * AMENITY_NEED_PER_UNIT;
 }
 export const STARTING_HABITED_POPULATION = 10_000_000_000;
+/** A small trained reserve lets new empires build specialists before barracks mature. */
+export const STARTING_CREW_STOCKPILE = 100_000;
 export const NEW_COLONY_POPULATION = 500_000_000;
 export const FRONTIER_SETTLEMENT_DURATION_YEARS = 10;
 export const BUILDING_MAX_LEVEL = 5;
@@ -579,7 +581,7 @@ export const JOB_DEFINITIONS: Record<JobKind, JobDefinition> = {
     kind: "researcher",
     label: "Researchers",
     class: "middle",
-    description: "Turns energy and goods into stockpiled research.",
+    description: "Turns energy and goods into technology research.",
     output: { research: 0.06 },
     upkeep: { energy: 0.05, goods: 0.024 },
   },
@@ -3615,7 +3617,7 @@ export function createInitialFactionEconomyState(factionId: number, currentMonth
   return {
     factionId,
     stockpiles: cloneResourceCounts(STARTING_RESOURCE_STOCKPILES),
-    crewStockpile: 0,
+    crewStockpile: STARTING_CREW_STOCKPILE,
     monthlyDelta: createEmptyResourceCounts(),
     lastProcessedMonth: currentMonth,
     lastProcessedHour: currentMonth * 30 * 24,

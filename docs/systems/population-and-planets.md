@@ -64,7 +64,7 @@ empires and an active, unsuspended migration pact; open borders alone are insuff
 
 Colonization is a persistent fleet order, not an instant remote action. The server accepts it only
 when the system is owned, the world is uninhabited and permitted by its planet type, founding-species
-effective habitability is above zero, the route and command link are valid, and the fleet has a
+effective habitability is above zero, the route is valid, and the fleet has a
 surviving colonization ship. The fleet travels into the target planet's orbit and revalidates all
 conditions on arrival. Success consumes exactly one colonization ship. Failure preserves the ship,
 clears the order, and leaves the fleet orbiting; therefore competing orders are safe and the first

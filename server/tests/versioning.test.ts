@@ -119,9 +119,9 @@ test("schema and wire protocol manifests stay aligned with current compatibility
   assert.equal(CURRENT_SCHEMA_VERSION, 30);
   assert.equal(VERSION_MANIFEST.schemaVersion, CURRENT_SCHEMA_VERSION);
   assert.deepEqual(VERSION_MANIFEST.migratesFromSchema, [30]);
-  assert.equal(CURRENT_PROTOCOL_VERSION, 11);
+  assert.equal(CURRENT_PROTOCOL_VERSION, 12);
   assert.equal(VERSION_MANIFEST.protocolVersion, CURRENT_PROTOCOL_VERSION);
-  assert.deepEqual(SUPPORTED_SERVER_PROTOCOL_VERSIONS, [5, 6, 7, 8, 9, 10, 11]);
+  assert.deepEqual(SUPPORTED_SERVER_PROTOCOL_VERSIONS, [5, 6, 7, 8, 9, 10, 11, 12]);
   assert.equal(CURRENT_RUNTIME_API_VERSION, 1);
 });
 

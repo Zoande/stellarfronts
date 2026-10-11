@@ -111,7 +111,12 @@ export function buildSystemDetailPayload(
   if (!Number.isInteger(input.starId) || !star) {
     return { ok: false, error: "System is not available." };
   }
-  if (input.perspective.mode !== "observer" && !input.knownStarIds?.has(input.starId)) {
+  const factionId = input.perspective.mode === "faction" ? input.perspective.factionId : null;
+  const ownsFleetHere = factionId !== null && input.fleets.some((fleet) => (
+    fleet.ownerId === factionId && fleet.currentStarId === input.starId && !fleet.hyperlanePosition
+    && fleet.combatStatus !== "destroyed" && fleet.phase !== "missingInAction"
+  ));
+  if (input.perspective.mode !== "observer" && !input.knownStarIds?.has(input.starId) && !ownsFleetHere) {
     return { ok: false, error: "System is not available." };
   }
 

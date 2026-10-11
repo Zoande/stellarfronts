@@ -38,7 +38,55 @@ export interface GameFleet extends ServerFleet {
 
 export interface GameShip extends ServerShip {}
 
+export interface CaretakerFleetBaseline {
+  fleetId: string;
+  ships: Array<{ shipId: string; shipKind: import("../../src/data/Starbase").StarbaseShipKind; designId: string | null }>;
+}
+
+export interface CaretakerEpisode {
+  accountId: number;
+  startedAt: number;
+  lastActivityAt: number;
+  nextDecisionYear: number;
+  fleets: CaretakerFleetBaseline[];
+  /** Queue reservations are tied to one baseline fleet, even after a restart. */
+  queuedShips: Record<string, { fleetId: string; shipKind: import("../../src/data/Starbase").StarbaseShipKind; designId: string | null }>;
+  /** Completed replacements are assigned to their original fleet until merged. */
+  reinforcements: Record<string, { fleetId: string; shipKind: import("../../src/data/Starbase").StarbaseShipKind; designId: string | null }>;
+  repairOrders?: Record<string, { targetFleetId: string; issuedAtYear: number }>;
+}
+
+export interface PassiveEpisode extends CaretakerEpisode {
+  source: "unclaimed" | "afk";
+  nextOutpostYear: number;
+  nextColonyYear: number;
+  nextDevelopmentYear: number;
+  nextShipYear: number;
+  /** Accepted AI pauses only; player-disabled buildings are never restarted. */
+  pausedBuildings?: Record<string, number>;
+  managedJobLocks?: string[];
+}
+
+export interface ActiveEpisode extends PassiveEpisode {
+  nextWarYear: number;
+  nextDiplomacyYear: number;
+  /** Prevent scouts from endlessly alternating between equally useful systems. */
+  exploredStarIds: number[];
+  militaryOrdersSinceOutpost?: number;
+  blockedScoutTargets?: Record<string, number>;
+  warBaselineSystems?: Record<string, number[]>;
+  nextInvestmentYear?: number;
+  nextArmyYear?: number;
+}
+
 export interface GameState {
+  /** Private authoritative state; never included in faction observations. */
+  determinism?: import("./determinism").DeterministicState;
+  caretakerEpisodes?: Record<string, CaretakerEpisode>;
+  passiveEpisodes?: Record<string, PassiveEpisode>;
+  activeEpisodes?: Record<string, ActiveEpisode>;
+  /** Server-owned game tag. Absent/false keeps AI from initiating wars. */
+  aiSettings?: { allowWarDeclarations: boolean };
   schemaVersion: 30;
   stars: StarData[];
   nebulae: NebulaRegion[];
@@ -89,6 +137,7 @@ export interface ClientSession {
   perspective: GalaxyPerspective;
   detailSubscriptions: Map<string, DetailSubscription>;
   sentInitialSnapshot: boolean;
+  lastActivitySignalAt?: number;
 }
 
 export interface GameRuntime {
@@ -102,6 +151,7 @@ export interface GameRuntime {
 }
 
 export interface RuntimeContext {
+  commandEffects?: import("./mutation-coordinator").MutationEffects;
   game: StoredGame;
   statePath: string;
   state: GameState;
@@ -117,6 +167,9 @@ export interface RuntimeContext {
   services: {
     authStore: GameRuntimeAuthPort;
     now: () => number;
+    realNow: () => number;
+    simulationSeed?: number;
+    initialWorld?: { starCount: number; factionCount: number };
   };
   // Method fields wired up inside createGameRuntime (hoisted declarations, so safe to reference at ctx init).
   setFleetPhase: (fleet: GameFleet, phase: ShipTransitPhase) => void;

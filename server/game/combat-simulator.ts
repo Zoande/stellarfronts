@@ -1,3 +1,4 @@
+import { createDeterministicState } from "./determinism";
 import { GAME_HOURS_PER_YEAR } from "../../src/game/GameTime";
 import { processContinuousFleetCombat } from "./fleet-combat";
 import type { RuntimeContext } from "./types";
@@ -18,13 +19,7 @@ export interface HeadlessCombatSimulationResult {
   reportsCreated: number;
 }
 
-export function createSeededRandom(seed: number): () => number {
-  let state = (seed >>> 0) || 0x9e3779b9;
-  return () => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return state / 0x1_0000_0000;
-  };
-}
+export { createSeededRandom } from "./determinism";
 
 /**
  * Advances the authoritative combat runtime with deterministic randomness.
@@ -41,9 +36,8 @@ export function simulateHeadlessCombat(
   let projectilesResolved = 0;
   let elapsedHours = 0;
   let steps = 0;
-  const previousRandom = Math.random;
-  Math.random = createSeededRandom(options.seed);
-  try {
+  ctx.state.determinism ??= createDeterministicState(options.seed);
+  {
     while (elapsedHours < maxHours) {
       const before = ctx.state.combatProjectiles.length;
       ctx.state.clock.year += stepHours / GAME_HOURS_PER_YEAR;
@@ -58,8 +52,6 @@ export function simulateHeadlessCombat(
         .map((fleet) => fleet.ownerId));
       if (owners.size <= 1 && ctx.state.combatProjectiles.length === 0) break;
     }
-  } finally {
-    Math.random = previousRandom;
   }
   const survivingOwners = Array.from(new Set(ctx.state.fleets
     .filter((fleet) => options.starId === undefined || fleet.currentStarId === options.starId)

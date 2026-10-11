@@ -1,3 +1,4 @@
+import { random } from "./determinism";
 import { RESOURCE_KINDS } from "../../src/data/Economy";
 import type { PlanetModifier, ResourceCounts } from "../../src/data/Economy";
 import { createLegendaryLeaderCandidate, formatLeaderClass, getLeaderArchetypesByFaction } from "../../src/data/Leaders";
@@ -20,8 +21,7 @@ import { SHORTAGE_PROGRESS_RISE_PER_DAY, SHORTAGE_PROGRESS_FALL_PER_DAY } from "
 import type { GameFleet, GameState, RuntimeContext } from "./types";
 
 export function nextEventInstanceId(ctx: RuntimeContext): string {
-  ctx.eventInstanceSeq += 1;
-  return `evt-${Date.now().toString(36)}-${ctx.eventInstanceSeq.toString(36)}`;
+  return ctx.createRuntimeId("evt");
 }
 
 export function probabilityOverDays(chancePerDay: number, elapsedDays: number): number {
@@ -91,13 +91,13 @@ export function expireFactionModifiers(ctx: RuntimeContext): boolean {
 }
 
 export function generatePowerfulLeaderCandidate(ctx: RuntimeContext, factionId: number): LeaderState {
-  const leaderClass: LeaderClass = Math.random() < 0.5 ? "military" : "civilian";
+  const leaderClass: LeaderClass = random(ctx, "events") < 0.5 ? "military" : "civilian";
   const archetypeId = getLeaderArchetypesByFaction(ctx.state.factions, ctx.state.species).get(factionId) ?? "humanoid";
   return createLegendaryLeaderCandidate(
     factionId,
     leaderClass,
     getLeaderDayIndex(ctx.state.clock.year),
-    Math.floor(Math.random() * 100000),
+    Math.floor(random(ctx, "events") * 100000),
     ctx.state.clock.year,
     archetypeId,
   );
@@ -183,7 +183,11 @@ export function applyGameEffects(ctx: RuntimeContext, factionId: number, effects
         const factionShips = ctx.state.ships.filter((s) => s.ownerId === factionId);
         const toDisband = Math.floor(factionShips.length * effect.fraction);
         if (toDisband > 0) {
-          const shuffled = [...factionShips].sort(() => Math.random() - 0.5);
+          const shuffled = [...factionShips];
+          for (let i = shuffled.length - 1; i > 0; i--) {
+            const j = Math.floor(random(ctx, "events") * (i + 1));
+            [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+          }
           const disbanded = new Set(shuffled.slice(0, toDisband).map((s) => s.id));
           ctx.state.ships = ctx.state.ships.filter((s) => !disbanded.has(s.id));
           for (const fleet of ctx.state.fleets) {
@@ -227,8 +231,8 @@ export function processRandomEvents(ctx: RuntimeContext, elapsedGameDays: number
   const lostChance = probabilityOverDays(LOST_IN_TRANSIT_CHANCE_PER_DAY, elapsedGameDays);
   for (const fleet of ctx.state.fleets) {
     if (fleet.phase !== "jumpingHyperlane") continue;
-    if (Math.random() >= lostChance) continue;
-    const days = LOST_IN_TRANSIT_MIN_DAYS + Math.random() * (LOST_IN_TRANSIT_MAX_DAYS - LOST_IN_TRANSIT_MIN_DAYS);
+    if (random(ctx, "events") >= lostChance) continue;
+    const days = LOST_IN_TRANSIT_MIN_DAYS + random(ctx, "events") * (LOST_IN_TRANSIT_MAX_DAYS - LOST_IN_TRANSIT_MIN_DAYS);
     if (sendFleetMissing(ctx, fleet.id, days)) {
       queueFactionEvent(ctx, fleet.ownerId, LOST_IN_TRANSIT_EVENT_ID, { fleetName: fleetDisplayName(fleet) });
       changed = true;
@@ -237,7 +241,7 @@ export function processRandomEvents(ctx: RuntimeContext, elapsedGameDays: number
 
   const offerChance = probabilityOverDays(LEADER_OFFER_CHANCE_PER_DAY, elapsedGameDays);
   for (const faction of ctx.state.factions) {
-    if (Math.random() >= offerChance) continue;
+    if (random(ctx, "events") >= offerChance) continue;
     if (ctx.state.events.some((event) => event.factionId === faction.id && event.defId === LEADER_OFFER_EVENT_ID)) continue;
     queueFactionEvent(ctx, faction.id, LEADER_OFFER_EVENT_ID, buildLeaderOfferContext(ctx, faction.id));
     changed = true;

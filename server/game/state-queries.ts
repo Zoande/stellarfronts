@@ -566,6 +566,8 @@ export function getPlanetConfig(ctx: RuntimeContext, planetState: PlanetState): 
 export function canAccessStar(ctx: RuntimeContext, perspective: GalaxyPerspective, starId: number): boolean {
   if (starId < 0 || starId >= ctx.state.stars.length) return false;
   if (perspective.mode === "observer") return true;
+  if (ctx.state.fleets.some((fleet) => fleet.ownerId === perspective.factionId && fleet.currentStarId === starId
+    && !fleet.hyperlanePosition && fleet.combatStatus !== "destroyed" && fleet.phase !== "missingInAction")) return true;
   const view = getIntelEntityView(ctx.state, perspective.factionId, "star", starId);
   return view?.fields.type?.status !== undefined && view.fields.type.status !== "unknown";
 }

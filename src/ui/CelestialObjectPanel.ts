@@ -97,7 +97,7 @@ import type { FactionTechnologyView, TechId } from "../data/Technology";
 import { PanelInteractionGate, captureScrollState, restoreScrollStateSoon } from "./panelDomState";
 import { requestOpenLeadersPanel } from "./leaderEvents";
 import { FloatingTooltipManager } from "./FloatingTooltipManager";
-import { formatIntelFreshness, getClientIntelField, getClientIntelYear, hasClientEntityCommandLink } from "../game/ClientIntelligence";
+import { formatIntelFreshness, getClientIntelField, getClientIntelYear } from "../game/ClientIntelligence";
 import type { IntelValue } from "../data/Intelligence";
 import { ARMY_TOTAL_CREW_DEMAND, ARMY_TRANSPORT_BUILD_DAYS, ARMY_TYPE_DEFINITIONS, MOBILE_ARMY_TYPE_IDS, getArmyCurrentPower, getArmyHabitabilityMultiplier, getArmyMaxHp, getPlanetCombatWidth } from "../data/Armies";
 import type { ArmyUnit, GroundBattleState } from "../data/Armies";
@@ -2014,8 +2014,7 @@ export class CelestialObjectPanel {
     const isPlanet = data.kind === "planet";
     const isHabitedPlanet = isPlanet && data.isHabited;
     const planetState = data.planetState;
-    const commandLinked = !isPlanet || hasClientEntityCommandLink("planet", data.objectId);
-    const tabsDisabled = isHabitedPlanet && commandLinked ? "" : " disabled";
+    const tabsDisabled = isHabitedPlanet ? "" : " disabled";
     const managementDisabled = isPlanet ? "" : " disabled";
     const nameIntel = this.planetIntel(data, "name");
     const nameFreshness = nameIntel ? formatIntelFreshness(nameIntel, getClientIntelYear()) : null;
@@ -2230,7 +2229,7 @@ export class CelestialObjectPanel {
     const limits = planetState
       ? getEffectivePlanetDistrictLimits(details.districtLimits, planetState.features)
       : details.districtLimits;
-    const canBuild = data.kind === "planet" && data.isHabited && Boolean(planetState) && hasClientEntityCommandLink("planet", data.objectId);
+    const canBuild = data.kind === "planet" && data.isHabited && Boolean(planetState);
     const buildTray = this.renderBuildingTray(data);
     const featuresTray = this.renderFeaturesTray(data);
     const buildingDetails = this.renderBuildingDetails(data);
@@ -2889,8 +2888,7 @@ export class CelestialObjectPanel {
   ): string {
     const planetState = data.planetState!;
     const canManage = data.isHabited
-      && data.canManageLeaders === true
-      && hasClientEntityCommandLink("planet", data.objectId);
+      && data.canManageLeaders === true;
     const queued = hasQueuedFeatureRemoval(planetState, definition.kind);
     const requiredTechIds = getRequiredTechIdsForPlanetFeatureRemoval(definition.kind);
     const technologyUnlocked = requiredTechIds.length === 0

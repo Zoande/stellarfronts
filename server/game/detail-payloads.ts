@@ -46,7 +46,7 @@ import {
   getMarketTrend,
 } from "./economy-market";
 import { getKnownSet } from "./visibility";
-import { getIntelEntityView, getKnownStarIds, getPerspectiveEntityView, hasCommandLink } from "./intelligence";
+import { getIntelEntityView, getKnownDiscreteEntityViews, getKnownStarIds, getPerspectiveEntityView } from "./intelligence";
 import { createVisibleState, createVisibleStars, createRevision } from "./snapshot";
 import {
   getSpeciesLawSelections,
@@ -62,6 +62,7 @@ import type { RuntimeContext } from "./types";
 import { getFactionPlanetColonizationEligibility } from "./colonization";
 import { getFactionFoundingSpeciesId } from "./state-normalization";
 import { getEffectiveArmyPower } from "./ground-combat";
+import { getPlanetSystemOrbitRadius, getSystemOrbitLayout } from "../../src/data/SystemCoordinates";
 
 function intelValue<T>(view: IntelEntityView | null, fieldId: string, fallback: T): T {
   const field = view?.fields[fieldId] as IntelValue<T> | undefined;
@@ -81,13 +82,15 @@ function createPartialPlanetDetail(
   if (exact) {
     const armies = ctx.state.armies.filter((army) => army.location.kind === "planet" && army.location.planetId === sourceState.id);
     return {
-      planet: sourcePlanet,
+      planet: {
+        ...sourcePlanet,
+        systemOrbitRadius: getPlanetSystemOrbitRadius(sourcePlanet, sourceState.planetIndex, getSystemOrbitLayout(ctx.state.stars[sourceState.starId]?.type)),
+      },
       planetState: sourceState,
       armies,
       groundBattle: battle,
       armyPower: armies.reduce((total, army) => total + getEffectiveArmyPower(ctx.state, sourceState, army, battle?.attackerFactionId === army.ownerId, battle).nominal, 0),
       intelligence: [getPerspectiveEntityView(ctx.state, perspective, "planet", sourceState.id)!],
-      commandLinked: true,
     };
   }
   const view = getIntelEntityView(ctx.state, perspective.factionId, "planet", sourceState.id);
@@ -100,6 +103,7 @@ function createPartialPlanetDetail(
     textureVariation: intelValue(view, "textureVariation", 0),
     diameter: intelValue(view, "diameter", 1),
     orbitRadius: intelValue(view, "orbitRadius", 1),
+    systemOrbitRadius: intelValue<number | undefined>(view, "systemOrbitRadius", undefined),
     orbitSpeed: intelValue(view, "orbitSpeed", 0),
     orbitPhaseAtEpoch: intelValue(view, "orbitPhaseAtEpoch", 0),
     orbitEpochMs: intelValue(view, "orbitEpochMs", 0),
@@ -140,11 +144,10 @@ function createPartialPlanetDetail(
     planet,
     planetState,
     intelligence: [view],
-    commandLinked: hasCommandLink(ctx.state, perspective.factionId, sourceState.starId),
   };
 }
 
-function createPartialStarbase(source: ServerStarbase, view: IntelEntityView): ServerStarbase {
+function createPartialStarbase(source: Pick<ServerStarbase, "id">, view: IntelEntityView): ServerStarbase {
   return {
     id: source.id,
     ownerId: intelValue(view, "ownerId", -1),
@@ -173,7 +176,7 @@ function createPartialStarbase(source: ServerStarbase, view: IntelEntityView): S
   };
 }
 
-function createPartialFleet(source: ServerFleet, view: IntelEntityView): ServerFleet {
+function createPartialFleet(source: Pick<ServerFleet, "id">, view: IntelEntityView): ServerFleet {
   const telemetry = view.fields.telemetry as IntelValue<ServerFleet> | undefined;
   if (telemetry && telemetry.status !== "unknown") return telemetry.value;
   const shipCountIntel = view.fields.shipCount as IntelValue<number> | undefined;
@@ -219,7 +222,7 @@ function createPartialFleet(source: ServerFleet, view: IntelEntityView): ServerF
   };
 }
 
-function createPartialShip(source: ServerShip, view: IntelEntityView): ServerShip {
+function createPartialShip(source: Pick<ServerShip, "id">, view: IntelEntityView): ServerShip {
   const telemetry = view.fields.telemetry as IntelValue<ServerShip> | undefined;
   if (telemetry && telemetry.status !== "unknown") return telemetry.value;
   return {
@@ -235,18 +238,12 @@ function createPartialShip(source: ServerShip, view: IntelEntityView): ServerShi
 
 export function getVisibleFullStarbases(ctx: RuntimeContext, perspective: GalaxyPerspective): ServerStarbase[] {
   if (perspective.mode === "observer") return ctx.state.starbases;
-  return ctx.state.starbases.flatMap((starbase) => {
-    const view = getIntelEntityView(ctx.state, perspective.factionId, "starbase", starbase.id);
-    return view?.fields.existence ? [createPartialStarbase(starbase, view)] : [];
-  });
+  return getKnownDiscreteEntityViews(ctx.state, perspective.factionId, "starbase").map((view) => createPartialStarbase({ id: view.id }, view));
 }
 
 export function getVisibleFullFleets(ctx: RuntimeContext, perspective: GalaxyPerspective): ServerFleet[] {
   if (perspective.mode === "observer") return ctx.state.fleets;
-  return ctx.state.fleets.flatMap((fleet) => {
-    const view = getIntelEntityView(ctx.state, perspective.factionId, "fleet", fleet.id);
-    return view?.fields.existence ? [createPartialFleet(fleet, view)] : [];
-  });
+  return getKnownDiscreteEntityViews(ctx.state, perspective.factionId, "fleet").map((view) => createPartialFleet({ id: view.id }, view));
 }
 
 export function getVisibleFullShips(
@@ -256,11 +253,9 @@ export function getVisibleFullShips(
 ): ServerShip[] {
   const visibleFleetIds = new Set(fleets.map((fleet) => fleet.id));
   if (perspective.mode === "observer") return ctx.state.ships.filter((ship) => visibleFleetIds.has(ship.fleetId));
-  return ctx.state.ships.flatMap((ship) => {
-    if (!visibleFleetIds.has(ship.fleetId)) return [];
-    const view = getIntelEntityView(ctx.state, perspective.factionId, "ship", ship.id);
-    return view?.fields.existence ? [createPartialShip(ship, view)] : [];
-  });
+  return getKnownDiscreteEntityViews(ctx.state, perspective.factionId, "ship")
+    .filter((view) => visibleFleetIds.has(intelValue(view, "fleetId", "")))
+    .map((view) => createPartialShip({ id: view.id }, view));
 }
 
 export function createVisibleDetailState(ctx: RuntimeContext, perspective: GalaxyPerspective) {
@@ -325,13 +320,11 @@ export function createSystemDetailPayload(
       getPerspectiveEntityView(ctx.state, perspective, "system", starId),
       ...partials.flatMap((entry) => entry.intelligence),
     ].filter((entry): entry is IntelEntityView => entry !== null);
-    result.payload.commandLinked = hasCommandLink(ctx.state, perspective.factionId, starId);
   } else {
     result.payload.intelligence = [
       getPerspectiveEntityView(ctx.state, perspective, "star", starId)!,
       getPerspectiveEntityView(ctx.state, perspective, "system", starId)!,
     ];
-    result.payload.commandLinked = true;
   }
   return {
     payload: result.payload,
@@ -389,7 +382,7 @@ export function createDiplomacyDetailPayload(ctx: RuntimeContext, perspective: G
   const playerFactionId = perspective.mode === "faction" ? perspective.factionId : null;
   const factions: FactionState[] = ctx.state.factions.map((faction) => ({
     ...faction,
-    discoveredStarIds: Array.from(getKnownStarIds(ctx.state, faction.id)),
+    discoveredStarIds: playerFactionId === null || playerFactionId === faction.id ? Array.from(getKnownStarIds(ctx.state, faction.id)) : [],
   }));
   const activeWars = ctx.state.diplomacy.wars.filter((war) => !Number.isFinite(war.endedAtYear ?? Number.NaN));
   const activeTreaties = ctx.state.diplomacy.treaties.filter((treaty) => !Number.isFinite(treaty.cancelledAtYear ?? Number.NaN));
@@ -430,9 +423,13 @@ export function createDiplomacyDetailPayload(ctx: RuntimeContext, perspective: G
         && isTreatyArticleSuspended(ctx.state.diplomacy, MIGRATION_PACT_ARTICLE_ID, playerFactionId, faction.id),
     };
   });
-  const wars = playerFactionId === null
+  const relevantWars = playerFactionId === null
     ? activeWars
     : activeWars.filter((war) => pairRelevant(war.attackerFactionId, war.defenderFactionId));
+  const wars = playerFactionId === null ? relevantWars : relevantWars.map((war) => ({
+    ...war,
+    preWarOwnership: war.preWarOwnership.filter(([, ownerId]) => ownerId === playerFactionId),
+  }));
   const treaties = playerFactionId === null
     ? activeTreaties
     : activeTreaties.filter((treaty) => pairRelevant(treaty.factionIds[0], treaty.factionIds[1]));
@@ -472,14 +469,15 @@ export function createEligiblePeaceTransferSystems(
     ) {
       continue;
     }
-    for (const starbase of ctx.state.starbases) {
+    const knownStarbases = playerFactionId === null ? ctx.state.starbases : getVisibleFullStarbases(ctx, { mode: "faction", factionId: playerFactionId });
+    for (const starbase of knownStarbases) {
       if (starbase.ownerId !== war.attackerFactionId && starbase.ownerId !== war.defenderFactionId) continue;
       const toFactionId = starbase.ownerId === war.attackerFactionId ? war.defenderFactionId : war.attackerFactionId;
       const star = ctx.state.stars[starbase.starId];
       rows.push({
         starbaseId: starbase.id,
         starId: starbase.starId,
-        starName: star?.name ?? `System ${starbase.starId}`,
+        starName: playerFactionId === null ? star?.name ?? `System ${starbase.starId}` : intelValue(getIntelEntityView(ctx.state, playerFactionId, "star", starbase.starId), "name", `System ${starbase.starId}`),
         ownerId: starbase.ownerId,
         ownerName: ctx.state.factions.find((faction) => faction.id === starbase.ownerId)?.name ?? `Faction ${starbase.ownerId}`,
         fromFactionId: starbase.ownerId,
@@ -563,7 +561,9 @@ export function createDetailPayload(
   perspective: GalaxyPerspective,
   scope: GameDetailScope,
   id: string | number | null | undefined,
+  options: { skipRevision?: boolean } = {},
 ): { payload: GameDetailPayload; revision: string; normalizedId: string | number | null } | { error: string } {
+  const revision = (payload: unknown) => options.skipRevision ? "ai" : createRevision(payload);
   if (scope === "system") {
     const starId = Number(id);
     if (!Number.isInteger(starId)) return { error: "System is not available." };
@@ -579,7 +579,7 @@ export function createDetailPayload(
     const partial = createPartialPlanetDetail(ctx, perspective, planetState, planet);
     if (!partial) return { error: "Planet is not available." };
     const payload = { starId: planetState.starId, ...partial };
-    return { payload, revision: createRevision(payload), normalizedId: planetId };
+    return { payload, revision: revision(payload), normalizedId: planetId };
   }
 
   if (scope === "starbase") {
@@ -591,9 +591,8 @@ export function createDetailPayload(
     const payload = {
       starbase: perspective.mode === "observer" ? starbase : createPartialStarbase(starbase, view),
       intelligence: [view],
-      commandLinked: perspective.mode === "observer" || hasCommandLink(ctx.state, perspective.factionId, starbase.starId),
     };
-    return { payload, revision: createRevision(payload), normalizedId: starbaseId };
+    return { payload, revision: revision(payload), normalizedId: starbaseId };
   }
 
   if (scope === "fleet") {
@@ -613,10 +612,8 @@ export function createDetailPayload(
         return shipView?.fields.existence ? [createPartialShip(ship, shipView)] : [];
       }),
       intelligence: [view, ...shipViews],
-      commandLinked: perspective.mode === "observer"
-        || (!fleet.hyperlanePosition && hasCommandLink(ctx.state, perspective.factionId, fleet.currentStarId)),
     };
-    return { payload, revision: createRevision(payload), normalizedId: fleetId };
+    return { payload, revision: revision(payload), normalizedId: fleetId };
   }
 
   if (scope === "fleetManager") {
@@ -632,19 +629,21 @@ export function createDetailPayload(
       combatReports: detailState.combatReports,
       armies: detailState.armies,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "planetManager") {
     const detailState = createVisibleDetailState(ctx, perspective);
     const ownerId = perspective.mode === "faction" ? perspective.factionId : null;
     const planets = ctx.state.planetStates
-      .filter((planetState) => ownerId === null || (ctx.state.starOwnership[planetState.starId] ?? -1) === ownerId)
+      .filter((planetState) => ownerId === null || planetState.ownerId === ownerId || (ctx.state.starOwnership[planetState.starId] ?? -1) === ownerId)
       .filter((planetState) => canAccessPlanet(ctx, perspective, planetState))
       .map((planetState) => {
         const star = ctx.state.stars[planetState.starId];
         const planet = getPlanetConfig(ctx, planetState);
         if (!star || !planet) return null;
+        const partial = createPartialPlanetDetail(ctx, perspective, planetState, planet);
+        if (!partial) return null;
         const systemOwnerId = ctx.state.starOwnership[planetState.starId] ?? -1;
         const relevantFactionId = ownerId ?? systemOwnerId;
         const foundingSpeciesId = relevantFactionId >= 0
@@ -662,8 +661,8 @@ export function createDetailPayload(
           starName: star.name,
           ownerId: planetState.ownerId ?? -1,
           systemOwnerId,
-          planet,
-          planetState,
+          planet: partial.planet,
+          planetState: partial.planetState,
           foundingSpeciesId,
           foundingSpeciesName,
           foundingSpeciesHabitability: colonizationEligibility?.foundingSpeciesHabitability ?? null,
@@ -676,12 +675,12 @@ export function createDetailPayload(
       leaders: detailState.leaders,
       factionEconomies: detailState.factionEconomies,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "market") {
     const payload = createMarketDetailPayload(ctx, perspective);
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "technology") {
@@ -690,7 +689,7 @@ export function createDetailPayload(
       technologies: detailState.technologies,
       factionEconomies: detailState.factionEconomies,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "leaders") {
@@ -700,7 +699,7 @@ export function createDetailPayload(
       fleets: detailState.fleets,
       planetStates: detailState.planetStates,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "government") {
@@ -714,17 +713,17 @@ export function createDetailPayload(
       technologies: detailState.technologies,
       factionEconomies: detailState.factionEconomies,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "society") {
     const payload = createSocietyDetailPayload(ctx, perspective);
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "diplomacy") {
     const payload = createDiplomacyDetailPayload(ctx, perspective);
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "selection") {
@@ -735,7 +734,7 @@ export function createDetailPayload(
       starbases: detailState.starbases,
       leaders: detailState.leaders,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "hud") {
@@ -746,7 +745,7 @@ export function createDetailPayload(
       habitedPlanetSystemIds: detailState.habitedPlanetSystemIds,
       starOwnership: detailState.starOwnership,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   return { error: "Details are not available." };

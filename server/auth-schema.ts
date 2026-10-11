@@ -75,6 +75,7 @@ export function initializeAuthSchema(db: AuthDatabaseConnection): void {
       flag_design TEXT,
       species_setup TEXT,
       joined_at INTEGER NOT NULL,
+      last_activity_at INTEGER NOT NULL,
       PRIMARY KEY(game_id, account_id),
       UNIQUE(game_id, faction_id),
       FOREIGN KEY(game_id) REFERENCES games(id) ON DELETE CASCADE,
@@ -198,6 +199,10 @@ export function initializeAuthSchema(db: AuthDatabaseConnection): void {
   }
   if (!membershipColumns.some((column) => column.name === 'species_setup')) {
     db.exec(`ALTER TABLE game_memberships ADD COLUMN species_setup TEXT`);
+  }
+  if (!membershipColumns.some((column) => column.name === 'last_activity_at')) {
+    db.exec(`ALTER TABLE game_memberships ADD COLUMN last_activity_at INTEGER NOT NULL DEFAULT 0`);
+    db.prepare(`UPDATE game_memberships SET last_activity_at = ?`).run(Date.now());
   }
 
   const gameColumns = db.prepare(`PRAGMA table_info(games)`).all() as Array<{ name: string }>;

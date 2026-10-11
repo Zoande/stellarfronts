@@ -43,6 +43,10 @@ See [the local development guide](docs/must-read/06-local-dev-and-environments.m
 
 ## Architecture
 
+For an isolated overnight test with 15 active AIs, the full default map, every production tick and forensic recording, run `npm run grandsimulation`. It defaults to 15 wall hours and an 80 GB soft budget with old-log compaction. It uses no live servers or auth database. See the [grand simulation guide](docs/server/grand-simulation.md) for storage estimates, recovery and result analysis.
+
+For an isolated three-country combat test with two matched colonies each, run `npm run ai:simulate -- war --days 1800`. The countries start at war and cannot make AI peace in this fixture. The AI must recruit and deploy its own ground troops. See the [war validation guide](docs/server/war-validation.md) for recordings and timing limits.
+
 StellarFronts normally runs as three long-lived processes:
 
 - `src/`: React pages, BabylonJS scenes, DOM HUD/panels, and gameplay modules shared with the server.
@@ -75,7 +79,7 @@ Implemented systems include:
 
 - A deterministic 500-star, 15-faction galaxy with hyperlanes and generated planets/nebulae.
 - Field-level intelligence with sensor suites, current/stale observations, known lanes, nebula
-  blocking, and authority-based command links.
+  blocking, and current information for owned assets.
 - Real-time fleet movement with route segments, system/hyperlane travel, orbiting, merging, retreat,
   tactical formations, repair orders, and selectable doctrines.
 - Modular ship design across hulls, sections, weapons, defenses, and utilities.
@@ -122,9 +126,9 @@ are stored under `server/state/games/<gameId>/game-state.json`.
 
 ## Versioning
 
-The current build advertises protocol version 11 and schema version 30. Schema 30 is a deliberate
+The current build advertises protocol version 12 and schema version 30. Schema 30 is a deliberate
 new-game boundary for persistent Army Units and ground battles; schema-29 saves are not migrated.
-The browser client accepts wire protocols 5 through 11. The orchestrator
+The browser client accepts wire protocols 5 through 12. The orchestrator
 checks compatibility before moving a game and creates checksummed, version-aware backups around
 destructive operations. Corrupt or incompatible saves are quarantined and preserved rather than
 being replaced with a fresh galaxy.
@@ -153,6 +157,9 @@ wire state.
 ## Repository map
 
 ```text
+package.json     Project metadata, dependencies, and npm commands
+*.config.*       Tool configuration (Vite, TypeScript, Wrangler)
+scripts/         Local utilities, asset generators, and bundle checks
 src/
   auth/          Auth client and shared account/profile types
   components/    React shells and shared page components
@@ -170,9 +177,12 @@ server/
   index.ts       Game server/runtime and command handlers
   orchestrator.ts Multi-version host and gateway
 docs/            Engineering and gameplay-system documentation
-resources/       Source art and model resources
+resources/       Source and original art, models, and texture packs
 public/          Browser-served static assets
 ```
+
+Original, unprocessed assets belong under `resources/original-assets/` (split into `models/` and
+`textures/`). Runtime assets served by the client belong under `public/`.
 
 ## Documentation
 

@@ -702,14 +702,18 @@ export function refreshLeaderPool(
   dayIndex: number,
   year: number,
   archetypesByFaction: ReadonlyMap<number, SpeciesArchetypeId> = new Map(),
+  preserveExisting = false,
 ): LeaderState[] {
   const retained = leaders.filter((leader) => leader.status !== "pool");
   const next = retained.slice();
+  const existing = new Map(leaders.filter((leader) => leader.status === "pool").map((leader) => [leader.id, leader]));
   for (const factionId of factionIds) {
     const archetypeId = archetypesByFaction.get(factionId) ?? "humanoid";
     for (let index = 0; index < LEADER_POOL_PER_CLASS; index += 1) {
-      next.push(createLeaderCandidate(factionId, "civilian", dayIndex, index, year, "pool", archetypeId));
-      next.push(createLeaderCandidate(factionId, "military", dayIndex, index, year, "pool", archetypeId));
+      for (const leaderClass of ["civilian", "military"] as const) {
+        const candidate = createLeaderCandidate(factionId, leaderClass, dayIndex, index, year, "pool", archetypeId);
+        next.push(preserveExisting ? existing.get(candidate.id) ?? candidate : candidate);
+      }
     }
   }
   return next;
@@ -823,5 +827,5 @@ export function normalizeLeadersForFactions(
     }
   }
 
-  return refreshLeaderPool(normalized, factionIds, dayIndex, year, archetypesByFaction);
+  return refreshLeaderPool(normalized, factionIds, dayIndex, year, archetypesByFaction, true);
 }

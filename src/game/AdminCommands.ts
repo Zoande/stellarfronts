@@ -85,6 +85,7 @@ export const ADMIN_COMMAND_DEFINITIONS: AdminCommandDefinition[] = [
   command("economy_status", "help", "economy_status <owner|me|all>", "Summarize faction economy state."),
   command("tech_status", "technology", "tech_status <owner|me|all>", "Summarize faction technology progress."),
   command("state_summary", "help", "state_summary", "Summarize global game state."),
+  command("ai_wars", "combat", "ai_wars <on|off|status>", "Set the persisted game tag allowing AI war declarations (default off)."),
 
   command("tick_size", "time", "tick_size <days>", "Set game days advanced per simulation tick."),
   command("tick_speed", "time", "tick_speed <seconds>", "Set real seconds per simulation tick; decimals are supported."),
@@ -115,7 +116,7 @@ export const ADMIN_COMMAND_DEFINITIONS: AdminCommandDefinition[] = [
   command("intel_inspect", "ownership", "intel_inspect <owner|me> [kind] [id]", "Inspect stored intelligence and current sensor grants."),
   command("intel_report", "ownership", "intel_report <owner|me> <star|system|planet|starbase|fleet|ship|faction> <id> [fields=a,b]", "Add a dated one-shot intelligence report."),
   command("intel_revoke", "ownership", "intel_revoke <owner|me> [kind] [id] [--confirm]", "Revoke stored intelligence reports.", { destructive: true }),
-  command("sensor_debug", "ownership", "sensor_debug <owner|me>", "Inspect sources, bands, grants, command links, and nebula blocks."),
+  command("sensor_debug", "ownership", "sensor_debug <owner|me>", "Inspect sources, bands, grants, and nebula blocks."),
   command("own_system", "ownership", "own_system <systemId|selected|current> <owner|none>", "Set system ownership."),
   command("set_home_system", "ownership", "set_home_system <owner> <systemId> [--confirm]", "Move a faction home-system pointer.", { destructive: true }),
 

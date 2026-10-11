@@ -53,7 +53,7 @@ merging, orbiting, and retreat are handled in
 
 `FleetOrderType` also includes persistent `colonize`. A colonization order stores the destination
 planet in its movement plan, travels to planetary orbit, and calls the server-authoritative founding
-path on arrival. Stop, replacement, retreat, merge, and command-link recovery replace/cancel it
+path on arrival. Stop, replacement, retreat, and merge replace/cancel it
 through the ordinary order lifecycle. Arrival failures clear the order without consuming a ship.
 See [population-and-planets.md](population-and-planets.md) for eligibility and colony effects.
 

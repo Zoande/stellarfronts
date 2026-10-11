@@ -156,6 +156,7 @@ interface GameSummaryRow extends GameRow {
   flag_design: string | null;
   species_setup: string | null;
   joined_at: number | null;
+  last_activity_at: number | null;
   last_entered_at: number | null;
 }
 
@@ -167,6 +168,7 @@ interface MembershipRow {
   flag_design: string | null;
   species_setup: string | null;
   joined_at: number;
+  last_activity_at: number;
 }
 
 interface NewsPostRow {
@@ -767,13 +769,14 @@ export class AuthStore {
         own_members.flag_design,
         own_members.species_setup,
         own_members.joined_at,
+        own_members.last_activity_at,
         visits.last_entered_at
       FROM games g
       LEFT JOIN game_memberships all_members ON all_members.game_id = g.id
       LEFT JOIN game_memberships own_members ON own_members.game_id = g.id AND own_members.account_id = ?
       LEFT JOIN game_visits visits ON visits.game_id = g.id AND visits.account_id = ?
       WHERE g.status != 'archived'
-      GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.flag_design, own_members.species_setup, own_members.joined_at, visits.last_entered_at
+      GROUP BY g.id, own_members.faction_id, own_members.country_name, own_members.flag_design, own_members.species_setup, own_members.joined_at, own_members.last_activity_at, visits.last_entered_at
       ORDER BY COALESCE(visits.last_entered_at, 0) DESC, g.created_at DESC, g.id ASC
     `).all(account.id, account.id) as GameSummaryRow[];
     const runtimeById = new Map(
@@ -788,7 +791,7 @@ export class AuthStore {
 
   getGameMembership(gameId: string, accountId: number): GameMembership | null {
     const row = this.db.prepare(`
-      SELECT game_id, account_id, faction_id, country_name, flag_design, species_setup, joined_at
+      SELECT game_id, account_id, faction_id, country_name, flag_design, species_setup, joined_at, last_activity_at
       FROM game_memberships
       WHERE game_id = ? AND account_id = ?
     `).get(gameId, accountId) as MembershipRow | undefined;
@@ -797,7 +800,7 @@ export class AuthStore {
 
   listGameMemberships(gameId: string): GameMembership[] {
     const rows = this.db.prepare(`
-      SELECT game_id, account_id, faction_id, country_name, flag_design, species_setup, joined_at
+      SELECT game_id, account_id, faction_id, country_name, flag_design, species_setup, joined_at, last_activity_at
       FROM game_memberships
       WHERE game_id = ?
       ORDER BY faction_id ASC
@@ -852,9 +855,9 @@ export class AuthStore {
         ?? createFlagDesign({ seed: `${game.id}:${account.id}:${countryName}` });
       const speciesSetup = sanitizeSpeciesSetupInput(speciesSetupInput, `${countryName} Founders`);
       this.db.prepare(`
-        INSERT INTO game_memberships (game_id, account_id, faction_id, country_name, flag_design, species_setup, joined_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(game.id, account.id, factionId, countryName, JSON.stringify(flagDesign), JSON.stringify(speciesSetup), joinedAt);
+        INSERT INTO game_memberships (game_id, account_id, faction_id, country_name, flag_design, species_setup, joined_at, last_activity_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(game.id, account.id, factionId, countryName, JSON.stringify(flagDesign), JSON.stringify(speciesSetup), joinedAt, joinedAt);
       return this.getGameMembership(game.id, account.id);
     });
     if (!membership) {
@@ -1162,6 +1165,15 @@ export class AuthStore {
       ON CONFLICT(game_id, account_id) DO UPDATE SET
         last_entered_at = excluded.last_entered_at
     `).run(gameId, account.id, Date.now());
+  }
+
+  recordGameActivity(gameId: string, accountId: number, atMs: number): boolean {
+    if (!Number.isSafeInteger(atMs) || atMs < 0) return false;
+    const result = this.db.prepare(`
+      UPDATE game_memberships SET last_activity_at = ?
+      WHERE game_id = ? AND account_id = ? AND last_activity_at < ?
+    `).run(atMs, gameId, accountId, atMs);
+    return result.changes > 0;
   }
 
   setGameRuntimeStats(stats: DevGameRuntimeStats): void {
@@ -1556,6 +1568,7 @@ export class AuthStore {
       flagDesign: parseStoredFlagDesign(row.flag_design),
       speciesSetup: parseStoredSpeciesSetup(row.species_setup),
       joinedAt: row.joined_at,
+      lastActivityAt: row.last_activity_at,
     };
   }
 
@@ -1575,6 +1588,7 @@ export class AuthStore {
         flag_design: row.flag_design,
         species_setup: row.species_setup,
         joined_at: row.joined_at,
+        last_activity_at: row.last_activity_at ?? row.joined_at,
       });
     const controlledCountries = Number(row.controlled_countries ?? 0);
     const isFull = controlledCountries >= game.countryCapacity;
@@ -2284,6 +2298,7 @@ export type GameRuntimeAuthPort = Pick<
   | 'isAdminAccount'
   | 'listGameMemberships'
   | 'recordGameEnter'
+  | 'recordGameActivity'
   | 'recordGameStateVersions'
   | 'spendPlayerDarkMatter'
 >;

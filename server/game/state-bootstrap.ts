@@ -1,3 +1,5 @@
+import { refreshIntelligence } from "./intelligence";
+import { createDeterministicState, normalizeDeterministicState, recoverRuntimeIdCounter } from "./determinism";
 // =============================================================================
 // Game state birth & rehydration — extracted from server/index.ts
 //
@@ -34,7 +36,7 @@ import {
 } from "../../src/data/Starbase";
 import type { StarbaseLevel } from "../../src/data/Starbase";
 import { calculateShipDesignStats, createDefaultShipDesign } from "../../src/data/ShipDesigns";
-import { createInitialFactionEconomyState } from "../../src/data/Economy";
+import { createInitialFactionEconomyState, createPlanetBuildingState } from "../../src/data/Economy";
 import { normalizeFactionTechState } from "../../src/data/Technology";
 import { createInitialGovernmentStates, normalizeGovernmentStatesForFactions } from "../../src/data/Government";
 import { createDefaultSpeciesRightsState } from "../../src/data/Species";
@@ -81,7 +83,7 @@ const SF_VERSION_ID = VERSION_MANIFEST.versionId;
 
 // === EXTRACTED BODY BELOW (ctx threaded as first parameter) ===
 export function createInitialState(ctx: RuntimeContext): GameState {
-  const cfg = { ...GALAXY_MAP, seed: ctx.game.seed };
+  const cfg = { ...GALAXY_MAP, seed: ctx.game.seed, ...(ctx.services?.initialWorld ? { starCount: ctx.services.initialWorld.starCount } : {}) };
   const stars = generateStarMap(
     cfg.width,
     cfg.height,
@@ -90,7 +92,7 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     cfg.minStarSpacing,
     cfg.shape,
   );
-  const factions = buildFactions(stars, cfg);
+  const factions = buildFactions(stars, cfg, ctx.services?.initialWorld?.factionCount);
   const species = normalizeSpeciesForFactions(factions, []);
   ensureHabitedHomePlanets(stars, factions.map((faction) => faction.homeStarId));
   const homeStarIds = factions.map((faction) => faction.homeStarId);
@@ -110,7 +112,12 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     const homePlanet = planetStates.find((planetState) => (
       planetState.starId === faction.homeStarId && planetState.isHabited
     ));
-    if (homePlanet) homePlanet.ownerId = faction.id;
+    if (homePlanet) {
+      homePlanet.ownerId = faction.id;
+      // New spacefaring empires need recurring research from their first day.
+      // Apply only at world creation; restored player layouts remain authoritative.
+      homePlanet.buildings.city[3] = createPlanetBuildingState("researchLabs");
+    }
   }
   applyPlanetStatesToStars(stars, planetStates);
   const starbaseCombat = STARBASE_LEVEL_DEFINITIONS.starbase.combat;
@@ -164,13 +171,14 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     return [combatFleet, constructionFleet];
   });
 
-  const now = Date.now();
+  const now = ctx.services?.now?.() ?? 0;
   const startMonth = gameYearToMonthIndex(GAME_START_YEAR);
   const startHour = gameYearToHourIndex(GAME_START_YEAR);
   const startPopulationWeek = gameYearToWeekIndex(GAME_START_YEAR);
   const startLeaderDay = getLeaderDayIndex(GAME_START_YEAR);
   const created: GameState = {
     schemaVersion: 30,
+    determinism: ctx.state?.determinism ?? createDeterministicState(ctx.services?.simulationSeed ?? ctx.game.seed),
     stars,
     nebulae,
     planetStates,
@@ -245,9 +253,32 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     );
   }
 
+  let decoded: unknown;
+  try { decoded = JSON.parse(raw); }
+  catch (error) { throw new GameStateLoadError(ctx.game.id, ctx.statePath, "Save could not be validated. The existing file was preserved.", { cause: error }); }
+  return restoreState(ctx, decoded);
+}
+
+/** The same schema/migration/normalization path for disk saves and laboratory checkpoints. */
+export function restoreState(ctx: RuntimeContext, decoded: unknown): GameState {
   try {
-    const decoded: unknown = JSON.parse(raw);
     const { state: parsed, originalSchema: onDiskSchema } = migrateGameStateEnvelope(decoded);
+    const missingDeterminism = parsed.determinism === undefined;
+    const legacyIds = missingDeterminism ? recoverRuntimeIdCounter(parsed) : 0;
+    parsed.determinism = normalizeDeterministicState(parsed.determinism, ctx.services?.simulationSeed);
+    parsed.determinism.idCounter = Math.max(parsed.determinism.idCounter, legacyIds);
+    if (missingDeterminism) ctx.hasDirtyState = true;
+    ctx.state = parsed;
+    parsed.caretakerEpisodes = parsed.caretakerEpisodes && typeof parsed.caretakerEpisodes === "object" && !Array.isArray(parsed.caretakerEpisodes)
+      ? parsed.caretakerEpisodes : {};
+    if (parsed.passiveEpisodes !== undefined) parsed.passiveEpisodes = parsed.passiveEpisodes && typeof parsed.passiveEpisodes === "object" && !Array.isArray(parsed.passiveEpisodes)
+      ? parsed.passiveEpisodes : {};
+    if (parsed.activeEpisodes !== undefined) parsed.activeEpisodes = parsed.activeEpisodes && typeof parsed.activeEpisodes === "object" && !Array.isArray(parsed.activeEpisodes)
+      ? parsed.activeEpisodes : {};
+    for (const episode of Object.values(parsed.activeEpisodes ?? {})) {
+      if (episode && typeof episode === "object" && !Number.isFinite(episode.nextArmyYear)) episode.nextArmyYear = Number.isFinite(parsed.clock?.year) ? parsed.clock.year : GAME_START_YEAR;
+    }
+    if (parsed.aiSettings !== undefined) parsed.aiSettings = { allowWarDeclarations: parsed.aiSettings?.allowWarDeclarations === true };
     parsed.armies = Array.isArray(parsed.armies)
       ? parsed.armies.map(normalizeArmyUnit).filter((army): army is NonNullable<typeof army> => army !== null)
       : [];
@@ -278,7 +309,7 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     parsed.situations = Array.isArray(parsed.situations) ? parsed.situations : [];
     parsed.events = Array.isArray(parsed.events) ? parsed.events : [];
     parsed.factionModifiers = Array.isArray(parsed.factionModifiers) ? parsed.factionModifiers : [];
-    parsed.recentCombatContacts = [];
+    parsed.recentCombatContacts = Array.isArray(parsed.recentCombatContacts) ? parsed.recentCombatContacts : [];
     parsed.combatProjectiles = Array.isArray(parsed.combatProjectiles) ? parsed.combatProjectiles : [];
     parsed.combatReports = Array.isArray(parsed.combatReports)
       ? parsed.combatReports.map((report) => ({
@@ -288,7 +319,7 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
       }))
       : [];
     parsed.shipDesigns = normalizeShipDesignsForFactions(parsed.factions, parsed.shipDesigns, parsed.clock?.year ?? GAME_START_YEAR);
-    parsed.clock = normalizeClock(parsed.clock);
+    parsed.clock = normalizeClock(parsed.clock, ctx.services?.now?.() ?? 0);
     const factionsBeforeSpecies = JSON.stringify(parsed.factions ?? []);
     const rawSpecies = (parsed as GameState & { species?: unknown }).species;
     parsed.species = normalizeSpeciesForFactions(parsed.factions, rawSpecies);
@@ -428,7 +459,7 @@ export async function loadState(ctx: RuntimeContext): Promise<GameState> {
     if (metadataChanged || habitationChanged || normalizedPlanetStates.changed || planetStateApplied || factionEconomiesChanged || factionTechnologiesChanged || governmentsChanged || speciesChanged || speciesRightsChanged || speciesPopulationChanged || normalizedDiplomacy.changed || leadersChanged || homeStarbaseChanged || ownershipChanged) {
       ctx.hasDirtyState = true;
     }
-    refreshDiscovery(parsed);
+    refreshIntelligence(parsed, true);
     return parsed;
   } catch (error) {
     throw new GameStateLoadError(

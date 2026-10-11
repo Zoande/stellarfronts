@@ -50,8 +50,8 @@ phases run in this order — each adds fields to the `changed` set:
 
 1. **Dark Matter fleet billing + clock** — bill moving-day boost boundaries up to the target time,
    retime exhausted fleets, then advance `clock.year`; add `clock`/`fleets`.
-2. **Intelligence and fleet movement** — refresh sensor intelligence, stop/recover fleets that lost
-   their command link, run `advanceFleet`, and refresh intelligence again if anything moved.
+2. **Intelligence and fleet movement** — refresh sensor intelligence, run `advanceFleet`, and
+   refresh intelligence again if anything moved.
 3. **Missing-in-action** — `processMissingInActionFleets` (emergency-retreat recovery).
 4. **Continuous combat** — `processContinuousFleetCombat` → ships/fleets/starbases/combatContacts/
    visibility.

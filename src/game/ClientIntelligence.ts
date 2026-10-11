@@ -8,7 +8,6 @@ import { gameYearToDateTime, GAME_DAYS_PER_YEAR } from "./GameTime";
 
 const entities = new Map<string, IntelEntityView>();
 let currentYear = 0;
-let commandLinkedStars = new Set<number>();
 
 function key(kind: IntelEntityKind, id: string | number): string {
   return `${kind}:${id}`;
@@ -17,14 +16,7 @@ function key(kind: IntelEntityKind, id: string | number): string {
 export function setClientIntelligence(view: GalaxyIntelligenceView, year?: number): void {
   entities.clear();
   if (Number.isFinite(year)) currentYear = Number(year);
-  commandLinkedStars = new Set(view.sensorDebug?.commandLinkedStarIds ?? []);
   for (const entity of view.entities) entities.set(key(entity.kind, entity.id), entity);
-}
-
-export function hasClientEntityCommandLink(kind: IntelEntityKind, id: string | number): boolean {
-  const fieldId = kind === "fleet" ? "currentStarId" : "starId";
-  const field = getClientIntelField<number>(kind, id, fieldId);
-  return field.status !== "unknown" && commandLinkedStars.has(Number(field.value));
 }
 
 export function getClientIntelYear(): number {

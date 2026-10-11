@@ -62,7 +62,7 @@ max(1, ceil(remainingDays × 0.05))
 ```
 
 That is 1 Dark Matter per 20 remaining days, rounded up. The server validates planet ownership,
-command link, queue membership, and whether the target can still be completed before debiting the
+queue membership, and whether the target can still be completed before debiting the
 account. `completePlanetConstructionQueueItem` applies the district/building/upgrade and recalculates
 the planet economy. The client does not optimistically remove the queue item.
 

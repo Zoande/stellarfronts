@@ -1,3 +1,4 @@
+import { random } from "./determinism";
 import {
   LEADER_POOL_PER_CLASS,
   calculateLeaderLevel,
@@ -58,7 +59,7 @@ export function processLeaderDays(ctx: RuntimeContext, targetDay: number): {
 
     const dailyDeathChance = getLeaderDailyDeathChance(leader.age, leader.lifespan);
     const deathChance = 1 - Math.pow(1 - dailyDeathChance, days);
-    if (Math.random() >= deathChance) continue;
+    if (random(ctx, "leaders") >= deathChance) continue;
     const oldAssignment = leader.assignment;
     leader.status = "dead";
     leader.assignment = null;

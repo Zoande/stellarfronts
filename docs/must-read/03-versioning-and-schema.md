@@ -10,7 +10,7 @@ The checked-in [`server/version-manifest.json`](../../server/version-manifest.js
 artifact metadata:
 
 - `schemaVersion: 30` describes the persisted `GameState`.
-- `protocolVersion: 11` describes WebSocket messages.
+- `protocolVersion: 12` describes WebSocket messages.
 - `runtimeApiVersion: 1` describes the stable control-plane/runtime integration.
 - `migratesFromSchema: [30]` makes the persistent-Army overhaul a deliberate new-game boundary.
 
@@ -53,13 +53,14 @@ locks, and verified backups are described in
 
 ## Wire compatibility
 
-The current client accepts server protocols 5 through 11 through
+The current client accepts server protocols 5 through 12 through
 [`src/game/ProtocolAdapter.ts`](../../src/game/ProtocolAdapter.ts). Every initial snapshot is
 validated and adapted to the current canonical client model before entering the UI. Updates are
 validated against the negotiated protocol and reduced with explicit missing-versus-null semantics.
 Protocol 8+ correlates normal command results by request ID; older protocols retain their legacy
 fire-and-forget behavior. Protocol 11 adds persistent Army Units, ground battles, Army queue orders,
-and their incremental update fields.
+and their incremental update fields. Protocol 12 separates ownership telemetry from sensor
+observations and adds direct visual contact with sparse planetary orbital positions.
 
 Compatibility is never bypassed for the development version. The same static manifest and migration
 checks apply to `dev` and immutable versions.

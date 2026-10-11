@@ -29,13 +29,19 @@ import { STARBASE_BUILDING_DEFINITIONS } from "../../src/data/Starbase";
 import type { GalaxyPerspective } from "../../src/data/Factions";
 import type { GameState } from "./types";
 import { resolveShipDesign } from "./ship-designs";
+import { getFleetSystemPosition, getPlanetSystemPositionAt } from "./system-positions";
+import { RANGE_BAND_SYSTEM_DISTANCE } from "./combat";
+import { getPlanetSystemOrbitRadius, getSystemOrbitLayout } from "../../src/data/SystemCoordinates";
 
 interface TruthField {
+  structured?: boolean;
   value: unknown;
   bundle: IntelBundleId;
 }
 
 interface TruthEntity {
+  structuredRoots?: Array<[string, TruthField]>;
+  fieldIndex?: Map<IntelBundleId, string[]>;
   id: string;
   kind: IntelEntityKind;
   starId: number | null;
@@ -47,22 +53,40 @@ interface SensorSource {
   factionId: number;
   starId: number;
   suites: SensorSuiteId[];
-  authority: boolean;
 }
 
+interface SourceSetCache {
+  singletons: Map<string, Set<string>>;
+  extensions: WeakMap<Set<string>, Map<string, Set<string>>>;
+}
 interface FactionEvaluation {
+  sourceSetCache?: SourceSetCache;
   factionId: number;
   truth: Map<string, TruthEntity>;
   fieldSources: Map<string, Map<IntelFieldId, Set<string>>>;
   coveredStars: Set<number>;
   knownLanes: Set<string>;
   currentLanes: Set<string>;
-  commandLinkedStars: Set<number>;
   sourceBands: Array<{ sourceId: string; suiteId: SensorSuiteId; starId: number; distance: number }>;
   nebulaBlocks: Array<{ sourceId: string; fromStarId: number; toStarId: number }>;
 }
 
 const evaluationCache = new WeakMap<GameState, Map<number, FactionEvaluation>>();
+// A synchronous, read-only payload assembly asks for the same large entity
+// many times. Reuse detached views only within that assembly, never across a
+// command, refresh, faction observation, or simulation update.
+const viewAssemblyCaches = new WeakMap<GameState, { views: Map<string, IntelEntityView | null>; lazyFields: boolean }>();
+export function withIntelViewAssembly<T>(state: GameState, build: () => T, lazyFields = false): T {
+  const previous = viewAssemblyCaches.get(state);
+  viewAssemblyCaches.set(state, { views: new Map(), lazyFields });
+  // Borrow values while synchronous readers assemble the graph, then detach
+  // the complete result once. Nothing borrowed may escape this scope.
+  try { return structuredClone(build()); }
+  finally {
+    if (previous) viewAssemblyCaches.set(state, previous);
+    else viewAssemblyCaches.delete(state);
+  }
+}
 
 const TRADE_BUNDLES = new Set<IntelBundleId>([
   "planetIdentity",
@@ -106,7 +130,22 @@ function addField(
 }
 
 /** Store collections at their stable root and as individually addressable leaves. */
-function addStructuredFields(
+function addStructuredFields(fields: Record<IntelFieldId, TruthField>, prefix: string, value: unknown, bundle: IntelBundleId): void {
+  if (value !== undefined) fields[prefix] = { value, bundle, structured: true };
+}
+
+/** Expand only bundles actually observed, rather than every unknown planet's economy. */
+function expandEntityFields(entity: TruthEntity, bundles?: ReadonlySet<IntelBundleId>, explicitFields: readonly string[] = []): void {
+  entity.structuredRoots ??= Object.entries(entity.fields).filter(([, field]) => field.structured);
+  for (const [prefix, field] of entity.structuredRoots) {
+    if (!field.structured || (bundles && !bundles.has(field.bundle) && !explicitFields.some((id) => id === prefix || id.startsWith(`${prefix}.`)))) continue;
+    field.structured = false;
+    entity.fieldIndex = undefined;
+    expandStructuredValue(entity.fields, prefix, field.value, field.bundle);
+  }
+}
+
+function expandStructuredValue(
   fields: Record<IntelFieldId, TruthField>,
   prefix: string,
   value: unknown,
@@ -121,13 +160,13 @@ function addStructuredFields(
         : isRecord(entry) && typeof entry.speciesId === "string" && typeof entry.job === "string"
           ? `group:${encodeURIComponent(entry.speciesId)}:${encodeURIComponent(entry.job)}:${encodeURIComponent(String(entry.livingStandard ?? ""))}`
           : String(index);
-      addStructuredFields(fields, `${prefix}.${stableSegment}`, entry, bundle);
+      expandStructuredValue(fields, `${prefix}.${stableSegment}`, entry, bundle);
     });
     return;
   }
   if (!isRecord(value)) return;
   for (const [key, entry] of Object.entries(value)) {
-    addStructuredFields(fields, `${prefix}.${key}`, entry, bundle);
+    expandStructuredValue(fields, `${prefix}.${key}`, entry, bundle);
   }
 }
 
@@ -179,6 +218,7 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
       addField(fields, "starId", star.id, "planetPhysical");
       addField(fields, "planetIndex", index, "planetPhysical");
       addField(fields, "orbitRadius", planet.orbitRadius, "planetPhysical");
+      addField(fields, "systemOrbitRadius", getPlanetSystemOrbitRadius(planet, index, getSystemOrbitLayout(star.type)), "planetPhysical");
       addField(fields, "diameter", planet.diameter, "planetPhysical");
       addField(fields, "type", planet.type, "planetPhysical");
       addField(fields, "textureVariation", planet.textureVariation, "planetPhysical");
@@ -285,7 +325,8 @@ function buildTruth(state: GameState): Map<string, TruthEntity> {
     addStructuredFields(fields, "leaders", state.leaders.filter((entry) => entry.factionId === faction.id), "factionLeadership");
     addStructuredFields(fields, "diplomacy", {
       borders: state.diplomacy.borders.filter((entry) => entry.ownerFactionId === faction.id || entry.targetFactionId === faction.id),
-      wars: state.diplomacy.wars.filter((entry) => entry.attackerFactionId === faction.id || entry.defenderFactionId === faction.id),
+      // This is server bookkeeping, not a report of every country's territory.
+      wars: state.diplomacy.wars.filter((entry) => entry.attackerFactionId === faction.id || entry.defenderFactionId === faction.id).map((war) => ({ ...war, preWarOwnership: [] })),
       treaties: state.diplomacy.treaties.filter((entry) => entry.factionIds.includes(faction.id)),
       proposals: state.diplomacy.proposals.filter((entry) => entry.fromFactionId === faction.id || entry.toFactionId === faction.id),
       chatMessages: state.diplomacy.chatMessages.filter((entry) => entry.fromFactionId === faction.id || entry.toFactionId === faction.id),
@@ -314,7 +355,7 @@ function collectSensorSources(state: GameState): SensorSource[] {
       const kind = buildingKind(slot);
       if (!kind || !buildingEnabled(slot)) continue;
       const suites = BUILDING_DEFINITIONS[kind as keyof typeof BUILDING_DEFINITIONS]?.sensorSuiteIds ?? [];
-      if (suites.length > 0) sources.push({ id: `planet:${planet.id}:${kind}`, factionId: planet.ownerId, starId: planet.starId, suites, authority: true });
+      if (suites.length > 0) sources.push({ id: `planet:${planet.id}:${kind}`, factionId: planet.ownerId, starId: planet.starId, suites });
     }
     for (const building of getActivePlanetDefenseBuildings(planet)) {
       const suiteId = PLANET_DEFENSE_BUILDING_DEFINITIONS[building.kind].sensorSuiteIds?.[building.level];
@@ -324,7 +365,6 @@ function collectSensorSources(state: GameState): SensorSource[] {
           factionId: planet.ownerId,
           starId: planet.starId,
           suites: [suiteId],
-          authority: true,
         });
       }
     }
@@ -336,7 +376,7 @@ function collectSensorSources(state: GameState): SensorSource[] {
       if (!kind) continue;
       for (const suiteId of STARBASE_BUILDING_DEFINITIONS[kind].sensorSuiteIds ?? []) suites.add(suiteId);
     }
-    if (suites.size > 0) sources.push({ id: `starbase:${starbase.id}`, factionId: starbase.ownerId, starId: starbase.starId, suites: Array.from(suites), authority: true });
+    if (suites.size > 0) sources.push({ id: `starbase:${starbase.id}`, factionId: starbase.ownerId, starId: starbase.starId, suites: Array.from(suites) });
   }
   for (const fleet of state.fleets) {
     if (fleet.combatStatus === "destroyed" || fleet.retreatState?.status === "mia") continue;
@@ -344,7 +384,7 @@ function collectSensorSources(state: GameState): SensorSource[] {
     if (fleet.hyperlanePosition) continue;
     const suites = new Set<SensorSuiteId>();
     for (const shipId of fleet.shipIds) for (const suite of getShipSuites(state, shipId)) suites.add(suite);
-    if (suites.size > 0) sources.push({ id: `fleet:${fleet.id}`, factionId: fleet.ownerId, starId: fleet.currentStarId, suites: Array.from(suites), authority: false });
+    if (suites.size > 0) sources.push({ id: `fleet:${fleet.id}`, factionId: fleet.ownerId, starId: fleet.currentStarId, suites: Array.from(suites) });
   }
   return sources;
 }
@@ -408,12 +448,26 @@ function grantField(evaluation: FactionEvaluation, entityKey: string, fieldId: s
     entityFields = new Map();
     evaluation.fieldSources.set(entityKey, entityFields);
   }
-  let sources = entityFields.get(fieldId);
-  if (!sources) {
-    sources = new Set();
-    entityFields.set(fieldId, sources);
+  const sources = entityFields.get(fieldId);
+  if (sources?.has(sourceId)) return;
+  const cache = evaluation.sourceSetCache;
+  if (!cache) {
+    const updated = sources ?? new Set<string>(); updated.add(sourceId); entityFields.set(fieldId, updated);
+    return;
   }
-  sources.add(sourceId);
+  // Source sets are immutable within an evaluation. A bundle's thousands of
+  // fields can share the same set; extensions replace instead of mutating it.
+  if (!sources) {
+    let singleton = cache.singletons.get(sourceId);
+    if (!singleton) { singleton = new Set([sourceId]); cache.singletons.set(sourceId, singleton); }
+    entityFields.set(fieldId, singleton);
+  } else {
+    let extensions = cache.extensions.get(sources);
+    if (!extensions) { extensions = new Map(); cache.extensions.set(sources, extensions); }
+    let extended = extensions.get(sourceId);
+    if (!extended) { extended = new Set([...sources, sourceId]); extensions.set(sourceId, extended); }
+    entityFields.set(fieldId, extended);
+  }
 }
 
 function grantEntityBundles(
@@ -423,21 +477,32 @@ function grantEntityBundles(
   sourceId: string,
   explicitFields: readonly IntelFieldId[] = [],
 ): void {
+  expandEntityFields(entity, bundles, explicitFields);
   const key = intelEntityKey(entity.kind, entity.id);
-  for (const [fieldId, field] of Object.entries(entity.fields)) {
-    if (bundles.has(field.bundle) || explicitFields.includes(fieldId)) grantField(evaluation, key, fieldId, sourceId);
+  if (!entity.fieldIndex) {
+    entity.fieldIndex = new Map();
+    for (const [fieldId, field] of Object.entries(entity.fields)) {
+      const fields = entity.fieldIndex.get(field.bundle) ?? [];
+      fields.push(fieldId); entity.fieldIndex.set(field.bundle, fields);
+    }
+  }
+  for (const bundle of bundles) {
+    for (const fieldId of entity.fieldIndex.get(bundle) ?? []) grantField(evaluation, key, fieldId, sourceId);
+  }
+  for (const fieldId of explicitFields) {
+    if (entity.fields[fieldId]) grantField(evaluation, key, fieldId, sourceId);
   }
 }
 
-function createEvaluation(state: GameState, factionId: number, truth: Map<string, TruthEntity>): FactionEvaluation {
+function createEvaluation(state: GameState, factionId: number, truth: Map<string, TruthEntity>, sensorSources = collectSensorSources(state), shareSources = true): FactionEvaluation {
   const evaluation: FactionEvaluation = {
+    sourceSetCache: shareSources ? { singletons: new Map(), extensions: new WeakMap() } : undefined,
     factionId,
     truth,
     fieldSources: new Map(),
     coveredStars: new Set(),
     knownLanes: new Set(),
     currentLanes: new Set(),
-    commandLinkedStars: new Set(),
     sourceBands: [],
     nebulaBlocks: [],
   };
@@ -449,18 +514,15 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
     truthByStar.set(entity.starId, entries);
   }
 
-  const sourceCoverage: Array<{ source: SensorSource; suiteId: SensorSuiteId; coverage: Map<number, number> }> = [];
-  for (const source of collectSensorSources(state).filter((candidate) => candidate.factionId === factionId)) {
+  for (const source of sensorSources.filter((candidate) => candidate.factionId === factionId)) {
     for (const suiteId of new Set(source.suites)) {
       const coverage = computeCoverage(state, source, suiteId, evaluation);
-      sourceCoverage.push({ source, suiteId, coverage });
       const suite = SENSOR_SUITE_DEFINITIONS[suiteId];
       for (const [starId, distance] of coverage) {
         const band = suite.bands[distance];
         if (!band) continue;
         evaluation.coveredStars.add(starId);
         evaluation.sourceBands.push({ sourceId: source.id, suiteId, starId, distance });
-        if (band.commandLink && source.authority) evaluation.commandLinkedStars.add(starId);
         const bundles = new Set(band.bundles);
         for (const entity of truthByStar.get(starId) ?? []) {
           if (band.fleetDetection === "militaryOnly" && !isMilitarySensorTarget(state, entity)) continue;
@@ -481,33 +543,52 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
     }
   }
 
-  // Mobile suites relay command traffic only after their source itself is
-  // connected to an authority network. Iterate to support future relay chains.
-  let commandExpanded = true;
-  while (commandExpanded) {
-    commandExpanded = false;
-    for (const entry of sourceCoverage) {
-      if (entry.source.authority || !Array.from(entry.coverage.keys()).some((starId) => evaluation.commandLinkedStars.has(starId))) continue;
-      for (const [starId, distance] of entry.coverage) {
-        if (!SENSOR_SUITE_DEFINITIONS[entry.suiteId].bands[distance]?.commandLink) continue;
-        if (!evaluation.commandLinkedStars.has(starId)) {
-          evaluation.commandLinkedStars.add(starId);
-          commandExpanded = true;
-        }
-      }
+  // Owned assets always report current information, including ships in transit
+  // or without working sensors. This reveals no foreign assets or remote systems.
+  for (const entity of truth.values()) {
+    if (!["planet", "starbase", "fleet", "ship"].includes(entity.kind)
+      || entity.fields.ownerId?.value !== factionId) continue;
+    const sourceId = `owner:${entity.kind}:${entity.id}`;
+    grantEntityBundles(evaluation, entity, new Set(Object.values(entity.fields).map((field) => field.bundle)), sourceId);
+    if (entity.starId !== null && (entity.kind === "planet" || entity.kind === "starbase")) {
+      evaluation.coveredStars.add(entity.starId);
+      const star = truth.get(intelEntityKey("star", entity.starId));
+      if (star) grantEntityBundles(evaluation, star, new Set(["stellar"]), sourceId);
+      const system = truth.get(intelEntityKey("system", entity.starId));
+      if (system) grantEntityBundles(evaluation, system, new Set(["stellar", "planetPhysical", "starbaseIdentity"]), sourceId);
     }
   }
 
-  // Operational ship sensors self-report their own ship and fleet in transit without scanning either endpoint.
+  // Direct visual contact needs no sensor module. Only the nearby object is
+  // revealed; sharing a system alone grants no sight or planetary private data.
+  const contactBundles = new Set<IntelBundleId>([
+    "planetPhysical", "planetIdentity", "starbaseIdentity",
+    "fleetContact", "fleetClassification", "fleetTelemetry",
+  ]);
   for (const fleet of state.fleets) {
-    if (fleet.ownerId !== factionId || !fleet.hyperlanePosition) continue;
-    const operational = fleet.shipIds.some((shipId) => getShipSuites(state, shipId).length > 0);
-    if (!operational) continue;
-    for (const entity of truth.values()) {
-      if ((entity.kind === "fleet" && entity.id === fleet.id)
-        || (entity.kind === "ship" && fleet.shipIds.includes(entity.id))) {
-        grantEntityBundles(evaluation, entity, new Set(["fleetContact", "fleetClassification", "fleetTelemetry"]), `self-report:${fleet.id}`);
-      }
+    if (fleet.ownerId !== factionId || fleet.hyperlanePosition || fleet.phase === "missingInAction"
+      || fleet.combatStatus === "destroyed" || !fleet.shipIds.some((id) => state.ships.some((ship) => ship.id === id && ship.hull > 0))) continue;
+    const position = getFleetSystemPosition(state, fleet);
+    const sourceId = `visual-contact:${fleet.id}`;
+    const reveal = (kind: IntelEntityKind, id: string | number, target: { x: number; z: number }) => {
+      if (Math.hypot(position.x - target.x, position.z - target.z) > RANGE_BAND_SYSTEM_DISTANCE.pointBlank) return;
+      const entity = truth.get(intelEntityKey(kind, id));
+      if (entity) grantEntityBundles(evaluation, entity, contactBundles, sourceId);
+    };
+    const star = state.stars[fleet.currentStarId];
+    star?.system.planets.forEach((planet, index) => {
+      const entity = (truthByStar.get(star.id) ?? []).find((entry) => entry.kind === "planet" && entry.fields.planetIndex?.value === index);
+      if (entity) reveal("planet", entity.id, getPlanetSystemPositionAt(star, planet, index, state.clock.year));
+    });
+    for (const target of state.starbases) {
+      if (target.starId === fleet.currentStarId) reveal("starbase", target.id, target.systemPosition);
+    }
+    for (const target of state.fleets) {
+      if (target.currentStarId !== fleet.currentStarId || target.hyperlanePosition
+        || target.phase === "missingInAction" || target.combatStatus === "destroyed") continue;
+      const targetPosition = getFleetSystemPosition(state, target);
+      reveal("fleet", target.id, targetPosition);
+      for (const shipId of target.shipIds) reveal("ship", shipId, targetPosition);
     }
   }
 
@@ -542,8 +623,8 @@ function createEvaluation(state: GameState, factionId: number, truth: Map<string
     const starKey = intelEntityKey("star", star.id);
     if (!evaluation.fieldSources.get(starKey)?.has("type")) continue;
     const sourceId = "system-silhouette-scaffold";
-    for (const entity of truth.values()) {
-      if (entity.kind !== "planet" || entity.starId !== star.id) continue;
+    for (const entity of truthByStar.get(star.id) ?? []) {
+      if (entity.kind !== "planet") continue;
       const key = intelEntityKey(entity.kind, entity.id);
       for (const fieldId of ["existence", "starId", "planetIndex", "orbitRadius", "diameter"]) {
         if (entity.fields[fieldId]) grantField(evaluation, key, fieldId, sourceId);
@@ -565,10 +646,25 @@ function rememberObservation(
   value: unknown,
   observedAtYear: number,
   sourceIds: string[],
+  copies?: WeakMap<object, unknown>,
 ): void {
   const key = intelEntityKey(entity.kind, entity.id);
   const stored = store.entities[key] ??= { kind: entity.kind, fields: {} };
-  stored.fields[fieldId] = { value: cloneIntelValue(value), observedAtYear, sourceIds: [...sourceIds].sort() };
+  let copied: unknown;
+  if (value && typeof value === "object" && copies) {
+    if (copies.has(value)) copied = copies.get(value);
+    else {
+      copied = cloneIntelValue(value);
+      const rememberCopies = (source: object, target: unknown): void => {
+        copies.set(source, target);
+        for (const [key, child] of Object.entries(source)) {
+          if (child && typeof child === "object" && !copies.has(child)) rememberCopies(child, (target as Record<string, unknown>)[key]);
+        }
+      };
+      rememberCopies(value, copied);
+    }
+  } else copied = cloneIntelValue(value);
+  stored.fields[fieldId] = { value: copied, observedAtYear, sourceIds: [...sourceIds].sort() };
 }
 
 function seedStartingIntelligence(state: GameState, truth: Map<string, TruthEntity>): void {
@@ -630,18 +726,54 @@ function seedStartingIntelligence(state: GameState, truth: Map<string, TruthEnti
   state.startingIntelligenceSeeded = true;
 }
 
-export function refreshIntelligence(state: GameState): void {
+export function refreshIntelligence(state: GameState, preserveObservations = false, options: { disableSharedSources?: boolean } = {}): void {
   const truth = buildTruth(state);
   seedStartingIntelligence(state, truth);
   const cache = new Map<number, FactionEvaluation>();
+  const sensorSources = collectSensorSources(state);
+  const copies = new WeakMap<object, unknown>();
   for (const faction of state.factions) {
-    const evaluation = createEvaluation(state, faction.id, truth);
+    const evaluation = createEvaluation(state, faction.id, truth, sensorSources, !options.disableSharedSources);
     const store = getStore(state, faction.id);
+    // Upgrade old authority-ledger observations that contained the full private
+    // war ownership map, including its individually addressable array leaves.
+    const ledgerKey = intelEntityKey("faction", faction.id);
+    const ledger = store.entities[ledgerKey];
+    // The owner receives the complete current roster. Expired daily candidates
+    // disappear from that roster permanently; retaining their stable-id leaves
+    // added tens of thousands of stale fields per country per year. Do not
+    // prune foreign ledgers or historical sightings of ships/planets.
+    const ledgerTruth = truth.get(ledgerKey);
+    if (!preserveObservations && ledger && evaluation.fieldSources.get(ledgerKey)?.has("leaders") && ledgerTruth) {
+      for (const fieldId of Object.keys(ledger.fields)) {
+        if (fieldId.startsWith("leaders.") && !Object.hasOwn(ledgerTruth.fields, fieldId)) delete ledger.fields[fieldId];
+      }
+    }
+    if (ledger) for (const [fieldId, observation] of Object.entries(ledger.fields)) {
+      if (!fieldId.startsWith("diplomacy")) continue;
+      if (fieldId.endsWith(".preWarOwnership.length")) { observation.value = 0; continue; }
+      if (fieldId.includes(".preWarOwnership.")) { delete ledger.fields[fieldId]; continue; }
+      if (fieldId.endsWith(".preWarOwnership")) { observation.value = []; continue; }
+      const clearWarMaps = (value: unknown): void => {
+        if (!value || typeof value !== "object") return;
+        for (const [key, child] of Object.entries(value)) {
+          if (key === "preWarOwnership") (value as Record<string, unknown>)[key] = [];
+          else if (child && typeof child === "object") clearWarMaps(child);
+        }
+      };
+      clearWarMaps(observation.value);
+    }
+    const lastKnownStars = new Map(Object.entries(store.entities).map(([key, stored]) => {
+      const fleetId = stored.fields.fleetId?.value;
+      const fleet = typeof fleetId === "string" ? store.entities[intelEntityKey("fleet", fleetId)] : undefined;
+      return [key, Number(stored.fields.starId?.value ?? stored.fields.currentStarId?.value ?? fleet?.fields.currentStarId?.value)] as const;
+    }));
     // Remove a discrete ghost only when a live source scans its last-known
     // location with a band capable of detecting that entity's existence.
-    for (const [entityKey, stored] of Object.entries(store.entities)) {
-      if (truth.has(entityKey) || !["fleet", "ship", "starbase"].includes(stored.kind)) continue;
-      const starId = Number(stored.fields.starId?.value ?? stored.fields.currentStarId?.value);
+    for (const [entityKey, stored] of Object.entries(preserveObservations ? {} : store.entities)) {
+      if (!["fleet", "ship", "starbase"].includes(stored.kind)) continue;
+      if (evaluation.fieldSources.get(entityKey)?.get("existence")?.size) continue;
+      const starId = lastKnownStars.get(entityKey)!;
       if (!Number.isInteger(starId)) continue;
       const requiredBundle: IntelBundleId = stored.kind === "starbase" ? "starbaseIdentity" : "fleetContact";
       const confirmedAbsent = evaluation.sourceBands.some((entry) => (
@@ -650,15 +782,15 @@ export function refreshIntelligence(state: GameState): void {
       ));
       if (confirmedAbsent) delete store.entities[entityKey];
     }
-    for (const [entityKey, fieldMap] of evaluation.fieldSources) {
+    for (const [entityKey, fieldMap] of preserveObservations ? [] : evaluation.fieldSources) {
       const entity = truth.get(entityKey);
       if (!entity) continue;
       for (const [fieldId, sources] of fieldMap) {
         const field = entity.fields[fieldId];
-        if (field) rememberObservation(store, entity, fieldId, field.value, state.clock.year, Array.from(sources));
+        if (field) rememberObservation(store, entity, fieldId, field.value, state.clock.year, Array.from(sources), copies);
       }
     }
-    for (const laneKey of evaluation.currentLanes) {
+    for (const laneKey of preserveObservations ? [] : evaluation.currentLanes) {
       const pair = state.hyperlanes.find(([a, b]) => intelLaneKey(a, b) === laneKey);
       if (!pair) continue;
       store.lanes[laneKey] = { value: pair, observedAtYear: state.clock.year, sourceIds: ["sensor-coverage"] };
@@ -685,47 +817,77 @@ export function getIntelEntityView(
   kind: IntelEntityKind,
   id: string | number,
 ): IntelEntityView | null {
+  const assembly = viewAssemblyCaches.get(state);
+  const assemblyKey = `${factionId}:${kind}:${id}`;
+  if (assembly?.views.has(assemblyKey)) return assembly.views.get(assemblyKey)!;
   const evaluation = ensureEvaluation(state, factionId);
   const key = intelEntityKey(kind, id);
   const truthEntity = evaluation.truth.get(key);
   const storedEntity = getStore(state, factionId).entities[key];
-  if (!truthEntity && !storedEntity) return null;
+  if (!truthEntity && !storedEntity) { assembly?.views.set(assemblyKey, null); return null; }
+  if (assembly?.lazyFields && !storedEntity) {
+    const empty = { id: String(id), kind, fields: {} };
+    assembly.views.set(assemblyKey, empty); return empty;
+  }
   // Unknown fields are omitted from the sparse wire view. This is essential:
   // enumerating truth-side array indices would leak an unknown collection's size.
-  const fieldIds = new Set(Object.keys(storedEntity?.fields ?? {}));
-  const fields: Record<string, IntelValue<unknown>> = {};
-  for (const fieldId of fieldIds) {
+  const resolved: Record<string, IntelValue<unknown>> = {};
+  const resolveField = (fieldId: string): IntelValue<unknown> | undefined => {
+    if (Object.hasOwn(resolved, fieldId)) return resolved[fieldId];
     const observation = storedEntity?.fields[fieldId];
-    if (!observation) {
-      fields[fieldId] = { status: "unknown" };
-      continue;
-    }
+    if (!observation) return undefined;
     const sources = evaluation.fieldSources.get(key)?.get(fieldId);
-    fields[fieldId] = {
+    return resolved[fieldId] = {
       status: sources && sources.size > 0 ? "current" : "stale",
-      value: cloneIntelValue(observation.value),
+      value: assembly ? observation.value : cloneIntelValue(observation.value),
       observedAtYear: observation.observedAtYear,
       sourceIds: [...observation.sourceIds],
     };
-  }
-  return { id: String(id), kind, fields };
+  };
+  // Only compact AI assembly uses lazy fields. The proxy stays inside this
+  // synchronous scope: compact metadata replaces it before the final clone.
+  const fields = assembly?.lazyFields ? new Proxy(resolved, {
+    get: (_target, fieldId) => typeof fieldId === "string" ? resolveField(fieldId) : undefined,
+    ownKeys: () => Object.keys(storedEntity?.fields ?? {}),
+    getOwnPropertyDescriptor: (_target, fieldId) => typeof fieldId === "string" && storedEntity?.fields[fieldId]
+      ? { configurable: true, enumerable: true, value: resolveField(fieldId), writable: false } : undefined,
+  }) : resolved;
+  if (!assembly?.lazyFields) for (const fieldId of Object.keys(storedEntity?.fields ?? {})) resolveField(fieldId);
+  const view = { id: String(id), kind, fields };
+  assembly?.views.set(assemblyKey, view);
+  return view;
 }
 
-export function getAllIntelEntityViews(state: GameState, factionId: number): IntelEntityView[] {
+export function getAllIntelEntityViews(state: GameState, factionId: number, kinds?: ReadonlySet<IntelEntityKind>): IntelEntityView[] {
   const evaluation = ensureEvaluation(state, factionId);
   const keys = new Set([...evaluation.truth.keys(), ...Object.keys(getStore(state, factionId).entities)]);
   const views: IntelEntityView[] = [];
   for (const key of keys) {
     const separator = key.indexOf(":");
     const kind = key.slice(0, separator) as IntelEntityKind;
+    if (kinds && !kinds.has(kind) || !getStore(state, factionId).entities[key]) continue;
     const id = key.slice(separator + 1);
     const view = getIntelEntityView(state, factionId, kind, id);
-    if (view && Object.values(view.fields).some((field) => field.status !== "unknown")) views.push(view);
+    if (view && (viewAssemblyCaches.get(state)?.lazyFields ? Object.keys(getStore(state, factionId).entities[key]?.fields ?? {}).length > 0
+      : Object.values(view.fields).some((field) => field.status !== "unknown"))) views.push(view);
   }
-  return views;
+  return views.sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));
+}
+
+/** Enumerate disclosed entities from remembered intelligence, never truth-side membership. */
+export function getKnownDiscreteEntityViews(state: GameState, factionId: number, kind: "fleet" | "ship" | "starbase"): IntelEntityView[] {
+  return Object.entries(getStore(state, factionId).entities)
+    .filter(([, entity]) => entity.kind === kind)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([key]) => {
+      const view = getIntelEntityView(state, factionId, kind, key.slice(kind.length + 1));
+      const existence = view?.fields.existence;
+      return view && existence && existence.status !== "unknown" && existence.value === true ? [view] : [];
+    });
 }
 
 function materializeObserverEntity(state: GameState, truth: TruthEntity): IntelEntityView {
+  expandEntityFields(truth);
   const fields = Object.fromEntries(Object.entries(truth.fields).map(([fieldId, field]) => [fieldId, {
     status: "current" as const,
     value: cloneIntelValue(field.value),
@@ -762,17 +924,6 @@ export function getKnownSystemOwner(state: GameState, factionId: number, starId:
   return owner && owner.status !== "unknown" ? Number(owner.value) : -1;
 }
 
-export function hasCommandLink(state: GameState, factionId: number, starId: number): boolean {
-  return ensureEvaluation(state, factionId).commandLinkedStars.has(starId);
-}
-
-export function getOperationalCommandSourceStarIds(state: GameState, factionId: number): Set<number> {
-  const evaluation = ensureEvaluation(state, factionId);
-  return new Set(evaluation.sourceBands
-    .filter((band) => band.distance === 0 && (band.sourceId.startsWith("planet:") || band.sourceId.startsWith("starbase:")))
-    .map((band) => band.starId));
-}
-
 export function isFleetCurrentlyVisible(state: GameState, factionId: number, fleetId: string): boolean {
   const view = getIntelEntityView(state, factionId, "fleet", fleetId);
   return view?.fields.existence?.status === "current";
@@ -782,7 +933,6 @@ export function getSensorDebugView(state: GameState, factionId: number) {
   const evaluation = ensureEvaluation(state, factionId);
   return {
     sourceBands: evaluation.sourceBands,
-    commandLinkedStarIds: Array.from(evaluation.commandLinkedStars),
     coveredStarIds: Array.from(evaluation.coveredStars),
     currentLanes: Array.from(evaluation.currentLanes),
     knownLanes: Array.from(evaluation.knownLanes),
@@ -800,6 +950,7 @@ export function grantOneShotIntelReport(
   const truth = buildTruth(state).get(intelEntityKey(kind, id));
   if (!truth) return false;
   const store = getStore(state, factionId);
+  expandEntityFields(truth);
   const selected = fieldIds?.length ? new Set(fieldIds) : null;
   for (const [fieldId, field] of Object.entries(truth.fields)) {
     if (selected && !selected.has(fieldId)) continue;
@@ -843,6 +994,7 @@ export function getPerspectiveEntityView(
 export function getGalaxyIntelligenceView(
   state: GameState,
   perspective: GalaxyPerspective,
+  kinds?: ReadonlySet<IntelEntityKind>,
 ): GalaxyIntelligenceView {
   if (perspective.mode === "observer") {
     const truth = buildTruth(state);
@@ -859,7 +1011,7 @@ export function getGalaxyIntelligenceView(
   const evaluation = ensureEvaluation(state, perspective.factionId);
   const store = getStore(state, perspective.factionId);
   return {
-    entities: getAllIntelEntityViews(state, perspective.factionId),
+    entities: getAllIntelEntityViews(state, perspective.factionId, kinds),
     lanes: Object.entries(store.lanes).map(([key, observation]) => ({
       endpoints: [...observation.value] as [number, number],
       status: evaluation.currentLanes.has(key) ? "current" : "stale",

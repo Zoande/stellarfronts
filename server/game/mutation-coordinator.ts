@@ -45,6 +45,15 @@ export function runAuthoritativeCommand(
 
 /** Apply the common cross-domain aftermath in one deterministic order. */
 export function applyMutationEffects(ctx: RuntimeContext, effects: MutationEffects): void {
+  if (ctx.commandEffects) {
+    const pending = ctx.commandEffects;
+    for (const key of ["recalculatePlanets", "refreshFactionEconomy", "refreshDiscovery", "refreshIntelligence", "dirty"] as const) {
+      if (effects[key]) pending[key] = true;
+    }
+    (pending.changed ??= []).push(...effects.changed ?? []);
+    (pending.planetDetailIds ??= []).push(...effects.planetDetailIds ?? []);
+    return;
+  }
   if (effects.recalculatePlanets) ctx.recalculatePlanetEconomies();
   if (effects.refreshFactionEconomy) ctx.refreshFactionEconomyDeltas();
   if (effects.refreshDiscovery) ctx.refreshDiscovery();

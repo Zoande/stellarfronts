@@ -1,22 +1,23 @@
+import { normalizeFleetTacticalOrder } from "./fleet-factory";
+import { random } from "./determinism";
 // =============================================================================
 // Fleet routing, movement, and combat engine — extracted from server/index.ts
 // =============================================================================
 
 import {
-  getPlanetSystemPosition,
   getSystemHyperlaneEntryPosition,
   getSystemHyperlaneExitPosition,
   getSystemStarOrbitPosition,
   getSystemStarbasePosition,
   getSystemStarbaseOrbitPosition,
   interpolateSystemPosition,
-  DEFAULT_ORBIT_EPOCH_MS,
   SYSTEM_FLEET_Y,
 } from "../../src/data/SystemCoordinates";
-import { getSystemOrbitLayout } from "../../src/data/SystemCoordinates";
+import { getFleetSystemPosition, getPlanetSystemPositionAt } from "./system-positions";
 import type { PlanetConfig, StarData } from "../../src/data/StarMap";
 import { addResourceCounts } from "../../src/data/Economy";
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
+import type { ShipDesign } from "../../src/data/ShipDesigns";
 import {
   calculateStarbaseEconomy,
   createEmptyStarbaseSlots,
@@ -33,7 +34,6 @@ import type { GalaxyPerspective } from "../../src/data/Factions";
 import {
   GAME_DAYS_PER_YEAR,
   GAME_HOURS_PER_YEAR,
-  GAME_START_YEAR,
   REAL_MS_PER_GAME_DAY,
 } from "../../src/game/GameTime";
 import { DARK_MATTER_FLEET_SPEED_MULTIPLIER } from "../../src/game/DarkMatter";
@@ -86,8 +86,6 @@ import { getKnownOwnership } from "./visibility";
 import {
   getKnownLanePairs,
   getKnownStarIds,
-  getOperationalCommandSourceStarIds,
-  hasCommandLink,
   getIntelEntityView,
 } from "./intelligence";
 import {
@@ -327,16 +325,6 @@ function getPlanetConfigById(
   return null;
 }
 
-function getPlanetSystemPositionAt(
-  star: StarData,
-  planet: PlanetConfig,
-  planetIndex: number,
-  year: number,
-): { x: number; y: number; z: number } {
-  const nowMs = DEFAULT_ORBIT_EPOCH_MS + ((year - GAME_START_YEAR) * GAME_DAYS_PER_YEAR * REAL_MS_PER_GAME_DAY);
-  return getPlanetSystemPosition(planet, planetIndex, nowMs, getSystemOrbitLayout(star.type));
-}
-
 // ---------------------------------------------------------------------------
 // Fleet position
 // ---------------------------------------------------------------------------
@@ -346,35 +334,7 @@ export function getFleetAuthoritativeSystemPosition(
   fleet: GameFleet,
   year = ctx.state.clock.year,
 ): { x: number; y: number; z: number } {
-  if (fleet.movementPlan) {
-    const segment = fleet.movementPlan.segments.find((candidate) => (
-      year >= candidate.startYear && year < candidate.endYear
-    ));
-    if (segment) {
-      const progress = Math.max(
-        0,
-        Math.min(1, (year - segment.startYear) / Math.max(0.000001, segment.endYear - segment.startYear)),
-      );
-      return interpolateSystemPosition(segment.from, segment.to, progress);
-    }
-    const finalSegment = fleet.movementPlan.segments[fleet.movementPlan.segments.length - 1];
-    if (finalSegment) return cloneSystemPosition(finalSegment.to);
-  }
-  if (fleet.orbitTargetPlanetId) {
-    const star = ctx.state.stars[fleet.currentStarId];
-    const planetIndex = star?.system.planets.findIndex((planet) => planet.id === fleet.orbitTargetPlanetId) ?? -1;
-    const planet = planetIndex >= 0 ? star.system.planets[planetIndex] : null;
-    if (star && planet) {
-      const planetPosition = getPlanetSystemPositionAt(star, planet, planetIndex, year);
-      const offset = fleet.orbitOffset ?? { x: SYSTEM_PLANET_ORBIT_DISTANCE, y: SYSTEM_FLEET_Y, z: 0 };
-      return {
-        x: planetPosition.x + offset.x,
-        y: offset.y,
-        z: planetPosition.z + offset.z,
-      };
-    }
-  }
-  return cloneSystemPosition(fleet.systemPosition ?? systemCenterPosition());
+  return getFleetSystemPosition(ctx.state, fleet, year);
 }
 
 /**
@@ -795,56 +755,6 @@ export function startMoveOrder(
   startPositionOrder(ctx, fleet, targetStarId, "move", destination.position, destination.orbitTarget, routeOverride);
 }
 
-export function processFleetCommandLinkLoss(ctx: RuntimeContext): boolean {
-  let changed = false;
-  for (const fleet of ctx.state.fleets) {
-    if (fleet.combatStatus === "destroyed" || fleet.phase === "missingInAction") continue;
-    if (fleet.hyperlanePosition) continue; // finish the active lane segment
-    if (hasCommandLink(ctx.state, fleet.ownerId, fleet.currentStarId)) continue;
-
-    const targets = getOperationalCommandSourceStarIds(ctx.state, fleet.ownerId);
-    const laneAdjacency = new Map<number, number[]>();
-    for (const [a, b] of getKnownLanePairs(ctx.state, fleet.ownerId)) {
-      laneAdjacency.set(a, [...(laneAdjacency.get(a) ?? []), b]);
-      laneAdjacency.set(b, [...(laneAdjacency.get(b) ?? []), a]);
-    }
-    const queue = [fleet.currentStarId];
-    const previous = new Map<number, number | null>([[fleet.currentStarId, null]]);
-    let destination: number | null = targets.has(fleet.currentStarId) ? fleet.currentStarId : null;
-    for (let head = 0; head < queue.length && destination === null; head += 1) {
-      const current = queue[head];
-      for (const neighbor of laneAdjacency.get(current) ?? []) {
-        if (previous.has(neighbor) || !canEnterSystem(ctx, fleet.ownerId, neighbor)) continue;
-        previous.set(neighbor, current);
-        queue.push(neighbor);
-        if (targets.has(neighbor)) {
-          destination = neighbor;
-          break;
-        }
-      }
-    }
-
-    if (destination === null || destination === fleet.currentStarId) {
-      if (fleet.movementPlan || fleet.targetStarId !== null || fleet.orderType !== null) {
-        clearFleetMovementNow(ctx, fleet);
-        changed = true;
-      }
-      continue;
-    }
-    if (fleet.targetStarId === destination && fleet.movementPlan) continue;
-    const route: number[] = [];
-    for (let cursor: number | null = destination; cursor !== null; cursor = previous.get(cursor) ?? null) route.push(cursor);
-    route.reverse();
-    const target = route[route.length - 1];
-    if (target === undefined) continue;
-    clearFleetMovementNow(ctx, fleet);
-    const moveTarget = getDefaultMoveDestination(ctx, target);
-    startPositionOrder(ctx, fleet, target, "move", moveTarget.position, moveTarget.orbitTarget, route);
-    changed = true;
-  }
-  return changed;
-}
-
 export function startAttackSystemOrder(ctx: RuntimeContext, fleet: GameFleet, targetStarId: number): void {
   const hostileStarbase = ctx.state.starbases.find((starbase) => (
     starbase.starId === targetStarId
@@ -873,7 +783,7 @@ export function startAttackSystemOrder(ctx: RuntimeContext, fleet: GameFleet, ta
       : getDefaultMoveDestination(ctx, targetStarId);
 
   startPositionOrder(ctx, fleet, targetStarId, "attack", destination.position, destination.orbitTarget);
-  fleet.currentTacticalOrder = { type: "attack", issuedAtYear: ctx.state.clock.year };
+  fleet.currentTacticalOrder = normalizeFleetTacticalOrder({ type: "attack", issuedAtYear: ctx.state.clock.year });
   if (fleet.combatStance === "passive" || fleet.combatStance === "evade") {
     fleet.combatStance = "aggressive";
   }
@@ -1361,7 +1271,7 @@ export function getFleetWeaponMounts(
     .filter((ship): ship is GameShip => !!ship)
     .flatMap((ship) => {
       const design = getShipDesignForShip(ctx, ship);
-      return calculateShipDesignStats(design).combat.weaponMounts;
+      return combatDesignStats(ctx, design).combat.weaponMounts;
     });
 }
 
@@ -1459,7 +1369,7 @@ export function updateFleetTacticalProfile(
   shipsById: Map<string, GameShip>,
 ): boolean {
   const ships = getFleetLivingShips(fleet, shipsById);
-  const mounts = ships.flatMap((ship) => calculateShipDesignStats(getShipDesignForShip(ctx, ship)).combat.weaponMounts);
+  const mounts = ships.flatMap((ship) => combatDesignStats(ctx, getShipDesignForShip(ctx, ship)).combat.weaponMounts);
   const range = getMountRangeSummary(mounts);
   const weightedWeaponRange = mounts.length > 0 ? RANGE_BAND_SYSTEM_DISTANCE[getPreferredRangeBand(mounts)] : 0;
   const nextRadius = getFleetTacticalRadius(Math.max(1, ships.length));
@@ -1807,7 +1717,7 @@ export function retreatFleetByDoctrine(ctx: RuntimeContext, fleet: GameFleet): b
     targetSystemPosition: destination.targetSystemPosition ?? null,
     startedAtYear: ctx.state.clock.year,
   };
-  fleet.currentTacticalOrder = { type: "retreat", issuedAtYear: ctx.state.clock.year };
+  fleet.currentTacticalOrder = normalizeFleetTacticalOrder({ type: "retreat", issuedAtYear: ctx.state.clock.year });
   fleet.combatStatus = "retreating";
   startFleetRetreat(ctx, fleet);
   return true;
@@ -1819,7 +1729,7 @@ export function getShipEvasionForFleetCombat(
   fleet: GameFleet,
 ): number {
   const design = getShipDesignForShip(ctx, ship);
-  const stats = calculateShipDesignStats(design);
+  const stats = combatDesignStats(ctx, design);
   const bonus = FORMATION_EVASION_BONUS[fleet.formation] ?? 0;
   // Leader and government effects come from state-queries helpers (pass ctx.state)
   const leaderBonus = getFleetLeaderEffects(ctx.state, fleet.id).evasionBonus;
@@ -1929,13 +1839,7 @@ export function updateFleetCombatMovement(
   }
   const order = fleet.currentTacticalOrder;
   if (order?.type === "retreat") return retreatFleetByDoctrine(ctx, fleet);
-  const fleetSpeed = getFleetSpeedMultiplier(ctx.state, fleet);
-  const engineMultiplier = getFleetLivingShips(fleet, shipsById).reduce((minimum, ship) => {
-    if (!ship.subsystemState?.engineDisabled) return minimum;
-    return Math.min(minimum, ship.subsystemState.emergencyMobility ? 0.25 : 0.1);
-  }, 1);
-  const step = Math.max(0, elapsedDays) * SYSTEM_FLEET_SPEED_UNITS_PER_DAY * Math.max(0.05, fleet.speed * fleetSpeed * engineMultiplier);
-  if (step <= 0) return false;
+  if (elapsedDays <= 0) return false;
   let destination: { x: number; y: number; z: number } | null = null;
   if ((order?.type === "move" || order?.type === "guard") && order.targetPosition) {
     destination = cloneSystemPosition(order.targetPosition);
@@ -1954,6 +1858,15 @@ export function updateFleetCombatMovement(
     fleet.combatStatus = target && actorIsInFleetWeaponRange(actor, target) ? "firing" : "idle";
     return false;
   }
+  // Government and leader speed modifiers cannot affect a fleet that has no
+  // tactical destination. Avoid recomputing them for every idle substep.
+  const fleetSpeed = getFleetSpeedMultiplier(ctx.state, fleet);
+  const engineMultiplier = getFleetLivingShips(fleet, shipsById).reduce((minimum, ship) => {
+    if (!ship.subsystemState?.engineDisabled) return minimum;
+    return Math.min(minimum, ship.subsystemState.emergencyMobility ? 0.25 : 0.1);
+  }, 1);
+  const step = Math.max(0, elapsedDays) * SYSTEM_FLEET_SPEED_UNITS_PER_DAY * Math.max(0.05, fleet.speed * fleetSpeed * engineMultiplier);
+  if (step <= 0) return false;
   const next = movePointToward(actor.position, destination, step);
   if (isSameSystemPosition(actor.position, next)) {
     if (order?.type === "move") fleet.currentTacticalOrder = null;
@@ -1991,6 +1904,8 @@ export function applyFleetSoftSeparation(
       const push = (minimum - distance) * FLEET_SOFT_SEPARATION_FACTOR;
       const ux = dx / distance;
       const uz = dz / distance;
+      const previousLeft = left.systemPosition;
+      const previousRight = right.systemPosition;
       if (!left.stationaryStarbaseId) {
         const amount = right.stationaryStarbaseId ? push : push / 2;
         left.systemPosition = { x: left.systemPosition.x - ux * amount, y: SYSTEM_FLEET_Y, z: left.systemPosition.z - uz * amount };
@@ -1999,7 +1914,10 @@ export function applyFleetSoftSeparation(
         const amount = left.stationaryStarbaseId ? push : push / 2;
         right.systemPosition = { x: right.systemPosition.x + ux * amount, y: SYSTEM_FLEET_Y, z: right.systemPosition.z + uz * amount };
       }
-      changed = true;
+      // Once floating-point positions have settled, a mathematically positive
+      // push can round to no movement. Do not report an idle pair as moving.
+      changed ||= previousLeft.x !== left.systemPosition.x || previousLeft.y !== left.systemPosition.y || previousLeft.z !== left.systemPosition.z
+        || previousRight.x !== right.systemPosition.x || previousRight.y !== right.systemPosition.y || previousRight.z !== right.systemPosition.z;
     }
   }
   return changed;
@@ -2036,9 +1954,9 @@ function chooseScreenedFleetShip(ctx: RuntimeContext, fleet: GameFleet, intended
   const protectedWeight = shipCommandWeight(intended);
   const command = getFleetCommandProfile(ctx, fleet, shipsById);
   const chance = computeFleetScreeningChance(screenStrength, protectedWeight, command.coordinationMultiplier);
-  if (Math.random() >= chance) return intended;
+  if (random(ctx, "combat") >= chance) return intended;
   const total = screens.reduce((sum, ship) => sum + shipCommandWeight(ship) * shipDurabilityRatio(ship) * proximityWeight(ship), 0);
-  let roll = Math.random() * total;
+  let roll = random(ctx, "combat") * total;
   for (const screen of screens) {
     roll -= shipCommandWeight(screen) * shipDurabilityRatio(screen) * proximityWeight(screen);
     if (roll <= 0) return screen;
@@ -2059,8 +1977,8 @@ function chooseStarbaseScreen(ctx: RuntimeContext, starbase: ServerStarbase, shi
   const platformStrength = (ship: GameShip): number => shipDurabilityRatio(ship) * Math.sqrt((ship.maxShield + ship.maxArmor + ship.maxHull) / Math.max(1, baselineDurability));
   const strength = candidates.reduce((sum, candidate) => sum + platformStrength(candidate.ship), 0);
   const chance = computeStarbaseScreeningChance(strength, getStarbaseScreenCap(starbase));
-  if (candidates.length === 0 || Math.random() >= chance) return null;
-  let roll = Math.random() * Math.max(0.001, strength);
+  if (candidates.length === 0 || random(ctx, "combat") >= chance) return null;
+  let roll = random(ctx, "combat") * Math.max(0.001, strength);
   for (const candidate of candidates) {
     roll -= platformStrength(candidate.ship);
     if (roll <= 0) return candidate;
@@ -2096,7 +2014,7 @@ function launchCombatProjectile(
   targetProjectile: ServerCombatProjectile | null = null,
 ): ServerCombatProjectile {
   const shotMount = { ...mount, barrels: 1, accuracy: clamp(mount.accuracy * accuracyMultiplier, 0.02, 0.99) };
-  const roll = rollWeaponShot(shotMount, targetProjectile?.evasion ?? targetEvasion);
+  const roll = rollWeaponShot(shotMount, targetProjectile?.evasion ?? targetEvasion, () => random(ctx, "combat"));
   const distance = targetProjectile ? Math.min(6, effectiveActorDistance(source, target)) : effectiveActorDistance(source, target);
   const travelHours = Math.max(0.01, distance / Math.max(0.01, getWeaponTravelSpeed(mount)));
   const attackClass = getWeaponAttackClass(mount);
@@ -2167,8 +2085,8 @@ function chooseStrayHitShip(ctx: RuntimeContext, projectile: ServerCombatProject
     return sum + shipCommandWeight(candidate.ship) * doctrineFactor;
   }, 0);
   const chance = computeStrayHitProbability(densityWeight);
-  if (candidates.length === 0 || Math.random() >= chance) return null;
-  let roll = Math.random() * densityWeight;
+  if (candidates.length === 0 || random(ctx, "combat") >= chance) return null;
+  let roll = random(ctx, "combat") * densityWeight;
   for (const candidate of candidates) {
     const doctrineFactor = candidate.fleet.combatSettings.doctrine === "artillery" ? 0.7 : candidate.fleet.combatSettings.doctrine === "assault" ? 1.2 : candidate.fleet.combatSettings.doctrine === "escort" ? 1.1 : 1;
     roll -= shipCommandWeight(candidate.ship) * doctrineFactor;
@@ -2192,19 +2110,19 @@ function applyShipCritical(ctx: RuntimeContext, ship: GameShip, hullDamage: numb
   if (hullDamage <= 0 || ship.maxHull <= 0 || ship.hull <= 0) return { critical: false, exploded: false };
   const chances = computeShipCriticalChances(hullDamage, ship.maxHull, ship.hull);
   ship.subsystemState ??= { disabledWeaponKeys: [], engineDisabled: false, emergencyMobility: false };
-  if (Math.random() < chances.explosion) {
+  if (random(ctx, "combat") < chances.explosion) {
     ship.hull = 0;
     ship.hp = 0;
     return { critical: true, exploded: true };
   }
-  if (!ship.subsystemState.engineDisabled && Math.random() < chances.engine) {
+  if (!ship.subsystemState.engineDisabled && random(ctx, "combat") < chances.engine) {
     ship.subsystemState.engineDisabled = true;
     ship.subsystemState.emergencyMobility = false;
     return { critical: true, exploded: false };
   }
-  if (mountCount > ship.subsystemState.disabledWeaponKeys.length && Math.random() < chances.weapon) {
+  if (mountCount > ship.subsystemState.disabledWeaponKeys.length && random(ctx, "combat") < chances.weapon) {
     const available = Array.from({ length: mountCount }, (_, index) => String(index)).filter((key) => !ship.subsystemState!.disabledWeaponKeys.includes(key));
-    const key = available[Math.floor(Math.random() * available.length)];
+    const key = available[Math.floor(random(ctx, "combat") * available.length)];
     if (key !== undefined) ship.subsystemState.disabledWeaponKeys.push(key);
     return { critical: true, exploded: false };
   }
@@ -2240,7 +2158,7 @@ export function fireFleetWeaponsAtTarget(
   const trackMultiplier = getCombatTrackAccuracyMultiplier(getCombatTrackQuality(ctx, actor.ownerId, target));
   for (const ship of getFleetLivingShips(actor.fleet, shipsById)) {
     if (ship.disabled) continue;
-    const mounts = calculateShipDesignStats(getShipDesignForShip(ctx, ship)).combat.weaponMounts;
+    const mounts = combatDesignStats(ctx, getShipDesignForShip(ctx, ship)).combat.weaponMounts;
     ship.weaponReadyAtYears ??= {};
     for (let index = 0; index < mounts.length; index += 1) {
       if (ship.subsystemState?.disabledWeaponKeys.includes(String(index))) continue;
@@ -2415,7 +2333,7 @@ export function processCombatProjectiles(
     if (targetShip) {
       targetShip.hp = targetShip.hull;
       if (result.shieldDamage > 0) targetShip.lastShieldDamageAtYear = projectile.impactYear;
-      const mounts = calculateShipDesignStats(getShipDesignForShip(ctx, targetShip)).combat.weaponMounts;
+      const mounts = combatDesignStats(ctx, getShipDesignForShip(ctx, targetShip)).combat.weaponMounts;
       const critical = applyShipCritical(ctx, targetShip, result.hullDamage, mounts.length);
       if (critical.critical) incrementFleetBattleMetric(ctx, targetFleet?.id, "subsystemCriticals");
       destroyed ||= critical.exploded;
@@ -2439,6 +2357,7 @@ export function processCombatProjectiles(
       starbasesChanged = true;
     }
     recordContinuousCombatContact(ctx, {
+      starId: projectile.starId,
       sourceId: projectile.sourceActorId,
       sourceKind: projectile.sourceActorKind,
       sourceOwnerId: projectile.ownerId,
@@ -2581,10 +2500,40 @@ function processContinuousFleetCombatStep(
   return { combatContactsChanged, shipsChanged, fleetsChanged, starbasesChanged, factionEconomiesChanged, visibilityChanged };
 }
 
-export function processContinuousFleetCombat(
+interface CombatStepOptions {
+  disableIdleSkip?: boolean;
+  onIdleSkip?: (hours: number) => void;
+  /** Diagnostic equivalence path. Cache lifetime never crosses an update. */
+  disableDesignCache?: boolean;
+}
+
+const combatDesignCaches = new WeakMap<RuntimeContext, WeakMap<ShipDesign, ReturnType<typeof calculateShipDesignStats>>>();
+function combatDesignStats(ctx: RuntimeContext, design: ShipDesign) {
+  const cache = combatDesignCaches.get(ctx);
+  if (!cache) return calculateShipDesignStats(design);
+  const existing = cache.get(design);
+  if (existing) return existing;
+  const stats = calculateShipDesignStats(design);
+  cache.set(design, stats);
+  return stats;
+}
+
+export function processContinuousFleetCombat(ctx: RuntimeContext, elapsedGameHours: number, elapsedGameDays: number, options: CombatStepOptions = {}) {
+  const previous = combatDesignCaches.get(ctx);
+  if (!options.disableDesignCache) combatDesignCaches.set(ctx, new WeakMap());
+  else combatDesignCaches.delete(ctx);
+  try { return processContinuousFleetCombatSteps(ctx, elapsedGameHours, elapsedGameDays, options); }
+  finally {
+    if (previous) combatDesignCaches.set(ctx, previous);
+    else combatDesignCaches.delete(ctx);
+  }
+}
+
+function processContinuousFleetCombatSteps(
   ctx: RuntimeContext,
   elapsedGameHours: number,
   elapsedGameDays: number,
+  options: CombatStepOptions,
 ): {
   combatContactsChanged: boolean;
   shipsChanged: boolean;
@@ -2613,6 +2562,18 @@ export function processContinuousFleetCombat(
     const result = processContinuousFleetCombatStep(ctx, stepHours, stepHours / 24);
     for (const key of Object.keys(aggregate) as Array<keyof typeof aggregate>) aggregate[key] ||= result[key];
     remaining -= stepHours;
+    // With no mutations and no scheduled combat work, further substeps can
+    // only repeat the same idle computation. Economy and construction still
+    // run through the ordinary pipeline after this phase.
+    if (!options.disableIdleSkip && !Object.values(result).some(Boolean)
+      && ctx.state.combatProjectiles.length === 0
+      && ctx.state.fleets.every((fleet) => !fleet.currentTargetId && !fleet.battleSnapshot && !fleet.retreatState
+        && !fleet.currentTacticalOrder && fleet.orderType !== "attack")
+      && ctx.state.ships.every((ship) => Object.values(ship.weaponCooldowns ?? {}).every((value) => value <= 0))
+      && ctx.state.starbases.every((base) => Object.values(base.weaponCooldowns ?? {}).every((value) => value <= 0))) {
+      options.onIdleSkip?.(remaining);
+      break;
+    }
   }
   ctx.state.clock.year = endYear;
   return aggregate;

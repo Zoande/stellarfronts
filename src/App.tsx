@@ -127,7 +127,7 @@ function MainAppFlow() {
         )}
         <LoadingScreen
           theme="auth"
-          subtitle="Command Link"
+          subtitle="Empire Access"
           title={homeTransitionTitle}
           progress={homeTransition.progress}
           detail={homeTransition.detail}

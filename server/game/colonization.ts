@@ -12,7 +12,6 @@ import {
   syncFleetMembership,
 } from "./state-normalization";
 import { getPlanetConfig, getPlanetSpeciesContext, getPlanetState } from "./state-queries";
-import { hasCommandLink } from "./intelligence";
 
 export function getFactionPlanetColonizationEligibility(
   ctx: RuntimeContext,
@@ -36,7 +35,6 @@ export function getFactionPlanetColonizationEligibility(
     ...(fleet
       ? {
         fleetAvailable: fleet.ownerId === factionId && fleet.combatStatus !== "destroyed" && fleet.phase !== "missingInAction",
-        hasCommandLink: hasCommandLink(ctx.state, factionId, fleet.currentStarId),
         hasColonizationShip: getFleetColonizationShip(ctx, fleet) !== null,
       }
       : {}),

@@ -173,6 +173,27 @@
   text-align: left;
 }
 
+.flag-join__trait-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 22px;
+}
+
+.flag-join__trait-content img {
+  width: 46px;
+  height: 46px;
+  flex: 0 0 46px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.flag-join__trait-copy {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
 .flag-join__trait small {
   color: rgba(214, 221, 231, 0.68);
   font-size: 0.72rem;
