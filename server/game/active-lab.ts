@@ -1,3 +1,7 @@
+import { analyzeCampaign } from "./campaign-analysis";
+import { calculateFactionResourceFlow } from "./economy-market";
+import { createCampaignTelemetry } from "./campaign-telemetry";
+import { campaignStep } from "./campaign-schedule";
 import { mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -18,6 +22,8 @@ export interface CampaignOptions {
   stepMs: number;
   allowWars: boolean;
   output: string;
+  adaptive?: boolean;
+  checkpoint?: string;
 }
 
 function sourceArchive(output: string) {
@@ -45,6 +51,16 @@ export function campaignSample(state: Readonly<GameState>, activeIds: readonly n
         ships: state.ships.filter((ship) => ship.ownerId === faction.id).length,
         technologies: state.factionTechnologies.find((entry) => entry.factionId === faction.id)?.completedTechIds.length ?? 0,
         stockpiles: { ...economy.stockpiles }, income: { ...economy.monthlyDelta },
+        crew: economy.crewStockpile,
+        militaryPower: state.ships.filter((ship) => ship.ownerId === faction.id && ["corvette", "destroyer", "cruiser", "battleship"].includes(ship.shipKind))
+          .reduce((sum, ship) => sum + ship.hull + ship.armor + ship.shield, 0),
+        unemployed: planets.reduce((sum, planet) => sum + planet.economy.unemployedPopulation, 0),
+        housing: planets.reduce((sum, planet) => sum + planet.economy.housing, 0),
+        researchIncome: economy.monthlyDelta.research,
+        imports: state.market.playerStats.find((entry) => entry.playerId === faction.id)?.totalImportsEnergy ?? 0,
+        exports: state.market.playerStats.find((entry) => entry.playerId === faction.id)?.totalExportsEnergy ?? 0,
+        production: calculateFactionResourceFlow(state as GameState, faction.id).production,
+        consumption: calculateFactionResourceFlow(state as GameState, faction.id).consumption,
         famine: planets.some((planet) => planet.economy.populationDecline.active && planet.economy.populationDecline.cause === "famine"),
         queues: planets.reduce((sum, planet) => sum + planet.constructionQueue.length + planet.defense.shipQueue.length, 0)
           + state.starbases.filter((base) => base.ownerId === faction.id).reduce((sum, base) => sum + base.constructionQueue.length + base.shipQueue.length, 0) };
@@ -63,7 +79,7 @@ export async function runCampaign(options: CampaignOptions) {
   const revision = sourceArchive(options.output);
   writeFileSync(path.join(options.output, "run.json"), JSON.stringify({ formatVersion: 1, options, revision, status: "running" }, null, 2));
   const created = performance.now();
-  const initial = createHeadlessGame({ worldSeed: options.seed, simulationSeed: (options.seed ^ 0x5f3759df) >>> 0,
+  const initial: GameCheckpoint = options.checkpoint ? JSON.parse(readFileSync(options.checkpoint, "utf8")) : createHeadlessGame({ worldSeed: options.seed, simulationSeed: (options.seed ^ 0x5f3759df) >>> 0,
     initialWorld: { starCount: options.stars, factionCount: options.countries } }).exportCheckpoint();
   initial.state.aiSettings = { allowWarDeclarations: options.allowWars };
   const activeIds = initial.state.factions.slice(0, options.active).map((faction) => faction.id);
@@ -77,7 +93,9 @@ export async function runCampaign(options: CampaignOptions) {
   const actionsByType: Record<string, number> = {};
   const rejections: Record<string, number> = {};
   const actionCounts = new Map<number, { accepted: number; rejected: number }>();
+  const telemetry = createCampaignTelemetry(options.output, initial.state);
   const headlessOptions: HeadlessGameOptions = { checkpoint: initial, stepMs: options.stepMs, enablePassiveAi: true, enableActiveAi: true, activeFactionIds: activeIds,
+    onAiDecision: (record) => telemetry.decision(day, record),
     onAiAction: (record) => {
       appendFileSync(commandsFile, `${JSON.stringify({ tick, day, ...record })}\n`);
       const counts = actionCounts.get(record.factionId) ?? { accepted: 0, rejected: 0 };
@@ -104,6 +122,7 @@ export async function runCampaign(options: CampaignOptions) {
   writeFileSync(path.join(options.output, "galaxy.json"), JSON.stringify({ stars, hyperlanes: start.state.hyperlanes, factions }));
   function sample() {
     const frame = campaignSample(game.diagnosticState(), activeIds, day); frames.push(frame);
+    telemetry.sample(game.diagnosticState(), day);
     appendFileSync(timelineFile, `${JSON.stringify(frame)}\n`);
     appendFileSync(ticksFile, `${JSON.stringify({ tick, day, digest: game.digest() })}\n`);
     writeFileSync(path.join(options.output, "progress.json"), JSON.stringify({ tick, day, accepted, rejected, elapsedSeconds: (performance.now() - created) / 1000 }));
@@ -115,9 +134,11 @@ export async function runCampaign(options: CampaignOptions) {
   try {
     game.advanceRealTime(0);
     while (game.now() - start.nowMs < duration) {
-      const elapsedMs = Math.min(options.stepMs, duration - (game.now() - start.nowMs));
+      const schedule = options.adaptive === false ? { ms: options.stepMs, reason: "fixed" } : campaignStep(game.diagnosticState(), options.stepMs, msPerDay);
+      const elapsedMs = Math.min(schedule.ms, duration - (game.now() - start.nowMs));
       tick++; day = (game.now() + elapsedMs - start.nowMs) / msPerDay;
-      const before = performance.now(); game.step(elapsedMs); maxTickMs = Math.max(maxTickMs, performance.now() - before);
+      const before = performance.now(); game.step(elapsedMs); const runtimeMs = performance.now() - before; maxTickMs = Math.max(maxTickMs, runtimeMs);
+      telemetry.step(game.diagnosticState(), day, elapsedMs / msPerDay, runtimeMs, schedule.reason);
       const state = game.diagnosticState(); const deltaDays = elapsedMs / msPerDay;
       for (const economy of state.factionEconomies) {
         const missing = shortages.get(economy.factionId) ?? {};
@@ -158,7 +179,7 @@ export async function runCampaign(options: CampaignOptions) {
   const final = game.exportCheckpoint();
   writeFileSync(path.join(options.output, "final.checkpoint.json"), JSON.stringify(final));
   const summary = { formatVersion: 1, options, revision, actualStars: final.state.stars.length, actualCountries: final.state.factions.length, activeIds,
-    ticks: tick, simulatedDays: day, runtimeMs: performance.now() - created, maximumTickMs: maxTickMs, accepted, rejected, actionsByType, rejections,
+    ...telemetry.summary(), ticks: tick, simulatedDays: day, runtimeMs: performance.now() - created, maximumTickMs: maxTickMs, accepted, rejected, actionsByType, rejections,
     ownershipChanges, warsStarted: final.state.diplomacy.wars.length, warsEnded: final.state.diplomacy.wars.filter((war) => war.endedAtYear).length,
     combatReports: combatReportIds.size, shipsLost: lostShips.size, finalDigest: game.digest(),
     factions: frames.at(-1)!.factions.map((faction) => ({ ...faction, ...actionCounts.get(faction.id), stockoutDays: shortages.get(faction.id) ?? {}, famineDays: famineDays.get(faction.id) ?? 0 })) };
@@ -166,13 +187,14 @@ export async function runCampaign(options: CampaignOptions) {
   writeFileSync(path.join(options.output, "timelapse.html"), campaignViewer({ stars, hyperlanes: start.state.hyperlanes, factions, frames, summary }));
   const report = ["# Active AI campaign", "", `Seed ${options.seed}; ${summary.actualStars} systems; ${options.active} active and ${summary.actualCountries - options.active} passive countries; AI wars ${options.allowWars ? "enabled" : "disabled"}.`,
     `${day.toFixed(0)} game days in ${(summary.runtimeMs / 1000).toFixed(1)} seconds; ${tick} ticks; virtual step ${options.stepMs} ms (${(options.stepMs / msPerDay).toFixed(3)} game days). No wall-clock waits.`, "",
-    `This is a coarse simulation through normal production rules. Tick size can affect combat, movement, and economic outcomes; compare balance only against the same schedule. Sampled stockout/famine durations are approximate. ${options.active} active countries are fixed for this laboratory run; remaining countries stay passive regardless of virtual real time.`, "",
+    `Schedule: ${options.adaptive === false ? "fixed" : "adaptive, daily peace maximum with transition boundaries and production combat cadence"}. This uses normal production rules. Tick size can affect combat, movement, and economic outcomes; compare balance only against the same schedule. Sampled stockout/famine durations are approximate. ${options.active} active countries are fixed for this laboratory run; remaining countries stay passive regardless of virtual real time.`, "",
     `Accepted/rejected actions: ${accepted}/${rejected}. Ownership changes: ${ownershipChanges}. Wars started/ended: ${summary.warsStarted}/${summary.warsEnded}. Unique combat reports: ${summary.combatReports}; recorded ship losses: ${summary.shipsLost}.`, "",
     "| Country | AI | Systems | Colonies | Ships | Techs | Food/month | Famine days | Accepted/rejected |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ...summary.factions.map((faction) => `| ${faction.id} | ${faction.mode} | ${faction.systems} | ${faction.colonies} | ${faction.ships} | ${faction.technologies} | ${faction.income.food.toFixed(1)} | ${faction.famineDays.toFixed(1)} | ${faction.accepted ?? 0}/${faction.rejected ?? 0} |`), "", "## Rejected commands", "",
-    ...Object.entries(rejections).map(([reason, count]) => `- ${count}: ${reason}`), "", "## Files", "", "Open timelapse.html in a browser for the animated border map and economy history. timeline.jsonl contains monthly snapshots; events.jsonl records ownership, war, and combat events at tick resolution; actions.jsonl contains every attempted command and its outcome. Initial, yearly, and final checkpoints preserve the complete isolated game. run.json and source archives identify the implementation. ticks.jsonl contains sampled state digests. These files are diagnostic history, not the scripted-scenario replay format.", ""];
+    ...Object.entries(rejections).map(([reason, count]) => `- ${count}: ${reason}`), "", "## Files", "", "Open timelapse.html in a browser for the animated border map and economy history. timeline.jsonl contains monthly snapshots; events.jsonl records ownership, war, and combat events at tick resolution; actions.jsonl contains every attempted command and its outcome. decisions.jsonl records every controller turn including idle turns, visible opportunity assessments, resource runway and stressed trade budgets. development.jsonl tracks queue changes, technologies, ship creation/removal and colonies; removal is not automatically a combat loss. market.jsonl records actual transactions, fees and energy flows. economies.jsonl and planets.jsonl preserve monthly production, consumption, crew, research, jobs, housing and construction. performance.jsonl records every integration interval, reason and measured runtime. Initial, yearly, and final checkpoints preserve the complete isolated game. run.json and source archives identify the implementation. ticks.jsonl contains sampled state digests. These files are diagnostic history, not the scripted-scenario replay format.", ""];
   writeFileSync(path.join(options.output, "findings.md"), report.join("\n"));
   writeFileSync(path.join(options.output, "run.json"), JSON.stringify({ formatVersion: 1, options, revision, status: "complete", finalDigest: summary.finalDigest }, null, 2));
+  await analyzeCampaign(options.output);
   return summary;
 }
 
@@ -183,6 +205,6 @@ export async function runCampaignCli(argv: string[]) {
   if (allow !== "true" && allow !== "false") throw new Error("--allow-wars must be true or false.");
   const output = path.resolve(option("out", `.cache/ai-lab/campaign-${Date.now()}`));
   const result = await runCampaign({ seed: Number(option("seed", "42")), stars: Number(option("stars", "500")), countries: Number(option("countries", "15")),
-    active: Number(option("active", "10")), days: Number(option("days", "3600")), stepMs: Number(option("step-ms", "24000")), allowWars: allow === "true", output });
+    active: Number(option("active", "10")), days: Number(option("days", "3600")), stepMs: Number(option("step-ms", "24000")), allowWars: allow === "true", adaptive: option("adaptive", "true") !== "false", checkpoint: argv.includes("--checkpoint") ? option("checkpoint", "") : undefined, output });
   console.log(`Finished ${result.simulatedDays} game days in ${(result.runtimeMs / 1000).toFixed(1)} seconds. Reports: ${output}`);
 }

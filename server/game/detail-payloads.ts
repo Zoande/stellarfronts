@@ -561,7 +561,9 @@ export function createDetailPayload(
   perspective: GalaxyPerspective,
   scope: GameDetailScope,
   id: string | number | null | undefined,
+  options: { skipRevision?: boolean } = {},
 ): { payload: GameDetailPayload; revision: string; normalizedId: string | number | null } | { error: string } {
+  const revision = (payload: unknown) => options.skipRevision ? "ai" : createRevision(payload);
   if (scope === "system") {
     const starId = Number(id);
     if (!Number.isInteger(starId)) return { error: "System is not available." };
@@ -577,7 +579,7 @@ export function createDetailPayload(
     const partial = createPartialPlanetDetail(ctx, perspective, planetState, planet);
     if (!partial) return { error: "Planet is not available." };
     const payload = { starId: planetState.starId, ...partial };
-    return { payload, revision: createRevision(payload), normalizedId: planetId };
+    return { payload, revision: revision(payload), normalizedId: planetId };
   }
 
   if (scope === "starbase") {
@@ -590,7 +592,7 @@ export function createDetailPayload(
       starbase: perspective.mode === "observer" ? starbase : createPartialStarbase(starbase, view),
       intelligence: [view],
     };
-    return { payload, revision: createRevision(payload), normalizedId: starbaseId };
+    return { payload, revision: revision(payload), normalizedId: starbaseId };
   }
 
   if (scope === "fleet") {
@@ -611,7 +613,7 @@ export function createDetailPayload(
       }),
       intelligence: [view, ...shipViews],
     };
-    return { payload, revision: createRevision(payload), normalizedId: fleetId };
+    return { payload, revision: revision(payload), normalizedId: fleetId };
   }
 
   if (scope === "fleetManager") {
@@ -627,19 +629,21 @@ export function createDetailPayload(
       combatReports: detailState.combatReports,
       armies: detailState.armies,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "planetManager") {
     const detailState = createVisibleDetailState(ctx, perspective);
     const ownerId = perspective.mode === "faction" ? perspective.factionId : null;
     const planets = ctx.state.planetStates
-      .filter((planetState) => ownerId === null || (ctx.state.starOwnership[planetState.starId] ?? -1) === ownerId)
+      .filter((planetState) => ownerId === null || planetState.ownerId === ownerId || (ctx.state.starOwnership[planetState.starId] ?? -1) === ownerId)
       .filter((planetState) => canAccessPlanet(ctx, perspective, planetState))
       .map((planetState) => {
         const star = ctx.state.stars[planetState.starId];
         const planet = getPlanetConfig(ctx, planetState);
         if (!star || !planet) return null;
+        const partial = createPartialPlanetDetail(ctx, perspective, planetState, planet);
+        if (!partial) return null;
         const systemOwnerId = ctx.state.starOwnership[planetState.starId] ?? -1;
         const relevantFactionId = ownerId ?? systemOwnerId;
         const foundingSpeciesId = relevantFactionId >= 0
@@ -657,8 +661,8 @@ export function createDetailPayload(
           starName: star.name,
           ownerId: planetState.ownerId ?? -1,
           systemOwnerId,
-          planet,
-          planetState,
+          planet: partial.planet,
+          planetState: partial.planetState,
           foundingSpeciesId,
           foundingSpeciesName,
           foundingSpeciesHabitability: colonizationEligibility?.foundingSpeciesHabitability ?? null,
@@ -671,12 +675,12 @@ export function createDetailPayload(
       leaders: detailState.leaders,
       factionEconomies: detailState.factionEconomies,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "market") {
     const payload = createMarketDetailPayload(ctx, perspective);
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "technology") {
@@ -685,7 +689,7 @@ export function createDetailPayload(
       technologies: detailState.technologies,
       factionEconomies: detailState.factionEconomies,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "leaders") {
@@ -695,7 +699,7 @@ export function createDetailPayload(
       fleets: detailState.fleets,
       planetStates: detailState.planetStates,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "government") {
@@ -709,17 +713,17 @@ export function createDetailPayload(
       technologies: detailState.technologies,
       factionEconomies: detailState.factionEconomies,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "society") {
     const payload = createSocietyDetailPayload(ctx, perspective);
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "diplomacy") {
     const payload = createDiplomacyDetailPayload(ctx, perspective);
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "selection") {
@@ -730,7 +734,7 @@ export function createDetailPayload(
       starbases: detailState.starbases,
       leaders: detailState.leaders,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   if (scope === "hud") {
@@ -741,7 +745,7 @@ export function createDetailPayload(
       habitedPlanetSystemIds: detailState.habitedPlanetSystemIds,
       starOwnership: detailState.starOwnership,
     };
-    return { payload, revision: createRevision(payload), normalizedId: null };
+    return { payload, revision: revision(payload), normalizedId: null };
   }
 
   return { error: "Details are not available." };

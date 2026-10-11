@@ -1,3 +1,4 @@
+import { aiDecisionRecord, type AiDecisionRecord } from "./game/ai-diagnostics";
 import { random, nextRuntimeId, createDeterministicState } from "./game/determinism";
 import { accept, reject, ADAPTER_COMMANDS } from "./game/actions";
 import type { GameAction, GameActor, ActionSession, CommandReply } from "./game/actions";
@@ -224,6 +225,7 @@ import { phaseDurationDays, hyperlaneTravelDays, createStarbaseOrbitTarget, clea
 import { runSimulationPipeline } from "./game/simulation-pipeline";
 import { ACTIVE_AFK_MS, ACTIVE_UNCLAIMED_MS, createActiveEpisode, decideActive, recordActiveAcceptance, recordActiveRejection } from "./game/active";
 import { PASSIVE_AFK_MS, createPassiveEpisode, decidePassive, recordPassiveAcceptance } from "./game/passive";
+import type { PassiveEpisode } from "./game/types";
 import { beginPlanetInvasion, embarkPlanetArmies, getArmyRecruitmentCap, isArmyFleet, processArmyAndCrewReplenishment, processGroundBattles, reinforceOwnedPlanet, requestGroundWithdrawal } from "./game/ground-combat";
 
 export interface GameCore {
@@ -240,7 +242,7 @@ export interface GameCore {
 export function createGameCore(
   game: StoredGame,
   authStore: GameRuntimeAuthPort,
-  options: { now?: () => number; realNow?: () => number; simulationSeed?: number; initialState?: GameState; initialWorld?: { starCount: number; factionCount: number }; deferInitialState?: boolean; enablePassiveAi?: boolean; enableActiveAi?: boolean; activeFactionIds?: readonly number[] } = {},
+  options: { now?: () => number; realNow?: () => number; simulationSeed?: number; initialState?: GameState; initialWorld?: { starCount: number; factionCount: number }; deferInitialState?: boolean; enablePassiveAi?: boolean; enableActiveAi?: boolean; activeFactionIds?: readonly number[]; onAiDecision?: (record: AiDecisionRecord) => void } = {},
 ): GameCore {
 let commandEffects: MutationEffects | null = null;
 let accountNotifications: Map<number, number> | null = null;
@@ -3651,6 +3653,10 @@ function processAiControllers(): Array<{ factionId: number; mode: "caretaker" | 
       : episodes[factionId] = createCaretakerEpisode(observation, accountId, lastActivityAt, realNow));
     if (!previous && handoff && handoff.accountId === accountId) {
       episode.queuedShips = handoff.queuedShips; episode.reinforcements = handoff.reinforcements; episode.repairOrders = handoff.repairOrders;
+      if ("nextDevelopmentYear" in episode && "nextDevelopmentYear" in handoff) {
+        (episode as PassiveEpisode).pausedBuildings = (handoff as PassiveEpisode).pausedBuildings;
+        (episode as PassiveEpisode).managedJobLocks = (handoff as PassiveEpisode).managedJobLocks;
+      }
       for (const fleet of handoff.fleets) if (!episode.fleets.some((entry) => entry.fleetId === fleet.fleetId)) episode.fleets.push(fleet);
     }
     if (!previous) ctx.hasDirtyState = true;
@@ -3658,6 +3664,7 @@ function processAiControllers(): Array<{ factionId: number; mode: "caretaker" | 
     ctx.hasDirtyState = true;
     const actor = issueActor({ kind: "ai" as const, factionId, controllerId: `${mode}-${factionId}` });
     const decisions = mode === "active" ? decideActive(observation, activeEpisodes[factionId], ctx.state.aiSettings?.allowWarDeclarations === true) : mode === "passive" ? decidePassive(observation, passiveEpisodes[factionId]) : decideCaretaker(observation, episode);
+    if (options.onAiDecision) options.onAiDecision(aiDecisionRecord(observation, mode, decisions.map(({ action }) => action), ctx.state.aiSettings?.allowWarDeclarations === true, episode));
     for (const decision of decisions) {
       const queuedBefore = decision.replacementForFleetId ? shipQueueIds(factionId) : null;
       const result = executeGameCommand(actor, decision.action);

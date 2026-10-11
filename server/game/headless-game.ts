@@ -1,3 +1,4 @@
+import type { AiDecisionRecord } from "./ai-diagnostics";
 import { createHash } from "node:crypto";
 import { createGameCore } from "../game-runtime";
 import type { GameRuntimeAuthPort, StoredGame } from "../auth-store";
@@ -65,6 +66,7 @@ export interface HeadlessGameOptions {
   checkpoint?: GameCheckpoint;
   accounts?: MemoryAccounts;
   onCaretakerAction?: (record: { factionId: number; action: GameAction; outcome: CommandOutcome }) => void;
+  onAiDecision?: (record: AiDecisionRecord) => void;
   onAiAction?: (record: { factionId: number; mode: "caretaker" | "passive" | "active"; action: GameAction; outcome: CommandOutcome }) => void;
   /** Scripted laboratory fixtures opt in; production enables passive by default. */
   enablePassiveAi?: boolean;
@@ -102,6 +104,7 @@ export function createHeadlessGame(options: HeadlessGameOptions = {}) {
     enablePassiveAi: options.enablePassiveAi ?? options.checkpoint?.enablePassiveAi ?? false,
     enableActiveAi: options.enableActiveAi ?? options.checkpoint?.enableActiveAi ?? false,
     activeFactionIds: options.activeFactionIds ?? options.checkpoint?.activeFactionIds,
+    onAiDecision: options.onAiDecision,
   });
   // New worlds are canonicalized too, so restoring a checkpoint is idempotent.
   core.context.state = restoreState(core.context, structuredClone(core.context.state));

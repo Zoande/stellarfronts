@@ -55,7 +55,12 @@ interface SensorSource {
   suites: SensorSuiteId[];
 }
 
+interface SourceSetCache {
+  singletons: Map<string, Set<string>>;
+  extensions: WeakMap<Set<string>, Map<string, Set<string>>>;
+}
 interface FactionEvaluation {
+  sourceSetCache?: SourceSetCache;
   factionId: number;
   truth: Map<string, TruthEntity>;
   fieldSources: Map<string, Map<IntelFieldId, Set<string>>>;
@@ -67,6 +72,21 @@ interface FactionEvaluation {
 }
 
 const evaluationCache = new WeakMap<GameState, Map<number, FactionEvaluation>>();
+// A synchronous, read-only payload assembly asks for the same large entity
+// many times. Reuse detached views only within that assembly, never across a
+// command, refresh, faction observation, or simulation update.
+const viewAssemblyCaches = new WeakMap<GameState, { views: Map<string, IntelEntityView | null>; lazyFields: boolean }>();
+export function withIntelViewAssembly<T>(state: GameState, build: () => T, lazyFields = false): T {
+  const previous = viewAssemblyCaches.get(state);
+  viewAssemblyCaches.set(state, { views: new Map(), lazyFields });
+  // Borrow values while synchronous readers assemble the graph, then detach
+  // the complete result once. Nothing borrowed may escape this scope.
+  try { return structuredClone(build()); }
+  finally {
+    if (previous) viewAssemblyCaches.set(state, previous);
+    else viewAssemblyCaches.delete(state);
+  }
+}
 
 const TRADE_BUNDLES = new Set<IntelBundleId>([
   "planetIdentity",
@@ -428,12 +448,26 @@ function grantField(evaluation: FactionEvaluation, entityKey: string, fieldId: s
     entityFields = new Map();
     evaluation.fieldSources.set(entityKey, entityFields);
   }
-  let sources = entityFields.get(fieldId);
-  if (!sources) {
-    sources = new Set();
-    entityFields.set(fieldId, sources);
+  const sources = entityFields.get(fieldId);
+  if (sources?.has(sourceId)) return;
+  const cache = evaluation.sourceSetCache;
+  if (!cache) {
+    const updated = sources ?? new Set<string>(); updated.add(sourceId); entityFields.set(fieldId, updated);
+    return;
   }
-  sources.add(sourceId);
+  // Source sets are immutable within an evaluation. A bundle's thousands of
+  // fields can share the same set; extensions replace instead of mutating it.
+  if (!sources) {
+    let singleton = cache.singletons.get(sourceId);
+    if (!singleton) { singleton = new Set([sourceId]); cache.singletons.set(sourceId, singleton); }
+    entityFields.set(fieldId, singleton);
+  } else {
+    let extensions = cache.extensions.get(sources);
+    if (!extensions) { extensions = new Map(); cache.extensions.set(sources, extensions); }
+    let extended = extensions.get(sourceId);
+    if (!extended) { extended = new Set([...sources, sourceId]); extensions.set(sourceId, extended); }
+    entityFields.set(fieldId, extended);
+  }
 }
 
 function grantEntityBundles(
@@ -460,8 +494,9 @@ function grantEntityBundles(
   }
 }
 
-function createEvaluation(state: GameState, factionId: number, truth: Map<string, TruthEntity>, sensorSources = collectSensorSources(state)): FactionEvaluation {
+function createEvaluation(state: GameState, factionId: number, truth: Map<string, TruthEntity>, sensorSources = collectSensorSources(state), shareSources = true): FactionEvaluation {
   const evaluation: FactionEvaluation = {
+    sourceSetCache: shareSources ? { singletons: new Map(), extensions: new WeakMap() } : undefined,
     factionId,
     truth,
     fieldSources: new Map(),
@@ -691,18 +726,29 @@ function seedStartingIntelligence(state: GameState, truth: Map<string, TruthEnti
   state.startingIntelligenceSeeded = true;
 }
 
-export function refreshIntelligence(state: GameState, preserveObservations = false): void {
+export function refreshIntelligence(state: GameState, preserveObservations = false, options: { disableSharedSources?: boolean } = {}): void {
   const truth = buildTruth(state);
   seedStartingIntelligence(state, truth);
   const cache = new Map<number, FactionEvaluation>();
   const sensorSources = collectSensorSources(state);
   const copies = new WeakMap<object, unknown>();
   for (const faction of state.factions) {
-    const evaluation = createEvaluation(state, faction.id, truth, sensorSources);
+    const evaluation = createEvaluation(state, faction.id, truth, sensorSources, !options.disableSharedSources);
     const store = getStore(state, faction.id);
     // Upgrade old authority-ledger observations that contained the full private
     // war ownership map, including its individually addressable array leaves.
-    const ledger = store.entities[intelEntityKey("faction", faction.id)];
+    const ledgerKey = intelEntityKey("faction", faction.id);
+    const ledger = store.entities[ledgerKey];
+    // The owner receives the complete current roster. Expired daily candidates
+    // disappear from that roster permanently; retaining their stable-id leaves
+    // added tens of thousands of stale fields per country per year. Do not
+    // prune foreign ledgers or historical sightings of ships/planets.
+    const ledgerTruth = truth.get(ledgerKey);
+    if (!preserveObservations && ledger && evaluation.fieldSources.get(ledgerKey)?.has("leaders") && ledgerTruth) {
+      for (const fieldId of Object.keys(ledger.fields)) {
+        if (fieldId.startsWith("leaders.") && !Object.hasOwn(ledgerTruth.fields, fieldId)) delete ledger.fields[fieldId];
+      }
+    }
     if (ledger) for (const [fieldId, observation] of Object.entries(ledger.fields)) {
       if (!fieldId.startsWith("diplomacy")) continue;
       if (fieldId.endsWith(".preWarOwnership.length")) { observation.value = 0; continue; }
@@ -771,42 +817,59 @@ export function getIntelEntityView(
   kind: IntelEntityKind,
   id: string | number,
 ): IntelEntityView | null {
+  const assembly = viewAssemblyCaches.get(state);
+  const assemblyKey = `${factionId}:${kind}:${id}`;
+  if (assembly?.views.has(assemblyKey)) return assembly.views.get(assemblyKey)!;
   const evaluation = ensureEvaluation(state, factionId);
   const key = intelEntityKey(kind, id);
   const truthEntity = evaluation.truth.get(key);
   const storedEntity = getStore(state, factionId).entities[key];
-  if (!truthEntity && !storedEntity) return null;
+  if (!truthEntity && !storedEntity) { assembly?.views.set(assemblyKey, null); return null; }
+  if (assembly?.lazyFields && !storedEntity) {
+    const empty = { id: String(id), kind, fields: {} };
+    assembly.views.set(assemblyKey, empty); return empty;
+  }
   // Unknown fields are omitted from the sparse wire view. This is essential:
   // enumerating truth-side array indices would leak an unknown collection's size.
-  const fieldIds = new Set(Object.keys(storedEntity?.fields ?? {}));
-  const fields: Record<string, IntelValue<unknown>> = {};
-  for (const fieldId of fieldIds) {
+  const resolved: Record<string, IntelValue<unknown>> = {};
+  const resolveField = (fieldId: string): IntelValue<unknown> | undefined => {
+    if (Object.hasOwn(resolved, fieldId)) return resolved[fieldId];
     const observation = storedEntity?.fields[fieldId];
-    if (!observation) {
-      fields[fieldId] = { status: "unknown" };
-      continue;
-    }
+    if (!observation) return undefined;
     const sources = evaluation.fieldSources.get(key)?.get(fieldId);
-    fields[fieldId] = {
+    return resolved[fieldId] = {
       status: sources && sources.size > 0 ? "current" : "stale",
-      value: cloneIntelValue(observation.value),
+      value: assembly ? observation.value : cloneIntelValue(observation.value),
       observedAtYear: observation.observedAtYear,
       sourceIds: [...observation.sourceIds],
     };
-  }
-  return { id: String(id), kind, fields };
+  };
+  // Only compact AI assembly uses lazy fields. The proxy stays inside this
+  // synchronous scope: compact metadata replaces it before the final clone.
+  const fields = assembly?.lazyFields ? new Proxy(resolved, {
+    get: (_target, fieldId) => typeof fieldId === "string" ? resolveField(fieldId) : undefined,
+    ownKeys: () => Object.keys(storedEntity?.fields ?? {}),
+    getOwnPropertyDescriptor: (_target, fieldId) => typeof fieldId === "string" && storedEntity?.fields[fieldId]
+      ? { configurable: true, enumerable: true, value: resolveField(fieldId), writable: false } : undefined,
+  }) : resolved;
+  if (!assembly?.lazyFields) for (const fieldId of Object.keys(storedEntity?.fields ?? {})) resolveField(fieldId);
+  const view = { id: String(id), kind, fields };
+  assembly?.views.set(assemblyKey, view);
+  return view;
 }
 
-export function getAllIntelEntityViews(state: GameState, factionId: number): IntelEntityView[] {
+export function getAllIntelEntityViews(state: GameState, factionId: number, kinds?: ReadonlySet<IntelEntityKind>): IntelEntityView[] {
   const evaluation = ensureEvaluation(state, factionId);
   const keys = new Set([...evaluation.truth.keys(), ...Object.keys(getStore(state, factionId).entities)]);
   const views: IntelEntityView[] = [];
   for (const key of keys) {
     const separator = key.indexOf(":");
     const kind = key.slice(0, separator) as IntelEntityKind;
+    if (kinds && !kinds.has(kind) || !getStore(state, factionId).entities[key]) continue;
     const id = key.slice(separator + 1);
     const view = getIntelEntityView(state, factionId, kind, id);
-    if (view && Object.values(view.fields).some((field) => field.status !== "unknown")) views.push(view);
+    if (view && (viewAssemblyCaches.get(state)?.lazyFields ? Object.keys(getStore(state, factionId).entities[key]?.fields ?? {}).length > 0
+      : Object.values(view.fields).some((field) => field.status !== "unknown"))) views.push(view);
   }
   return views.sort((a, b) => `${a.kind}:${a.id}`.localeCompare(`${b.kind}:${b.id}`));
 }
@@ -931,6 +994,7 @@ export function getPerspectiveEntityView(
 export function getGalaxyIntelligenceView(
   state: GameState,
   perspective: GalaxyPerspective,
+  kinds?: ReadonlySet<IntelEntityKind>,
 ): GalaxyIntelligenceView {
   if (perspective.mode === "observer") {
     const truth = buildTruth(state);
@@ -947,7 +1011,7 @@ export function getGalaxyIntelligenceView(
   const evaluation = ensureEvaluation(state, perspective.factionId);
   const store = getStore(state, perspective.factionId);
   return {
-    entities: getAllIntelEntityViews(state, perspective.factionId),
+    entities: getAllIntelEntityViews(state, perspective.factionId, kinds),
     lanes: Object.entries(store.lanes).map(([key, observation]) => ({
       endpoints: [...observation.value] as [number, number],
       status: evaluation.currentLanes.has(key) ? "current" : "stale",

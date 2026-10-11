@@ -1,3 +1,5 @@
+import { analyzeCampaign } from "./game/campaign-analysis";
+import { calibrateCampaign } from "./game/campaign-calibration";
 import { mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -23,6 +25,14 @@ function positive(name: string, fallback: number): number {
 
 if (mode === "active") {
   await runCampaignCli(argv);
+} else if (mode === "analyze") {
+  if (!argv[0]) throw new Error("Usage: ai:simulate analyze campaign-directory");
+  console.log(JSON.stringify(await analyzeCampaign(path.resolve(argv[0])), null, 2));
+} else if (mode === "calibrate") {
+  const output = path.resolve(option("out", ".cache/ai-lab/cadence-calibration.json"));
+  mkdirSync(path.dirname(output), { recursive: true });
+  const result = calibrateCampaign(output);
+  console.log(JSON.stringify(result.map(({ scenario, runs, resourceErrors, identicalCombat }) => ({ scenario, runs: runs.map(({ schedule, ticks, runtimeMs }) => ({ schedule, ticks, runtimeMs })), resourceErrors, identicalCombat })), null, 2));
 } else if (mode === "replay") {
   const filename = argv[0];
   if (!filename) throw new Error("Usage: npm run ai:simulate -- replay path/to/replay.jsonl");

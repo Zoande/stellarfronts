@@ -62,6 +62,9 @@ export interface PassiveEpisode extends CaretakerEpisode {
   nextColonyYear: number;
   nextDevelopmentYear: number;
   nextShipYear: number;
+  /** Accepted AI pauses only; player-disabled buildings are never restarted. */
+  pausedBuildings?: Record<string, number>;
+  managedJobLocks?: string[];
 }
 
 export interface ActiveEpisode extends PassiveEpisode {
@@ -69,11 +72,10 @@ export interface ActiveEpisode extends PassiveEpisode {
   nextDiplomacyYear: number;
   /** Prevent scouts from endlessly alternating between equally useful systems. */
   exploredStarIds: number[];
-  /** Accepted AI pauses only; player-disabled buildings are never restarted. */
-  pausedBuildings?: Record<string, number>;
-  managedJobLocks?: string[];
   militaryOrdersSinceOutpost?: number;
   blockedScoutTargets?: Record<string, number>;
+  warBaselineSystems?: Record<string, number[]>;
+  nextInvestmentYear?: number;
 }
 
 export interface GameState {

@@ -6,7 +6,8 @@ import { CARETAKER_AFK_MS } from "../game/caretaker";
 import { PASSIVE_AFK_MS, createPassiveEpisode, decidePassive, recordPassiveAcceptance } from "../game/passive";
 import { getAiCandidates } from "../game/ai-candidates";
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
-import { RESOURCE_KINDS } from "../../src/data/Economy";
+import { calculatePlanetEconomy, createPlanetBuildingState, RESOURCE_KINDS } from "../../src/data/Economy";
+import { buildingKey } from "../game/active-economy";
 import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
 
 let base: GameCheckpoint;
@@ -150,7 +151,7 @@ test("a claim between membership polls prevents an extra passive turn and persis
 test("famine funding reserves enough food to start another district instead of buying tiny rations", () => {
   const observation = healthyObservation();
   const economy = observation.snapshot.factionEconomies.find((entry) => entry.factionId === 0)!;
-  economy.stockpiles.food = 0; economy.stockpiles.energy = 500; economy.monthlyDelta.food = -100;
+  economy.stockpiles.food = 0; economy.stockpiles.energy = 10000; economy.monthlyDelta.food = -100;
   const planet = observation.planets.planets.find((entry) => entry.planetState.ownerId === 0 && entry.planetState.isHabited)!.planetState;
   planet.builtDistricts.agriculture = 0;
   planet.economy.populationDecline.active = true; planet.economy.populationDecline.cause = "famine";
@@ -161,8 +162,88 @@ test("famine funding reserves enough food to start another district instead of b
   economy.stockpiles.energy = 100;
   assert.equal(decidePassive(observation, episode).some(({ action }) => action.type === "marketTrade" && action.tradeType === "buy" && action.resourceId === "food"), false);
   economy.stockpiles.energy = 300; economy.stockpiles.food = 80;
-  economy.stockpiles.goods = 0; economy.monthlyDelta.goods = -100;
   assert.ok(decidePassive(observation, episode).some(({ action }) => action.type === "buildDistrict" && action.districtKind === "agriculture"));
+});
+
+test("passive food recovery starts before famine and sells protected exports when cash is low", () => {
+  const observation = healthyObservation();
+  const economy = observation.snapshot.factionEconomies.find((entry) => entry.factionId === 0)!;
+  economy.stockpiles.food = 100; economy.monthlyDelta.food = -100;
+  economy.stockpiles.energy = 0;
+  for (const entry of observation.planets.planets) entry.planetState.economy.populationDecline.active = false;
+  const decisions = decidePassive(observation, createPassiveEpisode(observation, null, 0, 0));
+  assert.ok(decisions.some(({ action }) => action.type === "marketTrade" && action.tradeType === "sell"), JSON.stringify(decisions));
+  assert.ok(!decisions.some(({ action }) => action.type === "buildStarbaseShip" || action.type === "colonizePlanet" || action.type === "declareWar"));
+});
+
+test("passive structural food recovery can pause industry to free farmers and remembers the pause", () => {
+  const observation = healthyObservation();
+  const economy = observation.snapshot.factionEconomies.find((entry) => entry.factionId === 0)!;
+  const planet = observation.planets.planets.find(({ planetState }) => planetState.ownerId === 0)!.planetState;
+  planet.population = 5_000_000_000; planet.speciesPopulations[0].population = planet.population;
+  planet.buildings.city[4] = createPlanetBuildingState("alloyFoundries");
+  planet.economy = calculatePlanetEconomy(planet);
+  economy.stockpiles.food = 10; economy.monthlyDelta.food = -100;
+  economy.stockpiles.energy = 1000;
+  for (const resource of ["energy", "minerals", "goods", "alloys"] as const) economy.monthlyDelta[resource] = 0;
+  const episode = createPassiveEpisode(observation, null, 0, 0);
+  const selected = decidePassive(observation, episode).find(({ action }) => action.type === "setPlanetBuildingEnabled");
+  assert.ok(selected?.action.type === "setPlanetBuildingEnabled", JSON.stringify(decidePassive(observation, episode)));
+  assert.equal(selected.action.enabled, false);
+  recordPassiveAcceptance(episode, selected.action, observation.snapshot.clock.year);
+  assert.equal(episode.pausedBuildings?.[buildingKey(selected.action)], observation.snapshot.clock.year);
+  assert.deepEqual(structuredClone(episode).pausedBuildings, episode.pausedBuildings);
+});
+
+test("a fully staffed food deficit does not block relief for simultaneous energy and mineral crises", () => {
+  const observation = healthyObservation();
+  const economy = observation.snapshot.factionEconomies.find((entry) => entry.factionId === 0)!;
+  const planet = observation.planets.planets.find(({ planetState }) => planetState.ownerId === 0)!.planetState;
+  planet.population = 12_000_000_000; planet.speciesPopulations[0].population = planet.population;
+  planet.builtDistricts.agriculture = 3; planet.builtDistricts.mining = 3;
+  planet.urbanSubDistricts[1].buildings[0] = createPlanetBuildingState("civilianFabricators");
+  planet.economy = calculatePlanetEconomy(planet);
+  for (const resource of ["food", "minerals", "energy", "goods"] as const) {
+    economy.stockpiles[resource] = 0; economy.monthlyDelta[resource] = -100;
+  }
+  economy.stockpiles.alloys = 490; economy.monthlyDelta.alloys = 15;
+  const decisions = decidePassive(observation, createPassiveEpisode(observation, null, 0, 0));
+  assert.ok(decisions.some(({ action }) => action.type === "setPlanetBuildingEnabled" && !action.enabled), JSON.stringify(decisions));
+});
+
+test("cashless crowded passive planets rezone empty industry but preserve buildings and wartime alloys", () => {
+  const observation = healthyObservation();
+  const economy = observation.snapshot.factionEconomies.find((entry) => entry.factionId === 0)!;
+  const planet = observation.planets.planets.find(({ planetState }) => planetState.ownerId === 0)!.planetState;
+  planet.population = 12_000_000_000; planet.speciesPopulations[0].population = planet.population;
+  planet.builtDistricts.agriculture = 3; planet.builtDistricts.mining = 3;
+  planet.economy = calculatePlanetEconomy(planet);
+  for (const resource of ["food", "minerals", "energy", "goods"] as const) {
+    economy.stockpiles[resource] = 0; economy.monthlyDelta[resource] = -100;
+  }
+  economy.monthlyDelta.food = -120; economy.monthlyDelta.minerals = -40;
+  economy.monthlyDelta.energy = -80; economy.monthlyDelta.goods = -30;
+  economy.stockpiles.alloys = 490; economy.monthlyDelta.alloys = 15;
+  const select = () => decidePassive(observation, createPassiveEpisode(observation, null, 0, 0));
+  const before = structuredClone(observation);
+  assert.ok(select().some(({ action }) => action.type === "setUrbanSubDistrict" && action.subDistrictKind === "residential"), JSON.stringify(select()));
+  assert.deepEqual(observation, before);
+  observation.diplomacy.countries.find((country) => !country.isSelf)!.atWar = true;
+  assert.equal(select().some(({ action }) => action.type === "setUrbanSubDistrict"), false);
+  observation.diplomacy.countries.find((country) => !country.isSelf)!.atWar = false;
+  planet.urbanSubDistricts[1].buildings[0] = createPlanetBuildingState("civilianFabricators");
+  assert.equal(select().some(({ action }) => action.type === "setUrbanSubDistrict"), false);
+});
+
+test("passive buys a meaningful emergency food batch without waiting for the full project buffer", () => {
+  const observation = healthyObservation();
+  const economy = observation.snapshot.factionEconomies.find((entry) => entry.factionId === 0)!;
+  economy.stockpiles.food = 0; economy.monthlyDelta.food = -100;
+  economy.stockpiles.energy = 500;
+  const decisions = decidePassive(observation, createPassiveEpisode(observation, null, 0, 0));
+  const trade = decisions.find(({ action }) => action.type === "marketTrade" && action.tradeType === "buy" && action.resourceId === "food");
+  assert.ok(trade?.action.type === "marketTrade", JSON.stringify(decisions));
+  assert.ok(trade.action.amount >= 25);
 });
 
 test("a recovered economy can resume development while its old shortage marker recedes", () => {

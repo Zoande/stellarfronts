@@ -5,6 +5,7 @@ import { calculatePlanetEconomy, createPlanetBuildingState, DISTRICT_COSTS, DIST
 import { createActiveEpisode, decideActive, recordActiveAcceptance } from "../game/active";
 import { activeRecoveryAction, buildingKey, developmentForecast, improvesProduction, jobLockKey, protectDevelopmentWorkforce, workforceForecast } from "../game/active-economy";
 import { getAiCandidates } from "../game/ai-candidates";
+import { getRequiredTechIdsForBuildingLevel } from "../../src/data/Technology";
 
 const game = createHeadlessGame({ worldSeed: 22, simulationSeed: 73, initialWorld: { starCount: 12, factionCount: 2 } });
 function fixture() {
@@ -20,7 +21,8 @@ function fixture() {
 }
 
 test("peaceful mineral crisis pauses optional alloy demand without changing authoritative state", () => {
-  const { observation, planet, episode } = fixture();
+  const { observation, planet, economy, episode } = fixture();
+  for (const resource of ["food", "goods", "alloys", "energy"] as const) economy.monthlyDelta[resource] = 0;
   const before = game.digest();
   const action = activeRecoveryAction(observation, episode, getAiCandidates(observation));
   assert.deepEqual(action, { type: "setPlanetBuildingEnabled", planetId: planet.planetState.id, area: "city", slotIndex: 4, subDistrictIndex: undefined, enabled: false });
@@ -38,6 +40,32 @@ test("wartime mineral recovery protects alloy factories and funds a whole mine",
   assert.ok(action.amount + economy.stockpiles.minerals >= DISTRICT_COSTS.mining.minerals - economy.monthlyDelta.minerals * DISTRICT_BUILD_DAYS.mining / 30);
 });
 
+test("exhausted mine capacity funds a productive processing upgrade instead of daily rations", () => {
+  const { observation, planet, economy, episode } = fixture();
+  observation.diplomacy.countries.find((country) => !country.isSelf)!.atWar = true;
+  planet.planet.objectDetails.districtLimits.mining = 2;
+  planet.planetState.builtDistricts.mining = 2;
+  planet.planet.objectDetails.districtLimits.city = 8;
+  planet.planetState.builtDistricts.city = 8;
+  planet.planetState.population = 20_000_000_000;
+  planet.planetState.speciesPopulations[0].population = planet.planetState.population;
+  planet.planetState.features = [];
+  planet.planetState.buildings.mining[0] = createPlanetBuildingState("mineralPurificationPlant");
+  planet.planetState.economy = calculatePlanetEconomy(planet.planetState);
+  observation.snapshot.technologies.find((entry) => entry.factionId === 0)!.completedTechIds.push(...getRequiredTechIdsForBuildingLevel("mineralPurificationPlant", 2));
+  economy.stockpiles.energy = 20000;
+  const project = { type: "upgradePlanetBuilding" as const, planetId: planet.planetState.id, area: "mining" as const, slotIndex: 0 };
+  assert.ok(improvesProduction(observation, project, "minerals"));
+  const action = activeRecoveryAction(observation, episode, getAiCandidates(observation));
+  assert.equal(action?.type, "marketTrade");
+  if (action?.type !== "marketTrade") return;
+  assert.equal(action.resourceId, "minerals"); assert.equal(action.tradeType, "buy");
+  assert.ok(action.amount + economy.stockpiles.minerals >= 2700, "funds the 2,000 mineral upgrade and the retained buffer: " + JSON.stringify(action));
+  economy.stockpiles.minerals += action.amount;
+  const next = decideActive(observation, episode);
+  assert.ok(next.some(({ action }) => action.type === "upgradePlanetBuilding" && action.area === "mining" && action.slotIndex === 0), JSON.stringify(next));
+});
+
 test("an energy crisis can sell surplus output without shutting wartime alloy production", () => {
   const { observation, economy, episode } = fixture();
   observation.diplomacy.countries.find((country) => !country.isSelf)!.atWar = true;
@@ -49,8 +77,30 @@ test("an energy crisis can sell surplus output without shutting wartime alloy pr
   assert.equal(action.tradeType, "sell"); assert.notEqual(action.resourceId, "alloys");
 });
 
+test("a profitable importer sells available exports at its cash floor before pausing industry", () => {
+  const { observation, economy, episode } = fixture();
+  economy.stockpiles.energy = 499; economy.monthlyDelta.energy = -100;
+  economy.stockpiles.minerals = 3000; economy.monthlyDelta.minerals = 100;
+  const action = activeRecoveryAction(observation, episode, getAiCandidates(observation));
+  assert.equal(action?.type, "marketTrade");
+  if (action?.type === "marketTrade") assert.equal(action.tradeType, "sell");
+});
+
+test("recurring imports buy a buffer beyond the retained floor rather than one day's ration", () => {
+  const { observation, economy, episode } = fixture();
+  economy.stockpiles.minerals = 699; economy.monthlyDelta.minerals = -10;
+  economy.stockpiles.energy = 20000;
+  // An in-progress mine means this trade maintains supplies, not a new project.
+  const owned = observation.planets.planets.find(({ planetState }) => planetState.ownerId === 0)!.planetState;
+  owned.constructionQueue.push({ id: "pending-mine", kind: "district", label: "Mining", districtKind: "mining", totalDays: 180, remainingDays: 90, mineralCost: 1000, cost: DISTRICT_COSTS.mining });
+  const action = activeRecoveryAction(observation, episode, getAiCandidates(observation));
+  assert.equal(action?.type, "marketTrade");
+  if (action?.type === "marketTrade") { assert.equal(action.tradeType, "buy"); assert.ok(action.amount >= 21); }
+});
+
 test("restart requires an accepted AI pause, a cooldown, and sustainable inputs", () => {
   const { observation, planet, economy, episode } = fixture();
+  for (const resource of ["food", "goods", "alloys", "energy"] as const) economy.monthlyDelta[resource] = 0;
   const pause = activeRecoveryAction(observation, episode, getAiCandidates(observation))!;
   assert.equal(pause.type, "setPlanetBuildingEnabled");
   planet.planetState.buildings.city[4] = createPlanetBuildingState("alloyFoundries", 1, false);
@@ -66,7 +116,9 @@ test("restart requires an accepted AI pause, a cooldown, and sustainable inputs"
   if (restart?.type !== "setPlanetBuildingEnabled") return;
   assert.equal(restart.enabled, true);
   economy.monthlyDelta.minerals = 0;
-  assert.equal(action(), undefined);
+  assert.equal(action()?.type, "setPlanetBuildingEnabled", "profitable exports can sustain the restarted inputs");
+  economy.monthlyDelta.energy = -5000;
+  assert.ok(action()?.type !== "setPlanetBuildingEnabled" || (action() as { enabled: boolean }).enabled === false);
   recordActiveAcceptance(episode, restart, observation.snapshot.clock.year);
   assert.deepEqual(episode.pausedBuildings, {});
 });
@@ -83,6 +135,8 @@ test("an unstaffed generator expansion is not mistaken for effective energy prod
 
 test("housing can be an energy recovery project when crowding suppresses production", () => {
   const { observation, planet, economy, episode } = fixture();
+  // Existing urban buildings rule out empty-district residential rezoning.
+  planet.planetState.urbanSubDistricts[1].buildings[0] = createPlanetBuildingState("civilianFabricators", 1, false);
   planet.planetState.population = 12_000_000_000;
   planet.planetState.speciesPopulations[0].population = 12_000_000_000;
   planet.planetState.economy.housing = 10_000_000_000;
@@ -142,14 +196,15 @@ test("workforce recovery preserves existing player locks and refuses locks on em
   assert.equal(p.jobLocks.some((lock) => lock.job === "farmer"), true);
 });
 
-test("structural energy recovery frees workers before repeatedly selling surplus", () => {
+test("structural energy recovery frees workers when recurring exports cannot cover it", () => {
   const { observation, planet, economy, episode } = fixture();
   const p = planet.planetState;
   p.population = 10_000_000_000; p.speciesPopulations[0].population = p.population;
   p.builtDistricts.mining = 3;
   p.economy = calculatePlanetEconomy(p);
   economy.stockpiles.energy = 500; economy.monthlyDelta.energy = -100;
-  economy.stockpiles.minerals = 10000; economy.monthlyDelta.minerals = 100;
+  economy.stockpiles.minerals = 10000;
+  for (const resource of ["minerals", "food", "goods", "alloys"] as const) economy.monthlyDelta[resource] = 0;
   const action = activeRecoveryAction(observation, episode, getAiCandidates(observation));
   assert.equal(action?.type, "setPlanetBuildingEnabled");
   if (action?.type === "setPlanetBuildingEnabled") assert.equal(action.enabled, false);

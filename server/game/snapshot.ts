@@ -9,7 +9,7 @@
 import { StarType } from "../../src/data/StarMap";
 import type { StarData } from "../../src/data/StarMap";
 import type { PlanetState } from "../../src/data/Economy";
-import type { IntelEntityView, IntelValue } from "../../src/data/Intelligence";
+import type { IntelEntityView, IntelValue, IntelEntityKind } from "../../src/data/Intelligence";
 import type { GalaxyPerspective } from "../../src/data/Factions";
 import { getBorderPolicy, areFactionsAtWar } from "../../src/data/Diplomacy";
 import type {
@@ -401,7 +401,7 @@ export function createVisibleState(ctx: RuntimeContext, perspective: GalaxyPersp
   };
 }
 
-export function createSnapshot(ctx: RuntimeContext, perspective: GalaxyPerspective): GameSnapshot {
+export function createSnapshot(ctx: RuntimeContext, perspective: GalaxyPerspective, intelligenceKinds?: ReadonlySet<IntelEntityKind>): GameSnapshot {
   const visibleState = createVisibleState(ctx, perspective);
   const knownSet = getKnownSet(ctx, perspective);
 
@@ -409,7 +409,7 @@ export function createSnapshot(ctx: RuntimeContext, perspective: GalaxyPerspecti
     type: "snapshot",
     protocolVersion: VERSION_MANIFEST.protocolVersion,
     perspective,
-    intelligence: getGalaxyIntelligenceView(ctx.state, perspective),
+    intelligence: getGalaxyIntelligenceView(ctx.state, perspective, intelligenceKinds),
     ...visibleState,
     stars: createVisibleStars(ctx, perspective, knownSet),
   };

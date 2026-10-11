@@ -26,10 +26,14 @@ test("unclaimed transitions at 72 hours; claimed transitions at day seven and im
   game.advanceRealTime(PASSIVE_AFK_MS - ACTIVE_UNCLAIMED_MS);
   const passive = game.diagnosticState().passiveEpisodes![0];
   passive.queuedShips.receipt = { fleetId: passive.fleets[0].fleetId, shipKind: "corvette", designId: null };
+  passive.pausedBuildings = { "recovery-pause": saved.state.clock.year };
+  passive.managedJobLocks = ["recovery-lock"];
   game.advanceRealTime(ACTIVE_AFK_MS - PASSIVE_AFK_MS - 1);
   assert.ok(game.diagnosticState().passiveEpisodes?.[0]);
   game.advanceRealTime(1);
   assert.ok(game.diagnosticState().activeEpisodes?.[0]?.queuedShips.receipt);
+  assert.deepEqual(game.diagnosticState().activeEpisodes?.[0]?.managedJobLocks, ["recovery-lock"]);
+  assert.deepEqual(game.diagnosticState().activeEpisodes?.[0]?.pausedBuildings, passive.pausedBuildings);
   assert.equal(game.diagnosticState().passiveEpisodes?.[0], undefined);
   assert.equal(game.recordPlayerActivity(99, 0), false);
   assert.equal(game.recordPlayerActivity(17, 0), true);
@@ -92,6 +96,9 @@ test("active declares only with the tag, a neighboring known weaker force, and h
   const enemy = { ...structuredClone(own), id: "known-enemy", ownerId: 1, currentStarId: foreignStar, shipIds: ["known-enemy-ship"] };
   observation.fleets.fleets.push(enemy);
   observation.fleets.ships.push({ ...structuredClone(ship), id: "known-enemy-ship", fleetId: enemy.id, ownerId: 1, hull: 100, maxHull: 100 });
+  const base = structuredClone(observation.fleets.starbases.find((base) => base.ownerId === 0)!);
+  observation.fleets.starbases.push({ ...base, id: "border-outpost", ownerId: 1, starId: foreignStar, level: "outpost", hull: 1600, armor: 500, shield: 700 });
+  observation.snapshot.habitedPlanetSystemIds = observation.snapshot.habitedPlanetSystemIds.filter((id) => id !== foreignStar);
   const episode = createActiveEpisode(observation, null, 0, 0);
   const war = (allow: boolean) => decideActive(observation, structuredClone(episode), allow).find(({ action }) => action.type === "declareWar");
   assert.equal(war(false), undefined);
@@ -116,6 +123,22 @@ test("a navy on the move does not trigger surrender, while losing the navy does"
   assert.equal(peace(), false);
   for (const ship of observation.fleets.ships.filter((entry) => entry.ownerId === 0)) ship.hull = ship.armor = ship.shield = 0;
   assert.equal(peace(), true);
+});
+
+test("idle reinforcements regroup with the navy through a known safe route", () => {
+  const observation = structuredClone(createHeadlessGame({ checkpoint: checkpoint() }).observe(0));
+  const main = observation.fleets.fleets.find((fleet) => fleet.ownerId === 0 && fleet.shipIds.includes("ship-0-1"))!;
+  const ship = observation.fleets.ships.find((ship) => main.shipIds.includes(ship.id))!;
+  const next = observation.snapshot.hyperlanes.find(([a, b]) => a === main.currentStarId || b === main.currentStarId)!;
+  const starId = next[0] === main.currentStarId ? next[1] : next[0];
+  observation.snapshot.starOwnership = [[main.currentStarId, 0], [starId, 0]];
+  observation.snapshot.knownStarIds ??= [];
+  if (!observation.snapshot.knownStarIds.includes(starId)) observation.snapshot.knownStarIds.push(starId);
+  ship.hull = ship.maxHull = 5000;
+  observation.fleets.fleets.push({ ...structuredClone(main), id: "reinforcements", currentStarId: starId, shipIds: ["reinforcement"] });
+  observation.fleets.ships.push({ ...structuredClone(ship), id: "reinforcement", fleetId: "reinforcements", hull: 100, maxHull: 100 });
+  const decisions = decideActive(observation, createActiveEpisode(observation, null, 0, 0));
+  assert.ok(decisions.some(({ action }) => action.type === "moveFleet" && action.fleetId === "reinforcements" && action.targetStarId === main.currentStarId));
 });
 
 test("a newly claimed active country cannot take another turn between membership polls", () => {
