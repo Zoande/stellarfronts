@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { runScenario, replay, type ReplayRecord, type SimulationResult } from "./game/simulation-lab";
 import { SCENARIO_NAMES, type ScenarioName } from "./game/simulation-scenarios";
 import { runCaretakerExperiment, type CaretakerSimulationResult } from "./game/caretaker-lab";
+import { runCampaignCli } from "./game/active-lab";
 
 const argv = process.argv.slice(2);
 const mode = argv.shift() ?? "batch";
@@ -20,7 +21,9 @@ function positive(name: string, fallback: number): number {
   return value;
 }
 
-if (mode === "replay") {
+if (mode === "active") {
+  await runCampaignCli(argv);
+} else if (mode === "replay") {
   const filename = argv[0];
   if (!filename) throw new Error("Usage: npm run ai:simulate -- replay path/to/replay.jsonl");
   const records = readFileSync(filename, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line) as ReplayRecord);
@@ -28,7 +31,7 @@ if (mode === "replay") {
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 1;
 } else {
-  if (mode !== "batch" && mode !== "scenario" && mode !== "long-economy" && mode !== "caretaker" && mode !== "passive") throw new Error("Use batch, scenario, long-economy, caretaker, passive, or replay.");
+  if (mode !== "batch" && mode !== "scenario" && mode !== "long-economy" && mode !== "caretaker" && mode !== "passive") throw new Error("Use active, batch, scenario, long-economy, caretaker, passive, or replay.");
   const scenario = option("scenario", "idle-economy") as ScenarioName;
   if (!SCENARIO_NAMES.includes(scenario)) throw new Error("Unknown scenario.");
   const seeds = option("seeds", "19,42,71").split(",").map(Number);

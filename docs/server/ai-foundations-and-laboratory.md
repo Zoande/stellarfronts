@@ -1,7 +1,8 @@
 # AI foundations and simulation laboratory
 
-Stage 1 provides shared authoritative actions, fair observations, deterministic runtime services,
-and scripted experiments. It does not enable live AI controllers or AFK transitions.
+The foundation provides shared authoritative actions, fair observations, deterministic runtime services,
+and scripted experiments. Live caretaker, passive, and active controllers now build on it; see
+[active AI and accelerated campaigns](active-ai-and-campaigns.md) for current behavior and war controls.
 
 ## Runtime and action boundary
 
@@ -102,9 +103,10 @@ Hourly diagnostic sampling can miss a shortage shorter than an hour. Newly queue
 Correctness findings require reproductions and regression tests. Balance changes require a separate
 decision.
 
-## Later controller stages
+## Live controller stages
 
 Unclaimed countries: passive for 72 real hours, then active. Claimed countries: human until 48 hours
 AFK, caretaker until day 5, passive until day 7, then active. Meaningful activity in that game resets
 AFK time; an unattended connection does not. Ownership remains with the player and control returns
-immediately on their return. These rules are agreed design targets, not enabled behavior in Stage 1.
+immediately on their return. Production now enables these transitions. Laboratory fixtures opt in
+explicitly and can pin the active/passive country assignment for an isolated campaign.

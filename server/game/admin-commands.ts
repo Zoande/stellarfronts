@@ -525,6 +525,15 @@ export async function executeAdminCommand(
         rows: ownerIds.flatMap((ownerId) => adminRowsForTechnologies(ctx, ownerId)),
       };
     }
+    case "ai_wars": {
+      const setting = parsed.args[0] ?? "status";
+      if (!["on", "off", "status"].includes(setting)) throw new Error("Use ai_wars on, off, or status.");
+      if (setting !== "status") {
+        ctx.state.aiSettings = { allowWarDeclarations: setting === "on" };
+        ctx.hasDirtyState = true;
+      }
+      return { message: `AI war declarations ${ctx.state.aiSettings?.allowWarDeclarations === true ? "enabled" : "disabled"}.` };
+    }
     case "state_summary":
       return {
         message: "State summary.",

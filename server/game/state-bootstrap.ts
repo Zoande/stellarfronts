@@ -36,7 +36,7 @@ import {
 } from "../../src/data/Starbase";
 import type { StarbaseLevel } from "../../src/data/Starbase";
 import { calculateShipDesignStats, createDefaultShipDesign } from "../../src/data/ShipDesigns";
-import { createInitialFactionEconomyState } from "../../src/data/Economy";
+import { createInitialFactionEconomyState, createPlanetBuildingState } from "../../src/data/Economy";
 import { normalizeFactionTechState } from "../../src/data/Technology";
 import { createInitialGovernmentStates, normalizeGovernmentStatesForFactions } from "../../src/data/Government";
 import { createDefaultSpeciesRightsState } from "../../src/data/Species";
@@ -112,7 +112,12 @@ export function createInitialState(ctx: RuntimeContext): GameState {
     const homePlanet = planetStates.find((planetState) => (
       planetState.starId === faction.homeStarId && planetState.isHabited
     ));
-    if (homePlanet) homePlanet.ownerId = faction.id;
+    if (homePlanet) {
+      homePlanet.ownerId = faction.id;
+      // New spacefaring empires need recurring research from their first day.
+      // Apply only at world creation; restored player layouts remain authoritative.
+      homePlanet.buildings.city[3] = createPlanetBuildingState("researchLabs");
+    }
   }
   applyPlanetStatesToStars(stars, planetStates);
   const starbaseCombat = STARBASE_LEVEL_DEFINITIONS.starbase.combat;
@@ -268,6 +273,9 @@ export function restoreState(ctx: RuntimeContext, decoded: unknown): GameState {
       ? parsed.caretakerEpisodes : {};
     if (parsed.passiveEpisodes !== undefined) parsed.passiveEpisodes = parsed.passiveEpisodes && typeof parsed.passiveEpisodes === "object" && !Array.isArray(parsed.passiveEpisodes)
       ? parsed.passiveEpisodes : {};
+    if (parsed.activeEpisodes !== undefined) parsed.activeEpisodes = parsed.activeEpisodes && typeof parsed.activeEpisodes === "object" && !Array.isArray(parsed.activeEpisodes)
+      ? parsed.activeEpisodes : {};
+    if (parsed.aiSettings !== undefined) parsed.aiSettings = { allowWarDeclarations: parsed.aiSettings?.allowWarDeclarations === true };
     parsed.armies = Array.isArray(parsed.armies)
       ? parsed.armies.map(normalizeArmyUnit).filter((army): army is NonNullable<typeof army> => army !== null)
       : [];

@@ -85,6 +85,7 @@ export const ADMIN_COMMAND_DEFINITIONS: AdminCommandDefinition[] = [
   command("economy_status", "help", "economy_status <owner|me|all>", "Summarize faction economy state."),
   command("tech_status", "technology", "tech_status <owner|me|all>", "Summarize faction technology progress."),
   command("state_summary", "help", "state_summary", "Summarize global game state."),
+  command("ai_wars", "combat", "ai_wars <on|off|status>", "Set the persisted game tag allowing AI war declarations (default off)."),
 
   command("tick_size", "time", "tick_size <days>", "Set game days advanced per simulation tick."),
   command("tick_speed", "time", "tick_speed <seconds>", "Set real seconds per simulation tick; decimals are supported."),

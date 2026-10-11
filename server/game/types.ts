@@ -64,11 +64,26 @@ export interface PassiveEpisode extends CaretakerEpisode {
   nextShipYear: number;
 }
 
+export interface ActiveEpisode extends PassiveEpisode {
+  nextWarYear: number;
+  nextDiplomacyYear: number;
+  /** Prevent scouts from endlessly alternating between equally useful systems. */
+  exploredStarIds: number[];
+  /** Accepted AI pauses only; player-disabled buildings are never restarted. */
+  pausedBuildings?: Record<string, number>;
+  managedJobLocks?: string[];
+  militaryOrdersSinceOutpost?: number;
+  blockedScoutTargets?: Record<string, number>;
+}
+
 export interface GameState {
   /** Private authoritative state; never included in faction observations. */
   determinism?: import("./determinism").DeterministicState;
   caretakerEpisodes?: Record<string, CaretakerEpisode>;
   passiveEpisodes?: Record<string, PassiveEpisode>;
+  activeEpisodes?: Record<string, ActiveEpisode>;
+  /** Server-owned game tag. Absent/false keeps AI from initiating wars. */
+  aiSettings?: { allowWarDeclarations: boolean };
   schemaVersion: 30;
   stars: StarData[];
   nebulae: NebulaRegion[];

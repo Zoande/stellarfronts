@@ -5,6 +5,12 @@ import { OUTPOST_CONSTRUCTION_COST, countStarbaseShipyards, getStarbaseShipConst
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
 import type { GameAction } from "./actions";
 import type { AiObservation } from "./ai-observation";
+import type { ServerFleet } from "../../src/game/GameProtocol";
+
+/** Completed travel normally ends in orbit, which can accept ordinary orders. */
+export function isAiFleetAvailable(fleet: Pick<ServerFleet, "phase">): boolean {
+  return fleet.phase === "idle" || fleet.phase === "orbiting" || fleet.phase === "orbitingPlanet";
+}
 
 export interface AiCandidates {
   economy: GameAction[];
@@ -88,7 +94,7 @@ export function getAiCandidates(observation: AiObservation): AiCandidates {
     if (economy && economy.stockpiles.energy >= quote.buyPrice) result.economy.push({ type: "marketTrade", resourceId: quote.resourceId, tradeType: "buy", amount: 1 });
     if (quote.ownedAmount >= 1) result.economy.push({ type: "marketTrade", resourceId: quote.resourceId, tradeType: "sell", amount: 1 });
   }
-  const ownedFleets = fleets.fleets.filter((f) => f.ownerId === factionId && !f.retreatState && f.phase === "idle");
+  const ownedFleets = fleets.fleets.filter((f) => f.ownerId === factionId && !f.retreatState && !f.stationaryStarbaseId && !f.stationaryPlanetId && isAiFleetAvailable(f));
   const shipsById = new Map(fleets.ships.map((s) => [s.id, s]));
   const owners = new Map(snapshot.starOwnership);
   const known = new Set(snapshot.knownStarIds ?? []);

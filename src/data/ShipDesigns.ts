@@ -326,7 +326,8 @@ export const SHIP_HULL_DEFINITIONS: Record<StarbaseShipKind, ShipHullDefinition>
     buildDays: 8,
     alloyUpkeepPerDay: 9,
     crewDemand: 10_000,
-    cost: resources({ minerals: 180, alloys: 125, goods: 80, research: 20 }),
+    // Research flows directly into technologies and is not a spendable stockpile.
+    cost: resources({ minerals: 180, alloys: 125, goods: 80 }),
     upkeep: resources({ energy: 1, alloys: 0.09, goods: 0.07 }),
     combat: {
       maxShield: 55,
@@ -1322,10 +1323,10 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
     iconKind: "sensor",
     shipKinds: ["scienceShip"],
     modifiers: {
-      cost: { alloys: 28, goods: 14, research: 4 },
+      cost: { alloys: 28, goods: 14 },
       upkeep: { energy: 0.14 },
     },
-    cost: resources({ alloys: 28, goods: 14, research: 4 }),
+    cost: resources({ alloys: 28, goods: 14 }),
     upkeep: resources({ energy: 0.14 }),
     sensorSuiteIds: ["scienceShipSensors"],
   },
@@ -1460,10 +1461,10 @@ export const SHIP_MODULE_DEFINITIONS: Record<string, ShipModuleDefinition> = {
       weaponAccuracyBonus: 0.06,
       weaponDamageMultiplier: 0.06,
       crewDemand: -140,
-      cost: { alloys: 48, goods: 38, research: 20 },
+      cost: { alloys: 48, goods: 38 },
       upkeep: { energy: 0.24, goods: 0.06 },
     },
-    cost: resources({ alloys: 48, goods: 38, research: 20 }),
+    cost: resources({ alloys: 48, goods: 38 }),
     upkeep: resources({ energy: 0.24, goods: 0.06 }),
   },
 };

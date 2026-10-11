@@ -1,4 +1,5 @@
-import { DISTRICT_COSTS, RESOURCE_KINDS, getBuildingCost, getBuildingUpgradeCost, getPlanetBuildingKind, getPlanetBuildingLevel, getEffectivePlanetDistrictLimits, getQueuedDistrictCount } from "../../src/data/Economy";
+import { DISTRICT_COSTS, RESOURCE_KINDS, PLANET_DEFENSE_BUILDING_DEFINITIONS, getBuildingCost, getBuildingUpgradeCost, getPlanetBuildingKind, getPlanetBuildingLevel, getEffectivePlanetDistrictLimits, getQueuedDistrictCount } from "../../src/data/Economy";
+import { ARMY_TYPE_DEFINITIONS } from "../../src/data/Armies";
 import type { ResourceCounts } from "../../src/data/Economy";
 import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
 import { OUTPOST_CONSTRUCTION_COST, STARBASE_BUILDING_DEFINITIONS } from "../../src/data/Starbase";
@@ -9,7 +10,9 @@ import { getAiCandidates } from "./ai-candidates";
 import type { GameAction } from "./actions";
 import { createCaretakerEpisode, decideCaretaker } from "./caretaker";
 import type { CaretakerDecision } from "./caretaker";
-import type { PassiveEpisode } from "./types";
+import type { ActiveEpisode, PassiveEpisode } from "./types";
+import { hasPeaceExpansionGoal } from "./active-strategy";
+import { improvesProduction } from "./active-economy";
 
 export const PASSIVE_AFK_MS = 5 * 24 * 60 * 60 * 1000;
 export const PASSIVE_MILITARY_UPKEEP_SHARE = 0.2;
@@ -29,6 +32,8 @@ function economyOf(observation: AiObservation) {
 
 function actionCost(observation: AiObservation, action: GameAction): Partial<ResourceCounts> {
   if (action.type === "buildDistrict") return DISTRICT_COSTS[action.districtKind];
+  if (action.type === "buildPlanetDefenseBuilding") return PLANET_DEFENSE_BUILDING_DEFINITIONS[action.buildingKind].levels[1].cost;
+  if (action.type === "queueArmyRecruitment") return ARMY_TYPE_DEFINITIONS[action.armyTypeId].cost;
   if (action.type === "buildPlanetBuilding") return getBuildingCost(action.buildingKind);
   if (action.type === "buildStarbase") return OUTPOST_CONSTRUCTION_COST;
   if (action.type === "buildStarbaseBuilding") return STARBASE_BUILDING_DEFINITIONS[action.buildingKind].cost;
@@ -47,7 +52,7 @@ function actionCost(observation: AiObservation, action: GameAction): Partial<Res
 }
 
 /** Elective growth retains construction funds and six months of recurring deficits. */
-function affordableWithReserve(observation: AiObservation, action: GameAction): boolean {
+export function affordableWithReserve(observation: AiObservation, action: GameAction): boolean {
   const economy = economyOf(observation);
   if (!economy) return false;
   const cost = actionCost(observation, action);
@@ -105,9 +110,18 @@ function fundFamineConstruction(observation: AiObservation, candidates: ReturnTy
   return { type: "marketTrade", resourceId: "food", tradeType: "buy", amount };
 }
 
-function developmentAction(observation: AiObservation, candidates: ReturnType<typeof getAiCandidates>): GameAction | undefined {
+function developmentAction(observation: AiObservation, candidates: ReturnType<typeof getAiCandidates>, active = false): GameAction | undefined {
   const economy = economyOf(observation);
   if (!economy) return;
+  if (active) {
+    const housing = candidates.economy.find((action) => {
+      if (action.type !== "buildDistrict" || action.districtKind !== "city" || !affordableWithReserve(observation, action)) return false;
+      const planet = observation.planets.planets.find((entry) => entry.planetState.id === action.planetId)?.planetState;
+      return !!planet && planet.population >= planet.economy.housing * 0.95 && planet.constructionQueue.length < 2
+        && !planet.constructionQueue.some((item) => item.districtKind === "city");
+    });
+    if (housing) return housing;
+  }
   const resources = [...(["food", "energy", "minerals", "goods", "alloys"] as const)].sort((a, b) =>
     (economy.monthlyDelta[a] < 0 ? economy.stockpiles[a] / -economy.monthlyDelta[a] : 100 + economy.monthlyDelta[a])
     - (economy.monthlyDelta[b] < 0 ? economy.stockpiles[b] / -economy.monthlyDelta[b] : 100 + economy.monthlyDelta[b]));
@@ -115,13 +129,25 @@ function developmentAction(observation: AiObservation, candidates: ReturnType<ty
     const kind = resource === "food" ? "agriculture" : resource === "energy" ? "generator" : resource === "minerals" ? "mining" : null;
     const buildingKind = resource === "food" ? "foodProcessingPlant" : resource === "energy" ? "energyGrid"
       : resource === "minerals" ? "mineralPurificationPlant" : resource === "goods" ? "civilianFabricators" : "alloyFoundries";
+    // A deliberate pause must not be bypassed by constructing another copy.
+    // Recovery evaluates whether the existing capacity can safely restart.
+    const pausedCapacity = active && observation.planets.planets.some(({ planetState: planet }) => planet.ownerId === observation.factionId
+      && [...Object.values(planet.buildings).flat(), ...planet.urbanSubDistricts.flatMap((sub) => sub.buildings)]
+        .some((slot) => slot && typeof slot !== "string" && slot.enabled === false && getPlanetBuildingKind(slot) === buildingKind));
     const needsProduction = economy.monthlyDelta[resource] < 0 || economy.stockpiles[resource] < ({ food: 500, energy: 1000, minerals: 2000, goods: 300, alloys: 500 }[resource]);
     if (!needsProduction) continue;
     const candidate = candidates.economy.find((action) => {
-      if (!(action.type === "buildDistrict" && action.districtKind === kind || action.type === "buildPlanetBuilding" && action.buildingKind === buildingKind)) return false;
+      if (!(action.type === "buildDistrict" && action.districtKind === kind || action.type === "buildPlanetBuilding" && action.buildingKind === buildingKind
+        || active && action.type === "upgradePlanetBuilding")) return false;
+      if (pausedCapacity && (action.type === "buildPlanetBuilding" || action.type === "upgradePlanetBuilding")) return false;
       const planet = observation.planets.planets.find((entry) => entry.planetState.id === action.planetId)?.planetState;
       if (!planet || planet.constructionQueue.length >= 2 || !affordableWithReserve(observation, action)) return false;
+      if (action.type === "upgradePlanetBuilding") {
+        const slots = action.area === "urbanSubDistrict" ? planet.urbanSubDistricts[action.subDistrictIndex ?? -1]?.buildings : planet.buildings[action.area];
+        if (getPlanetBuildingKind(slots?.[action.slotIndex]) !== buildingKind) return false;
+      }
       if (planet.constructionQueue.some((item) => item.districtKind === kind && kind !== null || item.buildingKind === buildingKind)) return false;
+      if (active && !improvesProduction(observation, action, resource)) return false;
       return economy.monthlyDelta[resource] < 0 || planet.economy.unemployedPopulation >= 250_000_000;
     });
     if (candidate) return candidate;
@@ -147,14 +173,18 @@ function pendingShips(observation: AiObservation, episode: PassiveEpisode) {
   return [...queue.values()];
 }
 
-function shipAction(observation: AiObservation, episode: PassiveEpisode, candidates: ReturnType<typeof getAiCandidates>): CaretakerDecision | undefined {
+function shipAction(observation: AiObservation, episode: PassiveEpisode, candidates: ReturnType<typeof getAiCandidates>, active = false): CaretakerDecision | undefined {
   const pending = pendingShips(observation, episode);
   if (pending.length >= 2) return;
   const ownShips = observation.fleets.ships.filter((ship) => ship.ownerId === observation.factionId && ship.hull > 0);
   const owners = new Map(observation.snapshot.starOwnership);
   const knownColony = observation.planets.planets.some((entry) => !entry.planetState.isHabited && entry.colonizationEligibility?.eligible && owners.get(entry.starId) === observation.factionId);
   const supportKind = !ownShips.some((ship) => ship.shipKind === "constructionShip") && !pending.some((ship) => ship.shipKind === "constructionShip") ? "constructionShip"
-    : knownColony && !ownShips.some((ship) => ship.shipKind === "colonizationShip") && !pending.some((ship) => ship.shipKind === "colonizationShip") ? "colonizationShip" : null;
+    : knownColony && !ownShips.some((ship) => ship.shipKind === "colonizationShip") && !pending.some((ship) => ship.shipKind === "colonizationShip") ? "colonizationShip"
+    : active && !ownShips.some((ship) => ship.shipKind === "scienceShip") && !pending.some((ship) => ship.shipKind === "scienceShip") ? "scienceShip" : null;
+  // One peacetime military order between outposts still grows the navy, then
+  // protects savings from an endless sequence of individually affordable ships.
+  if (active && !supportKind && hasPeaceExpansionGoal(observation) && ((episode as ActiveEpisode).militaryOrdersSinceOutpost ?? 0) >= 1) return;
   const recurring = { energy: 0, alloys: 0 };
   const military = { energy: 0, alloys: 0 };
   for (const entry of observation.planets.planets.filter((entry) => entry.planetState.ownerId === observation.factionId && entry.planetState.isHabited)) {
@@ -179,7 +209,7 @@ function shipAction(observation: AiObservation, episode: PassiveEpisode, candida
     const economy = economyOf(observation)!;
     if (RESOURCE_KINDS.some((resource) => stats.upkeep[resource] > 0 && (economy.monthlyDelta[resource] - stats.upkeep[resource] * upkeepMultiplier < 0
       || economy.stockpiles[resource] - stats.cost[resource] < stats.upkeep[resource] * upkeepMultiplier * 6))) continue;
-    if (!supportKind && (["energy", "alloys"] as const).some((resource) => military[resource] + stats.upkeep[resource] * upkeepMultiplier > recurring[resource] * PASSIVE_MILITARY_UPKEEP_SHARE)) continue;
+    if (!supportKind && (["energy", "alloys"] as const).some((resource) => military[resource] + stats.upkeep[resource] * upkeepMultiplier > recurring[resource] * (active ? 0.4 : PASSIVE_MILITARY_UPKEEP_SHARE))) continue;
     const target = !supportKind && observation.fleets.fleets.find((fleet) => fleet.ownerId === observation.factionId
       && !fleet.stationaryStarbaseId && !fleet.stationaryPlanetId && fleet.shipIds.some((id) => ownShips.some((ship) => ship.id === id && MILITARY_KINDS.has(ship.shipKind))));
     const fleetId = target ? target.id : `passive-${observation.factionId}-${supportKind ?? "reserve"}`;
@@ -189,10 +219,9 @@ function shipAction(observation: AiObservation, episode: PassiveEpisode, candida
 }
 
 /** Passive controllers only receive the same detached country information as players. */
-export function decidePassive(observation: AiObservation, episode: PassiveEpisode): CaretakerDecision[] {
+export function decidePassive(observation: AiObservation, episode: PassiveEpisode, active = false, candidates = getAiCandidates(observation)): CaretakerDecision[] {
   const year = observation.snapshot.clock.year;
-  const candidates = getAiCandidates(observation);
-  let decisions = decideCaretaker(observation, episode).filter(({ action }) =>
+  let decisions = decideCaretaker(observation, episode, candidates).filter(({ action }) =>
     action.type !== "buildStarbase" && action.type !== "buildStarbaseShip" && action.type !== "buildPlanetShip");
   const famineFunding = fundFamineConstruction(observation, candidates);
   if (famineFunding) decisions = [...decisions.filter(({ action }) => !["marketTrade", "buildDistrict", "buildPlanetBuilding", "upgradePlanetBuilding"].includes(action.type)), { action: famineFunding }];
@@ -200,15 +229,27 @@ export function decidePassive(observation: AiObservation, episode: PassiveEpisod
   if (research) decisions.push({ action: research });
   const hasEconomyAction = decisions.some(({ action }) => ["marketTrade", "buildDistrict", "buildPlanetBuilding", "upgradePlanetBuilding"].includes(action.type));
   if (!hasEconomyAction && year + 1e-9 >= episode.nextDevelopmentYear) {
-    const development = developmentAction(observation, candidates);
+    const development = developmentAction(observation, candidates, active);
     if (development) decisions.push({ action: development });
   }
   const atWar = observation.diplomacy.countries.some((country) => country.atWar);
   if (!healthy(observation) || hasEconomyAction) return decisions;
   // One elective expense per decision keeps all reserve checks on a current view.
-  if (decisions.some(({ action }) => action.type === "buildDistrict" || action.type === "buildPlanetBuilding")) return decisions;
+  if (decisions.some(({ action }) => action.type === "buildDistrict" || action.type === "buildPlanetBuilding" || action.type === "upgradePlanetBuilding")) return decisions;
+  const chooseOutpost = () => {
+    const owners = new Map(observation.snapshot.starOwnership);
+    const busy = new Set(decisions.flatMap(({ action }) => action.type === "repairFleet" ? [action.constructionFleetId] : action.type === "moveFleet" ? [action.fleetId] : []));
+    return candidates.expansion.find((action) => action.type === "buildStarbase" && !!action.fleetId && !busy.has(action.fleetId)
+      && !episode.repairOrders?.[action.fleetId] && affordableWithReserve(observation, action)
+      && observation.snapshot.hyperlanes.some(([a, b]) => a === action.targetStarId && owners.get(b) === observation.factionId || b === action.targetStarId && owners.get(a) === observation.factionId)
+      && !observation.fleets.fleets.some((fleet) => fleet.ownerId === observation.factionId && fleet.orderType === "build" && fleet.targetStarId === action.targetStarId));
+  };
+  if (active && hasPeaceExpansionGoal(observation) && year + 1e-9 >= episode.nextOutpostYear) {
+    const outpost = chooseOutpost();
+    if (outpost) return [...decisions, { action: outpost }];
+  }
   if (year + 1e-9 >= episode.nextShipYear) {
-    const ship = shipAction(observation, episode, candidates);
+    const ship = shipAction(observation, episode, candidates, active);
     if (ship) return [...decisions, ship];
     const hasYard = candidates.ships.length > 0 || observation.fleets.starbases.some((base) => base.ownerId === observation.factionId && base.buildingSlots.includes("shipyard"))
       || observation.planets.planets.some((entry) => entry.planetState.ownerId === observation.factionId && entry.planetState.defense.shipyardSlots.some((slot) => slot?.kind === "orbitalShipyard"));
@@ -224,11 +265,7 @@ export function decidePassive(observation: AiObservation, episode: PassiveEpisod
     if (colony) return [...decisions, { action: colony }];
   }
   if (year + 1e-9 >= episode.nextOutpostYear) {
-    const busy = new Set(decisions.flatMap(({ action }) => action.type === "repairFleet" ? [action.constructionFleetId] : action.type === "moveFleet" ? [action.fleetId] : []));
-    const outpost = candidates.expansion.find((action) => action.type === "buildStarbase" && !!action.fleetId && !busy.has(action.fleetId)
-      && !episode.repairOrders?.[action.fleetId] && affordableWithReserve(observation, action)
-      && observation.snapshot.hyperlanes.some(([a, b]) => a === action.targetStarId && owners.get(b) === observation.factionId || b === action.targetStarId && owners.get(a) === observation.factionId)
-      && !observation.fleets.fleets.some((fleet) => fleet.ownerId === observation.factionId && fleet.orderType === "build" && fleet.targetStarId === action.targetStarId));
+    const outpost = chooseOutpost();
     if (outpost) decisions.push({ action: outpost });
   }
   return decisions;

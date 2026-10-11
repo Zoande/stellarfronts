@@ -5,7 +5,7 @@ import { calculateShipDesignStats } from "../../src/data/ShipDesigns";
 import { GAME_DAYS_PER_YEAR } from "../../src/game/GameTime";
 import type { GameAction } from "./actions";
 import type { AiObservation } from "./ai-observation";
-import { getAiCandidates } from "./ai-candidates";
+import { getAiCandidates, isAiFleetAvailable } from "./ai-candidates";
 import type { CaretakerEpisode, RuntimeContext } from "./types";
 
 export const CARETAKER_AFK_MS = 48 * 60 * 60 * 1000;
@@ -28,7 +28,7 @@ export function createCaretakerEpisode(observation: AiObservation, accountId: nu
 
 /** Called by ordinary ship-queue completion, including after a checkpoint restore. */
 export function registerCaretakerShipCompletion(ctx: RuntimeContext, queueItemId: string, shipId: string): void {
-  for (const episode of [...Object.values(ctx.state.caretakerEpisodes ?? {}), ...Object.values(ctx.state.passiveEpisodes ?? {})]) {
+  for (const episode of [...Object.values(ctx.state.caretakerEpisodes ?? {}), ...Object.values(ctx.state.passiveEpisodes ?? {}), ...Object.values(ctx.state.activeEpisodes ?? {})]) {
     const assignment = episode.queuedShips[queueItemId];
     if (!assignment) continue;
     delete episode.queuedShips[queueItemId];
@@ -155,9 +155,8 @@ function replacementAction(observation: AiObservation, episode: CaretakerEpisode
 export interface CaretakerDecision { action: GameAction; replacementForFleetId?: string }
 
 /** A deterministic, deliberately conservative policy over detached faction information. */
-export function decideCaretaker(observation: AiObservation, episode: CaretakerEpisode): CaretakerDecision[] {
+export function decideCaretaker(observation: AiObservation, episode: CaretakerEpisode, candidates = getAiCandidates(observation)): CaretakerDecision[] {
   const { factionId, snapshot, fleets } = observation;
-  const candidates = getAiCandidates(observation);
   const decisions: CaretakerDecision[] = [];
   const owners = new Map(snapshot.starOwnership);
   const visibleEnemies = currentEnemyFleetIds(observation);
@@ -168,9 +167,9 @@ export function decideCaretaker(observation: AiObservation, episode: CaretakerEp
     && fleet.shipIds.some((id) => fleets.ships.some((ship) => ship.id === id && !["scienceShip", "constructionShip", "colonizationShip", "armyShip", "defensePlatform"].includes(ship.shipKind)))
     && !fleet.retreatState && !fleet.stationaryPlanetId && !fleet.stationaryStarbaseId);
   for (const enemy of enemies) {
-    const defender = ownMilitary.find((fleet) => fleet.currentStarId === enemy.currentStarId && fleet.phase === "idle");
+    const defender = ownMilitary.find((fleet) => fleet.currentStarId === enemy.currentStarId && isAiFleetAvailable(fleet));
     if (defender) { decisions.push({ action: { type: "attackTarget", fleetId: defender.id, targetId: enemy.id, targetKind: "fleet" } }); break; }
-    const mover = ownMilitary.find((fleet) => fleet.phase === "idle"
+    const mover = ownMilitary.find((fleet) => isAiFleetAvailable(fleet)
       && candidates.movement.some((action) => action.type === "moveFleet" && action.fleetId === fleet.id && action.targetStarId === enemy.currentStarId));
     if (mover) { decisions.push({ action: { type: "moveFleet", fleetId: mover.id, targetStarId: enemy.currentStarId } }); break; }
   }
@@ -205,7 +204,7 @@ export function decideCaretaker(observation: AiObservation, episode: CaretakerEp
       }));
     const repairShip = damaged && !enemies.some((enemy) => enemy.currentStarId === damaged.currentStarId)
       && fleets.fleets.find((fleet) => fleet.ownerId === factionId && fleet.id !== damaged.id && !busyFleetIds.has(fleet.id)
-      && fleet.phase === "idle"
+      && isAiFleetAvailable(fleet)
       && fleet.shipIds.some((id) => fleets.ships.some((ship) => ship.id === id && ship.shipKind === "constructionShip"))
       && candidates.movement.some((action) => action.type === "moveFleet" && action.fleetId === fleet.id && action.targetStarId === damaged.currentStarId));
     if (repairShip && damaged) {
@@ -221,11 +220,11 @@ export function decideCaretaker(observation: AiObservation, episode: CaretakerEp
       .filter((id): id is string => !!id));
     const original = fleets.fleets.find((fleet) => fleet.id === baseline.fleetId && fleet.ownerId === factionId);
     const target = original ?? fleets.fleets.find((fleet) => replacementFleetIds.has(fleet.id) && fleet.ownerId === factionId);
-    if (!target || busyFleetIds.has(target.id) || target.phase !== "idle" || target.retreatState || owners.get(target.currentStarId) !== factionId) continue;
+    if (!target || busyFleetIds.has(target.id) || !isAiFleetAvailable(target) || target.retreatState || owners.get(target.currentStarId) !== factionId) continue;
     for (const sourceId of replacementFleetIds) {
       if (sourceId === target.id) continue;
       const source = fleets.fleets.find((fleet) => fleet.id === sourceId && fleet.ownerId === factionId);
-      if (!source || busyFleetIds.has(source.id) || source.phase !== "idle" || source.retreatState) continue;
+      if (!source || busyFleetIds.has(source.id) || !isAiFleetAvailable(source) || source.retreatState) continue;
       if (source.currentStarId === target.currentStarId) {
         decisions.push({ action: { type: "mergeFleets", targetFleetId: target.id, sourceFleetIds: [source.id] } });
       } else if (candidates.movement.some((action) => action.type === "moveFleet" && action.fleetId === source.id && action.targetStarId === target.currentStarId)) {
