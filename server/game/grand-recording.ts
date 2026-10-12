@@ -7,17 +7,27 @@ import type { GameState } from "./types";
 
 export type GrandLogLevel = "compact" | "detailed" | "forensic";
 export type DeltaPath = Array<string | number>;
-export interface StateDelta { set: Array<[DeltaPath, unknown]>; remove: DeltaPath[] }
+export interface TimestampTree { [key: string]: TimestampTree | true }
+export interface StateDelta { set: Array<[DeltaPath, unknown]>; remove: DeltaPath[]; intelTimestamps?: Array<{ year: number; fields: TimestampTree }> }
 
 /** Lossless JSON-value deltas. Cached values are detached from mutable game
  * state. Paths are arrays, so dots/slashes in intelligence IDs are unambiguous. */
-export function createStateDelta() {
+export function createStateDelta(options: { groupIntelTimestamps?: boolean } = {}) {
   let previous: any;
   return (current: unknown): StateDelta => {
     const delta: StateDelta = { set: [], remove: [] };
+    const groups = new Map<number, TimestampTree>();
     function visit(value: any, prior: any, at: DeltaPath): any {
       if (value === null || typeof value !== "object") {
-        if (value !== prior) delta.set.push([at, value]);
+        if (value !== prior) {
+          if (options.groupIntelTimestamps && at.length >= 3 && at[0] === "intelligenceByFaction" && at.at(-1) === "observedAtYear" && typeof value === "number") {
+            let tree = groups.get(value);
+            if (!tree) { tree = Object.create(null) as TimestampTree; groups.set(value, tree); }
+            const keys = at.slice(1, -1);
+            for (const key of keys.slice(0, -1)) tree = (tree[String(key)] ??= Object.create(null)) as TimestampTree;
+            tree[String(keys.at(-1)!)] = true;
+          } else delta.set.push([at, value]);
+        }
         return value;
       }
       if (!prior || typeof prior !== "object" || Array.isArray(value) !== Array.isArray(prior)
@@ -32,6 +42,7 @@ export function createStateDelta() {
       return prior;
     }
     previous = visit(current, previous, []);
+    if (groups.size) delta.intelTimestamps = [...groups].map(([year, fields]) => ({ year, fields }));
     return delta;
   };
 }
@@ -42,6 +53,15 @@ export function applyStateDelta(previous: any, delta: StateDelta): any {
     if (!at.length) { previous = copy; continue; }
     let parent = previous; for (const key of at.slice(0, -1)) parent = parent[key];
     parent[at.at(-1)!] = copy;
+  }
+  for (const { year, fields } of delta.intelTimestamps ?? []) {
+    function stamp(target: any, tree: TimestampTree) {
+      for (const [key, child] of Object.entries(tree)) {
+        if (child === true) target[key].observedAtYear = year;
+        else stamp(target[key], child);
+      }
+    }
+    stamp(previous.intelligenceByFaction, fields);
   }
   for (const at of delta.remove) {
     let parent = previous; for (const key of at.slice(0, -1)) parent = parent[key];

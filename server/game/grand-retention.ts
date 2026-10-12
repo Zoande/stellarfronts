@@ -19,6 +19,7 @@ export function reduceOldGrandRecord(name: string, row: any): any {
       const { intelligenceByFaction: _intel, ...gameplay } = value as Record<string, unknown>;
       return [at, gameplay];
     });
+    delete delta.intelTimestamps;
     delta.remove = delta.remove.filter((at) => at[0] !== "intelligenceByFaction");
     row.projection = "gameplay-without-intelligence";
   } else if (name === "observations") {
