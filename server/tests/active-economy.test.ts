@@ -51,7 +51,8 @@ test("cashless multi-resource collapse can rezone empty industry in useful steps
   p.urbanSubDistricts[1].buildings[0] = createPlanetBuildingState("civilianFabricators", 1, false);
   assert.notEqual(activeRecoveryAction(observation, episode, getAiCandidates(observation))?.type, "setUrbanSubDistrict", "never demolish an existing building");
   p.urbanSubDistricts[1].buildings[0] = null;
-  p.constructionQueue.push({ id: "queued-industry", kind: "building", label: "Factory", area: "urbanSubDistrict", subDistrictIndex: 1, slotIndex: 0, buildingKind: "civilianFabricators", totalDays: 60, remainingDays: 60, mineralCost: 450, cost: { minerals: 450, energy: 120 } });
+  p.constructionQueue.push({ id: "queued-industry", kind: "building", label: "Factory", area: "urbanSubDistrict", subDistrictIndex: 1, slotIndex: 0, buildingKind: "civilianFabricators", totalDays: 60, remainingDays: 60, mineralCost: 450,
+    cost: { food: 0, minerals: 450, energy: 120, goods: 0, alloys: 0, research: 0 } });
   assert.notEqual(activeRecoveryAction(observation, episode, getAiCandidates(observation))?.type, "setUrbanSubDistrict", "never discard a paid queue");
 });
 
