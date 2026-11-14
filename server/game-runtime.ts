@@ -2643,7 +2643,12 @@ function advanceState(now: number): Set<ServerUpdateField> {
 
   refreshDiscovery();
 
-  const movingBefore = ctx.state.fleets.some((fleet) => fleet.phase !== "idle");
+  // Resting orbits do not advance in advanceFleet. Counting them as movement
+  // rebuilt every faction's field-level intelligence twice on every tick,
+  // even in an entirely stationary galaxy. Keep the pre-combat refresh for
+  // actual travel, construction and phase transitions, including arrivals.
+  const advancing = (fleet: GameFleet) => fleet.phase !== "idle" && fleet.phase !== "orbiting" && fleet.phase !== "orbitingPlanet";
+  const movingBefore = ctx.state.fleets.some(advancing);
   for (const fleet of ctx.state.fleets) {
     if (advanceFleet(ctx, fleet, scaledMs)) {
       arrivingFleets.push(fleet);
@@ -2664,7 +2669,7 @@ function advanceState(now: number): Set<ServerUpdateField> {
     changed.add("fleets");
     changed.add("visibility");
   }
-  const movingAfter = ctx.state.fleets.some((fleet) => fleet.phase !== "idle");
+  const movingAfter = ctx.state.fleets.some(advancing);
   if (movingBefore || movingAfter) {
     refreshDiscovery();
   }

@@ -156,6 +156,21 @@ export function economicRecoveryAction(observation: AiObservation, episode: Pass
     });
   }
   const urgent = needy[0];
+  const safeInputs = (change: Record<ResourceKind, number>) => BASIC.every((resource) => change[resource] >= 0
+    || economy.monthlyDelta[resource] + change[resource] >= 0
+    || economy.stockpiles[resource] >= Math.max(FLOORS[resource], -(economy.monthlyDelta[resource] + change[resource]) * 12));
+  // A bankrupt economy cannot repair every deficit in one step. In peace it
+  // may shed downstream industry to restore its mineral/energy inputs, even
+  // while goods remain short. Require a large net saving at visible market
+  // prices, never worsen food or either upstream input, and retain war output.
+  const upstreamEmergency = (change: Record<ResourceKind, number>) => !atWar && !tradeBacked && !exportBacked
+    && (["energy", "minerals"] as const).some((resource) => needy.includes(resource)
+      && economy.stockpiles[resource] < Math.max(25, -economy.monthlyDelta[resource]) && change[resource] > 1)
+    && change.food >= 0 && change.energy >= 0 && change.minerals >= 0
+    && change.energy + change.minerals * (observation.market.resources.find((quote) => quote.resourceId === "minerals")?.buyPrice ?? 0)
+      > 2 * Math.max(0, -change.goods) * (observation.market.resources.find((quote) => quote.resourceId === "goods")?.buyPrice ?? Infinity);
+  const helpsShortage = (change: Record<ResourceKind, number>) => change[urgent] > 1
+    || change[urgent] >= -1 && needy.some((resource) => change[resource] > 1);
   // Empty industrial sub-districts still reserve jobs and reduce housing.
   // Ordinary residential rezoning can escape a cashless crowding spiral.
   // Never remove buildings/queues, or sacrifice wartime alloy production.
@@ -167,10 +182,10 @@ export function economicRecoveryAction(observation: AiObservation, episode: Pass
         || planet.constructionQueue.some((item) => item.area === "urbanSubDistrict" && item.subDistrictIndex === index)) continue;
       const action = { type: "setUrbanSubDistrict", planetId: planet.id, subDistrictIndex: index, subDistrictKind: "residential" } as const;
       const change = developmentForecast(observation, action);
-      if (!change || change[urgent] <= 1 || atWar && change.alloys < -1) continue;
+      if (!change || !helpsShortage(change) || atWar && change.alloys < -1) continue;
       if (change.food < -1 && economy.monthlyDelta.food + change.food < 0
         && economy.stockpiles.food < Math.max(FLOORS.food, -(economy.monthlyDelta.food + change.food) * 6)) continue;
-      if (tradeBudget(observation, Object.fromEntries(RESOURCE_KINDS.map((resource) => [resource, -change[resource]]))).sustainable) return action;
+      if (safeInputs(change) || upstreamEmergency(change)) return action;
     }
   }
   // Only release locks installed by this episode, and only when the current
@@ -180,8 +195,7 @@ export function economicRecoveryAction(observation: AiObservation, episode: Pass
       const action: JobLock = { type: "setPlanetJobLock", planetId: entry.planetState.id, job: lock.job, locked: false };
       if (!episode.managedJobLocks?.includes(jobLockKey(action))) continue;
       const change = workforceForecast(observation, action);
-      if (change && change[urgent] > 1 && BASIC.every((resource) => economy.monthlyDelta[resource] + change[resource] >= 0
-        || economy.stockpiles[resource] >= Math.max(FLOORS[resource], -(economy.monthlyDelta[resource] + change[resource]) * 6))
+      if (change && helpsShortage(change) && safeInputs(change)
         && (!atWar || change.alloys >= -1)) return action;
     }
   }
@@ -193,12 +207,11 @@ export function economicRecoveryAction(observation: AiObservation, episode: Pass
       && !entry.planetState.constructionQueue.some((item) => item.districtKind === "city")) && improvesProduction(observation, action, urgent));
   const construction = housing ?? candidates.economy.find((action) => action.type === "buildDistrict" && action.districtKind === supplyKind && improvesProduction(observation, action, urgent));
   const pause = () => toggles.filter((action) => !action.enabled).map((action) => ({ action, estimate: toggleForecast(observation, action) }))
-    .filter(({ estimate }) => estimate && ["alloyFoundries", "civilianFabricators", "researchLabs", "foodProcessingPlant", "mineralPurificationPlant"].includes(estimate.kind)
+    .filter(({ estimate }) => estimate && ["alloyFoundries", "civilianFabricators", "researchLabs", "administrativeComplex", "foodProcessingPlant", "mineralPurificationPlant"].includes(estimate.kind)
       && !(atWar && estimate.kind === "alloyFoundries")
       && (!atWar || estimate.change.alloys >= -1)
-      && (estimate.change[urgent] > 1 || estimate.change[urgent] >= -1 && needy.some((resource) => estimate.change[resource] > 1))
-      && BASIC.every((resource) => estimate.change[resource] >= 0 || economy.monthlyDelta[resource] + estimate.change[resource] >= 0
-        || economy.stockpiles[resource] >= Math.max(FLOORS[resource], -(economy.monthlyDelta[resource] + estimate.change[resource]) * 12))
+      && helpsShortage(estimate.change)
+      && (safeInputs(estimate.change) || upstreamEmergency(estimate.change))
       && (estimate.kind !== "alloyFoundries" || economy.stockpiles.alloys > FLOORS.alloys
         || !atWar && economy.stockpiles.food < Math.max(25, -economy.monthlyDelta.food)))
     .sort((a, b) => b.estimate!.change[urgent] - a.estimate!.change[urgent]
