@@ -4,6 +4,7 @@ import path from "node:path";
 import { getGameStateDirectory } from "../game-state-path";
 import { VERSION_MANIFEST } from "../versionManifest";
 import type { RuntimeContext } from "./types";
+import { writeSnapshotBuffer } from "./write-buffer";
 
 const SF_VERSION_ID = VERSION_MANIFEST.versionId;
 
@@ -24,18 +25,22 @@ async function syncDirectory(directoryPath: string): Promise<void> {
 }
 
 async function writeStateSnapshot(ctx: RuntimeContext, nextState: RuntimeContext["state"]): Promise<void> {
-  const stateDirectory = path.dirname(ctx.statePath);
-  await mkdir(stateDirectory, { recursive: true });
-  const stamped = {
+  // Capture every field in one synchronous serialization before yielding. A
+  // shallow stamp retained old clock/array references while other live fields
+  // could change during mkdir/open, producing a snapshot from mixed instants.
+  const schemaVersion = nextState.schemaVersion;
+  const payload = Buffer.from(`${JSON.stringify({
     ...nextState,
     codeVersion: SF_VERSION_ID,
     protocolVersion: VERSION_MANIFEST.protocolVersion,
-  };
+  })}\n`, "utf8");
+  const stateDirectory = path.dirname(ctx.statePath);
+  await mkdir(stateDirectory, { recursive: true });
   const temporaryPath = `${ctx.statePath}.${process.pid}.${randomUUID()}.tmp`;
   let temporaryFile: Awaited<ReturnType<typeof open>> | null = null;
   try {
     temporaryFile = await open(temporaryPath, "wx");
-    await temporaryFile.writeFile(`${JSON.stringify(stamped)}\n`, "utf8");
+    await writeSnapshotBuffer(temporaryFile, payload);
     await temporaryFile.sync();
     await temporaryFile.close();
     temporaryFile = null;
@@ -46,7 +51,7 @@ async function writeStateSnapshot(ctx: RuntimeContext, nextState: RuntimeContext
     await rm(temporaryPath, { force: true }).catch(() => undefined);
     throw error;
   }
-  ctx.services.authStore.recordGameStateVersions(ctx.game.id, nextState.schemaVersion, VERSION_MANIFEST.protocolVersion);
+  ctx.services.authStore.recordGameStateVersions(ctx.game.id, schemaVersion, VERSION_MANIFEST.protocolVersion);
   ctx.lastSaveAt = ctx.services.now();
 }
 

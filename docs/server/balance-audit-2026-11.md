@@ -86,3 +86,23 @@ floors, production build/bundle budget, public observer authentication, and a
 read-only WebSocket snapshot through the deployed gateway. Schema 30 and
 protocol 12 remain compatible; deployment uses the orchestrator's verified
 backup/update flow.
+
+## Save latency follow-up
+
+After deployment, the newest on-disk save's game clock was roughly three minutes
+behind the running campaign even though writes were completing. Node's
+`FileHandle.writeFile` splits this roughly 60 MB snapshot into 512 KiB writes.
+With a busy synchronous tick, every callback can wait behind another tick.
+
+Snapshot writes now serialize one coherent instant before the first asynchronous
+operation, submit the complete remaining buffer, and retry legitimate short
+writes. A zero-progress write fails. Temporary-file replacement, file and
+directory fsync, single-flight saves and flushing of subsequent mutations are
+unchanged. A deterministic test checks that an old clock cannot be combined with
+later mutable arrays in the first snapshot.
+
+An isolated busy-loop benchmark of the same 59,382,795-byte file took 6.37 seconds
+with `writeFile` versus 0.27 seconds with the full-buffer writer. Both results
+matched the original SHA-256. This is an I/O scheduling experiment, not a claim
+that the live Pi has the same absolute timings or that simulation tick cost has
+been eliminated.
