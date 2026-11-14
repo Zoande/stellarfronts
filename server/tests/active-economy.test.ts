@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHeadlessGame } from "../game/headless-game";
-import { calculatePlanetEconomy, createPlanetBuildingState, DISTRICT_COSTS, DISTRICT_BUILD_DAYS } from "../../src/data/Economy";
+import { calculatePlanetEconomy, createPlanetBuildingState, DISTRICT_COSTS, DISTRICT_BUILD_DAYS, getPlanetBuildingKind, getPlanetBuildingLevel } from "../../src/data/Economy";
 import { createActiveEpisode, decideActive, recordActiveAcceptance } from "../game/active";
 import { activeRecoveryAction, buildingKey, developmentForecast, improvesProduction, jobLockKey, protectDevelopmentWorkforce, workforceForecast } from "../game/active-economy";
 import { getAiCandidates } from "../game/ai-candidates";
@@ -19,6 +19,64 @@ function fixture() {
   economy.stockpiles.minerals = 50; economy.monthlyDelta.minerals = -100;
   return { observation, planet, economy, episode: createActiveEpisode(observation, null, 0, 0) };
 }
+
+function bankruptFixture() {
+  const result = fixture(), p = result.planet.planetState;
+  p.population = 60_000_000_000;
+  p.speciesPopulations = [{ ...p.speciesPopulations[0], population: p.population }];
+  // Keep player structures intact, but turn off optional demand so each test
+  // exercises its chosen recovery rather than whichever building sorts first.
+  for (const slots of Object.values(p.buildings)) for (let i = 0; i < slots.length; i++) {
+    const kind = getPlanetBuildingKind(slots[i]);
+    if (kind && kind !== "planetaryCapital" && kind !== "housingComplex") slots[i] = createPlanetBuildingState(kind, getPlanetBuildingLevel(slots[i]), false);
+  }
+  for (const sub of p.urbanSubDistricts) { sub.kind = "residential"; sub.buildings.fill(null); }
+  for (const resource of ["food", "energy", "minerals", "goods", "alloys"] as const) {
+    result.economy.stockpiles[resource] = 0; result.economy.monthlyDelta[resource] = -200;
+  }
+  p.economy = calculatePlanetEconomy(p);
+  return result;
+}
+
+test("cashless multi-resource collapse can rezone empty industry in useful steps without requiring immediate solvency", () => {
+  const { observation, planet, episode } = bankruptFixture(), p = planet.planetState;
+  p.urbanSubDistricts[1].kind = "mixedIndustry";
+  p.economy = calculatePlanetEconomy(p);
+  const before = JSON.stringify(observation);
+  const action = activeRecoveryAction(observation, episode, getAiCandidates(observation));
+  assert.deepEqual(action, { type: "setUrbanSubDistrict", planetId: p.id, subDistrictIndex: 1, subDistrictKind: "residential" });
+  const change = developmentForecast(observation, action!)!;
+  assert.ok(change.minerals > 1 && change.energy > 1 && change.food >= 0);
+  assert.equal(JSON.stringify(observation), before, "planning does not grant money, move workers or edit the world");
+  p.urbanSubDistricts[1].buildings[0] = createPlanetBuildingState("civilianFabricators", 1, false);
+  assert.notEqual(activeRecoveryAction(observation, episode, getAiCandidates(observation))?.type, "setUrbanSubDistrict", "never demolish an existing building");
+  p.urbanSubDistricts[1].buildings[0] = null;
+  p.constructionQueue.push({ id: "queued-industry", kind: "building", label: "Factory", area: "urbanSubDistrict", subDistrictIndex: 1, slotIndex: 0, buildingKind: "civilianFabricators", totalDays: 60, remainingDays: 60, mineralCost: 450, cost: { minerals: 450, energy: 120 } });
+  assert.notEqual(activeRecoveryAction(observation, episode, getAiCandidates(observation))?.type, "setUrbanSubDistrict", "never discard a paid queue");
+});
+
+test("cashless upstream recovery can pause downstream goods demand but retains wartime production", () => {
+  const { observation, planet, episode } = bankruptFixture(), p = planet.planetState;
+  p.buildings.city[4] = createPlanetBuildingState("civilianFabricators");
+  p.economy = calculatePlanetEconomy(p);
+  const action = activeRecoveryAction(observation, episode, getAiCandidates(observation));
+  assert.equal(action?.type, "setPlanetBuildingEnabled");
+  if (action?.type !== "setPlanetBuildingEnabled") return;
+  assert.equal(action.slotIndex, 4); assert.equal(action.enabled, false);
+  observation.diplomacy.countries.find((country) => !country.isSelf)!.atWar = true;
+  assert.notEqual(activeRecoveryAction(observation, episode, getAiCandidates(observation))?.type, "setPlanetBuildingEnabled");
+});
+
+test("bankruptcy cannot justify sacrificing food processing or dismantling wartime alloy districts", () => {
+  const { observation, planet, episode } = bankruptFixture(), p = planet.planetState;
+  p.buildings.agriculture[0] = createPlanetBuildingState("foodProcessingPlant");
+  p.economy = calculatePlanetEconomy(p);
+  assert.equal(activeRecoveryAction(observation, episode, getAiCandidates(observation)), undefined);
+  p.urbanSubDistricts[1].kind = "mixedIndustry";
+  p.economy = calculatePlanetEconomy(p);
+  observation.diplomacy.countries.find((country) => !country.isSelf)!.atWar = true;
+  assert.equal(activeRecoveryAction(observation, episode, getAiCandidates(observation)), undefined);
+});
 
 test("peaceful mineral crisis pauses optional alloy demand without changing authoritative state", () => {
   const { observation, planet, economy, episode } = fixture();
