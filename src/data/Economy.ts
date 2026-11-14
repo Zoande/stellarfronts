@@ -17,6 +17,7 @@ import {
 import type { SpeciesId, SpeciesRights, SpeciesState } from "./Species";
 import {
   MIN_HABITED_POPULATION,
+  calculateFoodSupplyGrowthMultiplier,
   calculateFamineProjection,
   calculateBlendedPlanetCapacity,
   calculateMigrationAttractiveness,
@@ -2974,14 +2975,16 @@ export function calculatePopulationGrowth(
     getModifierMultiplier(getActiveModifiers(state, externalModifiers), "populationGrowth"),
   );
   const speciesMultiplier = Math.max(0, getWeightedSpeciesGrowthMultiplier(state.speciesPopulations, speciesContext));
+  const foodSupplyMultiplier = calculateFoodSupplyGrowthMultiplier(speciesContext?.foodShortageProgress);
   const factors: PlanetPopulationGrowthFactors = {
     ...quality.factors,
     qualityOfLifeMultiplier: quality.multiplier,
     capacityMultiplier,
     modifierMultiplier,
     speciesMultiplier,
+    foodSupplyMultiplier,
   };
-  const ratePerWeek = calculateWeeklyNaturalGrowthRate(
+  const ratePerWeek = foodSupplyMultiplier * calculateWeeklyNaturalGrowthRate(
     capacityMultiplier,
     quality.multiplier,
     modifierMultiplier,

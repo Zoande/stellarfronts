@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   BASE_POPULATION_GROWTH_RATE_PER_WEEK,
   calculateFamineProjection,
+  calculateFoodSupplyGrowthMultiplier,
   calculateBlendedPlanetCapacity,
   calculateMigrationAttractiveness,
   calculateMigrationIntakeCapacity,
@@ -13,6 +14,7 @@ import {
 import type { PopGroup } from "../../src/data/Economy";
 import {
   createPlanetStateFromSeed,
+  applyPopulationGrowth,
   recalculatePlanetStateEconomy,
   sumSpeciesPopulation,
 } from "../../src/data/Economy";
@@ -37,6 +39,31 @@ test("population pressure curve matches all authored anchors", () => {
   assert.ok(Math.abs(calculatePopulationCapacityMultiplier(1.5) - 0.2) < 1e-12);
   assert.ok(Math.abs(calculatePopulationCapacityMultiplier(2) - 0.05) < 1e-12);
   assert.equal(calculatePopulationCapacityMultiplier(3), 0.05);
+});
+
+test("food shortages taper births before famine and resupply restores growth without changing species totals", () => {
+  assert.equal(calculateFoodSupplyGrowthMultiplier(), 1);
+  assert.equal(calculateFoodSupplyGrowthMultiplier(-1), 1);
+  assert.equal(calculateFoodSupplyGrowthMultiplier(17), 0.5);
+  assert.equal(calculateFoodSupplyGrowthMultiplier(34), 0);
+  assert.equal(calculateFoodSupplyGrowthMultiplier(100), 0);
+  assert.equal(calculateFoodSupplyGrowthMultiplier(NaN), 1);
+  const limits = { city: 12, generator: 6, mining: 6, agriculture: 6 };
+  const planet = createPlanetStateFromSeed({ id: "nutrition", starId: 0, planetIndex: 0,
+    isHabited: true, habitability: 80, builtDistricts: { city: 0, generator: 0, mining: 0, agriculture: 0 }, districtLimits: limits });
+  // A specialist planet may import all its food: local deficit is not famine.
+  planet.builtDistricts.agriculture = 0;
+  const fed = applyPopulationGrowth(planet, limits, 1, [], { species: [], foodShortageProgress: 0 });
+  const hungry = applyPopulationGrowth(planet, limits, 1, [], { species: [], foodShortageProgress: 17 });
+  const famine = applyPopulationGrowth(planet, limits, 1, [], { species: [], foodShortageProgress: 50 });
+  assert.ok(planet.economy.net.food < 0);
+  assert.ok(fed.population > planet.population);
+  assert.ok(hungry.population > planet.population && hungry.population < fed.population);
+  assert.equal(famine.population, planet.population);
+  assert.equal(famine.economy.populationGrowth.factors.foodSupplyMultiplier, 0);
+  const resupplied = applyPopulationGrowth(famine, limits, 1, [], { species: [], foodShortageProgress: 0 });
+  assert.equal(resupplied.population, fed.population);
+  for (const result of [fed, hungry, famine, resupplied]) assert.equal(sumSpeciesPopulation(result.speciesPopulations), result.population);
 });
 
 test("capacity blend is 35/35/30 and falls as current vacancies fill", () => {
@@ -72,7 +99,7 @@ test("migration attractiveness and intake use the authored weights and capital t
   assert.equal(calculateMigrationIntakeCapacity(5, 2), 85_000_000);
 });
 
-test("food shortage UI penalties use the reduced caps and no growth penalty", () => {
+test("food shortage linear UI penalties remain separate from the nutrition growth curve", () => {
   const effects = SHORTAGE_EFFECTS.food ?? [];
   assert.deepEqual(
     effects.map((effect) => [effect.label, effect.full]),

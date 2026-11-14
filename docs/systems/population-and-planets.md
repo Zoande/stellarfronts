@@ -24,7 +24,13 @@ their current month so load never creates retrospective deaths or migration.
 
 The neutral base is `0.00025` (0.025%) per week:
 
-`base × population pressure × quality of life × populationGrowth modifiers × species growth`
+`base × population pressure × quality of life × populationGrowth modifiers × species growth × food supply`
+
+Food supply is 1 without an empire food shortage, tapers linearly to 0 at shortage progress 34,
+and stays 0 throughout famine. It recovers as shortage progress falls. This prevents births from
+indefinitely offsetting famine deaths. A planet's local food deficit does not affect this factor:
+other colonies and market imports can feed specialist worlds. The population panel shows the
+factor; older snapshots without it display 1 until the next authoritative economy refresh.
 
 Population pressure is 1.30 through 50% occupancy, 1.00 at 100%, 0.20 at 150%, and 0.05 at 200% and
 above, with linear interpolation between anchors. Quality of life equally weights normalized

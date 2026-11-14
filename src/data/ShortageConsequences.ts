@@ -57,7 +57,7 @@ export const SHORTAGE_EFFECTS: Partial<Record<ResourceKind, ShortageEffect[]>> =
 
 /** Short, resource-specific guidance on how to recover from the shortage. */
 export const SHORTAGE_RECOVERY: Partial<Record<ResourceKind, string>> = {
-  food: "Build hydroponics/agricultural districts, or import food on the market. Population upkeep falls if growth stalls.",
+  food: "Build hydroponics/agricultural districts, or import food on the market. Natural growth slows as food shortage progress rises and stops at 34%; it resumes as food supply recovers. Sustained famine causes population decline.",
   goods: "Add artisan jobs (industrial districts) or buy goods on the market to cover consumer demand.",
   energy: "Build solar arrays / generator districts, or trade for energy. Mothballing upkeep-heavy buildings also helps.",
   minerals: "Expand mining districts or import minerals; mineral upkeep drives goods and alloy production.",

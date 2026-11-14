@@ -9,6 +9,14 @@ export const FAMINE_MIDDLE_RATE_MULTIPLIER = 0.25;
 export const FAMINE_UPPER_RATE_MULTIPLIER = 0.1;
 export const FAMINE_FARMER_RATE_MULTIPLIER = 0.01;
 
+/** Empire-wide shortages include imports and food from other colonies. Local
+ * net food alone must never suppress births on a well-supplied specialist world.
+ * Births taper off before famine, rather than offsetting famine indefinitely. */
+export function calculateFoodSupplyGrowthMultiplier(shortageProgress = 0): number {
+  const progress = Number.isFinite(shortageProgress) ? shortageProgress : 0;
+  return 1 - Math.min(1, Math.max(0, progress) / FAMINE_START_PROGRESS);
+}
+
 export const MIGRATION_INTAKE_BY_CAPITAL_LEVEL: Record<number, number> = {
   1: 5_000_000,
   2: 10_000_000,
@@ -27,6 +35,8 @@ export interface PlanetPopulationGrowthFactors {
   capacityMultiplier: number;
   modifierMultiplier: number;
   speciesMultiplier: number;
+  /** Absent in older protocol-12 snapshots: treat as fully fed. */
+  foodSupplyMultiplier?: number;
 }
 
 export interface PlanetPopulationGrowth {
@@ -212,6 +222,7 @@ export function createEmptyPopulationGrowth(): PlanetPopulationGrowth {
       capacityMultiplier: 1,
       modifierMultiplier: 1,
       speciesMultiplier: 1,
+      foodSupplyMultiplier: 1,
     },
   };
 }

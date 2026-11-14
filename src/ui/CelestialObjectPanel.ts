@@ -3787,6 +3787,7 @@ export class CelestialObjectPanel {
         ${this.renderTooltipGridItem("Weekly Change", this.formatSignedPeople(growth.netPerWeek))}
         ${this.renderTooltipGridItem("Population pressure", `${growth.factors.capacityMultiplier.toFixed(2)}x`)}
         ${this.renderTooltipGridItem("Quality of life", `${growth.factors.qualityOfLifeMultiplier.toFixed(2)}x`)}
+        ${this.renderTooltipGridItem("Food supply", `${(growth.factors.foodSupplyMultiplier ?? 1).toFixed(2)}x`)}
         ${this.renderTooltipGridItem("Birth modifiers", `${growth.factors.modifierMultiplier.toFixed(2)}x`)}
         ${this.renderTooltipGridItem("Species traits", `${growth.factors.speciesMultiplier.toFixed(2)}x`)}
       </div>
@@ -4918,6 +4919,7 @@ export class CelestialObjectPanel {
       ? [
         ["Population pressure", growth.factors.capacityMultiplier],
         ["Quality of life", growth.factors.qualityOfLifeMultiplier],
+        ["Food supply", growth.factors.foodSupplyMultiplier ?? 1],
         ["Birth modifiers", growth.factors.modifierMultiplier],
         ["Species traits", growth.factors.speciesMultiplier],
       ] as const
